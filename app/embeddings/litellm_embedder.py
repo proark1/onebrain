@@ -10,6 +10,10 @@ from typing import List
 
 import numpy as np
 
+# Providers cap how many inputs one embedding request may carry. Gemini's
+# batchEmbedContents allows at most 100; 100 is safe for every provider.
+_MAX_BATCH = 100
+
 
 class LiteLLMEmbedder:
     name = "litellm"
@@ -28,9 +32,12 @@ class LiteLLMEmbedder:
             pass
 
     def _embed(self, texts: List[str]) -> np.ndarray:
-        response = self._litellm.embedding(model=self.model, input=texts)
-        data = response["data"] if isinstance(response, dict) else response.data
-        rows = [item["embedding"] if isinstance(item, dict) else item.embedding for item in data]
+        rows: list = []
+        for start in range(0, len(texts), _MAX_BATCH):
+            batch = texts[start:start + _MAX_BATCH]
+            response = self._litellm.embedding(model=self.model, input=batch)
+            data = response["data"] if isinstance(response, dict) else response.data
+            rows.extend(item["embedding"] if isinstance(item, dict) else item.embedding for item in data)
         vecs = np.array(rows, dtype=np.float32)
         norms = np.linalg.norm(vecs, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
