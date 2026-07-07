@@ -289,6 +289,12 @@ def update_plan(deployment_id: str, target_version: str, principal: Principal = 
     return _plan_out(get_control_plane_store().plan_update(deployment_id, target_version))
 
 
+@router.get("/deployments/{deployment_id}/rollouts", response_model=list[RolloutOut])
+def list_rollouts(deployment_id: str, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    return [_rollout_out(r) for r in get_control_plane_store().list_rollouts(deployment_id)]
+
+
 @router.post("/deployments/{deployment_id}/rollouts", response_model=RolloutOut)
 def start_rollout(deployment_id: str, body: RolloutCreate, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)

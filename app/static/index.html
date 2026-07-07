@@ -49,6 +49,14 @@
         <span class="plus">+</span> Upload document
       </button>
 
+      <button id="operatorBtn" class="btn-operator" type="button" hidden>
+        <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+          <path d="M5 18V8m7 10V4m7 14v-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+          <path d="M3.5 18.5h17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        </svg>
+        Operator
+      </button>
+
       <div id="reviewSection" class="review" hidden>
         <div class="docs-head">
           <span>Pending review</span>
@@ -70,7 +78,7 @@
       </div>
     </aside>
 
-    <main class="chat">
+    <main id="chatView" class="chat">
       <div id="messages" class="messages"></div>
 
       <form id="composer" class="composer" autocomplete="off">
@@ -84,6 +92,101 @@
         </div>
         <p class="composer-hint">Answers come only from documents your role is allowed to see.</p>
       </form>
+    </main>
+
+    <main id="operatorView" class="operator" hidden>
+      <div class="operator-shell">
+        <header class="operator-head">
+          <div>
+            <span class="operator-kicker">Operator</span>
+            <h1>Customer rollout</h1>
+          </div>
+          <button id="operatorRefresh" class="icon-btn operator-refresh" type="button" aria-label="Refresh" title="Refresh">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <path d="M20 12a8 8 0 0 1-13.4 5.9M4 12A8 8 0 0 1 17.4 6.1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+              <path d="M17.5 2.8v3.8h-3.8M6.5 21.2v-3.8h3.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </header>
+
+        <div class="operator-grid">
+          <section class="operator-panel provision-panel">
+            <div class="operator-panel-head">
+              <h2>Provision customer</h2>
+              <span id="provisionStatus" class="operator-status">Ready</span>
+            </div>
+            <form id="provisionForm" class="operator-form" autocomplete="off">
+              <label class="field">
+                <span class="field-label">Customer name</span>
+                <input id="provisionName" class="text-input" name="customer_name" required maxlength="200" placeholder="Acme GmbH" />
+              </label>
+              <div class="operator-form-grid">
+                <label class="field">
+                  <span class="field-label">Bundle</span>
+                  <select id="provisionBundle" class="select" name="bundle_id"></select>
+                </label>
+                <label class="field">
+                  <span class="field-label">Initial version</span>
+                  <input id="provisionVersion" class="text-input" name="initial_version" value="0.1.0" required maxlength="80" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Release ring</span>
+                  <select id="provisionRing" class="select" name="release_ring">
+                    <option value="manual" selected>Manual</option>
+                    <option value="pilot">Pilot</option>
+                    <option value="early">Early</option>
+                    <option value="stable">Stable</option>
+                    <option value="internal">Internal</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="field-label">Deployment</span>
+                  <select id="provisionType" class="select" name="deployment_type">
+                    <option value="dedicated_railway" selected>Dedicated Railway</option>
+                    <option value="shared_railway">Shared Railway</option>
+                    <option value="dedicated_server">Dedicated server</option>
+                    <option value="customer_owned">Customer owned</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="field-label">Account id</span>
+                  <input id="provisionAccount" class="text-input" name="account_id" maxlength="120" placeholder="auto" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Region</span>
+                  <input id="provisionRegion" class="text-input" name="region" maxlength="80" placeholder="eu-central" />
+                </label>
+              </div>
+              <button id="provisionSubmit" class="btn-primary" type="submit">Provision customer</button>
+            </form>
+          </section>
+
+          <section class="operator-panel">
+            <div class="operator-panel-head">
+              <h2>Bundles</h2>
+              <span id="bundleCount" class="operator-count">0</span>
+            </div>
+            <div id="bundleList" class="bundle-list"></div>
+          </section>
+
+          <section class="operator-panel operator-wide">
+            <div class="operator-panel-head">
+              <h2>Accounts and spaces</h2>
+              <span id="accountCount" class="operator-count">0</span>
+            </div>
+            <div id="accountList" class="operator-list"></div>
+          </section>
+
+          <section class="operator-panel operator-wide">
+            <div class="operator-panel-head">
+              <h2>Deployments and versions</h2>
+              <span id="deploymentCount" class="operator-count">0</span>
+            </div>
+            <div id="releaseRail" class="release-rail"></div>
+            <div id="deploymentList" class="operator-list"></div>
+          </section>
+        </div>
+      </div>
     </main>
   </div>
 

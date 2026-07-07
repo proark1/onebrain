@@ -3,6 +3,15 @@
 
 const json = (res) => res.json();
 
+async function requestJson(url, options = {}) {
+  const res = await fetch(url, options);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || "Request failed");
+  }
+  return res.json();
+}
+
 export async function getMe() {
   const res = await fetch("/api/session/me");
   return res.ok ? res.json() : null;   // 401 -> null (not logged in)
@@ -45,6 +54,37 @@ export async function uploadDocument(formData) {
     throw new Error(body.detail || "Upload failed");
   }
   return res.json();
+}
+
+export const listProvisioningBundles = () => requestJson("/api/provisioning/bundles");
+
+export async function provisionCustomer(payload) {
+  return requestJson("/api/provisioning/customers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export const listPlatformAccounts = () => requestJson("/api/platform/accounts");
+export const listPlatformSpaces = (accountId) => requestJson(`/api/platform/accounts/${encodeURIComponent(accountId)}/spaces`);
+export const listPlatformApps = (accountId) => requestJson(`/api/platform/accounts/${encodeURIComponent(accountId)}/apps`);
+
+export const listDeployments = () => requestJson("/api/operator/deployments");
+export const listDeploymentModules = (deploymentId) =>
+  requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/modules`);
+export const listReleases = () => requestJson("/api/operator/releases");
+export const getUpdatePlan = (deploymentId, targetVersion) =>
+  requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/update-plan/${encodeURIComponent(targetVersion)}`);
+export const listRollouts = (deploymentId) =>
+  requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/rollouts`);
+
+export async function startRollout(deploymentId, targetVersion) {
+  return requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/rollouts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target_version: targetVersion }),
+  });
 }
 
 // Streams the answer via SSE. Sends conversation_id (null starts a new one).

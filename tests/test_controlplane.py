@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+import app.routers.operator as operator_router
+from app.auth.principal import Principal
+from app.auth.roles import ROLES
 from app.controlplane.base import (
     BackupRun,
     CustomerDeployment,
@@ -12,6 +15,19 @@ from app.controlplane.base import (
     RolloutRun,
 )
 from app.controlplane.memory import MemoryControlPlaneStore
+
+
+def _admin() -> Principal:
+    role = ROLES["admin"]
+    return Principal(
+        user_id="admin@onebrain",
+        role_id=role.id,
+        role_label=role.label,
+        clearance=role.clearance,
+        locations=None,
+        categories=role.categories,
+        location_label="all",
+    )
 
 
 def _store() -> MemoryControlPlaneStore:
@@ -101,3 +117,20 @@ def test_unknown_module_and_invalid_ring_are_rejected():
     store.create_deployment(CustomerDeployment(id="dep_ok", customer_name="OK"))
     with pytest.raises(ValueError, match="Unknown module id"):
         store.upsert_module(DeploymentModule("dep_ok", "unknown-module", "1.0.0"))
+
+
+def test_operator_endpoint_lists_rollout_status(monkeypatch):
+    store = _store()
+    store.create_release(ReleaseManifest(
+        version="2026.07.3",
+        git_sha="abc789",
+        modules={"onebrain-api": "0.8.0", "communication-api": "0.6.0"},
+    ))
+    store.start_rollout(RolloutRun("roll_status", "dep_a", "2026.07.3", "running", "admin"))
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+
+    rollouts = operator_router.list_rollouts("dep_a", principal=_admin())
+
+    assert len(rollouts) == 1
+    assert rollouts[0].id == "roll_status"
+    assert rollouts[0].status == "running"
