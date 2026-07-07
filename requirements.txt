@@ -5,3 +5,5 @@ pydantic-settings>=2.2
 numpy>=1.26
 pypdf>=4.2
 litellm>=1.50
+psycopg[binary]>=3.1
+pgvector>=0.2.5

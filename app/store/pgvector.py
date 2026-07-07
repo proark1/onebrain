@@ -36,6 +36,17 @@ class PgVectorStore:
     def _init_schema(self) -> None:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            # If a chunks table already exists with a different embedding
+            # dimension (i.e. the embedding model changed), drop it — vectors
+            # from two models aren't comparable, so the index must be rebuilt.
+            # The app re-seeds automatically when the store is empty.
+            cur.execute(
+                "SELECT a.atttypmod FROM pg_attribute a JOIN pg_class c "
+                "ON c.oid = a.attrelid WHERE c.relname = 'chunks' AND a.attname = 'embedding'"
+            )
+            existing = cur.fetchone()
+            if existing is not None and existing[0] > 0 and existing[0] != self._dim:
+                cur.execute("DROP TABLE IF EXISTS chunks")
             cur.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS chunks (

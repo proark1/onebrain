@@ -20,6 +20,12 @@ class LiteLLMEmbedder:
         self._litellm = litellm
         self.model = model
         self.dim = dim
+        # Probe the true output dimension once, so a fixed-dim store (pgvector)
+        # creates its column at the right size before anything is inserted.
+        try:
+            self._embed(["dimension probe"])  # updates self.dim as a side effect
+        except Exception:  # no key / offline — corrected on first real embed
+            pass
 
     def _embed(self, texts: List[str]) -> np.ndarray:
         response = self._litellm.embedding(model=self.model, input=texts)
