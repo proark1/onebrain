@@ -129,8 +129,11 @@ function renderSources(sources) {
 function formatCost(usd) {
   if (usd === null || usd === undefined) return null;
   if (usd === 0) return "free";
-  if (usd < 0.01) return `$${usd.toFixed(4)}`;
-  return `$${usd.toFixed(2)}`;
+  const cents = usd * 100;               // per-request cost is almost always a fraction of a cent
+  if (cents < 0.01) return "<0.01¢";
+  if (cents < 1) return `${cents.toFixed(2)}¢`;   // 0.14¢
+  if (cents < 10) return `${cents.toFixed(1)}¢`;  // 4.2¢
+  return `${Math.round(cents)}¢`;                  // 42¢
 }
 
 function metaLine(e) {
