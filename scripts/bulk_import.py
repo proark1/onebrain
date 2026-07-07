@@ -25,7 +25,7 @@ try:
 except ImportError:
     sys.exit("This script needs `requests`:  pip install requests")
 
-DEFAULT_EXTS = ".txt,.md,.pdf,.csv,.json,.html"
+DEFAULT_EXTS = ".pdf,.docx,.xlsx,.xlsm,.pptx,.rtf,.txt,.md,.csv,.json,.html,.png,.jpg,.jpeg,.tiff,.bmp,.webp"
 
 
 def parse_args() -> argparse.Namespace:

@@ -56,8 +56,15 @@ python scripts/bulk_import.py ./hr_docs     --classification restricted --catego
 python scripts/bulk_import.py ./munich_ops  --classification internal --location munich --category ops --recursive
 ```
 
-Use `--dry-run` to preview. Supports `.txt`, `.md`, `.pdf`, `.csv`, `.json`,
-`.html` (override with `--ext`). Reports per-file success and a summary.
+Use `--dry-run` to preview. Reports per-file success and a summary.
+
+## Supported file types
+
+PDF (`.pdf`, with OCR fallback for scanned pages), Word (`.docx`), Excel
+(`.xlsx`/`.xlsm`), PowerPoint (`.pptx`), RTF, images via OCR
+(`.png`/`.jpg`/`.tiff`/…), and any text format (`.txt`/`.md`/`.csv`/`.json`/
+`.html`/…). OCR uses the `tesseract-ocr` system package (installed in the
+Docker image).
 
 ## How it works
 
