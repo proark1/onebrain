@@ -36,7 +36,8 @@ class IngestPipeline:
         self._store = store
 
     def ingest_text(self, *, title, text, classification, location, category, uploaded_by, tenant,
-                    require_approval=False, block_public_on_pii=True, pii_phase="dpia_signed") -> IngestResult:
+                    require_approval=False, block_public_on_pii=True, pii_phase="dpia_signed",
+                    account_id: str = "", space_id: str = "") -> IngestResult:
         cls = Classification.parse(classification)
         location = (location or GLOBAL_LOCATION).strip().lower() or GLOBAL_LOCATION
         category = (category or GENERAL_CATEGORY).strip().lower() or GENERAL_CATEGORY
@@ -46,6 +47,9 @@ class IngestPipeline:
         tenant = (tenant or "").strip()
         if not tenant:
             raise ValueError("tenant is required — a chunk with no tenant is unreachable.")
+
+        account_id = (account_id or "").strip()
+        space_id = (space_id or "").strip()
 
         pieces = chunk_text(text)
         if not pieces:
@@ -74,36 +78,42 @@ class IngestPipeline:
 
         vectors = self._embedder.embed([f"{title}. {piece}" for piece in pieces])
         doc_id = uuid.uuid4().hex
-        chunks = [
-            Chunk(
+        chunks = []
+        for i, (piece, vector) in enumerate(zip(pieces, vectors)):
+            meta = {
+                "tenant_id": tenant,
+                "doc_title": title,
+                "classification": int(cls),
+                "classification_label": cls.name.lower(),
+                "location": location,
+                "category": category,
+                "chunk_index": i,
+                "uploaded_by": uploaded_by,
+                "status": status,
+                "pii_findings": pii_findings,
+            }
+            if account_id:
+                meta["account_id"] = account_id
+            if space_id:
+                meta["space_id"] = space_id
+            chunks.append(Chunk(
                 id=f"{doc_id}:{i}",
                 doc_id=doc_id,
                 text=piece,
-                meta={
-                    "tenant_id": tenant,
-                    "doc_title": title,
-                    "classification": int(cls),
-                    "classification_label": cls.name.lower(),
-                    "location": location,
-                    "category": category,
-                    "chunk_index": i,
-                    "uploaded_by": uploaded_by,
-                    "status": status,
-                    "pii_findings": pii_findings,
-                },
+                meta=meta,
                 embedding=vector,
-            )
-            for i, (piece, vector) in enumerate(zip(pieces, vectors))
-        ]
+            ))
         self._store.add(chunks)
         return IngestResult(doc_id, title, cls.name.lower(), location, category, len(chunks),
                             status=status, pii_findings=pii_findings)
 
     def ingest_file(self, *, filename, data, classification, location, category, uploaded_by, tenant,
-                    require_approval=False, block_public_on_pii=True, pii_phase="dpia_signed") -> IngestResult:
+                    require_approval=False, block_public_on_pii=True, pii_phase="dpia_signed",
+                    account_id: str = "", space_id: str = "") -> IngestResult:
         text = extract_text(filename, data)
         return self.ingest_text(
             title=filename, text=text, classification=classification,
             location=location, category=category, uploaded_by=uploaded_by, tenant=tenant,
             require_approval=require_approval, block_public_on_pii=block_public_on_pii, pii_phase=pii_phase,
+            account_id=account_id, space_id=space_id,
         )

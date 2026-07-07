@@ -13,11 +13,17 @@ Key management (/api/service-keys) is human-admin-only.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth.principal import Principal, resolve_principal, resolve_service_principal
 from app.config import get_settings
-from app.deps import get_pipeline, get_retrieval_service, get_service_key_store, get_service_rate_limiter
+from app.deps import (
+    get_pipeline, get_platform_store, get_retrieval_service, get_service_key_store, get_service_rate_limiter,
+)
+from app.platform.base import AuditEvent
 from app.schemas import (
     MintedKey, ServiceAskRequest, ServiceAskResponse, ServiceCaptureRequest,
     ServiceKeyCreate, ServiceKeyInfo,
@@ -29,6 +35,52 @@ from app.servicekeys.base import (
 
 service_router = APIRouter(prefix="/api/service", tags=["service"])
 keys_router = APIRouter(prefix="/api/service-keys", tags=["service-keys"])
+
+
+def _platform_scope(body, principal: Principal, default_purpose: str):
+    fields = {
+        "account_id": (body.account_id or "").strip(),
+        "space_id": (body.space_id or "").strip(),
+        "app_id": (body.app_id or "").strip(),
+        "purpose": (body.purpose or default_purpose).strip(),
+    }
+    provided = [fields["account_id"], fields["space_id"], fields["app_id"]]
+    if not any(provided):
+        return None, principal
+    if not all(provided):
+        raise HTTPException(
+            status_code=400,
+            detail="account_id, space_id and app_id must be provided together for platform-scoped service calls.",
+        )
+    if fields["account_id"] != principal.tenant_id:
+        raise HTTPException(status_code=403, detail="This service key is not pinned to that account.")
+
+    store = get_platform_store()
+    decision = store.check_app_access(
+        fields["account_id"], fields["app_id"], fields["space_id"], fields["purpose"],
+    )
+    store.record_audit(AuditEvent(
+        id=f"aud_{uuid4().hex}",
+        account_id=fields["account_id"],
+        actor_id=principal.user_id,
+        actor_type=principal.principal_type,
+        action="service.access_checked",
+        target_type="space",
+        target_id=fields["space_id"],
+        space_id=fields["space_id"],
+        app_id=fields["app_id"],
+        purpose=fields["purpose"],
+        decision="allowed" if decision.allowed else "denied",
+        meta={"reason": decision.reason},
+    ))
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail=f"App access denied: {decision.reason}")
+
+    return fields, replace(
+        principal,
+        account_id=fields["account_id"],
+        space_ids=frozenset({fields["space_id"]}),
+    )
 
 
 def _require_scope(principal: Principal, scope: str) -> None:
@@ -50,6 +102,7 @@ def _rate_limit(principal: Principal) -> None:
 def capture(body: ServiceCaptureRequest, principal: Principal = Depends(resolve_service_principal)):
     _require_scope(principal, SCOPE_WRITE)
     _rate_limit(principal)
+    platform_scope, _ = _platform_scope(body, principal, "customer_service_inbox")
     settings = get_settings()
     try:
         # Labels are CLAMPED here, not taken from the caller: a service write can
@@ -65,6 +118,8 @@ def capture(body: ServiceCaptureRequest, principal: Principal = Depends(resolve_
             require_approval=False,
             block_public_on_pii=False,      # not public; the compartment is the control
             pii_phase=settings.pii_phase,   # still refuse real PII before the DPIA
+            account_id=platform_scope["account_id"] if platform_scope else "",
+            space_id=platform_scope["space_id"] if platform_scope else "",
         )
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -75,10 +130,11 @@ def capture(body: ServiceCaptureRequest, principal: Principal = Depends(resolve_
 def service_ask(body: ServiceAskRequest, principal: Principal = Depends(resolve_service_principal)):
     _require_scope(principal, SCOPE_READ)
     _rate_limit(principal)
+    _, scoped_principal = _platform_scope(body, principal, "customer_service_answer")
     service = get_retrieval_service()
     answer_parts: list[str] = []
     meta: dict = {}
-    for event in service.answer_stream(principal, body.question):
+    for event in service.answer_stream(scoped_principal, body.question):
         if event["type"] == "token":
             answer_parts.append(event["text"])
         elif event["type"] == "meta":

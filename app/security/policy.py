@@ -51,6 +51,8 @@ class AccessFilter:
     clearance: int
     locations: Optional[frozenset]   # None = all locations
     categories: Optional[frozenset]  # None = all categories
+    account_id: str = ""
+    space_ids: Optional[frozenset] = None
 
     def allows(self, meta: dict) -> bool:
         # Tenant is checked FIRST, unconditionally, with no wildcard and no
@@ -58,6 +60,13 @@ class AccessFilter:
         # tenant_id at all — is never accessible. This is the hard isolation
         # boundary between the businesses that share this brain.
         if meta.get("tenant_id") != self.tenant_id:
+            return False
+        # Optional platform-space boundary for the unified OneBrain model. When
+        # a service/app call is scoped to a space, legacy/unscoped chunks and
+        # other spaces are invisible before scoring.
+        if self.account_id and meta.get("account_id") != self.account_id:
+            return False
+        if self.space_ids is not None and meta.get("space_id") not in self.space_ids:
             return False
         if int(meta.get("classification", Classification.RESTRICTED)) > self.clearance:
             return False
@@ -83,6 +92,12 @@ class AccessFilter:
             "COALESCE(meta->>'status', 'approved') = 'approved'",
         ]
         params: list = [self.tenant_id, self.clearance]
+        if self.account_id:
+            clauses.append("meta->>'account_id' = %s")
+            params.append(self.account_id)
+        if self.space_ids is not None:
+            clauses.append("meta->>'space_id' = ANY(%s)")
+            params.append(list(self.space_ids))
         if self.locations is not None:
             clauses.append("(meta->>'location' = 'global' OR meta->>'location' = ANY(%s))")
             params.append(list(self.locations))

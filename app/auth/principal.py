@@ -43,6 +43,8 @@ class Principal:
     display_name: str = ""
     email: str = ""
     scopes: frozenset = frozenset()  # service-key scopes; humans hold none
+    account_id: str = ""
+    space_ids: Optional[frozenset] = None
 
     @property
     def is_employee(self) -> bool:
@@ -55,7 +57,10 @@ class Principal:
         return scope in self.scopes
 
     def access_filter(self) -> AccessFilter:
-        return AccessFilter(self.tenant_id, int(self.clearance), self.locations, self.categories)
+        return AccessFilter(
+            self.tenant_id, int(self.clearance), self.locations, self.categories,
+            account_id=self.account_id, space_ids=self.space_ids,
+        )
 
 
 def principal_from_user(user) -> Principal:

@@ -75,3 +75,10 @@ def get_service_rate_limiter():
 
     settings = get_settings()
     return RateLimiter(settings.service_rate_limit, settings.service_rate_window_seconds)
+
+
+@lru_cache
+def get_platform_store():
+    from app.platform.factory import build_platform_store
+
+    return build_platform_store(get_settings())

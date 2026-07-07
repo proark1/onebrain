@@ -77,10 +77,18 @@ class LoginRequest(BaseModel):
 class ServiceCaptureRequest(BaseModel):
     text: str = Field(min_length=1, max_length=20000)
     title: Optional[str] = Field(default=None, max_length=200)
+    account_id: Optional[str] = Field(default=None, max_length=120)
+    space_id: Optional[str] = Field(default=None, max_length=120)
+    app_id: Optional[str] = Field(default=None, max_length=80)
+    purpose: Optional[str] = Field(default=None, max_length=80)
 
 
 class ServiceAskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
+    account_id: Optional[str] = Field(default=None, max_length=120)
+    space_id: Optional[str] = Field(default=None, max_length=120)
+    app_id: Optional[str] = Field(default=None, max_length=80)
+    purpose: Optional[str] = Field(default=None, max_length=80)
 
 
 class ServiceAskResponse(BaseModel):
