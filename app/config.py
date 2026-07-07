@@ -96,6 +96,12 @@ class Settings(BaseSettings):
     require_approval: bool = False
     block_public_on_pii: bool = True
 
+    # Synthetic-data phase gate. While "synthetic", any upload in which the PII
+    # scanner detects real personal data is REFUSED — a code-enforced version of
+    # "synthetic data only until the DPIA is signed". Flip to "dpia_signed" once
+    # the DPIA (and EU-sovereign routing) are in place to allow real PII.
+    pii_phase: str = "synthetic"   # synthetic | dpia_signed
+
     @property
     def is_local_stack(self) -> bool:
         """True only when every provider is the keyless local variant (dev/test)."""

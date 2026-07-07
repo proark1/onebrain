@@ -5,6 +5,8 @@ The HTTP four-eyes rule is exercised separately (router-level).
 
 from __future__ import annotations
 
+import pytest
+
 from app.embeddings.local import LocalEmbedder
 from app.ingest.pipeline import IngestPipeline
 from app.security.policy import AccessFilter, Classification
@@ -55,6 +57,36 @@ def test_clean_upload_goes_live_immediately():
     )
     assert r.status == "approved"
     assert "Hours" in _titles(store)
+
+
+def test_synthetic_phase_refuses_real_pii():
+    pipe, store = _pipe()
+    with pytest.raises(ValueError, match="synthetic-data"):
+        pipe.ingest_text(
+            title="Leaked HR file", text="Employee IBAN DE89 3704 0044 0532 0130 00",
+            classification="internal", location="global", category="hr",
+            uploaded_by="u1", tenant="nft_gym", pii_phase="synthetic",
+        )
+    assert store.count() == 0                                # nothing was stored
+
+
+def test_dpia_signed_phase_allows_pii():
+    pipe, store = _pipe()
+    r = pipe.ingest_text(
+        title="Contract", text="Reach the member at member@example.de.", classification="internal",
+        location="global", category="hr", uploaded_by="u1", tenant="nft_gym", pii_phase="dpia_signed",
+    )
+    assert store.count() >= 1                                # allowed once the DPIA is signed
+    assert r.status == "approved"                            # internal (not public) + not require_approval
+
+
+def test_synthetic_phase_allows_clean_content():
+    pipe, store = _pipe()
+    r = pipe.ingest_text(
+        title="Hours", text="Open 06:00 to 23:00. 49 EUR per month.", classification="public",
+        location="global", category="general", uploaded_by="u1", tenant="nft_gym", pii_phase="synthetic",
+    )
+    assert r.status == "approved" and store.count() >= 1     # no PII -> unaffected by the gate
 
 
 def test_pending_is_tenant_scoped():

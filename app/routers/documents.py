@@ -42,6 +42,7 @@ async def upload(
             tenant=principal.tenant_id,  # server-side — never a caller-supplied field
             require_approval=settings.require_approval,
             block_public_on_pii=settings.block_public_on_pii,
+            pii_phase=settings.pii_phase,
         )
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
