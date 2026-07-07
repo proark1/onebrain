@@ -28,6 +28,13 @@ The platform must support multiple sale and deployment packages:
 Railway is the first deployment target for speed. The architecture must remain
 portable to dedicated or headless GDPR-compliant infrastructure later.
 
+The engineering setup must support many customer deployments at once. Customer A
+and customer B may each have their own OneBrain stack, installed modules, module
+versions, database migration state, release channel, backups, and rollout
+policy. Updates must be automated, version-controlled, observable, and
+rollback-aware across the OneBrain core, assistant module, communication module,
+workers, and UI.
+
 Data privacy and security are release gates, not later hardening tasks. The
 platform must be designed so real customer, employee, family, and private
 assistant data can only be stored, retrieved, exported, deleted, or sent to AI
@@ -49,6 +56,9 @@ controls.
 - Make module rollout simple for new customers.
 - Keep current products useful while migrating them into the unified platform.
 - Build the architecture so more services can be added over time.
+- Support automated, version-controlled deployments for many customers.
+- Provide an operator dashboard for customer instances, installed modules,
+  versions, update status, health, backups, migrations, and rollout controls.
 
 ## Non-Goals For The First Implementation
 
@@ -411,6 +421,42 @@ Responsibilities:
 - quality evaluation,
 - cost controls.
 
+### Deployment Control Plane
+
+Tables:
+
+- `customer_deployments`
+- `deployment_environments`
+- `deployment_services`
+- `deployment_modules`
+- `release_versions`
+- `release_manifests`
+- `module_versions`
+- `module_compatibility`
+- `rollout_policies`
+- `rollout_runs`
+- `migration_runs`
+- `backup_runs`
+- `health_check_runs`
+- `deployment_incidents`
+- `operator_audit_logs`
+
+Responsibilities:
+
+- track every customer instance,
+- track enabled modules and installed versions,
+- track target release versions and update availability,
+- automate rollout waves,
+- record database migration state,
+- record backup and restore readiness,
+- monitor health checks,
+- expose rollback status,
+- audit operator actions.
+
+The control plane stores deployment metadata only. It must not store customer
+documents, messages, memories, contacts, transcripts, or private/business
+content.
+
 ## Access Control Rules
 
 Every protected row has:
@@ -667,6 +713,21 @@ Railway services:
 
 Only `onebrain-db` is the master database.
 
+Each customer deployment is a data plane. The first supported deployment shape
+is a dedicated Railway project/environment per customer or per serious test
+customer:
+
+- isolated database,
+- isolated service variables,
+- isolated secrets,
+- isolated module set,
+- isolated backups,
+- isolated update policy.
+
+The platform may later support shared multi-tenant SaaS deployments, but the
+release and versioning architecture must work for both dedicated instances and
+shared clusters.
+
 Deployment presets:
 
 - `brain_only`: core API, DB, admin UI, workers.
@@ -683,6 +744,184 @@ Branding config should live in account/app installation settings:
 - email sender,
 - widget theme,
 - assistant name.
+
+## Engineering And Release Architecture
+
+### Control Plane And Data Planes
+
+The platform has two operational layers:
+
+1. **Control plane**
+   - operator dashboard,
+   - release catalog,
+   - customer deployment registry,
+   - module/version registry,
+   - rollout orchestration,
+   - health/backups/migration status,
+   - operator audit logs.
+
+2. **Customer data planes**
+   - one or more customer OneBrain stacks,
+   - OneBrain database,
+   - installed assistant/communication modules,
+   - customer-specific secrets,
+   - customer data and backups.
+
+The control plane can trigger deployment actions, but it must not hold customer
+content. It may store customer name, deployment IDs, environment URLs, module
+status, version numbers, health states, backup metadata, and rollout events.
+
+### Release Manifest
+
+Every release must have a version-controlled manifest. The manifest records:
+
+- release version,
+- Git commit SHA,
+- container image tags or build artifacts,
+- OneBrain core version,
+- admin UI version,
+- assistant module version,
+- communication module version,
+- worker version,
+- database migration range,
+- required environment variables,
+- module compatibility matrix,
+- breaking changes,
+- security notes,
+- migration plan,
+- rollback plan,
+- smoke test plan.
+
+Example release bundle:
+
+```text
+onebrain-suite 2026.07.1
+  onebrain-api: 0.8.0
+  onebrain-admin-ui: 0.8.0
+  onebrain-workers: 0.8.0
+  assistant-service: 0.5.0
+  communication-api: 0.6.0
+  communication-widget: 0.6.0
+  communication-voice: 0.4.0
+  database: migrations 0042..0048
+```
+
+### CI/CD Pipeline
+
+Every code change should move through automated gates:
+
+1. Lint, typecheck, and unit tests.
+2. Security checks for dependencies and secret leaks.
+3. Database migration checks.
+4. Cross-module contract tests.
+5. Build container images/artifacts.
+6. Generate release manifest.
+7. Deploy to internal staging.
+8. Run smoke tests.
+9. Run privacy/security release gates.
+10. Promote to rollout rings.
+
+### Rollout Rings
+
+Updates should not go to every customer at once.
+
+Default rollout rings:
+
+- `internal`: your own test deployment.
+- `pilot`: selected friendly customer/test customer.
+- `early`: low-risk customers.
+- `stable`: default customers.
+- `manual`: customers that require explicit approval or maintenance windows.
+
+Each customer deployment has an update policy:
+
+- automatic patch updates,
+- automatic minor updates after pilot success,
+- manual major updates,
+- maintenance window,
+- rollback preference,
+- backup requirement,
+- notification contacts.
+
+### Database Migration Rules
+
+Database migrations are the highest-risk part of multi-customer updates.
+
+Rules:
+
+- migrations are versioned and tracked per customer deployment,
+- migrations are idempotent where possible,
+- every migration has a dry-run/check mode where practical,
+- destructive migrations require an explicit release gate,
+- backup runs before schema-changing production updates,
+- migrations use expand/contract patterns for breaking schema changes,
+- old and new services must overlap safely during rolling updates,
+- migration failures stop rollout for that customer and open an incident.
+
+### Backups And Rollbacks
+
+Each customer deployment needs:
+
+- scheduled database backups,
+- backup success/failure visibility,
+- pre-update backup requirement,
+- restore procedure,
+- rollback plan per release,
+- rollback compatibility notes for migrations,
+- incident timeline.
+
+Rollback options:
+
+- service rollback to previous image/artifact,
+- feature flag disablement,
+- module disablement,
+- database restore for severe migration/data corruption incidents.
+
+### Feature Flags
+
+Feature flags should control risky or staged features:
+
+- per deployment,
+- per account,
+- per space,
+- per app installation,
+- per rollout ring.
+
+Feature flags must be visible in the operator dashboard and audited when
+changed.
+
+### Operator Dashboard
+
+The operator dashboard is for your team, not the end customer. It shows:
+
+- customers/deployments,
+- deployment type and region,
+- enabled modules,
+- current versions,
+- available updates,
+- rollout ring,
+- health status,
+- migration status,
+- backup status,
+- last deploy result,
+- incidents,
+- update/rollback buttons,
+- maintenance window,
+- customer contacts,
+- operator audit log.
+
+The dashboard must be minimal and operational:
+
+- green/yellow/red status,
+- "update available",
+- "safe to update",
+- "blocked by migration/privacy/test failure",
+- one-click deploy to selected ring,
+- one-click pause rollout,
+- rollback action with confirmation.
+
+It must not show customer content unless the operator also enters that
+customer's normal OneBrain admin flow with audited, permissioned access.
 
 ## Migration Strategy
 
@@ -707,6 +946,8 @@ on:
 - export/delete scope model,
 - provider and processor register,
 - real-data rollout checklist.
+- release security gate checklist,
+- operator access model for the control plane.
 
 Success:
 
@@ -715,7 +956,8 @@ Success:
 - customer-service purpose cannot retrieve personal/family data,
 - shared-space use is explicit and audited,
 - export/delete design covers source and derived data,
-- real-data deployments have a documented privacy checklist.
+- real-data deployments have a documented privacy checklist,
+- operator dashboard cannot access customer content by default.
 
 ### Phase 1: Foundation Schema
 
@@ -812,7 +1054,7 @@ Success:
 
 ### Phase 6: Deployment Templates
 
-Create Railway environment presets and seed/setup scripts:
+Create the control plane, Railway environment presets, and seed/setup scripts:
 
 - brain only,
 - brain + assistant,
@@ -822,7 +1064,10 @@ Create Railway environment presets and seed/setup scripts:
 Success:
 
 - new customer rollout can be created predictably from a preset,
-- brand names and module availability are config-driven.
+- brand names and module availability are config-driven,
+- operator dashboard lists customer deployments and module versions,
+- a release manifest can update an internal deployment automatically,
+- migration and backup state are visible per deployment.
 
 ### Phase 7: Operational Hardening
 
@@ -837,7 +1082,10 @@ Add:
 - evaluation sets,
 - cost limits,
 - backup/restore procedures,
-- incident response runbook.
+- incident response runbook,
+- rollout rings,
+- automated rollback path,
+- release health dashboards.
 
 Success:
 
@@ -858,7 +1106,9 @@ smallest useful vertical slice:
 6. Privacy center shows app access, audit events, consent, retention, export,
    and delete controls.
 7. Admin UI shows spaces, knowledge, inbox, app access, and audit events.
-8. Railway deployment runs the full suite for one test customer with synthetic
+8. Operator dashboard shows the test customer deployment, installed modules,
+   versions, health, backups, and migration state.
+9. Railway deployment runs the full suite for one test customer with synthetic
    data until the real-data privacy checklist is complete.
 
 ## Testing Plan
@@ -881,7 +1131,15 @@ Required tests:
 - audit logs are written for sensitive reads and writes,
 - retention workers remove or redact expired records and derived data,
 - AI prompts include only permission-approved retrieved context,
-- deployment presets enable only the expected modules.
+- deployment presets enable only the expected modules,
+- release manifests include all module/image/migration versions,
+- incompatible module versions are rejected before deploy,
+- migrations are tracked per customer deployment,
+- failed migrations stop rollout and create an incident,
+- pre-update backups are required for schema-changing releases,
+- operator dashboard does not expose customer content,
+- operator actions are audited,
+- rollback path is tested for service releases.
 
 ## Risks And Mitigations
 
@@ -942,6 +1200,29 @@ Mitigation:
 - app API contracts,
 - no module gets its own master database for long-term platform data.
 
+### Risk: Multi-customer updates become manual and error-prone
+
+Mitigation:
+
+- release manifests,
+- deployment registry,
+- rollout rings,
+- automated health checks,
+- migration state tracking,
+- pre-update backups,
+- operator dashboard,
+- audited deploy/rollback actions.
+
+### Risk: One customer update breaks other modules
+
+Mitigation:
+
+- module compatibility matrix,
+- cross-module contract tests,
+- staged rollout rings,
+- feature flags,
+- ability to pin a customer to a known-good version temporarily.
+
 ## Open Questions
 
 - Which module should be the first live customer-facing proof: website chat,
@@ -955,6 +1236,11 @@ Mitigation:
 - What is the first real-data hosting target after Railway prototype: Railway EU
   region with contractual setup, dedicated EU VM, managed EU Postgres, or
   customer-owned infrastructure?
+- Should the first production customer shape be dedicated Railway project per
+  customer, shared multi-tenant stack, or both with dedicated as the default for
+  high-trust customers?
+- Which release cadence should be the default: weekly stable releases plus
+  emergency hotfixes, or continuous deployment through rollout rings?
 
 ## Approval Criteria
 
@@ -966,4 +1252,6 @@ This design is ready for implementation planning when:
 - The first build milestone is approved.
 - Phase 0 privacy and security gates are approved.
 - The real-data rollout checklist is approved.
+- Multi-customer release/versioning architecture is approved.
+- Operator dashboard scope is approved.
 - Open questions have been answered or explicitly deferred.
