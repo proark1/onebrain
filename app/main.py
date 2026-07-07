@@ -6,14 +6,14 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.deps import get_pipeline, get_store, get_user_store
 from app.routers import auth, chat, conversations, documents, session
 from app.seed import seed_if_empty
-from app.users.seed import seed_users_if_empty
+from app.users.seed import seed_admin_from_env, seed_users_if_empty
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -31,6 +31,20 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="onebrain", version="0.1.0")
 
+    @app.middleware("http")
+    async def _harden(request, call_next):
+        # Cheap edge guards: reject oversized bodies, set conservative security headers.
+        cl = request.headers.get("content-length")
+        if cl and cl.isdigit() and int(cl) > settings.max_body_bytes:
+            return JSONResponse({"detail": "Payload too large"}, status_code=413)
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if settings.cookie_secure:
+            response.headers.setdefault("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+        return response
+
     app.include_router(auth.router)
     app.include_router(session.router)
     app.include_router(documents.router)
@@ -47,11 +61,20 @@ def create_app() -> FastAPI:
         except Exception as exc:  # a provider/key misconfig shouldn't brick startup
             logging.getLogger("onebrain").warning("Sample-data seeding skipped: %s", exc)
 
-    if settings.seed_demo_users:
+    # Shared-password demo accounts seed ONLY on a fully-local stack (or explicit
+    # opt-in) — on a real deployment they would be a standing credential exposure.
+    if settings.seed_demo_users and (settings.is_local_stack or settings.allow_demo_users):
         try:
             seed_users_if_empty(get_user_store())
         except Exception as exc:
             logging.getLogger("onebrain").warning("Demo-user seeding skipped: %s", exc)
+
+    # The safe login path on any stack: a real admin from ONEBRAIN_ADMIN_*.
+    try:
+        if seed_admin_from_env(get_user_store(), settings):
+            logging.getLogger("onebrain").info("Admin account bootstrapped from ONEBRAIN_ADMIN_*.")
+    except Exception as exc:
+        logging.getLogger("onebrain").warning("Admin bootstrap skipped: %s", exc)
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

@@ -63,6 +63,29 @@ class Settings(BaseSettings):
     seed_demo_users: bool = True
     cookie_secure: bool = True    # set false only for local http dev
 
+    # Production admin bootstrap — the SAFE login path (no shared/default password).
+    # Set both to have a real admin account ensured on any stack, incl. production.
+    admin_email: str = ""
+    admin_password: str = ""
+
+    # Shared-password demo accounts (email + "onebrain2026") are convenient for a
+    # local demo but must NEVER auto-seed on a real deployment. They seed only on a
+    # fully-local stack unless this is explicitly opted into.
+    allow_demo_users: bool = False
+
+    # Cap on request body size (bytes) — a cheap DoS/edge guard. 50 MB leaves room
+    # for large document/PDF uploads while rejecting absurd payloads.
+    max_body_bytes: int = 50 * 1024 * 1024
+
+    @property
+    def is_local_stack(self) -> bool:
+        """True only when every provider is the keyless local variant (dev/test)."""
+        return (
+            self.llm_provider == "local"
+            and self.embeddings_provider == "local"
+            and self.vector_store == "memory"
+        )
+
 
 @lru_cache
 def get_settings() -> Settings:
