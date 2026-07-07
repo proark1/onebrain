@@ -129,7 +129,12 @@ export function initUpload({ onUploaded }) {
       data.append("location", qs("#uploadLocation").value);
       data.append("category", qs("#catSelect").value);
       const doc = await uploadDocument(data);
-      toast(`Added "${doc.title}" (${doc.chunks} chunks)`);
+      if (doc.status === "pending") {
+        const why = doc.pii_findings ? " — possible personal data detected" : "";
+        toast(`"${doc.title}" submitted for review${why}`);
+      } else {
+        toast(`Added "${doc.title}" (${doc.chunks} chunks)`);
+      }
       close();
       onUploaded();
     } catch (err) {

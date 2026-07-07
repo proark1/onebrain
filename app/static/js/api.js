@@ -24,6 +24,16 @@ export async function login(email, password) {
 export const logout = () => fetch("/api/auth/logout", { method: "POST" });
 
 export const listDocuments = () => fetch("/api/documents").then(json);
+export const listPending = () => fetch("/api/documents/pending").then(json);
+
+export async function approveDocument(id) {
+  const res = await fetch(`/api/documents/${id}/approve`, { method: "POST" });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || "Approval failed");
+  }
+  return res.json();
+}
 export const getConversations = () => fetch("/api/conversations").then(json);
 export const getConversation = (id) => fetch(`/api/conversations/${id}`).then(json);
 export const deleteConversation = (id) => fetch(`/api/conversations/${id}`, { method: "DELETE" });

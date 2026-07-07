@@ -227,6 +227,34 @@ body {
 .doc-title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .doc-meta { font-size: 11px; color: var(--muted); text-transform: capitalize; }
 
+/* ---------- Review queue (pending approval) ---------- */
+.review { display: flex; flex-direction: column; gap: 8px; }
+.review[hidden] { display: none; }
+.review-count { background: var(--accent-soft); color: var(--accent); }
+.review-list { max-height: 220px; }
+.review-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-2);
+}
+.review-item .doc-info { flex: 1; }
+.review-warn {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.01em;
+  color: var(--cls-confidential); margin-top: 2px;
+}
+.review-approve {
+  flex: 0 0 auto;
+  font-size: 12px; font-weight: 600; font-family: inherit;
+  color: #fff; background: var(--accent);
+  border: none; border-radius: 6px;
+  padding: 6px 11px; cursor: pointer;
+  transition: opacity 0.15s;
+}
+.review-approve:hover:not(:disabled) { opacity: 0.9; }
+.review-approve:disabled { opacity: 0.5; cursor: default; }
+
 .sidebar-foot {
   display: flex;
   flex-direction: column;
