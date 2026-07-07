@@ -67,6 +67,13 @@ class PostgresUserStore:
             conn.commit()
         return user
 
+    def delete_by_email(self, email: str) -> bool:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM users WHERE email = %s", (email.strip().lower(),))
+            deleted = cur.rowcount
+            conn.commit()
+        return deleted > 0
+
     def count(self) -> int:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute("SELECT count(*) FROM users")

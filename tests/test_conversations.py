@@ -49,13 +49,19 @@ def test_list_orders_by_recent_and_limits():
     assert ids[0] == first.id and second.id in ids
 
 
-def test_history_is_included_in_prompt():
+def test_history_is_folded_as_untrusted_context_not_trusted_turns():
     history = [
         {"role": "user", "content": "What marketing do they want?"},
         {"role": "assistant", "content": "They want to expand internationally."},
     ]
     messages = build_messages("And the budget for it?", hits=[], tenant_id="nft_gym", history=history)
     roles = [m["role"] for m in messages]
-    assert roles == ["system", "user", "assistant", "user"]
-    assert "budget" in messages[-1]["content"]
-    assert "international" in messages[2]["content"]
+    # History is folded into a single user message — NOT replayed as trusted
+    # assistant/user turns the model would obey.
+    assert roles == ["system", "user"]
+    user_msg = messages[-1]["content"]
+    assert "budget" in user_msg                 # the current question
+    assert "international" in user_msg           # prior context still available for follow-ups
+    # ...but presented as fenced, untrusted data the system prompt forbids obeying.
+    system = messages[0]["content"].lower()
+    assert "untrusted" in system and "instruction" in system

@@ -44,6 +44,16 @@ class MemoryUserStore:
             self._save()
             return user
 
+    def delete_by_email(self, email: str) -> bool:
+        with self._lock:
+            key = email.strip().lower()
+            uid = self._by_email.pop(key, None)
+            if uid is None:
+                return False
+            self._by_id.pop(uid, None)
+            self._save()
+            return True
+
     def count(self) -> int:
         return len(self._by_id)
 

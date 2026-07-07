@@ -36,3 +36,23 @@ def seed_users_if_empty(store, tenant: str = "nft_gym") -> int:
             tenant_id=tenant, role_id=role_id, location=location,
         ))
     return len(DEMO_USERS)
+
+
+def seed_admin_from_env(store, settings, tenant: str = "nft_gym") -> int:
+    """Idempotently ensure a real admin from ONEBRAIN_ADMIN_EMAIL/PASSWORD.
+
+    This is the safe production login path — a per-deployment credential, never a
+    shared/default one. Returns 1 if it created the account, 0 otherwise.
+    """
+    email = (settings.admin_email or "").strip().lower()
+    password = settings.admin_password or ""
+    if not email or not password:
+        return 0
+    if store.get_by_email(email):
+        return 0
+    store.create(User(
+        id=uuid.uuid4().hex, email=email, display_name="Administrator",
+        password_hash=hash_password(password), tenant_id=tenant,
+        role_id="admin", location="all",
+    ))
+    return 1
