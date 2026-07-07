@@ -38,5 +38,8 @@ ROLES: dict[str, Role] = {
     "admin": Role("admin", "Admin / DPO", Classification.RESTRICTED, "chain", None),
 }
 
-DEFAULT_ROLE = "front_desk"
+# Fail closed: an unauthenticated / header-less request must land on PUBLIC
+# (customer tier), never on an internal role. Do NOT change this to an employee
+# role — anonymous callers would silently gain internal access.
+DEFAULT_ROLE = "public"
 LOCATIONS = ["munich", "berlin", "hamburg"]
