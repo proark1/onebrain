@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     # Model strings follow LiteLLM's "<provider>/<model>" format, so switching
     # provider (gemini / mistral / anthropic / openai) is a one-line change.
     litellm_model: str = "gemini/gemini-2.5-flash"
-    litellm_embedding_model: str = "gemini/text-embedding-004"
+    litellm_embedding_model: str = "gemini/gemini-embedding-001"
 
     # pgvector — only used when vector_store = "pgvector"
     database_url: str = ""
