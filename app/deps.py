@@ -10,6 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.config import get_settings
+from app.conversations.factory import build_conversation_store
 from app.embeddings.factory import build_embedder
 from app.ingest.pipeline import IngestPipeline
 from app.llm.factory import build_llm
@@ -40,3 +41,8 @@ def get_pipeline() -> IngestPipeline:
 @lru_cache
 def get_retrieval_service() -> RetrievalService:
     return RetrievalService(get_embedder(), get_store(), get_llm(), get_settings().top_k)
+
+
+@lru_cache
+def get_conversation_store():
+    return build_conversation_store(get_settings())

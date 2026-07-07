@@ -138,6 +138,37 @@ body {
 .btn-upload:hover { background: var(--surface); border-color: var(--accent); }
 .plus { color: var(--accent); font-size: 17px; line-height: 1; }
 
+/* ---------- New chat + recent chats ---------- */
+.btn-newchat {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; font-size: 14px; font-weight: 600; font-family: inherit;
+  color: #fff; background: var(--accent); border: none; border-radius: var(--radius-sm);
+  cursor: pointer; transition: opacity 0.15s;
+}
+.btn-newchat:hover { opacity: 0.9; }
+.btn-newchat .plus { color: #fff; }
+
+.chats { display: flex; flex-direction: column; gap: 8px; min-height: 0; flex: 1.5 1 0; }
+.chat-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.chat-item {
+  display: flex; align-items: center; gap: 2px;
+  border-radius: var(--radius-sm); border: 1px solid transparent;
+  transition: background 0.12s, border-color 0.12s;
+}
+.chat-item:hover { background: var(--surface-2); border-color: var(--line); }
+.chat-item.active { background: var(--surface-2); border-color: var(--line-strong); }
+.chat-title {
+  flex: 1; min-width: 0; padding: 8px 4px 8px 9px; font-size: 13px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; color: var(--ink);
+}
+.chat-del {
+  border: none; background: transparent; color: var(--muted); cursor: pointer;
+  font-size: 11px; padding: 4px 8px; opacity: 0; border-radius: 6px; flex: 0 0 auto;
+}
+.chat-item:hover .chat-del { opacity: 1; }
+.chat-del:hover { color: var(--accent); background: var(--surface); }
+.chat-empty { font-size: 12px; color: var(--muted); padding: 6px 9px; }
+
 /* ---------- Doc list ---------- */
 .docs { display: flex; flex-direction: column; gap: 8px; min-height: 0; flex: 1; }
 .docs-head {

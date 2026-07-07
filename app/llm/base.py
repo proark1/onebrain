@@ -12,8 +12,9 @@ class LLM(Protocol):
 
     def stream(
         self, question: str, hits: List[Hit], tenant_id: str = "nft_gym",
-        stats: Optional[dict] = None,
+        stats: Optional[dict] = None, history: Optional[list] = None,
     ) -> Iterator[str]:
-        """Yield answer tokens. If `stats` is given, populate it after streaming
-        with prompt_tokens / completion_tokens / cost_usd where known."""
+        """Yield answer tokens. `history` is prior [{role, content}] turns for
+        context. If `stats` is given, populate it after streaming with
+        prompt_tokens / completion_tokens / cost_usd where known."""
         ...

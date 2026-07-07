@@ -21,9 +21,9 @@ class LiteLLMLLM:
         self._litellm = litellm
         self.model = model
 
-    def stream(self, question, hits, tenant_id="nft_gym", stats=None):
+    def stream(self, question, hits, tenant_id="nft_gym", stats=None, history=None):
         response = self._litellm.completion(
-            model=self.model, messages=build_messages(question, hits, tenant_id),
+            model=self.model, messages=build_messages(question, hits, tenant_id, history),
             stream=True, stream_options={"include_usage": True},
         )
         usage = None

@@ -35,7 +35,7 @@ class LocalLLM:
 
     model = "local-extractive"  # used for (free) cost lookup
 
-    def stream(self, question, hits, tenant_id="nft_gym", stats=None):
+    def stream(self, question, hits, tenant_id="nft_gym", stats=None, history=None):
         if not hits:
             yield ("I couldn't find anything you have access to about that. "
                    "It may be restricted to another role, scoped to another location, "

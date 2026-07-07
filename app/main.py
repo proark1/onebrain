@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.deps import get_pipeline, get_store
-from app.routers import chat, documents, session
+from app.routers import chat, conversations, documents, session
 from app.seed import seed_if_empty
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -23,6 +23,7 @@ def create_app() -> FastAPI:
 
     app.include_router(session.router)
     app.include_router(documents.router)
+    app.include_router(conversations.router)
     app.include_router(chat.router)
 
     @app.get("/health")

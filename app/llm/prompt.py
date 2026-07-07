@@ -39,8 +39,15 @@ def format_context(hits: List[Hit]) -> str:
     return "\n\n".join(blocks)
 
 
-def build_messages(question: str, hits: List[Hit], tenant_id: str = "nft_gym") -> list[dict]:
-    return [
-        {"role": "system", "content": _system_prompt(tenant_id)},
-        {"role": "user", "content": f"Context:\n{format_context(hits)}\n\nQuestion: {question}"},
-    ]
+def build_messages(question, hits, tenant_id="nft_gym", history=None):
+    # Prior turns give the model conversational memory. We include only the
+    # plain Q&A text of earlier turns (not their retrieved context) to keep it
+    # cheap; the current turn carries freshly permission-filtered context.
+    messages = [{"role": "system", "content": _system_prompt(tenant_id)}]
+    for turn in (history or []):
+        role = "assistant" if turn.get("role") == "assistant" else "user"
+        content = (turn.get("content") or "")[:1500]
+        if content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": f"Context:\n{format_context(hits)}\n\nQuestion: {question}"})
+    return messages

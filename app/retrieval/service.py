@@ -34,12 +34,20 @@ class RetrievalService:
         # Defence in depth: re-check every returned chunk against the caller.
         return [h for h in hits if access.allows(h.chunk.meta)]
 
-    def answer_stream(self, principal: Principal, question: str) -> Iterator[dict]:
-        hits = self.retrieve(principal, question)
+    def answer_stream(self, principal: Principal, question: str, history: list | None = None) -> Iterator[dict]:
+        # For a follow-up, fold the previous user turn into the retrieval query
+        # so "and the budget for it?" still finds the right chunks. Retrieval is
+        # ALWAYS re-filtered by the current principal — history never widens access.
+        retrieval_query = question
+        if history:
+            last_user = next((t["content"] for t in reversed(history) if t.get("role") == "user"), "")
+            if last_user:
+                retrieval_query = f"{last_user}\n{question}"
+        hits = self.retrieve(principal, retrieval_query)
 
         stats: dict = {}
         answer_chars = 0
-        for token in self._llm.stream(question, hits, principal.tenant_id, stats):
+        for token in self._llm.stream(question, hits, principal.tenant_id, stats, history):
             answer_chars += len(token)
             yield {"type": "token", "text": token}
 
