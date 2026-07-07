@@ -1,0 +1,7 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+pydantic-settings>=2.2
+numpy>=1.26
+pypdf>=4.2
+litellm>=1.50

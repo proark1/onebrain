@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>onebrain · NFT Gym</title>
+  <link rel="stylesheet" href="/static/css/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%A5%8B%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">one</span><span>brain</span>
+        <span class="brand-sub">NFT Gym</span>
+      </div>
+
+      <div class="panel">
+        <label class="field">
+          <span class="field-label">Acting as</span>
+          <select id="roleSelect" class="select"></select>
+        </label>
+        <label class="field" id="locationField">
+          <span class="field-label">Location</span>
+          <select id="locationSelect" class="select"></select>
+        </label>
+      </div>
+
+      <button id="uploadBtn" class="btn-upload" type="button">
+        <span class="plus">+</span> Upload document
+      </button>
+
+      <div class="docs">
+        <div class="docs-head">
+          <span>Documents you can see</span>
+          <span id="docCount" class="docs-count">0</span>
+        </div>
+        <ul id="docList" class="doc-list"></ul>
+      </div>
+
+      <div class="sidebar-foot">
+        <span id="clearanceNote">clearance —</span>
+        <span class="prototype-tag">prototype · synthetic data</span>
+      </div>
+    </aside>
+
+    <main class="chat">
+      <div id="messages" class="messages"></div>
+
+      <form id="composer" class="composer" autocomplete="off">
+        <div class="composer-box">
+          <textarea id="input" class="input" rows="1" placeholder="Ask onebrain anything about NFT Gym…"></textarea>
+          <button id="send" class="send" type="submit" aria-label="Send">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <path d="M4 11.5 20 4l-7.5 16-2.2-6.3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </div>
+        <p class="composer-hint">Answers come only from documents your role is allowed to see.</p>
+      </form>
+    </main>
+  </div>
+
+  <div id="uploadModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="uploadTitle">
+      <div class="modal-head">
+        <h2 id="uploadTitle">Upload a document</h2>
+        <button id="uploadClose" class="icon-btn" type="button" aria-label="Close">✕</button>
+      </div>
+      <form id="uploadForm" class="upload-form">
+        <label id="dropzone" class="dropzone" for="fileInput">
+          <input id="fileInput" type="file" hidden />
+          <span id="dropText">Drop a file here, or click to choose</span>
+        </label>
+        <div class="upload-grid">
+          <label class="field">
+            <span class="field-label">Classification</span>
+            <select id="clsSelect" class="select">
+              <option value="public">Public</option>
+              <option value="internal" selected>Internal</option>
+              <option value="confidential">Confidential</option>
+              <option value="restricted">Restricted</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Location</span>
+            <select id="uploadLocation" class="select"></select>
+          </label>
+          <label class="field">
+            <span class="field-label">Category</span>
+            <select id="catSelect" class="select">
+              <option value="general">General</option>
+              <option value="cs">Customer service</option>
+              <option value="ops">Operations</option>
+              <option value="hr">HR</option>
+              <option value="finance">Finance</option>
+              <option value="marketing">Marketing</option>
+            </select>
+          </label>
+        </div>
+        <p class="upload-note">The label decides who can retrieve this. Unsure? Leave it restricted.</p>
+        <button id="uploadSubmit" class="btn-primary" type="submit" disabled>Add to the brain</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="/static/js/main.js"></script>
+</body>
+</html>

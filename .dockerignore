@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.onebrain_data/
+*.pkl
+.env
+.git/
+.gitignore
+.claude/
+tests/
+*.md
