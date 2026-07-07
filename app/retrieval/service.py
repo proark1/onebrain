@@ -51,7 +51,11 @@ class RetrievalService:
             answer_chars += len(token)
             yield {"type": "token", "text": token}
 
-        yield {"type": "sources", "sources": [
+        # Never hand source metadata (doc titles, classification, location) to a
+        # service principal — it would leak org structure to an external caller.
+        # Stripped brain-side, before the response leaves, not at the edge.
+        is_service = getattr(principal, "principal_type", "human") == "service"
+        yield {"type": "sources", "sources": [] if is_service else [
             {
                 "title": h.chunk.meta.get("doc_title", "Untitled"),
                 "classification": h.chunk.meta.get("classification_label", "internal"),

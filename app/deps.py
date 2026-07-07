@@ -60,3 +60,10 @@ def get_login_throttle():
 
     settings = get_settings()
     return LoginThrottle(settings.login_max_attempts, settings.login_lockout_seconds)
+
+
+@lru_cache
+def get_service_key_store():
+    from app.servicekeys.factory import build_service_key_store
+
+    return build_service_key_store(get_settings())
