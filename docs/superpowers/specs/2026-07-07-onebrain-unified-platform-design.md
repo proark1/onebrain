@@ -1,0 +1,789 @@
+# OneBrain Unified Platform Design
+
+Date: 2026-07-07
+
+## Summary
+
+OneBrain becomes the single master database and governed AI data platform for
+the current three products:
+
+- OneBrain: central data, knowledge, memory, governance, retrieval, and admin.
+- DarAI: personal/business assistant module and tool execution surface.
+- Assaddar AI Communication: customer-service communication module for website
+  chat, WhatsApp, Telegram, Meta channels, email, and telephone.
+
+The end state is one canonical data model in OneBrain. Assistant and
+communication services do not own long-term business, customer, personal, or
+knowledge data. They run as modules installed on top of OneBrain.
+
+The platform must support multiple sale and deployment packages:
+
+- OneBrain only.
+- OneBrain + personal assistant.
+- OneBrain + communication service.
+- Full suite: OneBrain + assistant + communication.
+- Future modules such as CRM, booking, finance/admin automation, and internal
+  employee helpdesk.
+
+Railway is the first deployment target for speed. The architecture must remain
+portable to dedicated or headless GDPR-compliant infrastructure later.
+
+## Goals
+
+- Move important data into one OneBrain database from the beginning.
+- Avoid duplicate long-term tables across OneBrain, DarAI, and communication.
+- Support private, business, customer service, shared, family, and project
+  spaces inside the same platform.
+- Make data boundaries explicit, auditable, and permission-aware.
+- Let a business owner safely combine private assistant data and company data
+  without leaking private data into customer service.
+- Keep the UI minimal, visual, and easy to understand.
+- Make module rollout simple for new customers.
+- Keep current products useful while migrating them into the unified platform.
+- Build the architecture so more services can be added over time.
+
+## Non-Goals For The First Implementation
+
+- Do not build every DarAI feature in the OneBrain UI immediately.
+- Do not build a public module marketplace in V1.
+- Do not implement complex enterprise policy engines before the core space
+  model works.
+- Do not support non-Postgres storage as the primary database in V1.
+- Do not remove all existing DarAI and communication database code before the
+  new OneBrain contracts are proven.
+
+## Core Product Model
+
+### Accounts
+
+An account is the billing and ownership container. Account types:
+
+- `person`: private individual.
+- `organization`: business/company.
+- `family`: household/family group.
+- `project`: optional project-specific container.
+
+An account can own multiple spaces and app installations.
+
+### Users
+
+A user is a human login identity. A user can belong to many accounts and spaces.
+For example, a founder can have:
+
+- a personal account,
+- a company account,
+- a family account,
+- a shared founder/business space.
+
+### Spaces
+
+Spaces are the main data boundary.
+
+Initial space types:
+
+- `personal`: private assistant data.
+- `business`: company documents, policies, team knowledge, operational data.
+- `customer_service`: customer conversations, channel inbox, approved support
+  answers, call transcripts, handoff records.
+- `shared`: intentionally shared private/business context for an owner or team.
+- `family`: family members, shared reminders, household tasks, family notes.
+- `project`: project-specific data, files, decisions, tasks, and memories.
+
+Every important data row must include `account_id` and `space_id`.
+
+### App Installations
+
+Apps are modules installed for an account or space.
+
+Initial apps:
+
+- `onebrain_core`
+- `assistant`
+- `communication`
+- `admin_console`
+- `workers`
+
+Future apps:
+
+- `crm`
+- `booking`
+- `finance_admin`
+- `internal_helpdesk`
+
+An app installation records:
+
+- enabled/disabled status,
+- visible brand name,
+- enabled spaces,
+- allowed purposes,
+- configuration,
+- service identity,
+- billing plan metadata.
+
+### Purposes
+
+Apps do not receive blanket data access. They request access by purpose.
+
+Initial purposes:
+
+- `assistant_context`
+- `assistant_action`
+- `customer_service_answer`
+- `customer_service_inbox`
+- `knowledge_management`
+- `admin_management`
+- `gdpr_export`
+- `gdpr_delete`
+- `analytics`
+- `billing`
+
+A customer-service answer purpose must never include personal or family data
+unless explicitly linked through a shared space and approved for that purpose.
+
+## Canonical Data Domains
+
+### Governance
+
+Tables:
+
+- `accounts`
+- `users`
+- `organizations`
+- `spaces`
+- `memberships`
+- `roles`
+- `app_installations`
+- `app_service_keys`
+- `app_permissions`
+- `consent_records`
+- `retention_policies`
+- `audit_logs`
+- `data_access_events`
+
+Responsibilities:
+
+- login identity,
+- account and space membership,
+- role and purpose-based access,
+- service key management,
+- auditability,
+- retention and GDPR workflows.
+
+### Knowledge
+
+Tables:
+
+- `knowledge_sources`
+- `knowledge_documents`
+- `knowledge_chunks`
+- `knowledge_suggestions`
+- `document_ingestion_jobs`
+- `document_files`
+- `embedding_jobs`
+
+Responsibilities:
+
+- uploaded files,
+- approved facts and FAQs,
+- document extraction,
+- chunking,
+- embeddings,
+- approval queue,
+- retrieval.
+
+This domain merges current OneBrain documents/chunks and the communication
+platform's tenant knowledge.
+
+### Memory And Knowledge Graph
+
+Tables:
+
+- `memories`
+- `memory_provenance`
+- `memory_redactions`
+- `entities`
+- `entity_mentions`
+- `entity_relationships`
+
+Responsibilities:
+
+- personal assistant memory,
+- business memory,
+- project memory,
+- source provenance,
+- forget/delete workflows,
+- entity-aware retrieval.
+
+This domain migrates DarAI semantic memories, AI memory, episodic memory, and
+knowledge graph entities into a OneBrain-owned model.
+
+### People
+
+Tables:
+
+- `people`
+- `contacts`
+- `customers`
+- `employees`
+- `family_members`
+- `person_identifiers`
+- `relationships`
+
+Responsibilities:
+
+- unified people records,
+- channel identifiers,
+- emails and phone numbers,
+- company relationships,
+- family relationships,
+- customer profiles.
+
+The same human can be represented safely in multiple roles. For example, a
+business owner can be a user, employee, contact, and family member without
+duplicating identity facts.
+
+### Communication
+
+Tables:
+
+- `channels`
+- `channel_connections`
+- `channel_credentials`
+- `conversations`
+- `conversation_participants`
+- `messages`
+- `message_deliveries`
+- `calls`
+- `call_transcripts`
+- `handoff_requests`
+- `inbox_items`
+- `channel_webhook_events`
+
+Responsibilities:
+
+- website chat,
+- WhatsApp,
+- Telegram,
+- Messenger,
+- Instagram,
+- telephone,
+- email,
+- delivery status,
+- unified inbox,
+- customer service history,
+- handoffs.
+
+This domain migrates the communication platform's tenant conversations, contact
+profiles, channel adapters, calls, transcripts, deliveries, and audit records.
+
+### Work And Assistant Data
+
+Tables:
+
+- `tasks`
+- `events`
+- `notes`
+- `projects`
+- `contracts`
+- `reminders`
+- `briefings`
+- `assistant_actions`
+- `assistant_action_approvals`
+- `assistant_conversation_state`
+
+Responsibilities:
+
+- personal assistant workflows,
+- business assistant workflows,
+- task and calendar context,
+- notes and contracts,
+- approvals,
+- undo/action trace.
+
+DarAI becomes the assistant surface and tool executor, while these records move
+to OneBrain.
+
+### Integrations
+
+Tables:
+
+- `integration_connections`
+- `integration_credentials`
+- `integration_sync_jobs`
+- `external_objects`
+- `webhook_subscriptions`
+
+Responsibilities:
+
+- Gmail,
+- Google/Microsoft calendar,
+- Telegram bot,
+- WhatsApp Cloud API,
+- Meta channels,
+- telephony providers,
+- future CRM/accounting/booking systems.
+
+Credentials are encrypted server-side and scoped to account, space, app, and
+purpose.
+
+### AI Operations
+
+Tables:
+
+- `ai_requests`
+- `retrieval_traces`
+- `model_usage_events`
+- `prompt_versions`
+- `evaluation_sets`
+- `evaluation_runs`
+- `cost_events`
+
+Responsibilities:
+
+- model usage tracking,
+- answer traceability,
+- retrieval debugging,
+- prompt versioning,
+- quality evaluation,
+- cost controls.
+
+## Access Control Rules
+
+Every protected row has:
+
+- `account_id`
+- `space_id`
+- `source_app`
+- `classification`
+- `status`
+- `created_by`
+- `purpose_visibility`
+
+Access requires all checks:
+
+1. Actor is authenticated as a user or service identity.
+2. Actor belongs to the account or holds a scoped service key.
+3. Actor has access to the target space.
+4. Actor has the required role.
+5. App installation is enabled.
+6. Requested purpose is allowed for the app and space.
+7. Data classification permits the action.
+8. Record status is active/approved where required.
+9. Retention and consent rules allow the action.
+
+The database should use PostgreSQL row-level security as defense in depth.
+Application code still applies explicit predicates and permission checks.
+
+## OneBrain API Surface
+
+### Core
+
+- `POST /api/accounts`
+- `GET /api/accounts/:accountId`
+- `POST /api/accounts/:accountId/spaces`
+- `GET /api/accounts/:accountId/spaces`
+- `POST /api/spaces/:spaceId/members`
+- `GET /api/spaces/:spaceId/access`
+
+### App Installations
+
+- `GET /api/accounts/:accountId/apps`
+- `POST /api/accounts/:accountId/apps/:appId/install`
+- `PATCH /api/accounts/:accountId/apps/:appInstallationId`
+- `POST /api/app-service-keys`
+- `DELETE /api/app-service-keys/:keyId`
+
+### Knowledge
+
+- `POST /api/spaces/:spaceId/knowledge/documents`
+- `GET /api/spaces/:spaceId/knowledge/documents`
+- `POST /api/spaces/:spaceId/knowledge/search`
+- `POST /api/spaces/:spaceId/knowledge/ask`
+- `GET /api/spaces/:spaceId/knowledge/suggestions`
+- `POST /api/knowledge/suggestions/:suggestionId/approve`
+- `POST /api/knowledge/suggestions/:suggestionId/reject`
+
+### Memory
+
+- `POST /api/spaces/:spaceId/memories`
+- `POST /api/spaces/:spaceId/memories/search`
+- `GET /api/spaces/:spaceId/entities`
+- `POST /api/memories/:memoryId/forget`
+
+### Communication
+
+- `POST /api/spaces/:spaceId/conversations`
+- `POST /api/conversations/:conversationId/messages`
+- `GET /api/spaces/:spaceId/inbox`
+- `POST /api/channels/webhooks/:provider`
+- `POST /api/conversations/:conversationId/handoff`
+
+### Assistant
+
+- `POST /api/assistant/context`
+- `POST /api/assistant/actions`
+- `POST /api/assistant/actions/:actionId/approve`
+- `POST /api/assistant/actions/:actionId/reject`
+
+### GDPR
+
+- `GET /api/accounts/:accountId/export`
+- `GET /api/spaces/:spaceId/export`
+- `DELETE /api/people/:personId`
+- `DELETE /api/accounts/:accountId`
+- `GET /api/audit`
+
+## Module Responsibilities
+
+### OneBrain Core
+
+Owns:
+
+- database,
+- spaces and permissions,
+- retrieval,
+- knowledge ingestion,
+- memory,
+- people,
+- audit,
+- GDPR,
+- admin API.
+
+### Assistant Module
+
+Owns:
+
+- chat and voice assistant UX,
+- tool execution,
+- proactive suggestions,
+- briefings,
+- user-facing assistant settings.
+
+Does not own:
+
+- canonical memory,
+- contacts,
+- tasks,
+- events,
+- notes,
+- contracts,
+- long-term conversations.
+
+### Communication Module
+
+Owns:
+
+- provider adapters,
+- webhooks,
+- widget,
+- voice bridge,
+- outbound delivery,
+- channel compliance.
+
+Does not own:
+
+- tenant/customer database,
+- approved knowledge,
+- canonical conversations,
+- customer profiles,
+- call transcripts.
+
+### Admin Console
+
+Owns:
+
+- minimal OneBrain UI,
+- space switcher,
+- data map,
+- access visualization,
+- knowledge approval,
+- inbox,
+- integration settings,
+- GDPR tools.
+
+## Minimal UI/UX Design
+
+The UI should feel like a simple control center, not a dense enterprise suite.
+
+Top-level navigation:
+
+- Spaces
+- Data
+- Inbox
+- Assistant
+- Knowledge
+- Integrations
+- Privacy
+- Settings
+
+Core UX patterns:
+
+- Space switcher is always visible.
+- Every page shows which space is active.
+- Every data detail page shows origin, access, usage, and delete/export options.
+- Visual data map shows documents, people, conversations, memories, and apps.
+- Access view answers: "Who can use this data and why?"
+- Approval queues are simple: approve, edit and approve, reject, archive.
+- Empty states guide setup without marketing copy.
+
+Important screens for V1:
+
+- Spaces overview.
+- Space detail with enabled apps and data counts.
+- Knowledge/document library.
+- Knowledge approval queue.
+- Unified inbox.
+- People/contact detail.
+- Assistant context viewer.
+- Integrations setup.
+- Privacy center with export/delete/audit.
+
+## Railway Deployment Shape
+
+Railway services:
+
+- `onebrain-api`
+- `onebrain-db`
+- `onebrain-admin-ui`
+- `onebrain-workers`
+- `assistant-service`
+- `communication-api`
+- `communication-widget`
+- `communication-voice`
+- `communication-workers`
+- optional `redis`
+
+Only `onebrain-db` is the master database.
+
+Deployment presets:
+
+- `brain_only`: core API, DB, admin UI, workers.
+- `brain_assistant`: brain-only plus assistant service.
+- `brain_communication`: brain-only plus communication API/widget/voice.
+- `full_suite`: all services.
+
+Branding config should live in account/app installation settings:
+
+- product/customer-facing name,
+- logo,
+- colors,
+- default language,
+- email sender,
+- widget theme,
+- assistant name.
+
+## Migration Strategy
+
+The target is one big OneBrain database. The migration is still phased to reduce
+risk.
+
+### Phase 1: Foundation Schema
+
+Add canonical tables for:
+
+- accounts,
+- organizations,
+- spaces,
+- memberships,
+- app installations,
+- app permissions,
+- consent,
+- retention,
+- audit.
+
+Success:
+
+- create a business account,
+- create personal/business/customer-service/family spaces,
+- install assistant and communication modules,
+- verify service keys are space and purpose scoped.
+
+### Phase 2: Knowledge Unification
+
+Merge:
+
+- existing OneBrain chunks/documents,
+- communication knowledge sources/documents/chunks,
+- FAQ/onboarding/suggestion flow.
+
+Success:
+
+- communication answers retrieve from OneBrain knowledge,
+- pending knowledge is not answerable,
+- approved knowledge works across modules.
+
+### Phase 3: Communication Unification
+
+Move communication-owned data into OneBrain:
+
+- tenants to accounts/organizations/spaces,
+- contacts/customers to people domain,
+- conversations/messages/calls/transcripts to communication domain,
+- channel connections and deliveries to integration/communication domain.
+
+Success:
+
+- website chat and at least one social/phone path write directly to OneBrain,
+- inbox reads from OneBrain,
+- customer export/delete works from OneBrain.
+
+### Phase 4: Assistant Unification
+
+Move DarAI-owned assistant data into OneBrain:
+
+- semantic memories,
+- AI memory,
+- KG entities,
+- notes,
+- contacts,
+- tasks,
+- events,
+- contracts,
+- assistant actions.
+
+Success:
+
+- assistant context is fetched from OneBrain,
+- assistant writes new memory/actions to OneBrain,
+- personal/business/shared space boundaries are respected.
+
+### Phase 5: UI Consolidation
+
+Build the minimal OneBrain admin console:
+
+- spaces,
+- data map,
+- access view,
+- knowledge,
+- inbox,
+- assistant context,
+- integrations,
+- privacy.
+
+Success:
+
+- a customer can understand what data exists and which apps can use it,
+- admin can approve knowledge,
+- admin can export/delete scoped data.
+
+### Phase 6: Deployment Templates
+
+Create Railway environment presets and seed/setup scripts:
+
+- brain only,
+- brain + assistant,
+- brain + communication,
+- full suite.
+
+Success:
+
+- new customer rollout can be created predictably from a preset,
+- brand names and module availability are config-driven.
+
+### Phase 7: Hardening
+
+Add:
+
+- RLS enforcement checks,
+- retention workers,
+- audit completeness tests,
+- export/delete coverage,
+- secret encryption,
+- AI provider routing,
+- evaluation sets,
+- cost limits.
+
+Success:
+
+- platform is ready for real customer data after legal/compliance setup.
+
+## First Build Milestone
+
+The first implementation milestone should prove the unified platform with the
+smallest useful vertical slice:
+
+1. Create account and spaces.
+2. Install assistant and communication modules.
+3. Upload/seed approved knowledge into OneBrain.
+4. Communication widget asks OneBrain and stores conversation/message in
+   OneBrain.
+5. Assistant asks OneBrain for context and stores a memory in OneBrain.
+6. Admin UI shows spaces, knowledge, inbox, app access, and audit events.
+7. Railway deployment runs the full suite for one test customer.
+
+## Testing Plan
+
+Required tests:
+
+- space access denies cross-space reads,
+- customer-service purpose cannot read personal/family spaces,
+- shared space can be used only when explicitly enabled,
+- service keys are scoped to app installation, space, and purpose,
+- pending knowledge is not retrievable,
+- approved knowledge is retrievable across enabled modules,
+- communication messages write to canonical OneBrain tables,
+- assistant memories write to canonical OneBrain tables,
+- GDPR export includes all selected account/space data,
+- delete/forget cascades or redacts derived memories and entities,
+- audit logs are written for sensitive reads and writes,
+- deployment presets enable only the expected modules.
+
+## Risks And Mitigations
+
+### Risk: Big merge breaks working products
+
+Mitigation:
+
+- migrate by domain,
+- keep old code paths behind flags during transition,
+- verify each vertical slice before removing old tables.
+
+### Risk: Private/business data leakage
+
+Mitigation:
+
+- spaces from day one,
+- purpose-based app permissions,
+- RLS defense in depth,
+- tests for forbidden cross-space retrieval,
+- audit every sensitive read.
+
+### Risk: UI becomes too complex
+
+Mitigation:
+
+- space-first navigation,
+- simple data map,
+- progressive disclosure,
+- avoid exposing raw schema concepts to normal users,
+- keep advanced controls in settings/privacy.
+
+### Risk: Future modules create new silos
+
+Mitigation:
+
+- app installation model,
+- canonical domains,
+- app API contracts,
+- no module gets its own master database for long-term platform data.
+
+## Open Questions
+
+- Which module should be the first live customer-facing proof: website chat,
+  telephone, or assistant chat?
+- Should assistant tasks/events be fully moved in Phase 4 or initially synced
+  from external calendars/task tools?
+- Which customer type should define the first default setup: gym, agency,
+  local service business, or owner/operator solo business?
+- Which AI providers are acceptable for real EU customer data in the first paid
+  deployment?
+
+## Approval Criteria
+
+This design is ready for implementation planning when:
+
+- OneBrain as the single master database is approved.
+- The initial space types are approved.
+- The initial modules and deployment presets are approved.
+- The first build milestone is approved.
+- Open questions have been answered or explicitly deferred.
