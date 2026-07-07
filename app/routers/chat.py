@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from app.auth.principal import Principal, resolve_principal
@@ -24,14 +24,10 @@ def _title(question: str) -> str:
 
 
 @router.post("/ask")
-def ask(
-    body: AskRequest,
-    principal: Principal = Depends(resolve_principal),
-    x_onebrain_session: str = Header(default=""),
-):
+def ask(body: AskRequest, principal: Principal = Depends(resolve_principal)):
     service = get_retrieval_service()
     convs = get_conversation_store()
-    scope = Scope(principal.tenant_id, (x_onebrain_session or "anon").strip() or "anon", principal.role_id)
+    scope = Scope(principal.tenant_id, principal.user_id, principal.role_id)
 
     conv = convs.get(body.conversation_id, scope) if body.conversation_id else None
     if conv is None:

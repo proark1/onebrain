@@ -10,17 +10,28 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
-from app.deps import get_pipeline, get_store
-from app.routers import chat, conversations, documents, session
+from app.deps import get_pipeline, get_store, get_user_store
+from app.routers import auth, chat, conversations, documents, session
 from app.seed import seed_if_empty
+from app.users.seed import seed_users_if_empty
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
+
+    # Fail closed: a weak/default cookie-signing secret means anyone can forge a
+    # session token for any user. Refuse to start rather than run insecurely.
+    if settings.auth_secret == "dev-insecure-change-me" or len(settings.auth_secret) < 32:
+        raise RuntimeError(
+            "ONEBRAIN_AUTH_SECRET must be a strong random secret (>=32 chars). "
+            'Generate one with: python -c "import secrets; print(secrets.token_hex(32))"'
+        )
+
     app = FastAPI(title="onebrain", version="0.1.0")
 
+    app.include_router(auth.router)
     app.include_router(session.router)
     app.include_router(documents.router)
     app.include_router(conversations.router)
@@ -35,6 +46,12 @@ def create_app() -> FastAPI:
             seed_if_empty(get_pipeline(), get_store())
         except Exception as exc:  # a provider/key misconfig shouldn't brick startup
             logging.getLogger("onebrain").warning("Sample-data seeding skipped: %s", exc)
+
+    if settings.seed_demo_users:
+        try:
+            seed_users_if_empty(get_user_store())
+        except Exception as exc:
+            logging.getLogger("onebrain").warning("Demo-user seeding skipped: %s", exc)
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

@@ -11,6 +11,7 @@ from functools import lru_cache
 
 from app.config import get_settings
 from app.conversations.factory import build_conversation_store
+from app.users.factory import build_user_store
 from app.embeddings.factory import build_embedder
 from app.ingest.pipeline import IngestPipeline
 from app.llm.factory import build_llm
@@ -46,3 +47,8 @@ def get_retrieval_service() -> RetrievalService:
 @lru_cache
 def get_conversation_store():
     return build_conversation_store(get_settings())
+
+
+@lru_cache
+def get_user_store():
+    return build_user_store(get_settings())

@@ -1,10 +1,10 @@
-// Entry point — wires session, chats, uploads, chat, and the document sidebar.
+// Entry point — auth gate, then wire chats, uploads, chat, and the doc sidebar.
 
-import { listDocuments } from "./api.js";
+import { getMe, listDocuments } from "./api.js";
+import { renderUserBar, showLogin } from "./auth.js";
 import { initChat, loadConversation, newChat } from "./chat.js";
 import { initConversations, refreshConversations } from "./conversations.js";
 import { el, qs } from "./dom.js";
-import { initSession } from "./session.js";
 import { CLASS_COLORS } from "./state.js";
 import { initUpload } from "./upload.js";
 
@@ -14,7 +14,7 @@ async function refreshDocuments() {
   qs("#docCount").textContent = docs.length;
 
   if (!docs.length) {
-    list.replaceChildren(el("li", { class: "doc-meta", style: "padding:8px 9px" }, "No documents visible to this role."));
+    list.replaceChildren(el("li", { class: "doc-meta", style: "padding:8px 9px" }, "No documents visible to your role."));
     return;
   }
   list.replaceChildren(...docs.map((doc) => el("li", { class: "doc-item", title: doc.title },
@@ -24,21 +24,23 @@ async function refreshDocuments() {
       el("div", { class: "doc-meta" }, `${doc.classification} · ${doc.category} · ${doc.location}`)))));
 }
 
-// Switching role changes both what's visible and which saved chats apply, so
-// reset to a fresh chat and refresh both lists.
-async function onRoleChange() {
-  newChat();
-  await Promise.all([refreshDocuments(), refreshConversations()]);
-}
+async function initApp(me) {
+  qs("#loginScreen").hidden = true;
+  qs(".app").hidden = false;
+  renderUserBar(me);
 
-async function main() {
   initChat({ onConversationChange: () => refreshConversations() });
   initConversations({ onSelect: (id) => loadConversation(id) });
   initUpload({ onUploaded: () => refreshDocuments() });
   qs("#newChatBtn").addEventListener("click", () => newChat());
 
-  await initSession({ onChange: onRoleChange });
   await Promise.all([refreshDocuments(), refreshConversations()]);
+}
+
+async function main() {
+  const me = await getMe();
+  if (!me) { showLogin(); return; }
+  await initApp(me);
 }
 
 main();

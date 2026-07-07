@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     # pgvector — only used when vector_store = "pgvector"
     database_url: str = ""
 
+    # Auth — sign session cookies. SET A STRONG SECRET IN PRODUCTION.
+    auth_secret: str = "dev-insecure-change-me"
+    session_days: int = 7
+    seed_demo_users: bool = True
+    cookie_secure: bool = True    # set false only for local http dev
+
 
 @lru_cache
 def get_settings() -> Settings:

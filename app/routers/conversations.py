@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth.principal import Principal, resolve_principal
 from app.conversations.base import Scope
@@ -12,31 +12,21 @@ from app.schemas import ConversationDetail, ConversationSummary, MessageOut
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 
-def get_session_id(x_onebrain_session: str = Header(default="")) -> str:
-    return (x_onebrain_session or "anon").strip() or "anon"
-
-
-def scope_of(principal: Principal, session_id: str) -> Scope:
-    return Scope(tenant_id=principal.tenant_id, session_id=session_id, role_id=principal.role_id)
+def scope_of(principal: Principal) -> Scope:
+    # Chats are owned by the authenticated USER (per-user history, ChatGPT-style).
+    return Scope(tenant_id=principal.tenant_id, session_id=principal.user_id, role_id=principal.role_id)
 
 
 @router.get("", response_model=list[ConversationSummary])
-def list_conversations(
-    principal: Principal = Depends(resolve_principal),
-    session_id: str = Depends(get_session_id),
-):
-    convs = get_conversation_store().list(scope_of(principal, session_id))
+def list_conversations(principal: Principal = Depends(resolve_principal)):
+    convs = get_conversation_store().list(scope_of(principal))
     return [ConversationSummary(id=c.id, title=c.title, updated_at=c.updated_at) for c in convs]
 
 
 @router.get("/{conversation_id}", response_model=ConversationDetail)
-def get_conversation(
-    conversation_id: str,
-    principal: Principal = Depends(resolve_principal),
-    session_id: str = Depends(get_session_id),
-):
+def get_conversation(conversation_id: str, principal: Principal = Depends(resolve_principal)):
     store = get_conversation_store()
-    conv = store.get(conversation_id, scope_of(principal, session_id))
+    conv = store.get(conversation_id, scope_of(principal))
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     messages = store.get_messages(conversation_id)
@@ -47,11 +37,7 @@ def get_conversation(
 
 
 @router.delete("/{conversation_id}")
-def delete_conversation(
-    conversation_id: str,
-    principal: Principal = Depends(resolve_principal),
-    session_id: str = Depends(get_session_id),
-):
-    if not get_conversation_store().delete(conversation_id, scope_of(principal, session_id)):
+def delete_conversation(conversation_id: str, principal: Principal = Depends(resolve_principal)):
+    if not get_conversation_store().delete(conversation_id, scope_of(principal)):
         raise HTTPException(status_code=404, detail="Conversation not found.")
     return {"deleted": conversation_id}

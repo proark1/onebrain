@@ -8,22 +8,32 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%A5%8B%3C/text%3E%3C/svg%3E" />
 </head>
 <body>
-  <div class="app">
+  <div id="loginScreen" class="login-screen" hidden>
+    <div class="login-card">
+      <div class="brand login-brand"><span class="brand-mark">one</span><span>brain</span></div>
+      <p class="login-sub">Sign in to the NFT Gym brain</p>
+      <form id="loginForm" class="login-form" autocomplete="on">
+        <input id="loginEmail" class="login-input" type="email" placeholder="Email" autocomplete="username" required />
+        <input id="loginPassword" class="login-input" type="password" placeholder="Password" autocomplete="current-password" required />
+        <p id="loginError" class="login-error" hidden></p>
+        <button id="loginSubmit" class="btn-primary" type="submit">Sign in</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="app" hidden>
     <aside class="sidebar">
       <div class="brand">
         <span class="brand-mark">one</span><span>brain</span>
         <span class="brand-sub">NFT Gym</span>
       </div>
 
-      <div class="panel">
-        <label class="field">
-          <span class="field-label">Acting as</span>
-          <select id="roleSelect" class="select"></select>
-        </label>
-        <label class="field" id="locationField">
-          <span class="field-label">Location</span>
-          <select id="locationSelect" class="select"></select>
-        </label>
+      <div id="userBar" class="userbar">
+        <div class="userbar-info">
+          <span id="userName" class="userbar-name">—</span>
+          <span id="userRole" class="userbar-role">—</span>
+        </div>
+        <button id="logoutBtn" class="logout-btn" type="button">Log out</button>
       </div>
 
       <button id="newChatBtn" class="btn-newchat" type="button">
@@ -48,7 +58,6 @@
       </div>
 
       <div class="sidebar-foot">
-        <span id="clearanceNote">clearance —</span>
         <span class="prototype-tag">prototype · synthetic data</span>
       </div>
     </aside>
@@ -93,7 +102,12 @@
           </label>
           <label class="field">
             <span class="field-label">Location</span>
-            <select id="uploadLocation" class="select"></select>
+            <select id="uploadLocation" class="select">
+              <option value="global" selected>Global</option>
+              <option value="munich">Munich</option>
+              <option value="berlin">Berlin</option>
+              <option value="hamburg">Hamburg</option>
+            </select>
           </label>
           <label class="field">
             <span class="field-label">Category</span>
