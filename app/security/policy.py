@@ -17,6 +17,12 @@ from typing import Optional
 GLOBAL_LOCATION = "global"      # visible from every location (subject to clearance)
 GENERAL_CATEGORY = "general"    # visible to every category (subject to clearance)
 
+# Publication lifecycle. Nothing is retrievable until it is APPROVED. A missing
+# status means a legacy chunk (created before the lifecycle) and is treated as
+# approved so nothing breaks on rollout; new uploads are stamped PENDING at ingest.
+STATUS_APPROVED = "approved"
+STATUS_PENDING = "pending"
+
 
 class Classification(IntEnum):
     PUBLIC = 0
@@ -59,13 +65,21 @@ class AccessFilter:
         category = meta.get("category", GENERAL_CATEGORY)
         if self.categories is not None and category != GENERAL_CATEGORY and category not in self.categories:
             return False
+        # Nothing unapproved ever reaches a reader (a mislabelled upload is parked,
+        # not live) — enforced here and in to_sql, right alongside tenant/clearance.
+        if meta.get("status", STATUS_APPROVED) != STATUS_APPROVED:
+            return False
         return True
 
     def to_sql(self) -> tuple[str, list]:
         """Compile to a parameterised pgvector WHERE clause."""
         # tenant equality is ALWAYS the first clause — never behind an
         # `is not None` guard, never with a wildcard value.
-        clauses = ["meta->>'tenant_id' = %s", "(meta->>'classification')::int <= %s"]
+        clauses = [
+            "meta->>'tenant_id' = %s",
+            "(meta->>'classification')::int <= %s",
+            "COALESCE(meta->>'status', 'approved') = 'approved'",
+        ]
         params: list = [self.tenant_id, self.clearance]
         if self.locations is not None:
             clauses.append("(meta->>'location' = 'global' OR meta->>'location' = ANY(%s))")

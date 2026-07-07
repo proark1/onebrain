@@ -88,6 +88,14 @@ class Settings(BaseSettings):
     login_max_attempts: int = 5
     login_lockout_seconds: int = 900
 
+    # Publication lifecycle (human-error firewall).
+    #   require_approval:     every upload lands in quarantine until a second,
+    #                         sufficiently-cleared person approves it (four-eyes).
+    #   block_public_on_pii:  a PUBLIC upload with detected PII is auto-quarantined
+    #                         even when require_approval is off (on by default).
+    require_approval: bool = False
+    block_public_on_pii: bool = True
+
     @property
     def is_local_stack(self) -> bool:
         """True only when every provider is the keyless local variant (dev/test)."""

@@ -37,6 +37,19 @@ class DocumentSummary(BaseModel):
     location: str
     category: str
     chunks: int
+    status: str = "approved"
+    pii_findings: int = 0
+
+
+class PendingDocument(BaseModel):
+    doc_id: str
+    title: str
+    classification: str
+    location: str
+    category: str
+    uploaded_by: str
+    has_pii: bool
+    chunks: int
 
 
 class RoleInfo(BaseModel):
