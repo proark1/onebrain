@@ -58,6 +58,14 @@ def test_service_principal_is_public_ceiled_and_tenant_pinned(monkeypatch):
     assert f.allows({**ok, "tenant_id": "companyB"}) is False                          # no cross-tenant
 
 
+def test_store_rejects_duplicate_id():
+    store = MemoryServiceKeyStore()
+    key_id, secret, _ = generate_key()
+    store.create(ServiceKey(id=key_id, key_hash=hash_secret(secret), tenant_id="nft_gym", scopes=(SCOPE_READ,)))
+    with pytest.raises(ValueError):                     # never silently overwrite a key
+        store.create(ServiceKey(id=key_id, key_hash="x", tenant_id="nft_gym", scopes=(SCOPE_READ,)))
+
+
 def test_missing_invalid_and_revoked_keys_fail_closed(monkeypatch):
     store, key_id, plaintext = _store_with_key(monkeypatch)
     for bad in ("", "Bearer ", "Bearer not-a-key", f"Bearer sk_{key_id}_wrongsecret"):

@@ -15,5 +15,5 @@ def build_service_key_store(settings: Settings):
 
     from app.servicekeys.memory import MemoryServiceKeyStore
 
-    path = os.path.join(settings.data_dir, "service_keys.pkl") if settings.persist else None
+    path = os.path.join(settings.data_dir, "service_keys.json") if settings.persist else None
     return MemoryServiceKeyStore(persist_path=path)

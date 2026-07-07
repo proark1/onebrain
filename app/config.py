@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     login_max_attempts: int = 5
     login_lockout_seconds: int = 900
 
+    # Service surface — per-key rate limit (metered LLM/embedding endpoints) and a
+    # cap on how many active keys one tenant may hold.
+    service_rate_limit: int = 60
+    service_rate_window_seconds: int = 60
+    max_service_keys_per_tenant: int = 50
+
     # Publication lifecycle (human-error firewall).
     #   require_approval:     every upload lands in quarantine until a second,
     #                         sufficiently-cleared person approves it (four-eyes).

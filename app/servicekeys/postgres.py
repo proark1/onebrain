@@ -53,9 +53,11 @@ class PostgresServiceKeyStore:
 
     def create(self, key: ServiceKey) -> ServiceKey:
         with self._conn() as conn, conn.cursor() as cur:
+            # No ON CONFLICT: a duplicate id must raise (mint then surfaces 500)
+            # rather than hand the admin a plaintext for an unstored key.
             cur.execute(
                 "INSERT INTO service_keys (id, key_hash, tenant_id, scopes, label, status) "
-                "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+                "VALUES (%s, %s, %s, %s, %s, %s)",
                 (key.id, key.key_hash, key.tenant_id, ",".join(key.scopes), key.label, key.status),
             )
             conn.commit()

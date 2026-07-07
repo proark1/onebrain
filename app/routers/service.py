@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth.principal import Principal, resolve_principal, resolve_service_principal
 from app.config import get_settings
-from app.deps import get_pipeline, get_retrieval_service, get_service_key_store
+from app.deps import get_pipeline, get_retrieval_service, get_service_key_store, get_service_rate_limiter
 from app.schemas import (
     MintedKey, ServiceAskRequest, ServiceAskResponse, ServiceCaptureRequest,
     ServiceKeyCreate, ServiceKeyInfo,
@@ -36,10 +36,20 @@ def _require_scope(principal: Principal, scope: str) -> None:
         raise HTTPException(status_code=403, detail=f"This service key lacks the '{scope}' scope.")
 
 
+def _rate_limit(principal: Principal) -> None:
+    # Per-key limit on the metered endpoints, so a leaked key can't be looped for
+    # unbounded LLM/embedding cost.
+    wait = get_service_rate_limiter().check(principal.user_id)
+    if wait > 0:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded — slow down.",
+                            headers={"Retry-After": str(wait)})
+
+
 # --- Service data surface (service-key auth) -----------------------------
 @service_router.post("/capture")
 def capture(body: ServiceCaptureRequest, principal: Principal = Depends(resolve_service_principal)):
     _require_scope(principal, SCOPE_WRITE)
+    _rate_limit(principal)
     settings = get_settings()
     try:
         # Labels are CLAMPED here, not taken from the caller: a service write can
@@ -64,6 +74,7 @@ def capture(body: ServiceCaptureRequest, principal: Principal = Depends(resolve_
 @service_router.post("/ask", response_model=ServiceAskResponse)
 def service_ask(body: ServiceAskRequest, principal: Principal = Depends(resolve_service_principal)):
     _require_scope(principal, SCOPE_READ)
+    _rate_limit(principal)
     service = get_retrieval_service()
     answer_parts: list[str] = []
     meta: dict = {}
@@ -88,6 +99,10 @@ def mint_key(body: ServiceKeyCreate, principal: Principal = Depends(resolve_prin
     scopes = tuple(s for s in dict.fromkeys(body.scopes) if s in VALID_SCOPES)
     if not scopes:
         raise HTTPException(status_code=400, detail=f"Provide at least one valid scope: {sorted(VALID_SCOPES)}.")
+    # Cap the active-key surface per tenant.
+    active = [k for k in get_service_key_store().list_by_tenant(principal.tenant_id) if k.status == "active"]
+    if len(active) >= get_settings().max_service_keys_per_tenant:
+        raise HTTPException(status_code=409, detail="This tenant already holds the maximum number of active service keys.")
     key_id, secret, plaintext = generate_key()
     # A key is minted for the admin's OWN tenant — no cross-tenant minting.
     get_service_key_store().create(ServiceKey(

@@ -54,3 +54,15 @@ def test_keys_are_independent():
         th.record_failure("email:a@x.de")
     assert th.retry_after("email:a@x.de") > 0
     assert th.retry_after("email:b@x.de") == 0      # a different account is unaffected
+
+
+def test_rate_limiter_allows_then_blocks_then_recovers():
+    from app.auth.throttle import RateLimiter
+
+    clk = _Clock()
+    rl = RateLimiter(limit=3, window_seconds=60, clock=clk)
+    assert rl.check("k") == 0 and rl.check("k") == 0 and rl.check("k") == 0   # 3 allowed
+    assert rl.check("k") > 0                          # 4th within the window -> 429
+    assert rl.check("other") == 0                     # a different key is independent
+    clk.advance(61)
+    assert rl.check("k") == 0                          # window passed -> allowed again
