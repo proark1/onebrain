@@ -169,6 +169,60 @@
             <div id="bundleList" class="bundle-list"></div>
           </section>
 
+          <section class="operator-panel operator-wide release-panel">
+            <div class="operator-panel-head">
+              <h2>Create release</h2>
+              <span id="releaseStatus" class="operator-status">Ready</span>
+            </div>
+            <form id="releaseForm" class="operator-form" autocomplete="off">
+              <div class="release-form-grid">
+                <label class="field">
+                  <span class="field-label">Source deployment</span>
+                  <select id="releaseSource" class="select" required></select>
+                </label>
+                <label class="field">
+                  <span class="field-label">Release version</span>
+                  <input id="releaseVersion" class="text-input" required maxlength="80" placeholder="2026.07.1" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Git SHA</span>
+                  <input id="releaseGitSha" class="text-input" required maxlength="80" placeholder="commit hash" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Module version</span>
+                  <input id="releaseModuleVersion" class="text-input" maxlength="80" placeholder="same as release" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Migration from</span>
+                  <input id="releaseMigrationFrom" class="text-input" maxlength="80" placeholder="current" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Migration to</span>
+                  <input id="releaseMigrationTo" class="text-input" maxlength="80" placeholder="optional" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Status</span>
+                  <select id="releaseManifestStatus" class="select">
+                    <option value="draft">Draft</option>
+                    <option value="ready" selected>Ready</option>
+                  </select>
+                </label>
+              </div>
+              <div id="releaseModulePreview" class="release-module-preview"></div>
+              <div class="release-form-grid">
+                <label class="field">
+                  <span class="field-label">Security notes</span>
+                  <textarea id="releaseSecurityNotes" class="text-input release-textarea" rows="3" placeholder="Security-relevant changes"></textarea>
+                </label>
+                <label class="field">
+                  <span class="field-label">Rollback plan</span>
+                  <textarea id="releaseRollbackPlan" class="text-input release-textarea" rows="3" placeholder="Rollback command or procedure"></textarea>
+                </label>
+              </div>
+              <button id="releaseSubmit" class="btn-primary" type="submit">Create release</button>
+            </form>
+          </section>
+
           <section class="operator-panel operator-wide">
             <div class="operator-panel-head">
               <h2>Accounts and spaces</h2>

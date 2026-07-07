@@ -11,6 +11,7 @@ from app.controlplane.base import (
     BackupRun,
     CustomerDeployment,
     DeploymentModule,
+    HealthCheckRun,
     ReleaseManifest,
     RolloutRun,
 )
@@ -134,3 +135,20 @@ def test_operator_endpoint_lists_rollout_status(monkeypatch):
     assert len(rollouts) == 1
     assert rollouts[0].id == "roll_status"
     assert rollouts[0].status == "running"
+
+
+def test_operator_endpoints_expose_latest_backup_and_health(monkeypatch):
+    store = _store()
+    store.record_backup(BackupRun("bak_failed", "dep_a", "failed", "old failure"))
+    store.record_backup(BackupRun("bak_ready", "dep_a", "success", "pre-update snapshot"))
+    store.record_health(HealthCheckRun("hlth_ready", "dep_a", "success", "all checks green"))
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+
+    backup = operator_router.latest_backup("dep_a", principal=_admin())
+    health = operator_router.latest_health("dep_a", principal=_admin())
+
+    assert backup is not None
+    assert backup.id == "bak_ready"
+    assert backup.status == "success"
+    assert health is not None
+    assert health.status == "success"

@@ -1,7 +1,10 @@
 // Admin operator workspace: provisioning, spaces, deployments and rollout plans.
 
 import {
+  createRelease,
   getUpdatePlan,
+  latestBackup,
+  latestHealth,
   listDeploymentModules,
   listDeployments,
   listPlatformAccounts,
@@ -11,12 +14,15 @@ import {
   listReleases,
   listRollouts,
   provisionCustomer,
+  recordBackup,
+  recordHealth,
   startRollout,
 } from "./api.js";
 import { el, qs, toast } from "./dom.js";
 
 let bundles = [];
 let releases = [];
+let deploymentRows = [];
 let loaded = false;
 
 const text = (value) => value || "-";
@@ -109,6 +115,39 @@ function renderReleaseRail() {
       el("span", {}, `${release.status} / ${Object.keys(release.modules).length} modules`))));
 }
 
+function selectedDeploymentRow() {
+  const deploymentId = qs("#releaseSource").value;
+  return deploymentRows.find((row) => row.deployment.id === deploymentId);
+}
+
+function updateReleaseModulePreview() {
+  const preview = qs("#releaseModulePreview");
+  const row = selectedDeploymentRow();
+  if (!row) {
+    preview.replaceChildren(emptyRow("Provision a deployment first."));
+    return;
+  }
+  const target = qs("#releaseModuleVersion").value.trim() || qs("#releaseVersion").value.trim() || "target";
+  preview.replaceChildren(
+    el("div", { class: "operator-chip-row" },
+      ...row.modules.map((module) => chip(`${module.module_id} -> ${target}`, "module"))),
+  );
+}
+
+function populateReleaseSource() {
+  const select = qs("#releaseSource");
+  const current = select.value;
+  select.replaceChildren(...deploymentRows.map((row) =>
+    el("option", { value: row.deployment.id }, `${row.deployment.customer_name} / ${row.deployment.id}`)));
+  select.disabled = deploymentRows.length === 0;
+  if (deploymentRows.some((row) => row.deployment.id === current)) select.value = current;
+  const row = selectedDeploymentRow();
+  if (row && !qs("#releaseMigrationFrom").value.trim()) {
+    qs("#releaseMigrationFrom").value = row.deployment.current_migration || "";
+  }
+  updateReleaseModulePreview();
+}
+
 function renderPlan(plan, resultNode, rolloutButton) {
   resultNode.replaceChildren(
     el("span", { class: plan.allowed ? "plan-ok" : "plan-blocked" }, plan.allowed ? "Allowed" : "Blocked"),
@@ -124,12 +163,16 @@ async function loadDeployments() {
   renderReleaseRail();
 
   const rows = await Promise.all(deployments.map(async (deployment) => {
-    const [modules, rollouts] = await Promise.all([
+    const [modules, rollouts, backup, health] = await Promise.all([
       listDeploymentModules(deployment.id),
       listRollouts(deployment.id),
+      latestBackup(deployment.id),
+      latestHealth(deployment.id),
     ]);
-    return { deployment, modules, rollouts };
+    return { deployment, modules, rollouts, backup, health };
   }));
+  deploymentRows = rows;
+  populateReleaseSource();
 
   const list = qs("#deploymentList");
   if (!rows.length) {
@@ -137,7 +180,7 @@ async function loadDeployments() {
     return;
   }
 
-  list.replaceChildren(...rows.map(({ deployment, modules, rollouts }) => {
+  list.replaceChildren(...rows.map(({ deployment, modules, rollouts, backup, health }) => {
     const releaseSelect = el("select", { class: "select operator-plan-select" },
       ...releases.map((release) => el("option", { value: release.version }, release.version)));
     releaseSelect.disabled = releases.length === 0;
@@ -172,6 +215,32 @@ async function loadDeployments() {
       }
     });
 
+    const backupButton = el("button", { class: "mini-btn", type: "button" }, "Record backup");
+    backupButton.addEventListener("click", async () => {
+      backupButton.disabled = true;
+      try {
+        await recordBackup(deployment.id, { status: "success", detail: "Operator recorded pre-update backup." });
+        toast(`Backup recorded for ${deployment.customer_name}`);
+        await loadDeployments();
+      } catch (err) {
+        toast(err.message);
+        backupButton.disabled = false;
+      }
+    });
+
+    const healthButton = el("button", { class: "mini-btn", type: "button" }, "Record health");
+    healthButton.addEventListener("click", async () => {
+      healthButton.disabled = true;
+      try {
+        await recordHealth(deployment.id, { status: "success", detail: "Operator recorded health check." });
+        toast(`Health recorded for ${deployment.customer_name}`);
+        await loadDeployments();
+      } catch (err) {
+        toast(err.message);
+        healthButton.disabled = false;
+      }
+    });
+
     return el("article", { class: "operator-row" },
       el("div", { class: "operator-row-main" },
         el("div", { class: "operator-row-title" },
@@ -179,11 +248,16 @@ async function loadDeployments() {
           el("code", {}, deployment.id)),
         el("div", { class: "operator-row-meta" },
           `${deployment.deployment_type} / ${deployment.release_ring} / version ${text(deployment.current_version)}`),
+        el("div", { class: "readiness-list" },
+          el("span", { class: `readiness-chip ${backup?.status || ""}`.trim() },
+            `backup ${backup?.status || "none"}`),
+          el("span", { class: `readiness-chip ${health?.status || ""}`.trim() },
+            `health ${health?.status || "none"}`)),
         el("div", { class: "operator-chip-row" },
           ...modules.map((module) => chip(`${module.module_id} ${module.version}`, "module")))),
       el("div", { class: "operator-plan" },
         releaseSelect,
-        el("div", { class: "operator-plan-actions" }, planButton, rolloutButton),
+        el("div", { class: "operator-plan-actions" }, planButton, rolloutButton, backupButton, healthButton),
         planResult,
         el("div", { class: "rollout-list" },
           ...(rollouts.length
@@ -239,6 +313,49 @@ async function submitProvisionForm(event) {
   }
 }
 
+function setReleaseStatus(message, tone = "") {
+  const node = qs("#releaseStatus");
+  node.textContent = message;
+  node.className = `operator-status ${tone}`.trim();
+}
+
+async function submitReleaseForm(event) {
+  event.preventDefault();
+  const row = selectedDeploymentRow();
+  if (!row) {
+    toast("Select a source deployment first.");
+    return;
+  }
+  const submit = qs("#releaseSubmit");
+  const releaseVersion = qs("#releaseVersion").value.trim();
+  const moduleVersion = qs("#releaseModuleVersion").value.trim() || releaseVersion;
+  submit.disabled = true;
+  setReleaseStatus("Creating", "busy");
+  try {
+    const modules = Object.fromEntries(row.modules.map((module) => [module.module_id, moduleVersion]));
+    const release = await createRelease({
+      version: releaseVersion,
+      git_sha: qs("#releaseGitSha").value.trim(),
+      status: qs("#releaseManifestStatus").value,
+      migration_from: qs("#releaseMigrationFrom").value.trim(),
+      migration_to: qs("#releaseMigrationTo").value.trim(),
+      security_notes: qs("#releaseSecurityNotes").value.trim(),
+      rollback_plan: qs("#releaseRollbackPlan").value.trim(),
+      modules,
+    });
+    toast(`Release ${release.version} created`);
+    qs("#releaseForm").reset();
+    setReleaseStatus("Created", "ok");
+    await loadDeployments();
+  } catch (err) {
+    setReleaseStatus("Blocked", "error");
+    toast(err.message);
+  } finally {
+    submit.disabled = false;
+    updateReleaseModulePreview();
+  }
+}
+
 export function initOperator(me) {
   const button = qs("#operatorBtn");
   const chatView = qs("#chatView");
@@ -270,6 +387,14 @@ export function initOperator(me) {
   });
   qs("#operatorRefresh").addEventListener("click", loadOperator);
   qs("#provisionForm").addEventListener("submit", submitProvisionForm);
+  qs("#releaseForm").addEventListener("submit", submitReleaseForm);
+  qs("#releaseSource").addEventListener("change", () => {
+    const row = selectedDeploymentRow();
+    if (row) qs("#releaseMigrationFrom").value = row.deployment.current_migration || "";
+    updateReleaseModulePreview();
+  });
+  qs("#releaseVersion").addEventListener("input", updateReleaseModulePreview);
+  qs("#releaseModuleVersion").addEventListener("input", updateReleaseModulePreview);
 
   return { showChat, showOperator };
 }

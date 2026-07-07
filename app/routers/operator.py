@@ -268,6 +268,13 @@ def record_backup(deployment_id: str, body: BackupCreate, principal: Principal =
     return _backup_out(backup)
 
 
+@router.get("/deployments/{deployment_id}/backups/latest", response_model=BackupOut | None)
+def latest_backup(deployment_id: str, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    backup = get_control_plane_store().latest_backup(deployment_id)
+    return _backup_out(backup) if backup else None
+
+
 @router.post("/deployments/{deployment_id}/health", response_model=HealthOut)
 def record_health(deployment_id: str, body: HealthCreate, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
@@ -281,6 +288,13 @@ def record_health(deployment_id: str, body: HealthCreate, principal: Principal =
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _health_out(health)
+
+
+@router.get("/deployments/{deployment_id}/health/latest", response_model=HealthOut | None)
+def latest_health(deployment_id: str, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    health = get_control_plane_store().latest_health(deployment_id)
+    return _health_out(health) if health else None
 
 
 @router.get("/deployments/{deployment_id}/update-plan/{target_version}", response_model=UpdatePlanOut)

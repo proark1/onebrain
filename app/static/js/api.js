@@ -74,10 +74,39 @@ export const listDeployments = () => requestJson("/api/operator/deployments");
 export const listDeploymentModules = (deploymentId) =>
   requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/modules`);
 export const listReleases = () => requestJson("/api/operator/releases");
+
+export async function createRelease(payload) {
+  return requestJson("/api/operator/releases", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export const getUpdatePlan = (deploymentId, targetVersion) =>
   requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/update-plan/${encodeURIComponent(targetVersion)}`);
 export const listRollouts = (deploymentId) =>
   requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/rollouts`);
+export const latestBackup = (deploymentId) =>
+  requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/backups/latest`);
+export const latestHealth = (deploymentId) =>
+  requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/health/latest`);
+
+export async function recordBackup(deploymentId, payload) {
+  return requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/backups`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function recordHealth(deploymentId, payload) {
+  return requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/health`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
 
 export async function startRollout(deploymentId, targetVersion) {
   return requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/rollouts`, {
