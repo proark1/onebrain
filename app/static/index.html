@@ -83,14 +83,37 @@
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="uploadTitle">
       <div class="modal-head">
         <h2 id="uploadTitle">Upload a document</h2>
-        <button id="uploadClose" class="icon-btn" type="button" aria-label="Close">✕</button>
+        <div class="modal-head-actions">
+          <button id="uploadInfo" class="icon-btn" type="button" aria-label="How it works" title="How it works">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path d="M12 11v5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+              <circle cx="12" cy="7.8" r="1.05" fill="currentColor" />
+            </svg>
+          </button>
+          <button id="uploadClose" class="icon-btn" type="button" aria-label="Close">✕</button>
+        </div>
       </div>
       <form id="uploadForm" class="upload-form">
-        <label id="dropzone" class="dropzone" for="fileInput">
-          <input id="fileInput" type="file" hidden
-            accept=".pdf,.docx,.xlsx,.xlsm,.pptx,.rtf,.txt,.md,.csv,.json,.html,.png,.jpg,.jpeg,.tiff,.bmp,.webp" />
-          <span id="dropText">Drop a file — PDF, Word, Excel, PowerPoint, images, or text</span>
-        </label>
+        <div id="uploader" class="uploader">
+          <label id="dropzone" class="dropzone" for="fileInput">
+            <input id="fileInput" type="file" hidden />
+            <svg class="dropzone-icon" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+              <path d="M12 15V4m0 0L8.5 7.5M12 4l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M4 15v2.5A2.5 2.5 0 0 0 6.5 20h11a2.5 2.5 0 0 0 2.5-2.5V15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            <span class="dropzone-title">Drag &amp; drop, or <span class="dropzone-link">browse</span></span>
+            <span class="dropzone-sub">PDF · Word · Excel · PowerPoint · images · text</span>
+          </label>
+          <div id="filePreview" class="file-card" hidden>
+            <span id="fileBadge" class="file-badge">FILE</span>
+            <div class="file-card-info">
+              <span id="fileName" class="file-card-name"></span>
+              <span id="fileSize" class="file-card-size"></span>
+            </div>
+            <button id="fileRemove" class="file-card-remove" type="button" aria-label="Remove file">✕</button>
+          </div>
+        </div>
         <div class="upload-grid">
           <label class="field">
             <span class="field-label">Classification</span>
@@ -125,6 +148,77 @@
         <p class="upload-note">The label decides who can retrieve this. Unsure? Leave it restricted.</p>
         <button id="uploadSubmit" class="btn-primary" type="submit" disabled>Add to the brain</button>
       </form>
+    </div>
+  </div>
+
+  <div id="infoModal" class="modal modal-info" hidden>
+    <div class="modal-card info-card" role="dialog" aria-modal="true" aria-labelledby="infoTitle">
+      <div class="modal-head">
+        <h2 id="infoTitle">How onebrain handles your upload</h2>
+        <button id="infoClose" class="icon-btn" type="button" aria-label="Close">✕</button>
+      </div>
+
+      <div class="info-body">
+        <section class="info-section">
+          <h3>What happens to a file you upload</h3>
+          <ol class="info-steps">
+            <li>onebrain <b>extracts the text</b> — from PDFs, Word/Excel/PowerPoint, plain text, or images (via OCR).</li>
+            <li>The text is split into small <b>chunks</b>, turned into <b>embeddings</b>, and stored.</li>
+            <li>When someone asks a question, onebrain <b>first filters the chunks down to only the ones that person's role may see</b>, then retrieves the most relevant few.</li>
+            <li>Only those allowed chunks are sent to the AI. <b>The model never sees a chunk the asker isn't cleared for</b> — access is enforced in code and the database, not by asking the model nicely.</li>
+          </ol>
+        </section>
+
+        <section class="info-section">
+          <h3>The label you set decides who can retrieve it</h3>
+          <p class="info-lead">A chunk is returned only if the asker clears <b>all three</b> — classification, location, and category — within their own organisation.</p>
+
+          <h4>Classification — how sensitive</h4>
+          <ul class="info-list">
+            <li><span class="cls-tag cls-public">Public</span> Anyone, including signed-out customers.</li>
+            <li><span class="cls-tag cls-internal">Internal</span> Any signed-in employee.</li>
+            <li><span class="cls-tag cls-confidential">Confidential</span> Location managers, marketing, and above.</li>
+            <li><span class="cls-tag cls-restricted">Restricted</span> Only the owning department (e.g. HR, Finance) and admins.</li>
+          </ul>
+
+          <h4>Location — which site it belongs to</h4>
+          <p><b>Global</b> is visible to everyone (subject to classification). A specific gym (Munich / Berlin / Hamburg) is visible only to staff at that gym — chain-wide roles like HR, Finance and Admin still see it.</p>
+
+          <h4>Category — which department compartment</h4>
+          <p>A role sees a compartment only if it's on its list. <b>General</b> is open to everyone (subject to classification); the rest (Customer service, Operations, HR, Finance, Marketing) are walled off to the departments that own them.</p>
+        </section>
+
+        <section class="info-section">
+          <h3>Who sees what</h3>
+          <div class="info-table-wrap">
+            <table class="info-table">
+              <thead>
+                <tr><th>Role</th><th>Sees up to</th><th>Locations</th><th>Compartments</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Public / customer</td><td><span class="cls-tag cls-public">Public</span></td><td>—</td><td>General</td></tr>
+                <tr><td>Front-desk staff</td><td><span class="cls-tag cls-internal">Internal</span></td><td>Their gym</td><td>General, Customer service, Ops</td></tr>
+                <tr><td>Trainer</td><td><span class="cls-tag cls-internal">Internal</span></td><td>Their gym</td><td>General, Ops</td></tr>
+                <tr><td>Location manager</td><td><span class="cls-tag cls-confidential">Confidential</span></td><td>Their gym</td><td>General, CS, Ops, Marketing</td></tr>
+                <tr><td>Marketing</td><td><span class="cls-tag cls-confidential">Confidential</span></td><td>All</td><td>General, Marketing</td></tr>
+                <tr><td>HR</td><td><span class="cls-tag cls-restricted">Restricted</span></td><td>All</td><td>General, HR</td></tr>
+                <tr><td>Finance</td><td><span class="cls-tag cls-restricted">Restricted</span></td><td>All</td><td>General, Finance</td></tr>
+                <tr><td>Admin / DPO</td><td><span class="cls-tag cls-restricted">Restricted</span></td><td>All</td><td>Everything</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="info-section">
+          <h3>Supported file types</h3>
+          <p>PDF (with OCR for scanned pages), Word <code>.docx</code>, Excel <code>.xlsx/.xlsm</code>, PowerPoint <code>.pptx</code>, RTF, images via OCR (<code>.png .jpg .tiff …</code>), and any text format (<code>.txt .md .csv .json .html …</code>).</p>
+        </section>
+
+        <p class="info-privacy">
+          <b>Prototype — synthetic data only.</b> Don't upload real member or employee personal data
+          until onebrain is on EU infrastructure with a DPIA and signed processor agreements.
+        </p>
+      </div>
     </div>
   </div>
 
