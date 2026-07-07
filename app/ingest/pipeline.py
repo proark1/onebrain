@@ -36,7 +36,7 @@ class IngestPipeline:
         self._store = store
 
     def ingest_text(self, *, title, text, classification, location, category, uploaded_by, tenant,
-                    require_approval=False, block_public_on_pii=True) -> IngestResult:
+                    require_approval=False, block_public_on_pii=True, pii_phase="dpia_signed") -> IngestResult:
         cls = Classification.parse(classification)
         location = (location or GLOBAL_LOCATION).strip().lower() or GLOBAL_LOCATION
         category = (category or GENERAL_CATEGORY).strip().lower() or GENERAL_CATEGORY
@@ -55,6 +55,16 @@ class IngestPipeline:
         # or lands in quarantine for a second pair of eyes. A mislabel, or a PII
         # leak into PUBLIC, is caught HERE — before the content is reachable.
         pii_findings = scan_pii(text)
+        # Synthetic-data phase interlock: before a signed DPIA, real personal data
+        # must not enter the system AT ALL — the scanner is the tripwire, so a
+        # careless upload of a real member/employee file is refused, not just parked.
+        if pii_phase == "synthetic" and pii_findings:
+            kinds = ", ".join(sorted({f["type"] for f in pii_findings}))
+            raise ValueError(
+                f"Personal data detected ({kinds}). This deployment is in synthetic-data mode "
+                "(ONEBRAIN_PII_PHASE=synthetic); a signed DPIA is required before real personal "
+                "data can be ingested."
+            )
         if require_approval:
             status = STATUS_PENDING
         elif pii_findings and cls == Classification.PUBLIC and block_public_on_pii:
@@ -90,10 +100,10 @@ class IngestPipeline:
                             status=status, pii_findings=pii_findings)
 
     def ingest_file(self, *, filename, data, classification, location, category, uploaded_by, tenant,
-                    require_approval=False, block_public_on_pii=True) -> IngestResult:
+                    require_approval=False, block_public_on_pii=True, pii_phase="dpia_signed") -> IngestResult:
         text = extract_text(filename, data)
         return self.ingest_text(
             title=filename, text=text, classification=classification,
             location=location, category=category, uploaded_by=uploaded_by, tenant=tenant,
-            require_approval=require_approval, block_public_on_pii=block_public_on_pii,
+            require_approval=require_approval, block_public_on_pii=block_public_on_pii, pii_phase=pii_phase,
         )
