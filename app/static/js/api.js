@@ -116,6 +116,14 @@ export async function startRollout(deploymentId, targetVersion) {
   });
 }
 
+export async function updateRollout(rolloutId, payload) {
+  return requestJson(`/api/operator/rollouts/${encodeURIComponent(rolloutId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 // Streams the answer via SSE. Sends conversation_id (null starts a new one).
 export async function askStream(question, conversationId, onEvent) {
   const res = await fetch("/api/ask", {

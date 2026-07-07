@@ -17,6 +17,7 @@ import {
   recordBackup,
   recordHealth,
   startRollout,
+  updateRollout,
 } from "./api.js";
 import { el, qs, toast } from "./dom.js";
 
@@ -156,6 +157,35 @@ function renderPlan(plan, resultNode, rolloutButton) {
   rolloutButton.hidden = !(plan.allowed && Object.keys(plan.modules_to_update || {}).length);
 }
 
+function rolloutActions(rollout, deployment) {
+  const actions = el("span", { class: "rollout-actions" });
+  const canAdvance = !["success", "failed"].includes(rollout.status);
+  if (!canAdvance) return actions;
+
+  const makeButton = (label, status, tone = "") => {
+    const button = el("button", { class: `rollout-action ${tone}`.trim(), type: "button" }, label);
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await updateRollout(rollout.id, { status, notes: `Marked ${status} from operator dashboard.` });
+        toast(`${deployment.customer_name} rollout marked ${status}`);
+        await loadDeployments();
+      } catch (err) {
+        toast(err.message);
+        button.disabled = false;
+      }
+    });
+    return button;
+  };
+
+  actions.append(
+    makeButton("Running", "running"),
+    makeButton("Success", "success", "success"),
+    makeButton("Failed", "failed", "danger"),
+  );
+  return actions;
+}
+
 async function loadDeployments() {
   const [deployments, releaseList] = await Promise.all([listDeployments(), listReleases()]);
   releases = releaseList;
@@ -262,7 +292,9 @@ async function loadDeployments() {
         el("div", { class: "rollout-list" },
           ...(rollouts.length
             ? rollouts.slice(-3).reverse().map((rollout) =>
-              el("span", {}, `${rollout.target_version} / ${rollout.status}`))
+              el("div", { class: "rollout-line" },
+                el("span", {}, `${rollout.target_version} / ${rollout.status}`),
+                rolloutActions(rollout, deployment)))
             : [el("span", { class: "operator-muted" }, "No rollouts")]))));
   }));
 }

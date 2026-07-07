@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from dataclasses import replace
 from typing import Dict, List, Optional
 
 from app.controlplane.base import (
@@ -184,6 +185,8 @@ class MemoryControlPlaneStore:
 
     def start_rollout(self, rollout: RolloutRun) -> RolloutRun:
         validate_run_status(rollout.status)
+        if rollout.status == "success":
+            raise ValueError("rollout cannot start as success")
         plan = self.plan_update(rollout.deployment_id, rollout.target_version)
         if not plan.allowed:
             raise ValueError(f"rollout blocked: {plan.reason}")
@@ -193,6 +196,42 @@ class MemoryControlPlaneStore:
             self._rollouts[rollout.id] = rollout
             self._save()
             return rollout
+
+    def update_rollout_status(self, rollout_id: str, status: str, notes: str = "") -> RolloutRun:
+        validate_run_status(status)
+        with self._lock:
+            rollout = self._rollouts.get(rollout_id)
+            if not rollout:
+                raise ValueError(f"unknown rollout: {rollout_id}")
+            if rollout.status in {"success", "failed"} and status != rollout.status:
+                raise ValueError("terminal rollout status cannot be changed")
+            updated = replace(rollout, status=status, notes=notes.strip() or rollout.notes)
+
+            if status == "success":
+                plan = self.plan_update(rollout.deployment_id, rollout.target_version)
+                if not plan.allowed:
+                    raise ValueError(f"rollout completion blocked: {plan.reason}")
+                release = self.get_release(rollout.target_version)
+                deployment = self.get_deployment(rollout.deployment_id)
+                if not release or not deployment:
+                    raise ValueError("rollout target is no longer available")
+
+                for module in self.list_modules(rollout.deployment_id):
+                    if module.status != "active" or module.module_id not in release.modules:
+                        continue
+                    self._modules[(module.deployment_id, module.module_id)] = replace(
+                        module,
+                        version=release.modules[module.module_id],
+                    )
+                self._deployments[deployment.id] = replace(
+                    deployment,
+                    current_version=release.version,
+                    current_migration=release.migration_to or deployment.current_migration,
+                )
+
+            self._rollouts[rollout_id] = updated
+            self._save()
+            return updated
 
     def list_rollouts(self, deployment_id: str) -> List[RolloutRun]:
         return [r for r in self._rollouts.values() if r.deployment_id == deployment_id]

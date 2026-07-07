@@ -106,6 +106,76 @@ def test_rollout_is_blocked_until_update_plan_is_allowed():
     assert store.list_rollouts("dep_a") == [rollout]
 
 
+def test_successful_rollout_applies_release_versions_and_migration():
+    store = _store()
+    store.create_release(ReleaseManifest(
+        version="2026.07.4",
+        git_sha="def999",
+        modules={"onebrain-api": "0.9.0", "communication-api": "0.7.0"},
+        migration_from="0041",
+        migration_to="0042",
+    ))
+    store.record_backup(BackupRun("bak_success", "dep_a", "success"))
+    store.start_rollout(RolloutRun("roll_apply", "dep_a", "2026.07.4", "running", "admin"))
+
+    rollout = store.update_rollout_status("roll_apply", "success", "completed by pipeline")
+
+    assert rollout.status == "success"
+    assert rollout.notes == "completed by pipeline"
+    assert store.get_deployment("dep_a").current_version == "2026.07.4"
+    assert store.get_deployment("dep_a").current_migration == "0042"
+    assert {m.module_id: m.version for m in store.list_modules("dep_a")} == {
+        "communication-api": "0.7.0",
+        "onebrain-api": "0.9.0",
+    }
+    assert store.plan_update("dep_a", "2026.07.4").reason == "already_current"
+
+
+def test_failed_rollout_does_not_apply_release_versions():
+    store = _store()
+    store.create_release(ReleaseManifest(
+        version="2026.07.4",
+        git_sha="def999",
+        modules={"onebrain-api": "0.9.0", "communication-api": "0.7.0"},
+    ))
+    store.start_rollout(RolloutRun("roll_fail", "dep_a", "2026.07.4", "running", "admin"))
+
+    rollout = store.update_rollout_status("roll_fail", "failed", "pipeline failed")
+
+    assert rollout.status == "failed"
+    assert store.get_deployment("dep_a").current_version == "2026.07.0"
+    assert {m.module_id: m.version for m in store.list_modules("dep_a")} == {
+        "communication-api": "0.5.0",
+        "onebrain-api": "0.7.0",
+    }
+
+
+def test_terminal_rollout_status_cannot_be_changed():
+    store = _store()
+    store.create_release(ReleaseManifest(
+        version="2026.07.4",
+        git_sha="def999",
+        modules={"onebrain-api": "0.9.0", "communication-api": "0.7.0"},
+    ))
+    store.start_rollout(RolloutRun("roll_terminal", "dep_a", "2026.07.4", "running", "admin"))
+    store.update_rollout_status("roll_terminal", "failed")
+
+    with pytest.raises(ValueError, match="terminal rollout status"):
+        store.update_rollout_status("roll_terminal", "running")
+
+
+def test_rollout_cannot_start_as_success():
+    store = _store()
+    store.create_release(ReleaseManifest(
+        version="2026.07.4",
+        git_sha="def999",
+        modules={"onebrain-api": "0.9.0", "communication-api": "0.7.0"},
+    ))
+
+    with pytest.raises(ValueError, match="cannot start as success"):
+        store.start_rollout(RolloutRun("roll_skip", "dep_a", "2026.07.4", "success", "admin"))
+
+
 def test_unknown_module_and_invalid_ring_are_rejected():
     store = MemoryControlPlaneStore()
     with pytest.raises(ValueError, match="Unknown release ring"):
@@ -135,6 +205,27 @@ def test_operator_endpoint_lists_rollout_status(monkeypatch):
     assert len(rollouts) == 1
     assert rollouts[0].id == "roll_status"
     assert rollouts[0].status == "running"
+
+
+def test_operator_endpoint_marks_rollout_success_and_updates_deployment(monkeypatch):
+    store = _store()
+    store.create_release(ReleaseManifest(
+        version="2026.07.5",
+        git_sha="abc555",
+        modules={"onebrain-api": "1.0.0", "communication-api": "0.8.0"},
+    ))
+    store.start_rollout(RolloutRun("roll_done", "dep_a", "2026.07.5", "running", "admin"))
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+
+    rollout = operator_router.update_rollout(
+        "roll_done",
+        operator_router.RolloutStatusUpdate(status="success", notes="done"),
+        principal=_admin(),
+    )
+
+    assert rollout.status == "success"
+    assert store.get_deployment("dep_a").current_version == "2026.07.5"
+    assert {m.module_id: m.version for m in store.list_modules("dep_a")}["onebrain-api"] == "1.0.0"
 
 
 def test_operator_endpoints_expose_latest_backup_and_health(monkeypatch):

@@ -128,6 +128,11 @@ class RolloutCreate(BaseModel):
     id: str | None = None
 
 
+class RolloutStatusUpdate(BaseModel):
+    status: str
+    notes: str = ""
+
+
 class RolloutOut(BaseModel):
     id: str
     deployment_id: str
@@ -321,6 +326,20 @@ def start_rollout(deployment_id: str, body: RolloutCreate, principal: Principal 
             started_by=principal.user_id,
             notes=body.notes.strip(),
         ))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _rollout_out(rollout)
+
+
+@router.patch("/rollouts/{rollout_id}", response_model=RolloutOut)
+def update_rollout(rollout_id: str, body: RolloutStatusUpdate, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    try:
+        rollout = get_control_plane_store().update_rollout_status(
+            rollout_id,
+            body.status.strip(),
+            notes=body.notes.strip(),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _rollout_out(rollout)
