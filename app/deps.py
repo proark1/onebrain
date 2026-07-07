@@ -52,3 +52,11 @@ def get_conversation_store():
 @lru_cache
 def get_user_store():
     return build_user_store(get_settings())
+
+
+@lru_cache
+def get_login_throttle():
+    from app.auth.throttle import LoginThrottle
+
+    settings = get_settings()
+    return LoginThrottle(settings.login_max_attempts, settings.login_lockout_seconds)
