@@ -82,3 +82,10 @@ def get_platform_store():
     from app.platform.factory import build_platform_store
 
     return build_platform_store(get_settings())
+
+
+@lru_cache
+def get_control_plane_store():
+    from app.controlplane.factory import build_control_plane_store
+
+    return build_control_plane_store(get_settings())
