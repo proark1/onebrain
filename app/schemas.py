@@ -39,6 +39,8 @@ class DocumentSummary(BaseModel):
     chunks: int
     status: str = "approved"
     pii_findings: int = 0
+    account_id: str = ""
+    space_id: str = ""
 
 
 class PendingDocument(BaseModel):
@@ -50,6 +52,8 @@ class PendingDocument(BaseModel):
     uploaded_by: str
     has_pii: bool
     chunks: int
+    account_id: str = ""
+    space_id: str = ""
 
 
 class RoleInfo(BaseModel):

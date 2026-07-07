@@ -66,6 +66,8 @@ class MemoryStore:
                     "classification": c.meta.get("classification_label", "internal"),
                     "location": c.meta.get("location", "global"),
                     "category": c.meta.get("category", "general"),
+                    "account_id": c.meta.get("account_id", ""),
+                    "space_id": c.meta.get("space_id", ""),
                     "chunks": 0,
                 })
                 doc["chunks"] += 1
@@ -86,6 +88,8 @@ class MemoryStore:
                     "classification_label": c.meta.get("classification_label", "internal"),
                     "location": c.meta.get("location", "global"),
                     "category": c.meta.get("category", "general"),
+                    "account_id": c.meta.get("account_id", ""),
+                    "space_id": c.meta.get("space_id", ""),
                     "uploaded_by": c.meta.get("uploaded_by", ""),
                     "status": c.meta.get("status", "pending"),
                     "has_pii": False,
@@ -95,6 +99,27 @@ class MemoryStore:
                 if c.meta.get("pii_findings"):
                     doc["has_pii"] = True
         return sorted(docs.values(), key=lambda d: d["title"].lower())
+
+    def get_document_meta(self, doc_id: str) -> Optional[dict]:
+        with self._lock:
+            chunks = [c for c in self._chunks if c.doc_id == doc_id]
+        if not chunks:
+            return None
+        first = chunks[0]
+        return {
+            "doc_id": doc_id,
+            "title": first.meta.get("doc_title", "Untitled"),
+            "tenant_id": first.meta.get("tenant_id", ""),
+            "classification": int(first.meta.get("classification", 3)),
+            "classification_label": first.meta.get("classification_label", "internal"),
+            "location": first.meta.get("location", "global"),
+            "category": first.meta.get("category", "general"),
+            "account_id": first.meta.get("account_id", ""),
+            "space_id": first.meta.get("space_id", ""),
+            "uploaded_by": first.meta.get("uploaded_by", ""),
+            "status": first.meta.get("status", "approved"),
+            "chunks": len(chunks),
+        }
 
     def set_document_status(self, doc_id: str, status: str, approved_by: Optional[str] = None) -> int:
         with self._lock:

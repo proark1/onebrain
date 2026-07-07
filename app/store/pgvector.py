@@ -97,15 +97,16 @@ class PgVectorStore:
         where, params = access.to_sql()
         sql = (
             "SELECT doc_id, meta->>'doc_title', meta->>'classification_label', "
-            "meta->>'location', meta->>'category', count(*) "
-            f"FROM chunks WHERE {where} GROUP BY 1, 2, 3, 4, 5 ORDER BY 2"
+            "meta->>'location', meta->>'category', meta->>'account_id', meta->>'space_id', count(*) "
+            f"FROM chunks WHERE {where} GROUP BY 1, 2, 3, 4, 5, 6, 7 ORDER BY 2"
         )
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()
         return [
             {"doc_id": r[0], "title": r[1] or "Untitled", "classification": r[2] or "internal",
-             "location": r[3] or "global", "category": r[4] or "general", "chunks": r[5]}
+             "location": r[3] or "global", "category": r[4] or "general",
+             "account_id": r[5] or "", "space_id": r[6] or "", "chunks": r[7]}
             for r in rows
         ]
 
@@ -113,7 +114,7 @@ class PgVectorStore:
         sql = (
             "SELECT doc_id, max(meta->>'doc_title'), max((meta->>'classification')::int), "
             "max(meta->>'classification_label'), max(meta->>'location'), max(meta->>'category'), "
-            "max(meta->>'uploaded_by'), max(meta->>'status'), "
+            "max(meta->>'account_id'), max(meta->>'space_id'), max(meta->>'uploaded_by'), max(meta->>'status'), "
             "bool_or(COALESCE(jsonb_array_length(meta->'pii_findings'), 0) > 0), count(*) "
             "FROM chunks WHERE tenant_id = %s AND COALESCE(meta->>'status', 'approved') <> 'approved' "
             "GROUP BY doc_id ORDER BY 2"
@@ -124,10 +125,32 @@ class PgVectorStore:
         return [
             {"doc_id": r[0], "title": r[1] or "Untitled", "classification": r[2] or 3,
              "classification_label": r[3] or "internal", "location": r[4] or "global",
-             "category": r[5] or "general", "uploaded_by": r[6] or "", "status": r[7] or "pending",
-             "has_pii": bool(r[8]), "chunks": r[9]}
+             "category": r[5] or "general", "account_id": r[6] or "", "space_id": r[7] or "",
+             "uploaded_by": r[8] or "", "status": r[9] or "pending",
+             "has_pii": bool(r[10]), "chunks": r[11]}
             for r in rows
         ]
+
+    def get_document_meta(self, doc_id: str):
+        sql = (
+            "SELECT doc_id, max(meta->>'doc_title'), max(meta->>'tenant_id'), "
+            "max((meta->>'classification')::int), max(meta->>'classification_label'), "
+            "max(meta->>'location'), max(meta->>'category'), max(meta->>'account_id'), "
+            "max(meta->>'space_id'), max(meta->>'uploaded_by'), max(meta->>'status'), count(*) "
+            "FROM chunks WHERE doc_id = %s GROUP BY doc_id"
+        )
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(sql, (doc_id,))
+            r = cur.fetchone()
+        if not r:
+            return None
+        return {
+            "doc_id": r[0], "title": r[1] or "Untitled", "tenant_id": r[2] or "",
+            "classification": r[3] or 3, "classification_label": r[4] or "internal",
+            "location": r[5] or "global", "category": r[6] or "general",
+            "account_id": r[7] or "", "space_id": r[8] or "",
+            "uploaded_by": r[9] or "", "status": r[10] or "approved", "chunks": r[11],
+        }
 
     def set_document_status(self, doc_id: str, status: str, approved_by=None) -> int:
         with self._conn() as conn, conn.cursor() as cur:
