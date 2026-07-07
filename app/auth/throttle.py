@@ -46,3 +46,29 @@ class LoginThrottle:
     def record_success(self, key: str) -> None:
         with self._lock:
             self._fails.pop(key, None)
+
+
+class RateLimiter:
+    """Sliding-window rate limit: at most `limit` calls per `window` seconds per
+    key. In-memory/per-process (fine for a single instance; move to Redis for
+    multi-replica). Used to cap metered service-key endpoints so a leaked key
+    cannot be looped for unbounded LLM/embedding cost."""
+
+    def __init__(self, limit: int, window_seconds: int, clock: Callable[[], float] = time.time):
+        self._limit = limit
+        self._window = window_seconds
+        self._clock = clock
+        self._events: Dict[str, List[float]] = {}
+        self._lock = threading.Lock()
+
+    def check(self, key: str) -> int:
+        """Record a call and return 0 if allowed, else seconds to wait (429)."""
+        with self._lock:
+            now = self._clock()
+            times = [t for t in self._events.get(key, []) if now - t < self._window]
+            if len(times) >= self._limit:
+                self._events[key] = times
+                return max(1, int(self._window - (now - min(times))) + 1)
+            times.append(now)
+            self._events[key] = times
+            return 0

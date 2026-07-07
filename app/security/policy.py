@@ -16,6 +16,8 @@ from typing import Optional
 
 GLOBAL_LOCATION = "global"      # visible from every location (subject to clearance)
 GENERAL_CATEGORY = "general"    # visible to every category (subject to clearance)
+CAPTURED_CATEGORY = "captured_input"  # raw captured comms — a walled compartment no
+                                      # read key and no ordinary staff role holds
 
 # Publication lifecycle. Nothing is retrievable until it is APPROVED. A missing
 # status means a legacy chunk (created before the lifecycle) and is treated as

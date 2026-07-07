@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from fastapi import Cookie, HTTPException
+from fastapi import Cookie, Header, HTTPException
 
 from app.auth.roles import ROLES
 from app.auth.tokens import read_token
@@ -39,13 +39,20 @@ class Principal:
     categories: Optional[frozenset]  # None = all categories
     location_label: str
     tenant_id: str = HUMAN_TENANT
-    principal_type: str = "human"    # "human" | "service" (service keys land in Phase 1)
+    principal_type: str = "human"    # "human" | "service"
     display_name: str = ""
     email: str = ""
+    scopes: frozenset = frozenset()  # service-key scopes; humans hold none
 
     @property
     def is_employee(self) -> bool:
-        return self.role_id != "public"
+        # Only a human account is ever an "employee". A service key is never one,
+        # even though it has a non-public role_id — human endpoints must not treat
+        # it as staff.
+        return self.principal_type == "human" and self.role_id != "public"
+
+    def has_scope(self, scope: str) -> bool:
+        return scope in self.scopes
 
     def access_filter(self) -> AccessFilter:
         return AccessFilter(self.tenant_id, int(self.clearance), self.locations, self.categories)
@@ -94,3 +101,37 @@ def resolve_principal(ob_session: str = Cookie(default="")) -> Principal:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     return principal_from_user(user)
+
+
+# The service surface. A service key never conveys a role or a clearance above
+# PUBLIC, and its tenant comes from the key record — NEVER from the caller. This
+# is the hard ceiling that lets an untrusted comms adapter / partner service talk
+# to the brain without ever being able to read internal data.
+def resolve_service_principal(authorization: str = Header(default="")) -> Principal:
+    from app.deps import get_service_key_store
+    from app.servicekeys.base import parse_key, verify_secret
+
+    token = authorization[7:].strip() if authorization.startswith("Bearer ") else ""
+    parsed = parse_key(token) if token else None
+    if not parsed:
+        raise HTTPException(status_code=401, detail="Missing or malformed service key")
+
+    key_id, secret = parsed
+    key = get_service_key_store().get(key_id)
+    # Fail closed: unknown key, revoked key, or a secret mismatch all deny.
+    if not key or key.status != "active" or not verify_secret(secret, key.key_hash):
+        raise HTTPException(status_code=401, detail="Invalid service key")
+
+    return Principal(
+        user_id=f"svc:{key.id}",
+        role_id="service",
+        role_label="Service",
+        clearance=Classification.PUBLIC,     # hard PUBLIC ceiling, never elevatable
+        locations=frozenset(),               # global-only
+        categories=frozenset({"general"}),   # general compartment only — no captured_input
+        location_label="—",
+        tenant_id=key.tenant_id,             # pinned by the key, not the caller
+        principal_type="service",
+        scopes=frozenset(key.scopes),
+        display_name=key.label,
+    )

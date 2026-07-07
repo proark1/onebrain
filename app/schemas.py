@@ -71,3 +71,39 @@ class SessionInfo(BaseModel):
 class LoginRequest(BaseModel):
     email: str = Field(min_length=3, max_length=200)
     password: str = Field(min_length=1, max_length=200)
+
+
+# --- Service surface (non-human callers) ---------------------------------
+class ServiceCaptureRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=20000)
+    title: Optional[str] = Field(default=None, max_length=200)
+
+
+class ServiceAskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+
+
+class ServiceAskResponse(BaseModel):
+    answer: str
+    chunks_used: int = 0
+
+
+class ServiceKeyCreate(BaseModel):
+    scopes: list[str]
+    label: Optional[str] = None
+
+
+class MintedKey(BaseModel):
+    id: str
+    key: str                    # the plaintext — shown ONCE, never retrievable again
+    tenant_id: str
+    scopes: list[str]
+    label: str = ""
+
+
+class ServiceKeyInfo(BaseModel):
+    id: str
+    tenant_id: str
+    scopes: list[str]
+    label: str = ""
+    status: str = "active"
