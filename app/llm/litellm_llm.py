@@ -21,12 +21,27 @@ class LiteLLMLLM:
         self._litellm = litellm
         self.model = model
 
-    def stream(self, question: str, hits: List[Hit], tenant_id: str = "nft_gym") -> Iterator[str]:
+    def stream(self, question, hits, tenant_id="nft_gym", stats=None):
         response = self._litellm.completion(
-            model=self.model, messages=build_messages(question, hits, tenant_id), stream=True
+            model=self.model, messages=build_messages(question, hits, tenant_id),
+            stream=True, stream_options={"include_usage": True},
         )
+        usage = None
         for part in response:
-            delta = getattr(part.choices[0], "delta", None)
-            content = getattr(delta, "content", None)
-            if content:
-                yield content
+            found = getattr(part, "usage", None)
+            if found is not None:
+                usage = found
+            if part.choices:
+                delta = getattr(part.choices[0], "delta", None)
+                content = getattr(delta, "content", None)
+                if content:
+                    yield content
+
+        if stats is not None and usage is not None:
+            from app.llm.pricing import estimate_cost
+
+            pt = getattr(usage, "prompt_tokens", None)
+            ct = getattr(usage, "completion_tokens", None)
+            stats["prompt_tokens"] = pt
+            stats["completion_tokens"] = ct
+            stats["cost_usd"] = estimate_cost(self.model, pt, ct)

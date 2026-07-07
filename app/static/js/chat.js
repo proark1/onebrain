@@ -78,10 +78,28 @@ function handleEvent(event, answer, body) {
   } else if (event.type === "sources" && event.sources.length) {
     body.append(renderSources(event.sources));
   } else if (event.type === "meta") {
-    body.append(el("div", { class: "answer-foot" },
-      `answered from ${event.chunks_used} chunk${event.chunks_used === 1 ? "" : "s"}` +
-      ` · ~${event.approx_tokens.toLocaleString()} tokens · ${event.llm}`));
+    body.append(el("div", { class: "answer-foot" }, metaLine(event)));
   }
+}
+
+function formatCost(usd) {
+  if (usd === null || usd === undefined) return null;
+  if (usd === 0) return "free";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;       // fractions of a cent
+  return `$${usd.toFixed(2)}`;
+}
+
+function metaLine(e) {
+  const tokens = e.total_tokens ?? e.approx_tokens ?? 0;
+  const approx = e.estimated ? "~" : "";
+  const cost = formatCost(e.cost_usd);
+  const parts = [
+    `answered from ${e.chunks_used} chunk${e.chunks_used === 1 ? "" : "s"}`,
+    `${approx}${tokens.toLocaleString()} tokens`,
+  ];
+  if (cost) parts.push(`≈ ${cost}`);
+  parts.push(e.llm);
+  return parts.join(" · ");
 }
 
 function renderSources(sources) {

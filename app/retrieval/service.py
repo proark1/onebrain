@@ -11,10 +11,11 @@ from __future__ import annotations
 from typing import Iterator, List
 
 from app.auth.principal import Principal
+from app.llm.pricing import estimate_cost
 from app.store.base import Hit
 
 
-def _estimate_tokens(hits: List[Hit], question: str) -> int:
+def _estimate_input_tokens(hits: List[Hit], question: str) -> int:
     chars = sum(len(h.chunk.text) for h in hits) + len(question) + 400  # + system/instructions
     return round(chars / 4)
 
@@ -36,7 +37,10 @@ class RetrievalService:
     def answer_stream(self, principal: Principal, question: str) -> Iterator[dict]:
         hits = self.retrieve(principal, question)
 
-        for token in self._llm.stream(question, hits, principal.tenant_id):
+        stats: dict = {}
+        answer_chars = 0
+        for token in self._llm.stream(question, hits, principal.tenant_id, stats):
+            answer_chars += len(token)
             yield {"type": "token", "text": token}
 
         yield {"type": "sources", "sources": [
@@ -49,10 +53,23 @@ class RetrievalService:
             }
             for h in hits
         ]}
+
+        # Prefer the model's real usage; fall back to a char-based estimate.
+        input_tokens = stats.get("prompt_tokens") or _estimate_input_tokens(hits, question)
+        output_tokens = stats.get("completion_tokens") or max(1, round(answer_chars / 4))
+        model = getattr(self._llm, "model", self._llm.name)
+        cost = stats.get("cost_usd")
+        if cost is None:
+            cost = estimate_cost(model, input_tokens, output_tokens)
+
         yield {
             "type": "meta",
             "chunks_used": len(hits),
-            "approx_tokens": _estimate_tokens(hits, question),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "cost_usd": cost,
+            "estimated": stats.get("prompt_tokens") is None,  # True when tokens are estimated, not measured
             "llm": self._llm.name,
         }
         yield {"type": "done"}

@@ -33,7 +33,9 @@ def _terms(text: str) -> set:
 class LocalLLM:
     name = "local-extractive"
 
-    def stream(self, question: str, hits: List[Hit], tenant_id: str = "nft_gym") -> Iterator[str]:
+    model = "local-extractive"  # used for (free) cost lookup
+
+    def stream(self, question, hits, tenant_id="nft_gym", stats=None):
         if not hits:
             yield ("I couldn't find anything you have access to about that. "
                    "It may be restricted to another role, scoped to another location, "
