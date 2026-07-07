@@ -28,10 +28,18 @@ The platform must support multiple sale and deployment packages:
 Railway is the first deployment target for speed. The architecture must remain
 portable to dedicated or headless GDPR-compliant infrastructure later.
 
+Data privacy and security are release gates, not later hardening tasks. The
+platform must be designed so real customer, employee, family, and private
+assistant data can only be stored, retrieved, exported, deleted, or sent to AI
+providers through explicit space, purpose, consent, retention, and audit
+controls.
+
 ## Goals
 
 - Move important data into one OneBrain database from the beginning.
 - Avoid duplicate long-term tables across OneBrain, DarAI, and communication.
+- Make privacy, security, and GDPR-grade governance the first implementation
+  priority.
 - Support private, business, customer service, shared, family, and project
   spaces inside the same platform.
 - Make data boundaries explicit, auditable, and permission-aware.
@@ -51,6 +59,62 @@ portable to dedicated or headless GDPR-compliant infrastructure later.
 - Do not support non-Postgres storage as the primary database in V1.
 - Do not remove all existing DarAI and communication database code before the
   new OneBrain contracts are proven.
+- Do not process real customer/private data in production until the Phase 0
+  privacy and security gates are implemented and verified.
+
+## Privacy And Security Principles
+
+OneBrain's business value depends on trust. The platform is only useful if
+customers can understand and control where their data lives, which apps can use
+it, and why.
+
+### Privacy By Design
+
+- Data is assigned to a space at creation time.
+- Data is created with a purpose and source app.
+- Apps receive only the minimum data needed for the requested purpose.
+- Customer-service workflows cannot use personal, family, or private assistant
+  data by default.
+- Shared spaces must be explicitly enabled and visible in the UI.
+- Raw customer/private data is not used to train shared models.
+- Derived data, such as memories, summaries, embeddings, and entity links, keeps
+  provenance back to the source record.
+
+### Security By Default
+
+- All service-to-service access uses scoped service identities, not shared root
+  secrets.
+- All secrets and provider credentials are encrypted at rest.
+- Production cookies/tokens require secure settings and rotation plans.
+- Every sensitive read/write emits an audit event.
+- PostgreSQL RLS is enabled as defense in depth.
+- The application still enforces explicit account, space, purpose, and role
+  predicates before database access.
+- Public surfaces are rate-limited and have payload size limits.
+- Webhooks are verified with provider signatures or shared secrets.
+
+### GDPR And EU Readiness
+
+- Railway is acceptable for the prototype, but production customer data must be
+  deployable to EU/GDPR-compliant infrastructure.
+- Each deployment must document processors, regions, AI providers, and transfer
+  mechanisms.
+- Export, delete, retention, and consent records are core product features.
+- Voice/call recording and AI handling need explicit notice and opt-out or
+  handoff paths where legally required.
+- Real data rollout requires signed processor agreements and a DPIA or
+  equivalent privacy review.
+
+### AI Data Handling
+
+- AI prompts receive only retrieved, permission-approved context.
+- Retrieval happens after account, space, purpose, consent, status, and
+  classification checks.
+- Embeddings are treated as derived personal/business data and included in
+  deletion/retention flows.
+- Sensitive spaces can require EU-sovereign model routing or refuse AI answers
+  when no approved provider is configured.
+- AI request logs must avoid raw secrets and minimize raw personal data.
 
 ## Core Product Model
 
@@ -374,6 +438,54 @@ Access requires all checks:
 The database should use PostgreSQL row-level security as defense in depth.
 Application code still applies explicit predicates and permission checks.
 
+## Privacy And Security Controls
+
+### Required Platform Controls
+
+- Strong authentication for human users.
+- Passwords hashed with a modern password hashing function.
+- Signed, secure, rotating sessions.
+- Scoped service keys for apps and workers.
+- Service keys store only hashed secrets.
+- Secrets encrypted with AES-GCM or a KMS-backed envelope provider.
+- Per-space and per-purpose authorization checks.
+- RLS policies for all tenant/account-scoped tables.
+- Audit events for sensitive reads, writes, exports, deletions, consent changes,
+  credential changes, and permission changes.
+- Retention workers for conversations, calls, raw uploads, memories, and
+  derived data.
+- Data export and delete flows that include derived memories, embeddings,
+  transcripts, and entity graph records.
+- Request IDs and structured logs with secret redaction.
+- Rate limits for public endpoints and app/service endpoints.
+- Provider webhook signature verification.
+
+### Privacy UI Requirements
+
+The UI must make privacy understandable:
+
+- Each data detail page shows its space, source app, purpose visibility, and
+  who can use it.
+- Each app installation shows which spaces and purposes it can access.
+- Shared spaces show a clear warning that data can cross private/business
+  boundaries.
+- The privacy center exposes export, delete, consent, retention, and audit.
+- The user can see why a memory exists and where it came from.
+- The user can forget/delete a memory or source record.
+
+### Release Gates
+
+No module can be marked production-ready until:
+
+- forbidden cross-space retrieval tests pass,
+- service-key scope tests pass,
+- audit tests pass,
+- export/delete tests pass,
+- retention tests pass,
+- webhook verification tests pass where applicable,
+- secrets are not stored or logged in plaintext,
+- production config refuses unsafe defaults.
+
 ## OneBrain API Surface
 
 ### Core
@@ -577,6 +689,34 @@ Branding config should live in account/app installation settings:
 The target is one big OneBrain database. The migration is still phased to reduce
 risk.
 
+### Phase 0: Privacy And Security Foundation
+
+Before migrating product domains, add the controls that everything else depends
+on:
+
+- threat model for OneBrain core, assistant, communication, workers, and public
+  webhooks,
+- account/space/purpose authorization contract,
+- production-safe auth/session defaults,
+- scoped service-key model,
+- encrypted credential storage,
+- audit event model,
+- consent and retention model,
+- data classification labels,
+- RLS strategy and enforcement check,
+- export/delete scope model,
+- provider and processor register,
+- real-data rollout checklist.
+
+Success:
+
+- unsafe production defaults fail startup,
+- a service key can access only its allowed account, space, app, and purpose,
+- customer-service purpose cannot retrieve personal/family data,
+- shared-space use is explicit and audited,
+- export/delete design covers source and derived data,
+- real-data deployments have a documented privacy checklist.
+
 ### Phase 1: Foundation Schema
 
 Add canonical tables for:
@@ -589,14 +729,18 @@ Add canonical tables for:
 - app permissions,
 - consent,
 - retention,
-- audit.
+- audit,
+- data access events,
+- encrypted credential metadata.
 
 Success:
 
 - create a business account,
 - create personal/business/customer-service/family spaces,
 - install assistant and communication modules,
-- verify service keys are space and purpose scoped.
+- verify service keys are space and purpose scoped,
+- verify audit, consent, retention, and export/delete paths exist for the new
+  account and spaces.
 
 ### Phase 2: Knowledge Unification
 
@@ -680,22 +824,25 @@ Success:
 - new customer rollout can be created predictably from a preset,
 - brand names and module availability are config-driven.
 
-### Phase 7: Hardening
+### Phase 7: Operational Hardening
 
 Add:
 
-- RLS enforcement checks,
-- retention workers,
-- audit completeness tests,
-- export/delete coverage,
-- secret encryption,
+- production RLS enforcement checks,
+- retention workers for every domain,
+- audit completeness dashboards,
+- export/delete coverage for every domain,
+- secret rotation workflows,
 - AI provider routing,
 - evaluation sets,
-- cost limits.
+- cost limits,
+- backup/restore procedures,
+- incident response runbook.
 
 Success:
 
-- platform is ready for real customer data after legal/compliance setup.
+- platform is ready for real customer data after legal/compliance setup and
+  privacy/security release gates pass.
 
 ## First Build Milestone
 
@@ -708,8 +855,11 @@ smallest useful vertical slice:
 4. Communication widget asks OneBrain and stores conversation/message in
    OneBrain.
 5. Assistant asks OneBrain for context and stores a memory in OneBrain.
-6. Admin UI shows spaces, knowledge, inbox, app access, and audit events.
-7. Railway deployment runs the full suite for one test customer.
+6. Privacy center shows app access, audit events, consent, retention, export,
+   and delete controls.
+7. Admin UI shows spaces, knowledge, inbox, app access, and audit events.
+8. Railway deployment runs the full suite for one test customer with synthetic
+   data until the real-data privacy checklist is complete.
 
 ## Testing Plan
 
@@ -719,6 +869,9 @@ Required tests:
 - customer-service purpose cannot read personal/family spaces,
 - shared space can be used only when explicitly enabled,
 - service keys are scoped to app installation, space, and purpose,
+- production startup refuses weak secrets and unsafe cookie settings,
+- credentials are encrypted and never returned in plaintext,
+- provider webhooks reject missing or invalid signatures/secrets,
 - pending knowledge is not retrievable,
 - approved knowledge is retrievable across enabled modules,
 - communication messages write to canonical OneBrain tables,
@@ -726,6 +879,8 @@ Required tests:
 - GDPR export includes all selected account/space data,
 - delete/forget cascades or redacts derived memories and entities,
 - audit logs are written for sensitive reads and writes,
+- retention workers remove or redact expired records and derived data,
+- AI prompts include only permission-approved retrieved context,
 - deployment presets enable only the expected modules.
 
 ## Risks And Mitigations
@@ -746,7 +901,27 @@ Mitigation:
 - purpose-based app permissions,
 - RLS defense in depth,
 - tests for forbidden cross-space retrieval,
-- audit every sensitive read.
+- audit every sensitive read,
+- real customer data blocked until privacy/security release gates pass.
+
+### Risk: Secrets or provider tokens leak
+
+Mitigation:
+
+- encrypted credential storage,
+- secret redaction in logs,
+- no browser-visible service credentials,
+- service-key hashing and rotation,
+- incident response runbook.
+
+### Risk: GDPR delete/export misses derived data
+
+Mitigation:
+
+- provenance for memories, summaries, embeddings, and entity links,
+- export/delete tests per domain,
+- retention workers include derived data,
+- privacy center shows source and derived records together.
 
 ### Risk: UI becomes too complex
 
@@ -777,6 +952,9 @@ Mitigation:
   local service business, or owner/operator solo business?
 - Which AI providers are acceptable for real EU customer data in the first paid
   deployment?
+- What is the first real-data hosting target after Railway prototype: Railway EU
+  region with contractual setup, dedicated EU VM, managed EU Postgres, or
+  customer-owned infrastructure?
 
 ## Approval Criteria
 
@@ -786,4 +964,6 @@ This design is ready for implementation planning when:
 - The initial space types are approved.
 - The initial modules and deployment presets are approved.
 - The first build milestone is approved.
+- Phase 0 privacy and security gates are approved.
+- The real-data rollout checklist is approved.
 - Open questions have been answered or explicitly deferred.
