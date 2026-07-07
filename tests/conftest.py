@@ -26,7 +26,7 @@ def service(store):
     return RetrievalService(LocalEmbedder(), store, LocalLLM(), top_k=8)
 
 
-def principal_for(role_id: str, location: str = "munich") -> Principal:
+def principal_for(role_id: str, location: str = "munich", tenant: str = "nft_gym") -> Principal:
     role = ROLES[role_id]
     if role.scope == "chain":
         locations = None
@@ -42,4 +42,5 @@ def principal_for(role_id: str, location: str = "munich") -> Principal:
         locations=locations,
         categories=role.categories,
         location_label=location,
+        tenant_id=tenant,
     )

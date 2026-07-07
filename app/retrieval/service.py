@@ -36,7 +36,7 @@ class RetrievalService:
     def answer_stream(self, principal: Principal, question: str) -> Iterator[dict]:
         hits = self.retrieve(principal, question)
 
-        for token in self._llm.stream(question, hits):
+        for token in self._llm.stream(question, hits, principal.tenant_id):
             yield {"type": "token", "text": token}
 
         yield {"type": "sources", "sources": [

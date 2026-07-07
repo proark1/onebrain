@@ -32,10 +32,16 @@ class IngestPipeline:
         self._embedder = embedder
         self._store = store
 
-    def ingest_text(self, *, title, text, classification, location, category, uploaded_by) -> IngestResult:
+    def ingest_text(self, *, title, text, classification, location, category, uploaded_by, tenant) -> IngestResult:
         cls = Classification.parse(classification)
         location = (location or GLOBAL_LOCATION).strip().lower() or GLOBAL_LOCATION
         category = (category or GENERAL_CATEGORY).strip().lower() or GENERAL_CATEGORY
+        # Tenant is an exact canonical id from a controlled source (a pinned
+        # constant or a service-key record) — NOT lowercased, so it matches the
+        # principal's tenant_id verbatim on read. Only whitespace is trimmed.
+        tenant = (tenant or "").strip()
+        if not tenant:
+            raise ValueError("tenant is required — a chunk with no tenant is unreachable.")
 
         pieces = chunk_text(text)
         if not pieces:
@@ -49,6 +55,7 @@ class IngestPipeline:
                 doc_id=doc_id,
                 text=piece,
                 meta={
+                    "tenant_id": tenant,
                     "doc_title": title,
                     "classification": int(cls),
                     "classification_label": cls.name.lower(),
@@ -64,9 +71,9 @@ class IngestPipeline:
         self._store.add(chunks)
         return IngestResult(doc_id, title, cls.name.lower(), location, category, len(chunks))
 
-    def ingest_file(self, *, filename, data, classification, location, category, uploaded_by) -> IngestResult:
+    def ingest_file(self, *, filename, data, classification, location, category, uploaded_by, tenant) -> IngestResult:
         text = extract_text(filename, data)
         return self.ingest_text(
             title=filename, text=text, classification=classification,
-            location=location, category=category, uploaded_by=uploaded_by,
+            location=location, category=category, uploaded_by=uploaded_by, tenant=tenant,
         )

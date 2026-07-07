@@ -54,20 +54,27 @@ class PgVectorStore:
                     doc_id TEXT NOT NULL,
                     text TEXT NOT NULL,
                     meta JSONB NOT NULL,
-                    embedding vector({self._dim})
+                    embedding vector({self._dim}),
+                    tenant_id TEXT
                 )
                 """
             )
+            # Idempotent for tables created before the tenant column existed.
+            # (The isolation guarantee is enforced via meta->>'tenant_id' in
+            # AccessFilter.to_sql; this column backs the Phase-1 RLS backstop.)
+            cur.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tenant_id TEXT")
             cur.execute("CREATE INDEX IF NOT EXISTS chunks_doc_id_idx ON chunks (doc_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS chunks_tenant_idx ON chunks (tenant_id)")
             conn.commit()
 
     def add(self, chunks: List[Chunk]) -> None:
         with self._conn() as conn, conn.cursor() as cur:
             for c in chunks:
                 cur.execute(
-                    "INSERT INTO chunks (id, doc_id, text, meta, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
-                    (c.id, c.doc_id, c.text, json.dumps(c.meta), np.asarray(c.embedding)),
+                    "INSERT INTO chunks (id, doc_id, text, meta, embedding, tenant_id) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+                    (c.id, c.doc_id, c.text, json.dumps(c.meta), np.asarray(c.embedding),
+                     c.meta.get("tenant_id")),
                 )
             conn.commit()
 

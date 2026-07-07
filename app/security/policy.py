@@ -39,11 +39,18 @@ class Classification(IntEnum):
 
 @dataclass(frozen=True)
 class AccessFilter:
+    tenant_id: str                   # which business this caller belongs to — NEVER wildcard
     clearance: int
     locations: Optional[frozenset]   # None = all locations
     categories: Optional[frozenset]  # None = all categories
 
     def allows(self, meta: dict) -> bool:
+        # Tenant is checked FIRST, unconditionally, with no wildcard and no
+        # exception even for admin. A chunk from another tenant — or with no
+        # tenant_id at all — is never accessible. This is the hard isolation
+        # boundary between the businesses that share this brain.
+        if meta.get("tenant_id") != self.tenant_id:
+            return False
         if int(meta.get("classification", Classification.RESTRICTED)) > self.clearance:
             return False
         location = meta.get("location", GLOBAL_LOCATION)
@@ -56,8 +63,10 @@ class AccessFilter:
 
     def to_sql(self) -> tuple[str, list]:
         """Compile to a parameterised pgvector WHERE clause."""
-        clauses = ["(meta->>'classification')::int <= %s"]
-        params: list = [self.clearance]
+        # tenant equality is ALWAYS the first clause — never behind an
+        # `is not None` guard, never with a wildcard value.
+        clauses = ["meta->>'tenant_id' = %s", "(meta->>'classification')::int <= %s"]
+        params: list = [self.tenant_id, self.clearance]
         if self.locations is not None:
             clauses.append("(meta->>'location' = 'global' OR meta->>'location' = ANY(%s))")
             params.append(list(self.locations))

@@ -11,13 +11,22 @@ from typing import List
 
 from app.store.base import Hit
 
-SYSTEM_PROMPT = (
-    "You are onebrain, the internal assistant for NFT Gym, a martial arts gym chain. "
-    "Answer ONLY using the numbered context below. "
-    "If the context does not contain the answer, say you don't have access to that "
-    "information rather than guessing. Never invent facts. "
-    "Cite sources inline as [1], [2]. Answer in the user's language."
-)
+# Per-tenant persona — a Company B channel user must never be told it's talking
+# to NFT Gym's assistant. Add new tenants here as they onboard.
+TENANT_PERSONAS = {
+    "nft_gym": "onebrain, the assistant for NFT Gym, a martial arts gym chain",
+}
+_DEFAULT_PERSONA = "onebrain, a helpful assistant"
+
+
+def _system_prompt(tenant_id: str) -> str:
+    persona = TENANT_PERSONAS.get(tenant_id, _DEFAULT_PERSONA)
+    return (
+        f"You are {persona}. Answer ONLY using the numbered context below. "
+        "If the context does not contain the answer, say you don't have access to that "
+        "information rather than guessing. Never invent facts. "
+        "Cite sources inline as [1], [2]. Answer in the user's language."
+    )
 
 
 def format_context(hits: List[Hit]) -> str:
@@ -30,8 +39,8 @@ def format_context(hits: List[Hit]) -> str:
     return "\n\n".join(blocks)
 
 
-def build_messages(question: str, hits: List[Hit]) -> list[dict]:
+def build_messages(question: str, hits: List[Hit], tenant_id: str = "nft_gym") -> list[dict]:
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": _system_prompt(tenant_id)},
         {"role": "user", "content": f"Context:\n{format_context(hits)}\n\nQuestion: {question}"},
     ]

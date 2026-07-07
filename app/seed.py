@@ -51,12 +51,12 @@ SAMPLE_DOCS = [
 ]
 
 
-def seed_if_empty(pipeline: IngestPipeline, store) -> int:
+def seed_if_empty(pipeline: IngestPipeline, store, tenant: str = "nft_gym") -> int:
     if store.count() > 0:
         return 0
     for title, classification, location, category, text in SAMPLE_DOCS:
         pipeline.ingest_text(
             title=title, text=text, classification=classification,
-            location=location, category=category, uploaded_by="seed",
+            location=location, category=category, uploaded_by="seed", tenant=tenant,
         )
     return len(SAMPLE_DOCS)

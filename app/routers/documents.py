@@ -36,6 +36,7 @@ async def upload(
             filename=file.filename or "upload.txt", data=data,
             classification=classification, location=location, category=category,
             uploaded_by=principal.user_id,
+            tenant=principal.tenant_id,  # server-side — never a caller-supplied field
         )
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

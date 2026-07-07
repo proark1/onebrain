@@ -21,9 +21,9 @@ class LiteLLMLLM:
         self._litellm = litellm
         self.model = model
 
-    def stream(self, question: str, hits: List[Hit]) -> Iterator[str]:
+    def stream(self, question: str, hits: List[Hit], tenant_id: str = "nft_gym") -> Iterator[str]:
         response = self._litellm.completion(
-            model=self.model, messages=build_messages(question, hits), stream=True
+            model=self.model, messages=build_messages(question, hits, tenant_id), stream=True
         )
         for part in response:
             delta = getattr(part.choices[0], "delta", None)

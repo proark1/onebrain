@@ -17,6 +17,13 @@ from app.auth.roles import DEFAULT_ROLE, ROLES
 from app.security.policy import AccessFilter, Classification
 
 
+# The human/header path is PINNED to this tenant. A second business (Company B)
+# is never reachable via headers — it is served only through scoped service keys
+# (see the omnichannel plan). This stays hard-coded until OIDC binds tenant to a
+# signed, server-side-allow-listed claim.
+HUMAN_TENANT = "nft_gym"
+
+
 @dataclass(frozen=True)
 class Principal:
     user_id: str
@@ -26,13 +33,15 @@ class Principal:
     locations: Optional[frozenset]   # None = all locations
     categories: Optional[frozenset]  # None = all categories
     location_label: str
+    tenant_id: str = HUMAN_TENANT
+    principal_type: str = "human"    # "human" | "service" (service keys land in Phase 1)
 
     @property
     def is_employee(self) -> bool:
         return self.role_id != "public"
 
     def access_filter(self) -> AccessFilter:
-        return AccessFilter(int(self.clearance), self.locations, self.categories)
+        return AccessFilter(self.tenant_id, int(self.clearance), self.locations, self.categories)
 
 
 def resolve_principal(
