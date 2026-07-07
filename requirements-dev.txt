@@ -1,2 +1,3 @@
 -r requirements.txt
 pytest>=8.0
+requests>=2.31   # used by scripts/bulk_import.py

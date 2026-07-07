@@ -42,6 +42,23 @@ change:
 A "—" means the brain replies that you don't have access — because the chunks
 were filtered out before retrieval, not because the model was asked to be coy.
 
+## Bulk-import documents
+
+Upload a whole folder at once with `scripts/bulk_import.py`. Every file gets the
+same label, so sort files into folders and run once per label:
+
+```bash
+pip install requests   # if not already installed
+export ONEBRAIN_URL=https://onebrain-production-0a16.up.railway.app
+
+python scripts/bulk_import.py ./public_docs --classification public     --category general
+python scripts/bulk_import.py ./hr_docs     --classification restricted --category hr
+python scripts/bulk_import.py ./munich_ops  --classification internal --location munich --category ops --recursive
+```
+
+Use `--dry-run` to preview. Supports `.txt`, `.md`, `.pdf`, `.csv`, `.json`,
+`.html` (override with `--ext`). Reports per-file success and a summary.
+
 ## How it works
 
 ```
