@@ -77,6 +77,17 @@ class Settings(BaseSettings):
     # for large document/PDF uploads while rejecting absurd payloads.
     max_body_bytes: int = 50 * 1024 * 1024
 
+    # Per-tier LLM routing (Schrems II): CONFIDENTIAL/RESTRICTED answers route to an
+    # EU-sovereign endpoint; PUBLIC/INTERNAL use the default model. Leave
+    # sovereign_llm_model empty to disable routing (everything uses the default).
+    sovereign_llm_model: str = ""              # e.g. mistral/mistral-large-latest
+    sovereign_min_tier: str = "confidential"   # min classification that must route sovereign
+    sovereign_required: bool = False           # fail closed if sensitive + no sovereign endpoint
+
+    # Login throttle — per-account brute-force / credential-stuffing lockout.
+    login_max_attempts: int = 5
+    login_lockout_seconds: int = 900
+
     @property
     def is_local_stack(self) -> bool:
         """True only when every provider is the keyless local variant (dev/test)."""
