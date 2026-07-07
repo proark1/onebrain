@@ -71,6 +71,44 @@ class MemoryStore:
                 doc["chunks"] += 1
         return sorted(docs.values(), key=lambda d: d["title"].lower())
 
+    def list_pending(self, tenant_id: str) -> List[dict]:
+        docs: dict[str, dict] = {}
+        with self._lock:
+            for c in self._chunks:
+                if c.meta.get("tenant_id") != tenant_id:
+                    continue
+                if c.meta.get("status", "approved") == "approved":
+                    continue
+                doc = docs.setdefault(c.doc_id, {
+                    "doc_id": c.doc_id,
+                    "title": c.meta.get("doc_title", "Untitled"),
+                    "classification": int(c.meta.get("classification", 3)),
+                    "classification_label": c.meta.get("classification_label", "internal"),
+                    "location": c.meta.get("location", "global"),
+                    "category": c.meta.get("category", "general"),
+                    "uploaded_by": c.meta.get("uploaded_by", ""),
+                    "status": c.meta.get("status", "pending"),
+                    "has_pii": False,
+                    "chunks": 0,
+                })
+                doc["chunks"] += 1
+                if c.meta.get("pii_findings"):
+                    doc["has_pii"] = True
+        return sorted(docs.values(), key=lambda d: d["title"].lower())
+
+    def set_document_status(self, doc_id: str, status: str, approved_by: Optional[str] = None) -> int:
+        with self._lock:
+            changed = 0
+            for c in self._chunks:
+                if c.doc_id == doc_id:
+                    c.meta["status"] = status
+                    if approved_by is not None:
+                        c.meta["approved_by"] = approved_by
+                    changed += 1
+            if changed:
+                self._save()
+        return changed
+
     def delete_document(self, doc_id: str) -> int:
         with self._lock:
             before = len(self._chunks)

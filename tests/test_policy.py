@@ -51,3 +51,20 @@ def test_admin_sees_everything(store):
     assert "Trainer salary bands 2026" in titles
     assert "Q1 2026 revenue by location" in titles
     assert "Berlin equipment maintenance log" in titles
+
+
+def test_pending_status_is_unreadable_even_by_admin():
+    from app.security.policy import AccessFilter, Classification, STATUS_APPROVED, STATUS_PENDING
+
+    admin = AccessFilter("nft_gym", int(Classification.RESTRICTED), None, None)
+    base = {"tenant_id": "nft_gym", "classification": int(Classification.PUBLIC)}
+    assert admin.allows({**base, "status": STATUS_APPROVED}) is True
+    assert admin.allows({**base, "status": STATUS_PENDING}) is False   # parked, not live
+    assert admin.allows(base) is True                                  # missing status = legacy/approved
+
+
+def test_to_sql_enforces_approved_status():
+    from app.security.policy import AccessFilter
+
+    where, _ = AccessFilter("nft_gym", 3, None, None).to_sql()
+    assert "status" in where and "approved" in where
