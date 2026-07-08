@@ -15,8 +15,20 @@ ACCOUNT_KINDS = frozenset({"person", "organization", "family", "project"})
 SPACE_KINDS = frozenset({"personal", "business", "customer_service", "shared", "family", "project"})
 APP_IDS = frozenset({"onebrain_core", "assistant", "communication", "admin_console", "workers"})
 PURPOSES = frozenset({
-    "assistant_context",
     "assistant_action",
+    "assistant_briefing",
+    "assistant_calendar_planning",
+    "assistant_connected_account",
+    "assistant_context",
+    "assistant_feedback",
+    "assistant_followup",
+    "assistant_model_usage",
+    "assistant_notification",
+    "assistant_provider_health",
+    "assistant_security",
+    "assistant_settings",
+    "assistant_sync",
+    "assistant_voice",
     "customer_service_answer",
     "customer_service_inbox",
     "knowledge_management",

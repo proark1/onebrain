@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Tuple
 
+from app.assistant.contracts import ASSISTANT_PURPOSES as ASSISTANT_CONTRACT_PURPOSES
+
 
 CORE_MODULES = ("onebrain-api", "onebrain-admin-ui", "onebrain-workers")
 ASSISTANT_MODULES = ("assistant-service",)
@@ -42,7 +44,7 @@ class ProvisioningBundle:
 
 
 CORE_PURPOSES = ("knowledge_management", "admin_management", "gdpr_export", "gdpr_delete")
-ASSISTANT_PURPOSES = ("assistant_context", "assistant_action")
+ASSISTANT_PURPOSES = tuple(sorted(ASSISTANT_CONTRACT_PURPOSES))
 COMMUNICATION_PURPOSES = ("customer_service_answer", "customer_service_inbox")
 
 
@@ -137,4 +139,3 @@ def get_bundle(bundle_id: str) -> ProvisioningBundle:
     if not bundle:
         raise ValueError(f"Unknown provisioning bundle: {bundle_id}")
     return bundle
-
