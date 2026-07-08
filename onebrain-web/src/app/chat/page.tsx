@@ -2,6 +2,7 @@ import { ApiUnavailableState, SignedOutState } from "@/components/app-state";
 import { ChatPanel } from "@/components/chat-panel";
 import { ConsoleShell } from "@/components/console-shell";
 import { getSession, listServerConversations, onebrainApiBaseUrl } from "@/lib/onebrain-api";
+import { loginHref } from "@/lib/login-redirect";
 
 export default async function ChatPage() {
   const apiBaseUrl = onebrainApiBaseUrl();
@@ -14,7 +15,7 @@ export default async function ChatPage() {
   }
 
   if (!sessionResult.session) {
-    return <SignedOutState apiBaseUrl={apiBaseUrl} />;
+    return <SignedOutState loginHref={loginHref("/chat")} />;
   }
 
   const conversations = await listServerConversations().catch(() => []);

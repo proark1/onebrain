@@ -117,8 +117,8 @@ ONEBRAIN_API_BASE_URL=http://${{onebrain.RAILWAY_PRIVATE_DOMAIN}}:8080
 
 Railway injects `PORT=8080` in the Python API container. Use the private
 Railway hostname plus that port for `ONEBRAIN_API_BASE_URL`. The browser still
-talks to same-origin Next.js routes; the Next.js server forwards those calls to
-FastAPI.
+talks to same-origin Next.js routes, including `/login`; the Next.js server
+forwards those calls to FastAPI.
 
 Optional API root handoff:
 
@@ -138,8 +138,8 @@ After deploy:
 1. Open `https://<onebrain-api domain>/health`.
 2. Open the Python API root and confirm it returns API JSON or redirects to the
    configured Next.js console.
-3. Open the Next.js domain and confirm it redirects to login or chat depending
-   on session state.
+3. Open the Next.js domain and confirm it shows the signed-out state or chat
+   depending on session state.
 4. Sign in with `ONEBRAIN_ADMIN_EMAIL` and `ONEBRAIN_ADMIN_PASSWORD`.
 5. Upload a synthetic test document in Postgres mode.
 6. Confirm the upload returns a job id or appears in the documents list after

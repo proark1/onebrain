@@ -1589,6 +1589,24 @@ h2 {
   justify-self: start;
 }
 
+.loginPanel {
+  gap: 20px;
+}
+
+.loginHeading {
+  display: grid;
+  gap: 8px;
+}
+
+.loginForm {
+  display: grid;
+  gap: 13px;
+}
+
+.loginForm .primaryButton {
+  width: 100%;
+}
+
 @media (max-width: 880px) {
   .consoleShell,
   .chatWorkspace,

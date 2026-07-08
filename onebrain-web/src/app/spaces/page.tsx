@@ -2,6 +2,7 @@ import { ApiUnavailableState, SignedOutState } from "@/components/app-state";
 import { ConsoleShell } from "@/components/console-shell";
 import { SpacesPanel } from "@/components/spaces-panel";
 import { getSession, onebrainApiBaseUrl } from "@/lib/onebrain-api";
+import { loginHref } from "@/lib/login-redirect";
 
 export default async function SpacesPage() {
   const apiBaseUrl = onebrainApiBaseUrl();
@@ -14,7 +15,7 @@ export default async function SpacesPage() {
   }
 
   if (!sessionResult.session) {
-    return <SignedOutState apiBaseUrl={apiBaseUrl} />;
+    return <SignedOutState loginHref={loginHref("/spaces")} />;
   }
 
   if (sessionResult.session.role_id !== "admin") {

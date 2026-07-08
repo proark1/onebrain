@@ -2,6 +2,7 @@ import { ApiUnavailableState, SignedOutState } from "@/components/app-state";
 import { ConsoleShell } from "@/components/console-shell";
 import { PrivacyPanel } from "@/components/privacy-panel";
 import { getSession, onebrainApiBaseUrl } from "@/lib/onebrain-api";
+import { loginHref } from "@/lib/login-redirect";
 
 export default async function PrivacyPage() {
   const apiBaseUrl = onebrainApiBaseUrl();
@@ -14,7 +15,7 @@ export default async function PrivacyPage() {
   }
 
   if (!sessionResult.session) {
-    return <SignedOutState apiBaseUrl={apiBaseUrl} />;
+    return <SignedOutState loginHref={loginHref("/privacy")} />;
   }
 
   if (sessionResult.session.role_id !== "admin") {

@@ -1,4 +1,4 @@
-export function SignedOutState({ apiBaseUrl }: { apiBaseUrl: string }) {
+export function SignedOutState({ loginHref }: { loginHref: string }) {
   return (
     <main className="stateScreen">
       <section className="statePanel">
@@ -7,8 +7,8 @@ export function SignedOutState({ apiBaseUrl }: { apiBaseUrl: string }) {
           <span>brain</span>
         </div>
         <h1>Sign in to continue</h1>
-        <p>Use the existing OneBrain login, then return here to work in the new web console.</p>
-        <a className="stateAction" href={apiBaseUrl}>Open login</a>
+        <p>Sign in with your OneBrain account to continue working in the web console.</p>
+        <a className="stateAction" href={loginHref}>Open login</a>
       </section>
     </main>
   );

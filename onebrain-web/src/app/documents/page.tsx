@@ -7,6 +7,7 @@ import {
   listServerPendingDocuments,
   onebrainApiBaseUrl,
 } from "@/lib/onebrain-api";
+import { loginHref } from "@/lib/login-redirect";
 import type { DocumentSummary } from "@/lib/onebrain-types";
 
 export default async function DocumentsPage() {
@@ -20,7 +21,7 @@ export default async function DocumentsPage() {
   }
 
   if (!sessionResult.session) {
-    return <SignedOutState apiBaseUrl={apiBaseUrl} />;
+    return <SignedOutState loginHref={loginHref("/documents")} />;
   }
 
   const [documentsResult, pendingResult] = await Promise.all([

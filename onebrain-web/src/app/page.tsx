@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { ApiUnavailableState, SignedOutState } from "@/components/app-state";
 import { getSession, onebrainApiBaseUrl } from "@/lib/onebrain-api";
+import { loginHref } from "@/lib/login-redirect";
 
 export default async function Home() {
   const apiBaseUrl = onebrainApiBaseUrl();
@@ -13,7 +14,7 @@ export default async function Home() {
   }
 
   if (!sessionResult.session) {
-    return <SignedOutState apiBaseUrl={apiBaseUrl} />;
+    return <SignedOutState loginHref={loginHref("/chat")} />;
   }
 
   redirect("/chat");
