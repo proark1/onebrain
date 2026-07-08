@@ -8,12 +8,15 @@ The Python/FastAPI service remains the source of truth for auth, access control,
 
 - `/chat` - streaming assistant chat backed by the FastAPI retrieval and conversation APIs.
 - `/documents` - document library, upload, and pending-review workflow backed by the FastAPI document APIs.
+- `/spaces` - admin account, space, app-installation, access-check, and audit workflows backed by the FastAPI platform APIs.
 - `/privacy` - admin privacy center for account/space export and erase operations backed by the FastAPI privacy APIs.
 - `/` - entry point that checks the API/session and redirects signed-in users to `/chat`.
 
 Admins see a compact workspace selector when the Python platform store contains an account matching their session tenant. The selected account/space scope is sent to chat, conversations, documents, upload, and review calls.
 
 The privacy center intentionally loads all platform accounts for admins because export and erasure are account-level operations. The Python backend still performs authorization, scope validation, audit writes, export assembly, and deletion.
+
+The spaces admin route uses the same backend ownership boundary: Next.js renders the controls, while FastAPI validates account/space/app records, records audit events, and decides access checks.
 
 ## Run
 

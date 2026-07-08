@@ -81,6 +81,63 @@ export type PlatformSpace = {
   status: string;
 };
 
+export type CreatePlatformAccountInput = {
+  id?: string;
+  kind: string;
+  name: string;
+};
+
+export type CreatePlatformSpaceInput = {
+  id?: string;
+  kind: string;
+  name: string;
+};
+
+export type PlatformAppInstallation = {
+  id: string;
+  account_id: string;
+  app_id: string;
+  enabled_space_ids: string[];
+  allowed_purposes: string[];
+  display_name: string;
+  status: string;
+};
+
+export type InstallPlatformAppInput = {
+  id?: string;
+  app_id: string;
+  display_name?: string;
+  enabled_space_ids: string[];
+  allowed_purposes: string[];
+};
+
+export type PlatformAccessCheckInput = {
+  account_id: string;
+  app_id: string;
+  space_id: string;
+  purpose: string;
+};
+
+export type PlatformAccessCheckResult = {
+  allowed: boolean;
+  reason: string;
+};
+
+export type PlatformAuditEvent = {
+  id: string;
+  account_id: string;
+  actor_id: string;
+  actor_type: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  space_id: string;
+  app_id: string;
+  purpose: string;
+  decision: string;
+  meta: Record<string, unknown>;
+};
+
 export type PrivacyAuditEvent = {
   id: string;
   account_id: string;

@@ -5,9 +5,16 @@ import type {
   ChatStreamEvent,
   ConversationDetail,
   ConversationSummary,
+  CreatePlatformAccountInput,
+  CreatePlatformSpaceInput,
   DocumentSummary,
+  InstallPlatformAppInput,
   PendingDocument,
+  PlatformAccessCheckInput,
+  PlatformAccessCheckResult,
   PlatformAccount,
+  PlatformAppInstallation,
+  PlatformAuditEvent,
   PlatformSpace,
   PrivacyEraseInput,
   PrivacyEraseResult,
@@ -76,8 +83,65 @@ export function listPlatformAccounts(): Promise<PlatformAccount[]> {
   return requestJson<PlatformAccount[]>("/platform/accounts");
 }
 
+export function createPlatformAccount(input: CreatePlatformAccountInput): Promise<PlatformAccount> {
+  return requestJson<PlatformAccount>("/platform/accounts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: input.id?.trim() || null,
+      kind: input.kind,
+      name: input.name.trim(),
+    }),
+  });
+}
+
 export function listPlatformSpaces(accountId: string): Promise<PlatformSpace[]> {
   return requestJson<PlatformSpace[]>(`/platform/accounts/${encodeURIComponent(accountId)}/spaces`);
+}
+
+export function createPlatformSpace(accountId: string, input: CreatePlatformSpaceInput): Promise<PlatformSpace> {
+  return requestJson<PlatformSpace>(`/platform/accounts/${encodeURIComponent(accountId)}/spaces`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: input.id?.trim() || null,
+      kind: input.kind,
+      name: input.name.trim(),
+    }),
+  });
+}
+
+export function listPlatformApps(accountId: string): Promise<PlatformAppInstallation[]> {
+  return requestJson<PlatformAppInstallation[]>(`/platform/accounts/${encodeURIComponent(accountId)}/apps`);
+}
+
+export function installPlatformApp(
+  accountId: string,
+  input: InstallPlatformAppInput,
+): Promise<PlatformAppInstallation> {
+  return requestJson<PlatformAppInstallation>(`/platform/accounts/${encodeURIComponent(accountId)}/apps`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: input.id?.trim() || null,
+      app_id: input.app_id,
+      display_name: input.display_name?.trim() || "",
+      enabled_space_ids: input.enabled_space_ids,
+      allowed_purposes: input.allowed_purposes,
+    }),
+  });
+}
+
+export function checkPlatformAccess(input: PlatformAccessCheckInput): Promise<PlatformAccessCheckResult> {
+  return requestJson<PlatformAccessCheckResult>("/platform/access/check", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export function listPlatformAudit(accountId: string): Promise<PlatformAuditEvent[]> {
+  return requestJson<PlatformAuditEvent[]>(`/platform/accounts/${encodeURIComponent(accountId)}/audit`);
 }
 
 export function exportPrivacyData(accountId: string, spaceId = ""): Promise<PrivacyExport> {
