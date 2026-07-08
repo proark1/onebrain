@@ -1,86 +1,51 @@
-import { getSession, onebrainApiBaseUrl, type SessionInfo } from "@/lib/onebrain-api";
-
-const navItems = ["Chat", "Documents", "Spaces", "Privacy", "Operator"];
+import { ChatShell } from "@/components/chat-shell";
+import { getSession, listServerConversations, onebrainApiBaseUrl } from "@/lib/onebrain-api";
 
 export default async function Home() {
-  let session: SessionInfo | null = null;
-  let apiState = "Connected";
-  try {
-    session = await getSession();
-  } catch {
-    apiState = "Unavailable";
-  }
   const apiBaseUrl = onebrainApiBaseUrl();
+  const sessionResult = await getSession()
+    .then((session) => ({ apiUnavailable: false, session }))
+    .catch(() => ({ apiUnavailable: true, session: null }));
 
+  if (sessionResult.apiUnavailable) {
+    return <ApiUnavailableState apiBaseUrl={apiBaseUrl} />;
+  }
+
+  if (!sessionResult.session) {
+    return <SignedOutState apiBaseUrl={apiBaseUrl} />;
+  }
+
+  const conversations = await listServerConversations().catch(() => []);
+
+  return <ChatShell initialConversations={conversations} session={sessionResult.session} />;
+}
+
+function SignedOutState({ apiBaseUrl }: { apiBaseUrl: string }) {
   return (
-    <main className="shell">
-      <aside className="sidebar" aria-label="Main navigation">
+    <main className="stateScreen">
+      <section className="statePanel">
         <div className="brand">
           <span className="brandMark">one</span>
           <span>brain</span>
         </div>
-        <nav className="nav">
-          {navItems.map((item, index) => (
-            <a className={index === 0 ? "navItem active" : "navItem"} href="#" key={item}>
-              {item}
-            </a>
-          ))}
-        </nav>
-      </aside>
+        <h1>Sign in to chat</h1>
+        <p>Use the existing OneBrain login, then return here to continue in the new web console.</p>
+        <a className="stateAction" href={apiBaseUrl}>Open login</a>
+      </section>
+    </main>
+  );
+}
 
-      <section className="workspace">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">Web console</p>
-            <h1>OneBrain</h1>
-          </div>
-          <div className={session ? "status signedIn" : "status signedOut"}>
-            <span className="statusDot" />
-            {session ? "Session active" : apiState}
-          </div>
-        </header>
-
-        <div className="grid">
-          <section className="panel primaryPanel">
-            <div>
-              <p className="panelLabel">Current user</p>
-              <h2>{session?.display_name || session?.email || "No active session"}</h2>
-            </div>
-            <dl className="facts">
-              <div>
-                <dt>Role</dt>
-                <dd>{session?.role_label || "None"}</dd>
-              </div>
-              <div>
-                <dt>Tenant</dt>
-                <dd>{session?.tenant_id || "None"}</dd>
-              </div>
-              <div>
-                <dt>Clearance</dt>
-                <dd>{session?.clearance || "None"}</dd>
-              </div>
-            </dl>
-          </section>
-
-          <section className="panel">
-            <p className="panelLabel">Core API</p>
-            <h2>{apiBaseUrl.replace(/^https?:\/\//, "")}</h2>
-            <div className="metricRow">
-              <span>API state</span>
-              <strong>{apiState}</strong>
-            </div>
-          </section>
-
-          <section className="panel listPanel">
-            <p className="panelLabel">Migration queue</p>
-            <ul>
-              <li>Typed API boundary</li>
-              <li>Chat surface</li>
-              <li>Document library</li>
-              <li>Privacy center</li>
-            </ul>
-          </section>
+function ApiUnavailableState({ apiBaseUrl }: { apiBaseUrl: string }) {
+  return (
+    <main className="stateScreen">
+      <section className="statePanel">
+        <div className="brand">
+          <span className="brandMark">one</span>
+          <span>brain</span>
         </div>
+        <h1>Core API unavailable</h1>
+        <p>Start the FastAPI service and refresh this page. The web console is configured for {apiBaseUrl}.</p>
       </section>
     </main>
   );

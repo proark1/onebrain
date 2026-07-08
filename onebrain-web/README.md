@@ -17,6 +17,8 @@ By default the app calls `http://127.0.0.1:8000`. Override with:
 ONEBRAIN_API_BASE_URL=http://127.0.0.1:8000 npm run dev
 ```
 
+For local HTTP login, run the FastAPI API with `ONEBRAIN_COOKIE_SECURE=false` so the browser can send the session cookie to the Next.js dev server.
+
 ## API Schema
 
 Export the FastAPI OpenAPI schema into the web app with:

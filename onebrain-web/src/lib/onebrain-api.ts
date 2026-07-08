@@ -1,14 +1,5 @@
 import { headers } from "next/headers";
-
-export type SessionInfo = {
-  role_id: string;
-  role_label: string;
-  clearance: string;
-  location_label: string;
-  tenant_id: string;
-  display_name: string;
-  email: string;
-};
+import type { ConversationSummary, SessionInfo } from "@/lib/onebrain-types";
 
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
 
@@ -22,17 +13,26 @@ async function forwardedCookie(): Promise<string> {
 }
 
 export async function getSession(): Promise<SessionInfo | null> {
+  return serverRequestJson<SessionInfo>("/api/session/me", true);
+}
+
+async function serverRequestJson<T>(path: string, nullableOnUnauthorized = false): Promise<T | null> {
   const cookie = await forwardedCookie();
-  const response = await fetch(`${onebrainApiBaseUrl()}/api/session/me`, {
+  const response = await fetch(`${onebrainApiBaseUrl()}${path}`, {
     headers: cookie ? { cookie } : {},
     cache: "no-store",
   });
 
-  if (response.status === 401) {
+  if (nullableOnUnauthorized && response.status === 401) {
     return null;
   }
   if (!response.ok) {
-    throw new Error(`OneBrain API returned ${response.status} for /api/session/me`);
+    throw new Error(`OneBrain API returned ${response.status} for ${path}`);
   }
-  return response.json() as Promise<SessionInfo>;
+  return response.json() as Promise<T>;
+}
+
+export async function listServerConversations(): Promise<ConversationSummary[]> {
+  const conversations = await serverRequestJson<ConversationSummary[]>("/api/conversations");
+  return conversations ?? [];
 }
