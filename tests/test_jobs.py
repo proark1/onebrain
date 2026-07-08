@@ -22,6 +22,7 @@ from app.jobs.base import (
     STATUS_FAILED,
     STATUS_RUNNING,
     STATUS_SUCCEEDED,
+    STATUS_QUEUED,
     JobFileInput,
 )
 from app.jobs.memory import MemoryJobStore
@@ -100,6 +101,35 @@ def test_memory_job_store_lifecycle_with_file_payload():
     assert done.status == STATUS_SUCCEEDED
     assert done.result == {"ok": True}
     assert done.completed_at
+
+
+def test_memory_job_store_summary_is_sanitized():
+    store = MemoryJobStore()
+    failed = store.enqueue(
+        type=JOB_DOCUMENT_INGEST,
+        tenant_id="nft_gym",
+        account_id="nft_gym",
+        space_id="sp_customer",
+        payload={"raw": "not returned"},
+        file=JobFileInput("secret.txt", "text/plain", b"not returned"),
+    )
+    queued = store.enqueue(type=JOB_SERVICE_CAPTURE, tenant_id="nft_gym")
+    store.claim("worker_a")
+    store.mark_failed(failed.id, "provider timeout")
+
+    summary = store.summary(recent_failures_limit=1)
+
+    assert summary.total == 2
+    assert summary.by_status[STATUS_FAILED] == 1
+    assert summary.by_status[STATUS_QUEUED] == 1
+    assert summary.by_type[JOB_DOCUMENT_INGEST] == 1
+    assert summary.by_type[JOB_SERVICE_CAPTURE] == 1
+    assert summary.recent_failures[0].id == failed.id
+    assert summary.recent_failures[0].error == "provider timeout"
+    assert not hasattr(summary.recent_failures[0], "payload")
+    assert not hasattr(summary.recent_failures[0], "result")
+    assert store.get_file(failed.id).data == b"not returned"
+    assert store.get(queued.id).status == STATUS_QUEUED
 
 
 def test_worker_processes_document_ingest_job(monkeypatch):

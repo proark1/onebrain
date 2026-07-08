@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi import HTTPException
 
@@ -16,17 +18,29 @@ from app.controlplane.base import (
     ReleaseManifest,
     RolloutRun,
 )
+from app.intake.base import IntakeRecord
+from app.intake.memory import MemoryIntakeStore
+from app.jobs.base import JOB_DOCUMENT_INGEST, JOB_SERVICE_CAPTURE
+from app.jobs.memory import MemoryJobStore
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.platform.base import Account, AppInstallation, Space
 from app.platform.memory import MemoryPlatformStore
 from app.servicekeys.base import SCOPE_READ, ServiceKey, hash_secret
 from app.servicekeys.memory import MemoryServiceKeyStore
+from app.store.base import Chunk
+from app.store.memory import MemoryStore
 
 
 def _admin() -> Principal:
+    return _principal("admin")
+
+
+def _principal(role_id: str) -> Principal:
     role = ROLES["admin"]
+    if role_id != "admin":
+        role = ROLES[role_id]
     return Principal(
-        user_id="admin@onebrain",
+        user_id=f"{role_id}@onebrain",
         role_id=role.id,
         role_label=role.label,
         clearance=role.clearance,
@@ -337,3 +351,106 @@ def test_operator_customer_overview_aggregates_metadata_only(monkeypatch):
     assert {module.module_id for module in row.modules} == {"onebrain-api", "communication-api"}
     assert row.service_keys[0].id == "key_comm"
     assert not hasattr(row.service_keys[0], "key")
+
+
+def test_operator_observability_aggregates_current_onebrain_state(monkeypatch):
+    vector_store = MemoryStore()
+    vector_store.add([
+        Chunk(
+            id="chunk_1",
+            doc_id="doc_1",
+            text="Internal document text must not appear in observability.",
+            meta={"tenant_id": "acme", "account_id": "acme", "space_id": "sp_service"},
+        )
+    ])
+    intake_store = MemoryIntakeStore()
+    intake_store.create(IntakeRecord(
+        id="rec_1",
+        tenant_id="acme",
+        account_id="acme",
+        space_id="sp_service",
+        app_id="communication",
+        purpose="customer_service_inbox",
+        source="communication",
+        source_ref="msg_1",
+        record_type="message",
+        intent="question",
+        classification="internal",
+        confidence=0.9,
+        status="approved",
+        title="Customer question",
+        content="Raw intake content must not appear in observability.",
+        summary="question",
+    ))
+    key_store = MemoryServiceKeyStore()
+    key_store.create(ServiceKey(
+        id="key_active",
+        key_hash=hash_secret("secret"),
+        tenant_id="acme",
+        scopes=(SCOPE_READ,),
+    ))
+    key_store.create(ServiceKey(
+        id="key_revoked",
+        key_hash=hash_secret("secret"),
+        tenant_id="acme",
+        scopes=(SCOPE_READ,),
+    ))
+    key_store.revoke("key_revoked")
+    job_store = MemoryJobStore()
+    failed = job_store.enqueue(
+        type=JOB_DOCUMENT_INGEST,
+        tenant_id="acme",
+        account_id="acme",
+        space_id="sp_service",
+        payload={"raw": "must not appear"},
+    )
+    job_store.claim("worker_a")
+    job_store.mark_failed(failed.id, "embedding provider timeout")
+    job_store.enqueue(type=JOB_SERVICE_CAPTURE, tenant_id="acme")
+    monkeypatch.setattr(
+        operator_router,
+        "get_settings",
+        lambda: SimpleNamespace(
+            vector_store="memory",
+            llm_provider="local",
+            embeddings_provider="local",
+            top_k=4,
+            retrieval_min_score=0.12,
+            use_async_ingestion=False,
+        ),
+    )
+    monkeypatch.setattr(operator_router, "get_store", lambda: vector_store)
+    monkeypatch.setattr(operator_router, "get_intake_store", lambda: intake_store)
+    monkeypatch.setattr(operator_router, "get_service_key_store", lambda: key_store)
+    monkeypatch.setattr(operator_router, "get_job_store", lambda: job_store)
+
+    snapshot = operator_router.operator_observability(principal=_admin())
+
+    assert snapshot.runtime.vector_store == "memory"
+    assert snapshot.runtime.async_ingestion is False
+    assert snapshot.retrieval.top_k == 4
+    assert snapshot.retrieval.min_score == 0.12
+    assert snapshot.storage.chunks == 1
+    assert snapshot.storage.intake_records == 1
+    assert snapshot.service_keys.total == 2
+    assert snapshot.service_keys.active == 1
+    assert snapshot.service_keys.revoked == 1
+    assert snapshot.jobs.total == 2
+    assert snapshot.jobs.by_status["failed"] == 1
+    assert snapshot.jobs.by_status["queued"] == 1
+    assert snapshot.jobs.by_type[JOB_DOCUMENT_INGEST] == 1
+    failure = snapshot.jobs.recent_failures[0]
+    assert failure.id == failed.id
+    assert failure.error == "embedding provider timeout"
+    dumped = snapshot.model_dump()
+    assert "payload" not in dumped["jobs"]["recent_failures"][0]
+    assert "result" not in dumped["jobs"]["recent_failures"][0]
+    assert "Internal document text" not in str(dumped)
+    assert "Raw intake content" not in str(dumped)
+    assert "secret" not in str(dumped)
+
+
+def test_operator_observability_requires_admin():
+    with pytest.raises(HTTPException) as exc:
+        operator_router.operator_observability(principal=_principal("front_desk"))
+    assert exc.value.status_code == 403

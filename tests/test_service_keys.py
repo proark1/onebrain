@@ -66,6 +66,24 @@ def test_store_rejects_duplicate_id():
         store.create(ServiceKey(id=key_id, key_hash="x", tenant_id="nft_gym", scopes=(SCOPE_READ,)))
 
 
+def test_memory_service_key_store_summary_counts_statuses_and_tenants():
+    store = MemoryServiceKeyStore()
+    store.create(ServiceKey(id="key_active", key_hash="x", tenant_id="nft_gym", scopes=(SCOPE_READ,)))
+    store.create(ServiceKey(id="key_revoked", key_hash="x", tenant_id="nft_gym", scopes=(SCOPE_WRITE,)))
+    store.create(ServiceKey(id="key_other", key_hash="x", tenant_id="other", scopes=(SCOPE_READ,)))
+    store.revoke("key_revoked")
+
+    all_keys = store.summary()
+    tenant_keys = store.summary("nft_gym")
+
+    assert all_keys.total == 3
+    assert all_keys.active == 2
+    assert all_keys.revoked == 1
+    assert tenant_keys.total == 2
+    assert tenant_keys.active == 1
+    assert tenant_keys.revoked == 1
+
+
 def test_missing_invalid_and_revoked_keys_fail_closed(monkeypatch):
     store, key_id, plaintext = _store_with_key(monkeypatch)
     for bad in ("", "Bearer ", "Bearer not-a-key", f"Bearer sk_{key_id}_wrongsecret"):

@@ -8,6 +8,8 @@ from datetime import datetime
 from uuid import uuid4
 
 from app.jobs.base import (
+    JobFailureSummary,
+    JobSummary,
     READY_STATUSES,
     STATUS_FAILED,
     STATUS_QUEUED,
@@ -19,6 +21,9 @@ from app.jobs.base import (
     JobFileInput,
     utcnow,
 )
+
+
+KNOWN_STATUSES = (STATUS_QUEUED, STATUS_RUNNING, STATUS_RETRYING, STATUS_SUCCEEDED, STATUS_FAILED)
 
 
 def _iso(value: datetime | str | None = None) -> str:
@@ -130,6 +135,42 @@ class MemoryJobStore:
             )
             self._jobs[job_id] = updated
             return updated
+
+    def summary(self, recent_failures_limit: int = 10) -> JobSummary:
+        with self._lock:
+            jobs = list(self._jobs.values())
+        by_status = {status: 0 for status in KNOWN_STATUSES}
+        by_type: dict[str, int] = {}
+        for job in jobs:
+            by_status[job.status] = by_status.get(job.status, 0) + 1
+            by_type[job.type] = by_type.get(job.type, 0) + 1
+        failed = sorted(
+            (job for job in jobs if job.status == STATUS_FAILED),
+            key=lambda job: job.completed_at or job.updated_at or job.created_at or job.id,
+            reverse=True,
+        )
+        limit = max(0, recent_failures_limit)
+        return JobSummary(
+            total=len(jobs),
+            by_status=by_status,
+            by_type=by_type,
+            recent_failures=[
+                JobFailureSummary(
+                    id=job.id,
+                    type=job.type,
+                    tenant_id=job.tenant_id,
+                    account_id=job.account_id,
+                    space_id=job.space_id,
+                    attempts=job.attempts,
+                    max_attempts=job.max_attempts,
+                    error=job.error[:500],
+                    created_at=job.created_at,
+                    updated_at=job.updated_at,
+                    completed_at=job.completed_at,
+                )
+                for job in failed[:limit]
+            ],
+        )
 
     def _update_terminal(self, job_id: str, status: str, result: dict | None = None, error: str = "") -> Job:
         with self._lock:

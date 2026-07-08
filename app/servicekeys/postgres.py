@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from app.db.schema import validate_postgres_schema
-from app.servicekeys.base import ServiceKey
+from app.servicekeys.base import ServiceKey, ServiceKeySummary
 
 
 class PostgresServiceKeyStore:
@@ -69,3 +69,21 @@ class PostgresServiceKeyStore:
             changed = cur.rowcount
             conn.commit()
         return changed > 0
+
+    def summary(self, tenant_id: str = "") -> ServiceKeySummary:
+        clauses = []
+        params = []
+        if tenant_id:
+            clauses.append("tenant_id = %s")
+            params.append(tenant_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM service_keys{where}", params)
+            total = int(cur.fetchone()[0])
+            cur.execute(f"SELECT status, COUNT(*) FROM service_keys{where} GROUP BY status", params)
+            by_status = {str(row[0]): int(row[1]) for row in cur.fetchall()}
+        return ServiceKeySummary(
+            total=total,
+            active=by_status.get("active", 0),
+            revoked=by_status.get("revoked", 0),
+        )

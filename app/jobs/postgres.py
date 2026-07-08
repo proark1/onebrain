@@ -8,14 +8,20 @@ from uuid import uuid4
 
 from app.db.schema import validate_postgres_schema
 from app.jobs.base import (
+    JobFailureSummary,
+    JobSummary,
     STATUS_FAILED,
     STATUS_QUEUED,
     STATUS_RETRYING,
+    STATUS_RUNNING,
     STATUS_SUCCEEDED,
     Job,
     JobFile,
     JobFileInput,
 )
+
+
+KNOWN_STATUSES = (STATUS_QUEUED, STATUS_RUNNING, STATUS_RETRYING, STATUS_SUCCEEDED, STATUS_FAILED)
 
 
 def _iso(value) -> str:
@@ -165,6 +171,44 @@ class PostgresJobStore:
         if not row:
             raise KeyError(f"unknown job: {job_id}")
         return self._job(row)
+
+    def summary(self, recent_failures_limit: int = 10) -> JobSummary:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM jobs")
+            total = int(cur.fetchone()[0])
+            cur.execute("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+            by_status = {status: 0 for status in KNOWN_STATUSES}
+            by_status.update({str(row[0]): int(row[1]) for row in cur.fetchall()})
+            cur.execute("SELECT type, COUNT(*) FROM jobs GROUP BY type")
+            by_type = {str(row[0]): int(row[1]) for row in cur.fetchall()}
+            cur.execute(
+                """
+                SELECT id, type, tenant_id, account_id, space_id, attempts, max_attempts,
+                       error, created_at, updated_at, completed_at
+                FROM jobs
+                WHERE status = %s
+                ORDER BY completed_at DESC NULLS LAST, updated_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (STATUS_FAILED, max(0, recent_failures_limit)),
+            )
+            failures = [
+                JobFailureSummary(
+                    id=row[0],
+                    type=row[1],
+                    tenant_id=row[2],
+                    account_id=row[3],
+                    space_id=row[4],
+                    attempts=int(row[5] or 0),
+                    max_attempts=int(row[6] or 0),
+                    error=(row[7] or "")[:500],
+                    created_at=_iso(row[8]),
+                    updated_at=_iso(row[9]),
+                    completed_at=_iso(row[10]),
+                )
+                for row in cur.fetchall()
+            ]
+        return JobSummary(total=total, by_status=by_status, by_type=by_type, recent_failures=failures)
 
     def _mark_terminal(self, job_id: str, status: str, result: dict | None = None, error: str = "") -> Job:
         with self._conn() as conn, conn.cursor() as cur:

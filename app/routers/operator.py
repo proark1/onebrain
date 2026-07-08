@@ -6,6 +6,7 @@ expose customer content.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -21,7 +22,15 @@ from app.controlplane.base import (
     RolloutRun,
     UpdatePlan,
 )
-from app.deps import get_control_plane_store, get_platform_store, get_service_key_store
+from app.config import get_settings
+from app.deps import (
+    get_control_plane_store,
+    get_intake_store,
+    get_job_store,
+    get_platform_store,
+    get_service_key_store,
+    get_store,
+)
 from app.schemas import ServiceKeyInfo
 
 router = APIRouter(prefix="/api/operator", tags=["operator"])
@@ -180,6 +189,59 @@ class CustomerOverviewOut(BaseModel):
     readiness: str = "not_deployed"
 
 
+class OperatorRuntimeOut(BaseModel):
+    vector_store: str
+    llm_provider: str
+    embeddings_provider: str
+    async_ingestion: bool
+
+
+class OperatorRetrievalOut(BaseModel):
+    top_k: int
+    min_score: float
+
+
+class OperatorStorageOut(BaseModel):
+    chunks: int
+    intake_records: int
+
+
+class OperatorServiceKeysOut(BaseModel):
+    total: int
+    active: int
+    revoked: int
+
+
+class OperatorJobFailureOut(BaseModel):
+    id: str
+    type: str
+    tenant_id: str
+    account_id: str = ""
+    space_id: str = ""
+    attempts: int = 0
+    max_attempts: int = 0
+    error: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    completed_at: str = ""
+
+
+class OperatorJobsOut(BaseModel):
+    total: int
+    by_status: dict[str, int] = Field(default_factory=dict)
+    by_type: dict[str, int] = Field(default_factory=dict)
+    recent_failures: list[OperatorJobFailureOut] = Field(default_factory=list)
+
+
+class OperatorObservabilityOut(BaseModel):
+    generated_at: str
+    runtime: OperatorRuntimeOut
+    retrieval: OperatorRetrievalOut
+    storage: OperatorStorageOut
+    service_keys: OperatorServiceKeysOut
+    jobs: OperatorJobsOut
+
+
 def _require_admin(principal: Principal) -> None:
     if principal.role_id != "admin":
         raise HTTPException(status_code=403, detail="Only admin can manage operator deployments.")
@@ -298,6 +360,57 @@ def _readiness(deployment, backup, health, latest_rollout) -> str:
     if health and health.status == "success":
         return "healthy"
     return "unknown"
+
+
+@router.get("/observability", response_model=OperatorObservabilityOut)
+def operator_observability(principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    settings = get_settings()
+    service_key_summary = get_service_key_store().summary()
+    job_summary = get_job_store().summary(recent_failures_limit=10)
+    return OperatorObservabilityOut(
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        runtime=OperatorRuntimeOut(
+            vector_store=settings.vector_store,
+            llm_provider=settings.llm_provider,
+            embeddings_provider=settings.embeddings_provider,
+            async_ingestion=settings.use_async_ingestion,
+        ),
+        retrieval=OperatorRetrievalOut(
+            top_k=settings.top_k,
+            min_score=settings.retrieval_min_score,
+        ),
+        storage=OperatorStorageOut(
+            chunks=get_store().count(),
+            intake_records=get_intake_store().count(),
+        ),
+        service_keys=OperatorServiceKeysOut(
+            total=service_key_summary.total,
+            active=service_key_summary.active,
+            revoked=service_key_summary.revoked,
+        ),
+        jobs=OperatorJobsOut(
+            total=job_summary.total,
+            by_status=job_summary.by_status,
+            by_type=job_summary.by_type,
+            recent_failures=[
+                OperatorJobFailureOut(
+                    id=job.id,
+                    type=job.type,
+                    tenant_id=job.tenant_id,
+                    account_id=job.account_id,
+                    space_id=job.space_id,
+                    attempts=job.attempts,
+                    max_attempts=job.max_attempts,
+                    error=job.error,
+                    created_at=job.created_at,
+                    updated_at=job.updated_at,
+                    completed_at=job.completed_at,
+                )
+                for job in job_summary.recent_failures
+            ],
+        ),
+    )
 
 
 @router.get("/deployments", response_model=list[DeploymentOut])

@@ -69,6 +69,29 @@ class Job:
     completed_at: str = ""
 
 
+@dataclass(frozen=True)
+class JobFailureSummary:
+    id: str
+    type: str
+    tenant_id: str
+    account_id: str = ""
+    space_id: str = ""
+    attempts: int = 0
+    max_attempts: int = 0
+    error: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    completed_at: str = ""
+
+
+@dataclass(frozen=True)
+class JobSummary:
+    total: int
+    by_status: dict[str, int] = field(default_factory=dict)
+    by_type: dict[str, int] = field(default_factory=dict)
+    recent_failures: list[JobFailureSummary] = field(default_factory=list)
+
+
 class JobStore(Protocol):
     def enqueue(
         self,
@@ -94,3 +117,5 @@ class JobStore(Protocol):
     def mark_failed(self, job_id: str, error: str) -> Job: ...
 
     def mark_retry(self, job_id: str, error: str, run_after: datetime) -> Job: ...
+
+    def summary(self, recent_failures_limit: int = 10) -> JobSummary: ...
