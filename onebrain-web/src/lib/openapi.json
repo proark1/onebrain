@@ -258,6 +258,361 @@
         "title": "AskRequest",
         "type": "object"
       },
+      "AssistantAuditEventCreate": {
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "action": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Action",
+            "type": "string"
+          },
+          "decision": {
+            "default": "recorded",
+            "maxLength": 80,
+            "title": "Decision",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "purpose": {
+            "default": "assistant_action",
+            "maxLength": 80,
+            "title": "Purpose",
+            "type": "string"
+          },
+          "space_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Space Id"
+          },
+          "target_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Target Id",
+            "type": "string"
+          },
+          "target_type": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Target Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "target_type",
+          "target_id"
+        ],
+        "title": "AssistantAuditEventCreate",
+        "type": "object"
+      },
+      "AssistantAuditEventOut": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "actor_id": {
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "actor_type": {
+            "title": "Actor Type",
+            "type": "string"
+          },
+          "app_id": {
+            "default": "",
+            "title": "App Id",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decision": {
+            "default": "",
+            "title": "Decision",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "purpose": {
+            "default": "",
+            "title": "Purpose",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "title": "Space Id",
+            "type": "string"
+          },
+          "target_id": {
+            "title": "Target Id",
+            "type": "string"
+          },
+          "target_type": {
+            "title": "Target Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "actor_id",
+          "actor_type",
+          "action",
+          "target_type",
+          "target_id"
+        ],
+        "title": "AssistantAuditEventOut",
+        "type": "object"
+      },
+      "AssistantRecordCreate": {
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "content": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "intent": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Intent",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "provenance": {
+            "additionalProperties": true,
+            "title": "Provenance",
+            "type": "object"
+          },
+          "purpose": {
+            "default": "assistant_context",
+            "maxLength": 80,
+            "title": "Purpose",
+            "type": "string"
+          },
+          "record_type": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Record Type",
+            "type": "string"
+          },
+          "retention": {
+            "additionalProperties": true,
+            "title": "Retention",
+            "type": "object"
+          },
+          "source": {
+            "default": "assistant",
+            "maxLength": 80,
+            "title": "Source",
+            "type": "string"
+          },
+          "source_ref": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "space_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Space Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "content",
+          "record_type"
+        ],
+        "title": "AssistantRecordCreate",
+        "type": "object"
+      },
+      "AssistantRecordOut": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "app_id": {
+            "title": "App Id",
+            "type": "string"
+          },
+          "classification": {
+            "title": "Classification",
+            "type": "string"
+          },
+          "confidence": {
+            "title": "Confidence",
+            "type": "number"
+          },
+          "content": {
+            "default": "",
+            "title": "Content",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "extracted_facts": {
+            "additionalProperties": true,
+            "title": "Extracted Facts",
+            "type": "object"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "intent": {
+            "title": "Intent",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "record_type": {
+            "title": "Record Type",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "source_ref": {
+            "default": "",
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "space_id": {
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "tenant_id": {
+            "title": "Tenant Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "account_id",
+          "space_id",
+          "app_id",
+          "purpose",
+          "source",
+          "record_type",
+          "intent",
+          "classification",
+          "confidence",
+          "status",
+          "title",
+          "summary"
+        ],
+        "title": "AssistantRecordOut",
+        "type": "object"
+      },
+      "AssistantRecordResponse": {
+        "properties": {
+          "record": {
+            "$ref": "#/components/schemas/AssistantRecordOut"
+          }
+        },
+        "required": [
+          "record"
+        ],
+        "title": "AssistantRecordResponse",
+        "type": "object"
+      },
       "AuditOut": {
         "properties": {
           "account_id": {
@@ -5244,6 +5599,164 @@
         "summary": "Service Ask",
         "tags": [
           "service"
+        ]
+      }
+    },
+    "/api/service/assistant/audit": {
+      "post": {
+        "operationId": "record_assistant_audit_event_api_service_assistant_audit_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantAuditEventCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantAuditEventOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record Assistant Audit Event",
+        "tags": [
+          "service-assistant"
+        ]
+      }
+    },
+    "/api/service/assistant/records": {
+      "post": {
+        "operationId": "create_assistant_record_api_service_assistant_records_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantRecordCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantRecordResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Assistant Record",
+        "tags": [
+          "service-assistant"
+        ]
+      }
+    },
+    "/api/service/assistant/records/{record_id}": {
+      "get": {
+        "operationId": "get_assistant_record_api_service_assistant_records__record_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "record_id",
+            "required": true,
+            "schema": {
+              "title": "Record Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantRecordResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Assistant Record",
+        "tags": [
+          "service-assistant"
         ]
       }
     },

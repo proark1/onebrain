@@ -111,6 +111,64 @@ class OneBrainClient:
             payload["title"] = title
         return self._request("POST", "api/service/intake", payload)
 
+    def create_assistant_record(
+        self,
+        content: str,
+        *,
+        record_type: str,
+        title: str = "",
+        intent: str = "",
+        source: str = "assistant",
+        source_ref: str = "",
+        purpose: str = "assistant_context",
+        metadata: Mapping[str, Any] | None = None,
+        provenance: Mapping[str, Any] | None = None,
+        retention: Mapping[str, Any] | None = None,
+        account_id: str = "",
+        space_id: str = "",
+    ) -> dict[str, Any]:
+        payload = {
+            "content": content,
+            "record_type": record_type,
+            "intent": intent,
+            "source": source,
+            "source_ref": source_ref,
+            "purpose": purpose,
+            "metadata": dict(metadata or {}),
+            "provenance": dict(provenance or {}),
+            "retention": dict(retention or {}),
+            **self._account_space_scope(account_id, space_id),
+        }
+        if title:
+            payload["title"] = title
+        return self._request("POST", "api/service/assistant/records", payload)
+
+    def get_assistant_record(self, record_id: str) -> dict[str, Any]:
+        return self._request("GET", f"api/service/assistant/records/{record_id}")
+
+    def record_assistant_audit(
+        self,
+        *,
+        action: str,
+        target_type: str,
+        target_id: str,
+        purpose: str = "assistant_action",
+        decision: str = "recorded",
+        metadata: Mapping[str, Any] | None = None,
+        account_id: str = "",
+        space_id: str = "",
+    ) -> dict[str, Any]:
+        payload = {
+            "action": action,
+            "target_type": target_type,
+            "target_id": target_id,
+            "purpose": purpose,
+            "decision": decision,
+            "metadata": dict(metadata or {}),
+            **self._account_space_scope(account_id, space_id),
+        }
+        return self._request("POST", "api/service/assistant/audit", payload)
+
     def store_message(
         self,
         *,
@@ -150,6 +208,13 @@ class OneBrainClient:
         }
         return {key: value for key, value in scope.items() if value}
 
+    def _account_space_scope(self, account_id: str, space_id: str) -> dict[str, str]:
+        scope = {
+            "account_id": account_id or self.account_id,
+            "space_id": space_id or self.space_id,
+        }
+        return {key: value for key, value in scope.items() if value}
+
     def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         url = urljoin(self.base_url, path)
         headers = {
@@ -185,3 +250,7 @@ class OneBrainClient:
         except URLError as exc:
             raise OneBrainError(0, str(exc.reason)) from exc
         return json.loads(body) if body else {}
+
+
+class BrainClient(OneBrainClient):
+    """Assistant-facing OneBrain client alias."""

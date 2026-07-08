@@ -6,6 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 import app.routers.provisioning as provisioning_router
+from app.assistant.contracts import ASSISTANT_PURPOSES
 from app.auth.principal import Principal
 from app.auth.roles import ROLES
 from app.controlplane.base import CustomerDeployment
@@ -122,6 +123,13 @@ def test_full_stack_provisioning_mints_constrained_integration_keys():
     )
 
     assert {credential.app_id for credential in result.credentials} == {"assistant", "communication"}
+
+    assistant = next(credential for credential in result.credentials if credential.app_id == "assistant")
+    stored_assistant = service_keys.get(assistant.id)
+    assert stored_assistant.account_id == "acme"
+    assert stored_assistant.app_id == "assistant"
+    assert set(stored_assistant.scopes) == {SCOPE_READ, SCOPE_WRITE}
+    assert set(stored_assistant.purposes) == set(ASSISTANT_PURPOSES)
 
     communication = next(credential for credential in result.credentials if credential.app_id == "communication")
     stored = service_keys.get(communication.id)

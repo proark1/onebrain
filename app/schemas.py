@@ -139,6 +139,10 @@ class IntakeRecordOut(BaseModel):
     created_at: str = ""
 
 
+class AssistantRecordOut(IntakeRecordOut):
+    content: str = ""
+
+
 class ServiceIntakeRequest(BaseModel):
     content: str = Field(min_length=1, max_length=20000)
     title: Optional[str] = Field(default=None, max_length=200)
@@ -155,6 +159,52 @@ class ServiceIntakeRequest(BaseModel):
 
 class ServiceIntakeResponse(BaseModel):
     record: IntakeRecordOut
+
+
+class AssistantRecordCreate(BaseModel):
+    content: str = Field(min_length=1, max_length=20000)
+    title: Optional[str] = Field(default=None, max_length=200)
+    record_type: str = Field(min_length=1, max_length=80)
+    intent: str = Field(default="", max_length=80)
+    source: str = Field(default="assistant", max_length=80)
+    source_ref: str = Field(default="", max_length=200)
+    purpose: str = Field(default="assistant_context", max_length=80)
+    account_id: Optional[str] = Field(default=None, max_length=120)
+    space_id: Optional[str] = Field(default=None, max_length=120)
+    metadata: dict = Field(default_factory=dict)
+    provenance: dict = Field(default_factory=dict)
+    retention: dict = Field(default_factory=dict)
+
+
+class AssistantRecordResponse(BaseModel):
+    record: AssistantRecordOut
+
+
+class AssistantAuditEventCreate(BaseModel):
+    action: str = Field(min_length=1, max_length=120)
+    target_type: str = Field(min_length=1, max_length=80)
+    target_id: str = Field(min_length=1, max_length=200)
+    account_id: Optional[str] = Field(default=None, max_length=120)
+    space_id: Optional[str] = Field(default=None, max_length=120)
+    purpose: str = Field(default="assistant_action", max_length=80)
+    decision: str = Field(default="recorded", max_length=80)
+    metadata: dict = Field(default_factory=dict)
+
+
+class AssistantAuditEventOut(BaseModel):
+    id: str
+    account_id: str
+    actor_id: str
+    actor_type: str
+    action: str
+    target_type: str
+    target_id: str
+    space_id: str = ""
+    app_id: str = ""
+    purpose: str = ""
+    decision: str = ""
+    meta: dict = Field(default_factory=dict)
+    created_at: str = ""
 
 
 class ServiceCapabilitiesResponse(BaseModel):
