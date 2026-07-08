@@ -88,11 +88,16 @@ ONEBRAIN_ADMIN_PASSWORD=<strong admin password>
 ONEBRAIN_PII_PHASE=synthetic
 ONEBRAIN_REQUIRE_APPROVAL=false
 ONEBRAIN_BLOCK_PUBLIC_ON_PII=true
+ONEBRAIN_RETRIEVAL_MIN_SCORE=0.05
 ```
 
 `ONEBRAIN_MIGRATION_EMBEDDING_DIM` must match the embedding provider or the
 existing `chunks.embedding` column. The current Railway database uses
 `3072`; a fresh local-hashing database can use the default `256`.
+
+`ONEBRAIN_RETRIEVAL_MIN_SCORE` filters weak vector matches before they reach the
+LLM. Tune it for the active embedding model after checking answer quality on
+representative customer questions.
 
 Worker tuning variables:
 

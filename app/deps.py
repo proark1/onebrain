@@ -42,7 +42,14 @@ def get_pipeline() -> IngestPipeline:
 
 @lru_cache
 def get_retrieval_service() -> RetrievalService:
-    return RetrievalService(get_embedder(), get_store(), get_llm(), get_settings().top_k)
+    settings = get_settings()
+    return RetrievalService(
+        get_embedder(),
+        get_store(),
+        get_llm(),
+        top_k=settings.top_k,
+        min_score=settings.retrieval_min_score,
+    )
 
 
 @lru_cache

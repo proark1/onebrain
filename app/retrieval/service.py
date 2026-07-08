@@ -28,6 +28,14 @@ _GREETING_RE = re.compile(
 )
 
 
+def _no_match_response() -> str:
+    return (
+        "I couldn't find anything relevant in the documents you can access about that. "
+        "It may be restricted to another role, scoped to another workspace, below the "
+        "retrieval confidence threshold, or simply not uploaded yet."
+    )
+
+
 def _direct_chat_response(question: str) -> str | None:
     text = " ".join(question.strip().lower().split())
     if not _GREETING_RE.match(text):
@@ -65,18 +73,30 @@ def _source_records(hits: List[Hit]) -> list[dict]:
 
 
 class RetrievalService:
-    def __init__(self, embedder, store, llm, top_k: int = 8):
+    def __init__(self, embedder, store, llm, top_k: int = 8, min_score: float = 0.05):
         self._embedder = embedder
         self._store = store
         self._llm = llm
         self._top_k = top_k
+        self._min_score = float(min_score)
 
     def retrieve(self, principal: Principal, question: str) -> List[Hit]:
+        hits, _ = self._retrieve_with_meta(principal, question)
+        return hits
+
+    def _retrieve_with_meta(self, principal: Principal, question: str) -> tuple[List[Hit], dict]:
         query_vec = self._embedder.embed_one(question)
         access = principal.access_filter()
-        hits = self._store.search(query_vec, self._top_k, access)
+        raw_hits = self._store.search(query_vec, self._top_k, access)
         # Defence in depth: re-check every returned chunk against the caller.
-        return [h for h in hits if access.allows(h.chunk.meta)]
+        allowed = [h for h in raw_hits if access.allows(h.chunk.meta)]
+        filtered = [h for h in allowed if h.score >= self._min_score]
+        best_score = max((h.score for h in allowed), default=None)
+        return filtered, {
+            "retrieval_min_score": self._min_score,
+            "best_score": round(best_score, 3) if best_score is not None else None,
+            "filtered_chunks": len(allowed) - len(filtered),
+        }
 
     def answer_stream(self, principal: Principal, question: str, history: list | None = None) -> Iterator[dict]:
         direct_response = _direct_chat_response(question)
@@ -94,6 +114,9 @@ class RetrievalService:
                 "cost_usd": 0,
                 "estimated": False,
                 "llm": "onebrain-direct",
+                "retrieval_min_score": self._min_score,
+                "best_score": None,
+                "filtered_chunks": 0,
             }
             yield {"type": "done"}
             return
@@ -106,7 +129,27 @@ class RetrievalService:
             last_user = next((t["content"] for t in reversed(history) if t.get("role") == "user"), "")
             if last_user:
                 retrieval_query = f"{last_user}\n{question}"
-        hits = self.retrieve(principal, retrieval_query)
+        hits, retrieval_meta = self._retrieve_with_meta(principal, retrieval_query)
+
+        if not hits:
+            response = _no_match_response()
+            yield {"type": "token", "text": response}
+            yield {"type": "sources", "sources": []}
+            input_tokens = max(1, round(len(question) / 4))
+            output_tokens = max(1, round(len(response) / 4))
+            yield {
+                "type": "meta",
+                "chunks_used": 0,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "cost_usd": 0,
+                "estimated": False,
+                "llm": "onebrain-retrieval",
+                **retrieval_meta,
+            }
+            yield {"type": "done"}
+            return
 
         stats: dict = {}
         answer_chars = 0
@@ -137,5 +180,6 @@ class RetrievalService:
             "cost_usd": cost,
             "estimated": stats.get("prompt_tokens") is None,  # True when tokens are estimated, not measured
             "llm": self._llm.name,
+            **retrieval_meta,
         }
         yield {"type": "done"}

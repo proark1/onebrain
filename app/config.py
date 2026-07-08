@@ -42,6 +42,7 @@ class Settings(BaseSettings):
 
     # Retrieval
     top_k: int = 8
+    retrieval_min_score: float = 0.05
     embedding_dim: int = 256             # dimension of the local hashing embedder
 
     # Local persistence (so uploads survive a restart with the memory store)
