@@ -4,6 +4,12 @@ Next.js shell for the OneBrain product UI.
 
 The Python/FastAPI service remains the source of truth for auth, access control, retrieval, ingestion, privacy operations, and service keys. This app calls that API through a typed boundary in `src/lib/onebrain-api.ts`.
 
+## Routes
+
+- `/chat` - streaming assistant chat backed by the FastAPI retrieval and conversation APIs.
+- `/documents` - document library, upload, and pending-review workflow backed by the FastAPI document APIs.
+- `/` - entry point that checks the API/session and redirects signed-in users to `/chat`.
+
 ## Run
 
 ```bash

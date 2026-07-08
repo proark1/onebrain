@@ -26,6 +26,45 @@ export type ConversationDetail = {
   messages: MessageOut[];
 };
 
+export type DocumentSummary = {
+  doc_id: string;
+  title: string;
+  classification: string;
+  location: string;
+  category: string;
+  chunks: number;
+  status: string;
+  pii_findings: number;
+  account_id: string;
+  space_id: string;
+};
+
+export type PendingDocument = {
+  doc_id: string;
+  title: string;
+  classification: string;
+  location: string;
+  category: string;
+  uploaded_by: string;
+  has_pii: boolean;
+  chunks: number;
+  account_id: string;
+  space_id: string;
+};
+
+export type ApproveDocumentResult = {
+  approved: string;
+  chunks: number;
+  approved_by: string;
+};
+
+export type UploadDocumentInput = {
+  category: string;
+  classification: string;
+  file: File;
+  location: string;
+};
+
 export type SourceRecord = {
   title: string;
   classification: string;
@@ -63,7 +102,7 @@ export type ChatStreamEvent =
   | ({ type: "meta" } & AnswerMeta)
   | { type: "done" };
 
-function cleanScope(scope: ChatScope = {}): ChatScope {
+export function cleanScope(scope: ChatScope = {}): ChatScope {
   const accountId = (scope.account_id || "").trim();
   const spaceId = (scope.space_id || "").trim();
   return accountId && spaceId ? { account_id: accountId, space_id: spaceId } : {};

@@ -1,11 +1,15 @@
 import type {
+  ApproveDocumentResult,
   AskPayload,
   ChatScope,
   ChatStreamEvent,
   ConversationDetail,
   ConversationSummary,
+  DocumentSummary,
+  PendingDocument,
+  UploadDocumentInput,
 } from "@/lib/onebrain-types";
-import { scopeQuery } from "@/lib/onebrain-types";
+import { cleanScope, scopeQuery } from "@/lib/onebrain-types";
 
 const PROXY_BASE = "/api/onebrain";
 
@@ -29,6 +33,37 @@ export function getConversation(id: string, scope: ChatScope = {}): Promise<Conv
 export async function deleteConversation(id: string, scope: ChatScope = {}): Promise<void> {
   await requestJson<{ deleted: string }>(`/conversations/${encodeURIComponent(id)}${scopeQuery(scope)}`, {
     method: "DELETE",
+  });
+}
+
+export function listDocuments(scope: ChatScope = {}): Promise<DocumentSummary[]> {
+  return requestJson<DocumentSummary[]>(`/documents${scopeQuery(scope)}`);
+}
+
+export function listPendingDocuments(scope: ChatScope = {}): Promise<PendingDocument[]> {
+  return requestJson<PendingDocument[]>(`/documents/pending${scopeQuery(scope)}`);
+}
+
+export function approveDocument(id: string, scope: ChatScope = {}): Promise<ApproveDocumentResult> {
+  return requestJson<ApproveDocumentResult>(`/documents/${encodeURIComponent(id)}/approve${scopeQuery(scope)}`, {
+    method: "POST",
+  });
+}
+
+export function uploadDocument(input: UploadDocumentInput, scope: ChatScope = {}): Promise<DocumentSummary> {
+  const clean = cleanScope(scope);
+  const body = new FormData();
+  body.set("file", input.file);
+  body.set("classification", input.classification);
+  body.set("location", input.location);
+  body.set("category", input.category);
+  if (clean.account_id && clean.space_id) {
+    body.set("account_id", clean.account_id);
+    body.set("space_id", clean.space_id);
+  }
+  return requestJson<DocumentSummary>("/upload", {
+    method: "POST",
+    body,
   });
 }
 

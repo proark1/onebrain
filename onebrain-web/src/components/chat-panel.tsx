@@ -23,12 +23,10 @@ type UiMessage = {
   status?: "streaming" | "failed" | "complete";
 };
 
-type ChatShellProps = {
+type ChatPanelProps = {
   initialConversations: ConversationSummary[];
   session: SessionInfo;
 };
-
-const FUTURE_NAV = ["Documents", "Spaces", "Privacy", "Operator"];
 
 function messageId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -95,7 +93,7 @@ function metaParts(meta?: AnswerMeta): string[] {
   return parts;
 }
 
-export function ChatShell({ initialConversations, session }: ChatShellProps) {
+export function ChatPanel({ initialConversations, session }: ChatPanelProps) {
   const [conversations, setConversations] = useState<ConversationSummary[]>(initialConversations);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<UiMessage[]>([]);
@@ -244,15 +242,14 @@ export function ChatShell({ initialConversations, session }: ChatShellProps) {
   }
 
   return (
-    <main className="chatShell">
-      <ConversationSidebar
+    <div className="chatWorkspace">
+      <ConversationRail
         conversations={conversations}
         currentId={selectedId}
         loading={loadingList}
         onDelete={removeConversation}
         onNewChat={startNewChat}
         onSelect={openConversation}
-        session={session}
       />
 
       <section className="chatMain">
@@ -284,18 +281,17 @@ export function ChatShell({ initialConversations, session }: ChatShellProps) {
           onSend={sendMessage}
         />
       </section>
-    </main>
+    </div>
   );
 }
 
-function ConversationSidebar({
+function ConversationRail({
   conversations,
   currentId,
   loading,
   onDelete,
   onNewChat,
   onSelect,
-  session,
 }: {
   conversations: ConversationSummary[];
   currentId: string | null;
@@ -303,18 +299,9 @@ function ConversationSidebar({
   onDelete: (id: string) => Promise<void>;
   onNewChat: () => void;
   onSelect: (id: string) => Promise<void>;
-  session: SessionInfo;
 }) {
   return (
-    <aside className="chatSidebar" aria-label="Chat navigation">
-      <div className="brandBlock">
-        <div className="brand">
-          <span className="brandMark">one</span>
-          <span>brain</span>
-        </div>
-        <p>{session.display_name || session.email}</p>
-      </div>
-
+    <aside className="conversationRail" aria-label="Conversation history">
       <button className="newChatButton" type="button" onClick={onNewChat}>
         New chat
       </button>
@@ -345,12 +332,6 @@ function ConversationSidebar({
           ))}
         </div>
       </section>
-
-      <nav className="futureNav" aria-label="Future sections">
-        {FUTURE_NAV.map((item) => (
-          <span aria-disabled="true" key={item}>{item}</span>
-        ))}
-      </nav>
     </aside>
   );
 }
