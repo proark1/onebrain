@@ -9,6 +9,9 @@ import type {
   PendingDocument,
   PlatformAccount,
   PlatformSpace,
+  PrivacyEraseInput,
+  PrivacyEraseResult,
+  PrivacyExport,
   UploadDocumentInput,
 } from "@/lib/onebrain-types";
 import { cleanScope, scopeQuery } from "@/lib/onebrain-types";
@@ -75,6 +78,23 @@ export function listPlatformAccounts(): Promise<PlatformAccount[]> {
 
 export function listPlatformSpaces(accountId: string): Promise<PlatformSpace[]> {
   return requestJson<PlatformSpace[]>(`/platform/accounts/${encodeURIComponent(accountId)}/spaces`);
+}
+
+export function exportPrivacyData(accountId: string, spaceId = ""): Promise<PrivacyExport> {
+  const params = spaceId ? `?${new URLSearchParams({ space_id: spaceId }).toString()}` : "";
+  return requestJson<PrivacyExport>(`/privacy/accounts/${encodeURIComponent(accountId)}/export${params}`);
+}
+
+export function erasePrivacyData(accountId: string, input: PrivacyEraseInput): Promise<PrivacyEraseResult> {
+  return requestJson<PrivacyEraseResult>(`/privacy/accounts/${encodeURIComponent(accountId)}/erase`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      confirm_account_id: input.confirm_account_id,
+      space_id: input.space_id || "",
+      reason: input.reason || "",
+    }),
+  });
 }
 
 export async function askStream(

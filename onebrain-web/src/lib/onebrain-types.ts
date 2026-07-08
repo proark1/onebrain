@@ -81,6 +81,47 @@ export type PlatformSpace = {
   status: string;
 };
 
+export type PrivacyAuditEvent = {
+  id: string;
+  account_id: string;
+  actor_id: string;
+  actor_type: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  space_id: string;
+  purpose: string;
+  decision: string;
+  meta: Record<string, unknown>;
+  created_at: string;
+};
+
+export type PrivacyExport = {
+  account_id: string;
+  space_id: string;
+  exported_at: string;
+  documents: Array<Record<string, unknown>>;
+  conversations: Array<Record<string, unknown>>;
+  intake_records: Array<Record<string, unknown>>;
+  audit_events: PrivacyAuditEvent[];
+};
+
+export type PrivacyEraseInput = {
+  confirm_account_id: string;
+  space_id?: string;
+  reason?: string;
+};
+
+export type PrivacyEraseResult = {
+  account_id: string;
+  space_id: string;
+  documents_deleted: number;
+  chunks_deleted: number;
+  conversations_deleted: number;
+  intake_records_deleted: number;
+  audit_event_id: string;
+};
+
 export type SourceRecord = {
   title: string;
   classification: string;

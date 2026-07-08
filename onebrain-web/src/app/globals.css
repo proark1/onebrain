@@ -39,6 +39,8 @@ body {
 }
 
 button,
+input,
+select,
 textarea {
   font: inherit;
 }
@@ -48,6 +50,8 @@ button {
 }
 
 button:disabled,
+input:disabled,
+select:disabled,
 textarea:disabled {
   cursor: not-allowed;
 }
@@ -88,6 +92,7 @@ a {
 
 .newChatButton,
 .composer button,
+.dangerButton,
 .primaryButton,
 .secondaryButton,
 .reviewButton,
@@ -103,6 +108,7 @@ a {
 
 .newChatButton:hover,
 .composer button:hover,
+.dangerButton:hover,
 .primaryButton:hover,
 .reviewButton:hover,
 .stateAction:hover {
@@ -116,10 +122,13 @@ a {
 .compactField select:focus-visible,
 .deleteConversation:focus-visible,
 .dropzone:focus-within,
+.dangerButton:focus-visible,
+.input:focus,
 .primaryButton:focus-visible,
 .secondaryButton:focus-visible,
 .reviewButton:focus-visible,
 .textButton:focus-visible,
+.textarea:focus,
 .stateAction:focus-visible {
   outline: 3px solid rgb(185 133 47 / 35%);
   outline-offset: 2px;
@@ -641,6 +650,7 @@ h2 {
 }
 
 .composer button:disabled,
+.dangerButton:disabled,
 .primaryButton:disabled,
 .secondaryButton:disabled,
 .reviewButton:disabled {
@@ -648,7 +658,25 @@ h2 {
   color: #fff;
 }
 
+.dangerButton {
+  background: var(--red);
+}
+
+.dangerButton:hover {
+  background: #963f38;
+}
+
+.dangerButton:disabled {
+  background: #aeb8b1;
+}
+
 .documentsWorkspace {
+  display: grid;
+  gap: 16px;
+  min-height: calc(100vh - 44px);
+}
+
+.privacyWorkspace {
   display: grid;
   gap: 16px;
   min-height: calc(100vh - 44px);
@@ -719,6 +747,37 @@ h2 {
   text-transform: uppercase;
 }
 
+.privacySummary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.privacySummary div,
+.resultGrid div {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgb(251 252 251 / 90%);
+  padding: 14px;
+}
+
+.privacySummary strong,
+.resultGrid strong {
+  overflow-wrap: anywhere;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.privacySummary span,
+.resultGrid span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
 .documentsGrid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
@@ -726,9 +785,17 @@ h2 {
   min-height: 0;
 }
 
+.privacyGrid {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  gap: 18px;
+}
+
 .documentLibrary,
 .uploadPanel,
-.reviewPanel {
+.reviewPanel,
+.privacyPanel,
+.blockedPanel {
   display: grid;
   align-content: start;
   gap: 14px;
@@ -737,6 +804,63 @@ h2 {
   background: rgb(251 252 251 / 92%);
   padding: 16px;
   box-shadow: 0 12px 32px rgb(23 33 29 / 7%);
+}
+
+.blockedPanel {
+  max-width: 720px;
+}
+
+.blockedPanel p {
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.privacyDanger {
+  border-color: rgb(181 75 66 / 26%);
+}
+
+.privacyScopeCard {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 13px;
+}
+
+.privacyScopeCard strong,
+.privacyScopeCard p {
+  overflow-wrap: anywhere;
+}
+
+.privacyScopeCard strong {
+  font-size: 15px;
+}
+
+.privacyScopeCard p,
+.privacyNote,
+.auditLine {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.privacyForm {
+  display: grid;
+  gap: 12px;
+}
+
+.resultPanel {
+  box-shadow: none;
+}
+
+.resultGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .documentSide {
@@ -921,7 +1045,9 @@ h2 {
   font-weight: 760;
 }
 
-.select {
+.input,
+.select,
+.textarea {
   width: 100%;
   min-height: 40px;
   border: 1px solid var(--line-strong);
@@ -932,7 +1058,15 @@ h2 {
   font: inherit;
 }
 
-.select:focus {
+.textarea {
+  min-height: 96px;
+  resize: vertical;
+  padding: 10px;
+}
+
+.input:focus,
+.select:focus,
+.textarea:focus {
   border-color: var(--green);
   outline: 3px solid rgb(44 107 79 / 14%);
 }
@@ -975,7 +1109,8 @@ h2 {
 @media (max-width: 880px) {
   .consoleShell,
   .chatWorkspace,
-  .documentsGrid {
+  .documentsGrid,
+  .privacyGrid {
     grid-template-columns: 1fr;
   }
 
@@ -990,7 +1125,7 @@ h2 {
   }
 
   .consoleNav {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .mutedNav,
@@ -1042,6 +1177,11 @@ h2 {
   }
 
   .documentStats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .privacySummary,
+  .resultGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

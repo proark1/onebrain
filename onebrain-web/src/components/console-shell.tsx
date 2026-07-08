@@ -4,7 +4,7 @@ import { WorkspaceProvider } from "@/components/workspace-provider";
 import { WorkspaceSelector } from "@/components/workspace-selector";
 import type { SessionInfo } from "@/lib/onebrain-types";
 
-type ConsoleSection = "chat" | "documents";
+type ConsoleSection = "chat" | "documents" | "privacy";
 
 type ConsoleShellProps = {
   active: ConsoleSection;
@@ -15,9 +15,10 @@ type ConsoleShellProps = {
 const PRIMARY_NAV: Array<{ id: ConsoleSection; href: string; label: string }> = [
   { id: "chat", href: "/chat", label: "Chat" },
   { id: "documents", href: "/documents", label: "Documents" },
+  { id: "privacy", href: "/privacy", label: "Privacy" },
 ];
 
-const FUTURE_NAV = ["Spaces", "Privacy", "Operator"];
+const FUTURE_NAV = ["Spaces", "Operator"];
 
 export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
   const identity = session.display_name || session.email;
