@@ -36,6 +36,12 @@ ONEBRAIN_API_BASE_URL=http://127.0.0.1:8000 npm run dev
 
 For local HTTP login, run the FastAPI API with `ONEBRAIN_COOKIE_SECURE=false` so the browser can send the session cookie to the Next.js dev server.
 
+## Deploy
+
+Build this directory as its own Railway service with `onebrain-web/Dockerfile`.
+Set `ONEBRAIN_API_BASE_URL` to the deployed FastAPI API URL, preferably the
+private Railway service URL when available.
+
 ## API Schema
 
 Export the FastAPI OpenAPI schema into the web app with:

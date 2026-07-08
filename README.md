@@ -100,7 +100,17 @@ ONEBRAIN_DATABASE_URL=postgresql://…
 
 ## Deploy to Railway
 
-Railway builds the `Dockerfile` automatically (config in `railway.json`).
+The production deployment shape is three Railway services plus Postgres:
+
+- `onebrain-api` from the root `Dockerfile`
+- `onebrain-workers` from `Dockerfile.worker`
+- `onebrain-admin-ui` from `onebrain-web/Dockerfile`
+- a Postgres service with pgvector
+
+See `docs/deployment.md` for exact service settings, variables, and smoke
+checks.
+
+Railway builds the API `Dockerfile` automatically (config in `railway.json`).
 
 1. **New Project → Deploy from GitHub repo** → pick this repo. It builds and
    boots straight away in **local mode** (no keys) with the seeded demo data.
@@ -125,10 +135,10 @@ When you outgrow the single-instance memory store (multiple replicas, real
 persistence), switch to Postgres: add a Postgres plugin and set
 `ONEBRAIN_VECTOR_STORE=pgvector` + `ONEBRAIN_DATABASE_URL` — no code change.
 
-Production Postgres deployments must run `python -m alembic upgrade head`
-before starting the API. In Postgres mode, ingestion uses durable background
-jobs by default, so run at least one worker process with
-`python -m app.workers.run`.
+Production Postgres deployments run `python -m alembic upgrade head` through
+the API startup launcher before serving traffic. In Postgres mode, ingestion
+uses durable background jobs by default, so run at least one worker process with
+`python -m app.deploy.start_worker`.
 
 ## Layout
 

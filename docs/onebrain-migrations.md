@@ -45,9 +45,18 @@ For production, migrations should run with an owner/migration database role befo
 3. Set `ONEBRAIN_MIGRATION_EMBEDDING_DIM` to match the embedding provider used by the deployment.
 4. Run `alembic upgrade head`.
 5. Start or roll FastAPI.
-6. Run a worker process with `python -m app.workers.run` when async ingestion is enabled.
+6. Run a worker process with `python -m app.deploy.start_worker` when async ingestion is enabled.
 
-An existing database that has tables but no Alembic stamp must be handled intentionally by an operator. The application does not auto-stamp or self-heal schema.
+The baseline migration can adopt a compatible pre-Alembic database created by
+the old runtime schema bootstrap. It uses `CREATE TABLE IF NOT EXISTS`,
+`CREATE INDEX IF NOT EXISTS`, and additive `ALTER TABLE ... ADD COLUMN IF NOT
+EXISTS` statements for known legacy columns. It still refuses an existing
+`chunks.embedding` vector dimension mismatch instead of rewriting customer
+data.
+
+An existing database with unknown or incompatible tables must be handled
+intentionally by an operator. The application does not auto-stamp or self-heal
+schema outside Alembic.
 
 ## Background Jobs
 
@@ -59,6 +68,8 @@ Useful settings:
 - `ONEBRAIN_WORKER_POLL_SECONDS`: worker idle poll interval.
 - `ONEBRAIN_WORKER_BATCH_SIZE`: number of jobs claimed per poll.
 - `ONEBRAIN_JOB_MAX_ATTEMPTS`: retry limit for queued jobs.
+- `ONEBRAIN_SCHEMA_WAIT_SECONDS`: deployment worker startup wait for migrated schema.
+- `ONEBRAIN_SCHEMA_WAIT_POLL_SECONDS`: schema wait poll interval.
 
 ## Embedding Model Changes
 

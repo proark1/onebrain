@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 
 from alembic import op
+from sqlalchemy import text
 
 
 revision = "0001_baseline_onebrain_schema"
@@ -46,13 +47,30 @@ def _embedding_dim() -> int:
     return dim
 
 
+def _assert_compatible_existing_chunks_table(dim: int) -> None:
+    bind = op.get_bind()
+    existing = bind.execute(
+        text(
+            "SELECT a.atttypmod FROM pg_attribute a JOIN pg_class c "
+            "ON c.oid = a.attrelid WHERE c.relname = 'chunks' AND a.attname = 'embedding'"
+        )
+    ).fetchone()
+    if existing is not None and existing[0] > 0 and existing[0] != dim:
+        raise RuntimeError(
+            "Existing pgvector chunks table has embedding dimension "
+            f"{existing[0]}, but this migration is configured for {dim}. "
+            "Run a re-embedding migration or point OneBrain at an empty/vector-compatible database."
+        )
+
+
 def upgrade() -> None:
     dim = _embedding_dim()
 
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    _assert_compatible_existing_chunks_table(dim)
     op.execute(
         """
-        CREATE TABLE users (
+        CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
             email TEXT UNIQUE NOT NULL,
             display_name TEXT NOT NULL,
@@ -67,7 +85,7 @@ def upgrade() -> None:
     )
     op.execute(
         f"""
-        CREATE TABLE chunks (
+        CREATE TABLE IF NOT EXISTS chunks (
             id TEXT PRIMARY KEY,
             doc_id TEXT NOT NULL,
             text TEXT NOT NULL,
@@ -77,11 +95,12 @@ def upgrade() -> None:
         )
         """
     )
-    op.execute("CREATE INDEX chunks_doc_id_idx ON chunks (doc_id)")
-    op.execute("CREATE INDEX chunks_tenant_idx ON chunks (tenant_id)")
+    op.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tenant_id TEXT")
+    op.execute("CREATE INDEX IF NOT EXISTS chunks_doc_id_idx ON chunks (doc_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS chunks_tenant_idx ON chunks (tenant_id)")
     op.execute(
         """
-        CREATE TABLE conversations (
+        CREATE TABLE IF NOT EXISTS conversations (
             id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
@@ -94,17 +113,19 @@ def upgrade() -> None:
         )
         """
     )
+    op.execute("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS account_id TEXT NOT NULL DEFAULT ''")
+    op.execute("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS space_id TEXT NOT NULL DEFAULT ''")
     op.execute(
-        "CREATE INDEX conv_scope_idx "
+        "CREATE INDEX IF NOT EXISTS conv_scope_idx "
         "ON conversations (tenant_id, session_id, role_id, account_id, space_id, updated_at DESC)"
     )
     op.execute(
-        "CREATE INDEX conv_scope_space_idx "
+        "CREATE INDEX IF NOT EXISTS conv_scope_space_idx "
         "ON conversations (tenant_id, session_id, role_id, account_id, space_id, updated_at DESC)"
     )
     op.execute(
         """
-        CREATE TABLE messages (
+        CREATE TABLE IF NOT EXISTS messages (
             id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
             role TEXT NOT NULL,
@@ -114,10 +135,10 @@ def upgrade() -> None:
         )
         """
     )
-    op.execute("CREATE INDEX msg_conv_idx ON messages (conversation_id, created_at)")
+    op.execute("CREATE INDEX IF NOT EXISTS msg_conv_idx ON messages (conversation_id, created_at)")
     op.execute(
         """
-        CREATE TABLE service_keys (
+        CREATE TABLE IF NOT EXISTS service_keys (
             id TEXT PRIMARY KEY,
             key_hash TEXT NOT NULL,
             tenant_id TEXT NOT NULL,
@@ -132,10 +153,14 @@ def upgrade() -> None:
         )
         """
     )
-    op.execute("CREATE INDEX service_keys_tenant_idx ON service_keys (tenant_id)")
+    op.execute("ALTER TABLE service_keys ADD COLUMN IF NOT EXISTS account_id TEXT NOT NULL DEFAULT ''")
+    op.execute("ALTER TABLE service_keys ADD COLUMN IF NOT EXISTS app_id TEXT NOT NULL DEFAULT ''")
+    op.execute("ALTER TABLE service_keys ADD COLUMN IF NOT EXISTS space_ids TEXT NOT NULL DEFAULT ''")
+    op.execute("ALTER TABLE service_keys ADD COLUMN IF NOT EXISTS purposes TEXT NOT NULL DEFAULT ''")
+    op.execute("CREATE INDEX IF NOT EXISTS service_keys_tenant_idx ON service_keys (tenant_id)")
     op.execute(
         """
-        CREATE TABLE platform_accounts (
+        CREATE TABLE IF NOT EXISTS platform_accounts (
             id TEXT PRIMARY KEY,
             kind TEXT NOT NULL,
             name TEXT NOT NULL,
@@ -147,7 +172,7 @@ def upgrade() -> None:
     )
     op.execute(
         """
-        CREATE TABLE platform_spaces (
+        CREATE TABLE IF NOT EXISTS platform_spaces (
             id TEXT PRIMARY KEY,
             account_id TEXT NOT NULL REFERENCES platform_accounts(id) ON DELETE CASCADE,
             kind TEXT NOT NULL,
@@ -157,10 +182,10 @@ def upgrade() -> None:
         )
         """
     )
-    op.execute("CREATE INDEX platform_spaces_account_idx ON platform_spaces (account_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS platform_spaces_account_idx ON platform_spaces (account_id)")
     op.execute(
         """
-        CREATE TABLE platform_app_installations (
+        CREATE TABLE IF NOT EXISTS platform_app_installations (
             id TEXT PRIMARY KEY,
             account_id TEXT NOT NULL REFERENCES platform_accounts(id) ON DELETE CASCADE,
             app_id TEXT NOT NULL,
@@ -173,12 +198,12 @@ def upgrade() -> None:
         """
     )
     op.execute(
-        "CREATE INDEX platform_app_installations_account_idx "
+        "CREATE INDEX IF NOT EXISTS platform_app_installations_account_idx "
         "ON platform_app_installations (account_id, app_id)"
     )
     op.execute(
         """
-        CREATE TABLE platform_audit_events (
+        CREATE TABLE IF NOT EXISTS platform_audit_events (
             id TEXT PRIMARY KEY,
             account_id TEXT NOT NULL,
             actor_id TEXT NOT NULL DEFAULT '',
@@ -195,10 +220,10 @@ def upgrade() -> None:
         )
         """
     )
-    op.execute("CREATE INDEX platform_audit_account_idx ON platform_audit_events (account_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS platform_audit_account_idx ON platform_audit_events (account_id)")
     op.execute(
         """
-        CREATE TABLE intake_records (
+        CREATE TABLE IF NOT EXISTS intake_records (
             id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL,
             account_id TEXT NOT NULL,
@@ -222,7 +247,7 @@ def upgrade() -> None:
         """
     )
     op.execute(
-        "CREATE INDEX intake_records_scope_idx "
+        "CREATE INDEX IF NOT EXISTS intake_records_scope_idx "
         "ON intake_records (tenant_id, account_id, space_id)"
     )
 

@@ -21,7 +21,7 @@ JOB_TABLES = ("jobs", "job_files")
 def upgrade() -> None:
     op.execute(
         """
-        CREATE TABLE jobs (
+        CREATE TABLE IF NOT EXISTS jobs (
             id TEXT PRIMARY KEY,
             type TEXT NOT NULL,
             status TEXT NOT NULL,
@@ -43,15 +43,15 @@ def upgrade() -> None:
         )
         """
     )
-    op.execute("CREATE INDEX jobs_claim_idx ON jobs (status, run_after, created_at)")
+    op.execute("CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs (status, run_after, created_at)")
     op.execute(
-        "CREATE INDEX jobs_scope_idx "
+        "CREATE INDEX IF NOT EXISTS jobs_scope_idx "
         "ON jobs (tenant_id, account_id, space_id, created_at DESC)"
     )
-    op.execute("CREATE INDEX jobs_locked_at_idx ON jobs (locked_at)")
+    op.execute("CREATE INDEX IF NOT EXISTS jobs_locked_at_idx ON jobs (locked_at)")
     op.execute(
         """
-        CREATE TABLE job_files (
+        CREATE TABLE IF NOT EXISTS job_files (
             id TEXT PRIMARY KEY,
             job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
             filename TEXT NOT NULL,
@@ -62,7 +62,7 @@ def upgrade() -> None:
         )
         """
     )
-    op.execute("CREATE INDEX job_files_job_idx ON job_files (job_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS job_files_job_idx ON job_files (job_id)")
 
 
 def downgrade() -> None:

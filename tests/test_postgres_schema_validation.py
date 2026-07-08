@@ -139,5 +139,39 @@ def test_migration_embedding_dim_env(monkeypatch):
     assert migration._embedding_dim() == 1024
 
 
+def test_baseline_migration_rejects_existing_chunks_dimension_mismatch(monkeypatch):
+    migration = _baseline_migration_module()
+
+    class FakeResult:
+        def fetchone(self):
+            return (1024,)
+
+    class FakeBind:
+        def execute(self, _sql):
+            return FakeResult()
+
+    class FakeOp:
+        def get_bind(self):
+            return FakeBind()
+
+    monkeypatch.setattr(migration, "op", FakeOp())
+
+    with pytest.raises(RuntimeError, match="embedding dimension 1024"):
+        migration._assert_compatible_existing_chunks_table(256)
+
+
+def test_baseline_migration_uses_legacy_adoption_sql():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "versions"
+        / "0001_baseline_onebrain_schema.py"
+    ).read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS chunks" in source
+    assert "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tenant_id" in source
+    assert "CREATE INDEX IF NOT EXISTS chunks_doc_id_idx" in source
+
+
 def test_migration_guidance_mentions_alembic_command():
     assert "alembic upgrade head" in MIGRATION_GUIDANCE
