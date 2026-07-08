@@ -31,6 +31,7 @@ from app.deps import (
     get_service_key_store,
     get_store,
 )
+from app.platform.base import AuditEvent
 from app.schemas import ServiceKeyInfo
 
 router = APIRouter(prefix="/api/operator", tags=["operator"])
@@ -322,7 +323,35 @@ def _service_key_out(k) -> ServiceKeyInfo:
         space_ids=list(k.space_ids),
         purposes=list(k.purposes),
         status=k.status,
+        last_used_at=k.last_used_at,
+        last_used_endpoint=k.last_used_endpoint,
+        use_count=k.use_count,
+        rotated_from_id=k.rotated_from_id,
+        revoked_at=k.revoked_at,
     )
+
+
+def _record_operator_key_audit(action: str, principal: Principal, key) -> None:
+    get_platform_store().record_audit(AuditEvent(
+        id=f"aud_{uuid4().hex}",
+        account_id=key.account_id or key.tenant_id,
+        actor_id=principal.user_id,
+        actor_type=principal.principal_type,
+        action=action,
+        target_type="service_key",
+        target_id=key.id,
+        space_id=key.space_ids[0] if len(key.space_ids) == 1 else "",
+        app_id=key.app_id,
+        purpose=key.purposes[0] if len(key.purposes) == 1 else "",
+        decision="recorded",
+        meta={
+            "label": key.label,
+            "account_id": key.account_id,
+            "app_id": key.app_id,
+            "space_ids": list(key.space_ids),
+            "purposes": list(key.purposes),
+        },
+    ))
 
 
 def _require_account(account_id: str) -> None:
@@ -454,6 +483,7 @@ def revoke_account_service_key(account_id: str, key_id: str, principal: Principa
     if not key or key.tenant_id != account_id:
         raise HTTPException(status_code=404, detail="Service key not found.")
     get_service_key_store().revoke(key_id)
+    _record_operator_key_audit("service_key.revoked", principal, key)
     return {"revoked": key_id}
 
 

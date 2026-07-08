@@ -38,6 +38,11 @@ class ServiceKey:
     purposes: tuple = ()
     status: str = "active"          # active | revoked
     created_at: str = ""
+    last_used_at: str = ""
+    last_used_endpoint: str = ""
+    use_count: int = 0
+    rotated_from_id: str = ""
+    revoked_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -79,6 +84,12 @@ def parse_key(token: str) -> Optional[tuple[str, str]]:
     return key_id, secret
 
 
+def sanitize_usage_endpoint(endpoint: str) -> str:
+    """Keep only coarse backend-controlled endpoint labels."""
+    clean = "".join(ch for ch in (endpoint or "") if ch.isalnum() or ch in "._:-")
+    return (clean or "service.unknown")[:120]
+
+
 class ServiceKeyStore(Protocol):
     def get(self, key_id: str) -> Optional[ServiceKey]: ...
 
@@ -89,3 +100,7 @@ class ServiceKeyStore(Protocol):
     def revoke(self, key_id: str) -> bool: ...
 
     def summary(self, tenant_id: str = "") -> ServiceKeySummary: ...
+
+    def record_usage(self, key_id: str, endpoint: str) -> ServiceKey: ...
+
+    def rotate(self, old_key_id: str, new_key: ServiceKey) -> ServiceKey: ...

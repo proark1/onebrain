@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from fastapi import Cookie, Header, HTTPException
+from fastapi import Cookie, Header, HTTPException, Request
 
 from app.auth.roles import ROLES
 from app.auth.tokens import read_token
@@ -114,7 +114,28 @@ def resolve_principal(ob_session: str = Cookie(default="")) -> Principal:
 # PUBLIC, and its tenant comes from the key record — NEVER from the caller. This
 # is the hard ceiling that lets an untrusted comms adapter / partner service talk
 # to the brain without ever being able to read internal data.
-def resolve_service_principal(authorization: str = Header(default="")) -> Principal:
+SERVICE_USAGE_ENDPOINTS = {
+    "capabilities": "service.capabilities",
+    "intake": "service.intake",
+    "capture": "service.capture",
+    "service_ask": "service.ask",
+    "create_assistant_record": "service.assistant.records.create",
+    "list_assistant_records": "service.assistant.records.list",
+    "get_assistant_record": "service.assistant.records.read",
+    "record_assistant_audit_event": "service.assistant.audit",
+    "get_job": "jobs.read",
+}
+
+
+def _usage_endpoint_from_request(request: Request | None) -> str:
+    if request is None:
+        return "service.auth"
+    endpoint = request.scope.get("endpoint")
+    name = getattr(endpoint, "__name__", "")
+    return SERVICE_USAGE_ENDPOINTS.get(name, "service.unknown")
+
+
+def service_principal_from_authorization(authorization: str, usage_endpoint: str = "service.auth") -> Principal:
     from app.deps import get_service_key_store
     from app.servicekeys.base import parse_key, verify_secret
 
@@ -128,6 +149,7 @@ def resolve_service_principal(authorization: str = Header(default="")) -> Princi
     # Fail closed: unknown key, revoked key, or a secret mismatch all deny.
     if not key or key.status != "active" or not verify_secret(secret, key.key_hash):
         raise HTTPException(status_code=401, detail="Invalid service key")
+    key = get_service_key_store().record_usage(key.id, usage_endpoint)
 
     return Principal(
         user_id=f"svc:{key.id}",
@@ -146,3 +168,10 @@ def resolve_service_principal(authorization: str = Header(default="")) -> Princi
         app_id=key.app_id,
         purposes=frozenset(key.purposes) if key.purposes else None,
     )
+
+
+def resolve_service_principal(
+    authorization: str = Header(default=""),
+    request: Request = None,
+) -> Principal:
+    return service_principal_from_authorization(authorization, _usage_endpoint_from_request(request))

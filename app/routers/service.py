@@ -234,6 +234,72 @@ def _rate_limit(principal: Principal) -> None:
                             headers={"Retry-After": str(wait)})
 
 
+def _service_key_info(k: ServiceKey) -> ServiceKeyInfo:
+    return ServiceKeyInfo(
+        id=k.id,
+        tenant_id=k.tenant_id,
+        scopes=list(k.scopes),
+        label=k.label,
+        account_id=k.account_id,
+        app_id=k.app_id,
+        space_ids=list(k.space_ids),
+        purposes=list(k.purposes),
+        status=k.status,
+        last_used_at=k.last_used_at,
+        last_used_endpoint=k.last_used_endpoint,
+        use_count=k.use_count,
+        rotated_from_id=k.rotated_from_id,
+        revoked_at=k.revoked_at,
+    )
+
+
+def _minted_key_out(k: ServiceKey, plaintext: str) -> MintedKey:
+    return MintedKey(
+        id=k.id,
+        key=plaintext,
+        tenant_id=k.tenant_id,
+        scopes=list(k.scopes),
+        label=k.label,
+        account_id=k.account_id,
+        app_id=k.app_id,
+        space_ids=list(k.space_ids),
+        purposes=list(k.purposes),
+        rotated_from_id=k.rotated_from_id,
+    )
+
+
+def _key_audit_meta(k: ServiceKey, extra: dict | None = None) -> dict:
+    meta = {
+        "scopes": list(k.scopes),
+        "label": k.label,
+        "account_id": k.account_id,
+        "app_id": k.app_id,
+        "space_ids": list(k.space_ids),
+        "purposes": list(k.purposes),
+    }
+    if extra:
+        meta.update(extra)
+    return meta
+
+
+def _record_key_audit(action: str, principal: Principal, key: ServiceKey, extra: dict | None = None) -> None:
+    account_id = key.account_id or key.tenant_id or principal.tenant_id
+    get_platform_store().record_audit(AuditEvent(
+        id=f"aud_{uuid4().hex}",
+        account_id=account_id,
+        actor_id=principal.user_id,
+        actor_type=principal.principal_type,
+        action=action,
+        target_type="service_key",
+        target_id=key.id,
+        space_id=key.space_ids[0] if len(key.space_ids) == 1 else "",
+        app_id=key.app_id,
+        purpose=key.purposes[0] if len(key.purposes) == 1 else "",
+        decision="recorded",
+        meta=_key_audit_meta(key, extra),
+    ))
+
+
 # --- Service data surface (service-key auth) -----------------------------
 @service_router.get("/capabilities", response_model=ServiceCapabilitiesResponse)
 def capabilities(principal: Principal = Depends(resolve_service_principal)):
@@ -390,27 +456,19 @@ def mint_key(body: ServiceKeyCreate, principal: Principal = Depends(resolve_prin
         raise HTTPException(status_code=409, detail="This tenant already holds the maximum number of active service keys.")
     key_id, secret, plaintext = generate_key()
     # A key is minted for the admin's OWN tenant — no cross-tenant minting.
-    get_service_key_store().create(ServiceKey(
+    key = get_service_key_store().create(ServiceKey(
         id=key_id, key_hash=hash_secret(secret), tenant_id=principal.tenant_id,
         scopes=scopes, label=body.label or "", account_id=account_id, app_id=app_id,
         space_ids=space_ids, purposes=purposes,
     ))
-    return MintedKey(id=key_id, key=plaintext, tenant_id=principal.tenant_id,
-                     scopes=list(scopes), label=body.label or "", account_id=account_id,
-                     app_id=app_id, space_ids=list(space_ids), purposes=list(purposes))
+    _record_key_audit("service_key.minted", principal, key)
+    return _minted_key_out(key, plaintext)
 
 
 @keys_router.get("", response_model=list[ServiceKeyInfo])
 def list_keys(principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
-    return [
-        ServiceKeyInfo(
-            id=k.id, tenant_id=k.tenant_id, scopes=list(k.scopes), label=k.label,
-            account_id=k.account_id, app_id=k.app_id, space_ids=list(k.space_ids),
-            purposes=list(k.purposes), status=k.status,
-        )
-        for k in get_service_key_store().list_by_tenant(principal.tenant_id)
-    ]
+    return [_service_key_info(k) for k in get_service_key_store().list_by_tenant(principal.tenant_id)]
 
 
 @keys_router.delete("/{key_id}")
@@ -421,4 +479,40 @@ def revoke_key(key_id: str, principal: Principal = Depends(resolve_principal)):
     if not key or key.tenant_id != principal.tenant_id:
         raise HTTPException(status_code=404, detail="Service key not found.")
     get_service_key_store().revoke(key_id)
+    _record_key_audit("service_key.revoked", principal, key)
     return {"revoked": key_id}
+
+
+@keys_router.post("/{key_id}/rotate", response_model=MintedKey)
+def rotate_key(key_id: str, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    old = get_service_key_store().get(key_id)
+    if not old or old.tenant_id != principal.tenant_id:
+        raise HTTPException(status_code=404, detail="Service key not found.")
+    if old.status != "active":
+        raise HTTPException(status_code=409, detail="Only active service keys can be rotated.")
+    new_key_id, secret, plaintext = generate_key()
+    try:
+        rotated = get_service_key_store().rotate(
+            old.id,
+            ServiceKey(
+                id=new_key_id,
+                key_hash=hash_secret(secret),
+                tenant_id=old.tenant_id,
+                scopes=old.scopes,
+                label=old.label,
+                account_id=old.account_id,
+                app_id=old.app_id,
+                space_ids=old.space_ids,
+                purposes=old.purposes,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _record_key_audit(
+        "service_key.rotated",
+        principal,
+        rotated,
+        extra={"old_key_id": old.id, "new_key_id": rotated.id},
+    )
+    return _minted_key_out(rotated, plaintext)

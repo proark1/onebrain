@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException
 
-from app.auth.principal import Principal, resolve_principal, resolve_service_principal
+from app.auth.principal import Principal, resolve_principal, service_principal_from_authorization
 from app.deps import get_job_store, get_platform_store
 from app.jobs.base import Job
 from app.platform.scope import scoped_human_principal, selected_space_id
@@ -55,7 +55,7 @@ def resolve_job_principal(
     authorization: str = Header(default=""),
 ) -> Principal:
     if authorization.startswith("Bearer "):
-        return resolve_service_principal(authorization=authorization)
+        return service_principal_from_authorization(authorization, "jobs.read")
     return resolve_principal(ob_session=ob_session)
 
 

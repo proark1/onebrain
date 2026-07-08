@@ -147,7 +147,9 @@ After deploy:
 7. As an admin, call `GET /api/operator/observability` and confirm it returns
    runtime, retrieval, storage, service-key, and job queue sections without
    customer content.
-8. Check worker logs for `worker started` and `job succeeded`.
+8. Mint a temporary service key, call `/api/service/capabilities`, rotate the
+   key, and confirm the old key receives `401` while the new key works.
+9. Check worker logs for `worker started` and `job succeeded`.
 
 ## Local Docker Checks
 

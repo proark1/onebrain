@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from app.db.schema import validate_postgres_schema
-from app.servicekeys.base import ServiceKey, ServiceKeySummary
+from app.servicekeys.base import ServiceKey, ServiceKeySummary, sanitize_usage_endpoint
 
 
 class PostgresServiceKeyStore:
@@ -31,9 +31,15 @@ class PostgresServiceKeyStore:
             space_ids=tuple(s for s in (r[7] or "").split(",") if s),
             purposes=tuple(s for s in (r[8] or "").split(",") if s),
             status=r[9], created_at=r[10].isoformat() if r[10] else "",
+            last_used_at=_iso(r[11]), last_used_endpoint=r[12] or "",
+            use_count=int(r[13] or 0), rotated_from_id=r[14] or "",
+            revoked_at=_iso(r[15]),
         )
 
-    _COLS = "id, key_hash, tenant_id, scopes, label, account_id, app_id, space_ids, purposes, status, created_at"
+    _COLS = (
+        "id, key_hash, tenant_id, scopes, label, account_id, app_id, space_ids, purposes, status, created_at, "
+        "last_used_at, last_used_endpoint, use_count, rotated_from_id, revoked_at"
+    )
 
     def get(self, key_id: str) -> Optional[ServiceKey]:
         with self._conn() as conn, conn.cursor() as cur:
@@ -47,11 +53,13 @@ class PostgresServiceKeyStore:
             # rather than hand the admin a plaintext for an unstored key.
             cur.execute(
                 "INSERT INTO service_keys "
-                "(id, key_hash, tenant_id, scopes, label, account_id, app_id, space_ids, purposes, status) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "(id, key_hash, tenant_id, scopes, label, account_id, app_id, space_ids, purposes, status, "
+                "last_used_endpoint, use_count, rotated_from_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     key.id, key.key_hash, key.tenant_id, ",".join(key.scopes), key.label,
                     key.account_id, key.app_id, ",".join(key.space_ids), ",".join(key.purposes), key.status,
+                    key.last_used_endpoint, int(key.use_count or 0), key.rotated_from_id,
                 ),
             )
             conn.commit()
@@ -65,7 +73,10 @@ class PostgresServiceKeyStore:
 
     def revoke(self, key_id: str) -> bool:
         with self._conn() as conn, conn.cursor() as cur:
-            cur.execute("UPDATE service_keys SET status = 'revoked' WHERE id = %s", (key_id,))
+            cur.execute(
+                "UPDATE service_keys SET status = 'revoked', revoked_at = COALESCE(revoked_at, now()) WHERE id = %s",
+                (key_id,),
+            )
             changed = cur.rowcount
             conn.commit()
         return changed > 0
@@ -87,3 +98,59 @@ class PostgresServiceKeyStore:
             active=by_status.get("active", 0),
             revoked=by_status.get("revoked", 0),
         )
+
+    def record_usage(self, key_id: str, endpoint: str) -> ServiceKey:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE service_keys
+                SET last_used_at = now(),
+                    last_used_endpoint = %s,
+                    use_count = use_count + 1
+                WHERE id = %s AND status = 'active'
+                RETURNING {self._COLS}
+                """,
+                (sanitize_usage_endpoint(endpoint), key_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        if not row:
+            raise KeyError(f"unknown active service key: {key_id}")
+        return self._row(row)
+
+    def rotate(self, old_key_id: str, new_key: ServiceKey) -> ServiceKey:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT {self._COLS} FROM service_keys WHERE id = %s FOR UPDATE", (old_key_id,))
+            old_row = cur.fetchone()
+            if not old_row:
+                raise KeyError(f"unknown service key: {old_key_id}")
+            old = self._row(old_row)
+            if old.status != "active":
+                raise ValueError("cannot rotate inactive service key")
+            if new_key.tenant_id != old.tenant_id:
+                raise ValueError("rotated service key must stay in the same tenant")
+            cur.execute(
+                f"""
+                INSERT INTO service_keys (
+                    id, key_hash, tenant_id, scopes, label, account_id, app_id, space_ids, purposes,
+                    status, last_used_endpoint, use_count, rotated_from_id
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', '', 0, %s)
+                RETURNING {self._COLS}
+                """,
+                (
+                    new_key.id, new_key.key_hash, old.tenant_id, ",".join(old.scopes), old.label,
+                    old.account_id, old.app_id, ",".join(old.space_ids), ",".join(old.purposes), old.id,
+                ),
+            )
+            row = cur.fetchone()
+            cur.execute(
+                "UPDATE service_keys SET status = 'revoked', revoked_at = COALESCE(revoked_at, now()) WHERE id = %s",
+                (old.id,),
+            )
+            conn.commit()
+        return self._row(row)
+
+
+def _iso(value) -> str:
+    return value.isoformat() if value else ""

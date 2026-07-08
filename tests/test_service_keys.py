@@ -9,17 +9,37 @@ import pytest
 from fastapi import HTTPException
 
 import app.deps
+import app.routers.service as service_router
+from app.auth.principal import Principal
 from app.auth.principal import resolve_service_principal
+from app.auth.roles import ROLES
 from app.embeddings.local import LocalEmbedder
 from app.ingest.pipeline import IngestPipeline
 from app.llm.local import LocalLLM
+from app.platform.base import Account
+from app.platform.memory import MemoryPlatformStore
 from app.retrieval.service import RetrievalService
+from app.schemas import ServiceKeyCreate
 from app.security.policy import CAPTURED_CATEGORY, Classification
 from app.servicekeys.base import (
     SCOPE_READ, SCOPE_WRITE, ServiceKey, generate_key, hash_secret, parse_key, verify_secret,
 )
 from app.servicekeys.memory import MemoryServiceKeyStore
 from app.store.memory import MemoryStore
+
+
+def _admin(tenant: str = "nft_gym") -> Principal:
+    role = ROLES["admin"]
+    return Principal(
+        user_id="admin@onebrain",
+        role_id=role.id,
+        role_label=role.label,
+        clearance=role.clearance,
+        locations=None,
+        categories=role.categories,
+        location_label="all",
+        tenant_id=tenant,
+    )
 
 
 def test_key_helpers_roundtrip():
@@ -84,6 +104,64 @@ def test_memory_service_key_store_summary_counts_statuses_and_tenants():
     assert tenant_keys.revoked == 1
 
 
+def test_memory_service_key_store_records_usage_and_rotates_immediately():
+    store = MemoryServiceKeyStore()
+    old = store.create(ServiceKey(
+        id="key_old",
+        key_hash=hash_secret("old"),
+        tenant_id="nft_gym",
+        scopes=(SCOPE_READ,),
+        label="Communication",
+        account_id="nft_gym",
+        app_id="communication",
+        space_ids=("sp_customer",),
+        purposes=("customer_service_answer",),
+    ))
+
+    used = store.record_usage(old.id, "service.ask")
+
+    assert used.use_count == 1
+    assert used.last_used_at
+    assert used.last_used_endpoint == "service.ask"
+
+    rotated = store.rotate(
+        old.id,
+        ServiceKey(
+            id="key_new",
+            key_hash=hash_secret("new"),
+            tenant_id="nft_gym",
+            scopes=old.scopes,
+            label=old.label,
+        ),
+    )
+
+    assert rotated.status == "active"
+    assert rotated.rotated_from_id == "key_old"
+    assert rotated.use_count == 0
+    assert rotated.account_id == "nft_gym"
+    assert rotated.space_ids == ("sp_customer",)
+    assert store.get("key_old").status == "revoked"
+    assert store.get("key_old").revoked_at
+    with pytest.raises(ValueError, match="inactive"):
+        store.rotate("key_old", ServiceKey(id="key_newer", key_hash="x", tenant_id="nft_gym", scopes=(SCOPE_READ,)))
+
+
+def test_resolve_service_principal_records_usage_after_valid_secret_only(monkeypatch):
+    store, key_id, plaintext = _store_with_key(monkeypatch, scopes=(SCOPE_READ,), tenant="nft_gym")
+
+    with pytest.raises(HTTPException):
+        resolve_service_principal(authorization=f"Bearer sk_{key_id}_wrong")
+    assert store.get(key_id).use_count == 0
+    assert store.get(key_id).last_used_at == ""
+
+    principal = resolve_service_principal(authorization=f"Bearer {plaintext}")
+
+    assert principal.user_id == f"svc:{key_id}"
+    assert store.get(key_id).use_count == 1
+    assert store.get(key_id).last_used_at
+    assert store.get(key_id).last_used_endpoint == "service.auth"
+
+
 def test_missing_invalid_and_revoked_keys_fail_closed(monkeypatch):
     store, key_id, plaintext = _store_with_key(monkeypatch)
     for bad in ("", "Bearer ", "Bearer not-a-key", f"Bearer sk_{key_id}_wrongsecret"):
@@ -96,6 +174,80 @@ def test_missing_invalid_and_revoked_keys_fail_closed(monkeypatch):
     with pytest.raises(HTTPException) as e:
         resolve_service_principal(authorization=f"Bearer {plaintext}")
     assert e.value.status_code == 401
+
+
+def test_service_key_management_audits_mint_revoke_and_rotate(monkeypatch):
+    keys = MemoryServiceKeyStore()
+    platform = MemoryPlatformStore()
+    platform.create_account(Account(id="nft_gym", kind="organization", name="NFT Gym"))
+    monkeypatch.setattr(app.deps, "get_service_key_store", lambda: keys)
+    monkeypatch.setattr(service_router, "get_service_key_store", lambda: keys)
+    monkeypatch.setattr(service_router, "get_platform_store", lambda: platform)
+
+    minted = service_router.mint_key(
+        ServiceKeyCreate(
+            scopes=[SCOPE_READ],
+            label="Communication integration",
+            app_id="communication",
+            space_ids=["sp_customer"],
+            purposes=["customer_service_answer"],
+        ),
+        principal=_admin(),
+    )
+
+    assert minted.key.startswith(f"sk_{minted.id}_")
+    assert minted.rotated_from_id == ""
+    assert keys.get(minted.id).status == "active"
+    listed = service_router.list_keys(principal=_admin())
+    assert listed[0].id == minted.id
+    assert listed[0].use_count == 0
+    assert not hasattr(listed[0], "key")
+    assert not hasattr(listed[0], "key_hash")
+
+    rotated = service_router.rotate_key(minted.id, principal=_admin())
+
+    assert rotated.id != minted.id
+    assert rotated.key.startswith(f"sk_{rotated.id}_")
+    assert rotated.rotated_from_id == minted.id
+    assert keys.get(minted.id).status == "revoked"
+    assert keys.get(minted.id).revoked_at
+    assert keys.get(rotated.id).status == "active"
+    assert keys.get(rotated.id).rotated_from_id == minted.id
+    with pytest.raises(HTTPException) as exc:
+        resolve_service_principal(authorization=f"Bearer {minted.key}")
+    assert exc.value.status_code == 401
+    assert resolve_service_principal(authorization=f"Bearer {rotated.key}").user_id == f"svc:{rotated.id}"
+
+    service_router.revoke_key(rotated.id, principal=_admin())
+
+    actions = [event.action for event in platform.list_audit("nft_gym")]
+    assert actions == ["service_key.minted", "service_key.rotated", "service_key.revoked"]
+    audit_dump = str([event.meta for event in platform.list_audit("nft_gym")])
+    assert minted.key not in audit_dump
+    assert rotated.key not in audit_dump
+    assert "sha256$" not in audit_dump
+
+
+def test_service_key_rotate_is_admin_and_tenant_scoped(monkeypatch):
+    keys = MemoryServiceKeyStore()
+    platform = MemoryPlatformStore()
+    platform.create_account(Account(id="nft_gym", kind="organization", name="NFT Gym"))
+    key = keys.create(ServiceKey(id="key_a", key_hash="x", tenant_id="nft_gym", scopes=(SCOPE_READ,)))
+    monkeypatch.setattr(service_router, "get_service_key_store", lambda: keys)
+    monkeypatch.setattr(service_router, "get_platform_store", lambda: platform)
+
+    with pytest.raises(HTTPException) as exc:
+        service_router.rotate_key(key.id, principal=_svc_principal())
+    assert exc.value.status_code == 403
+
+    with pytest.raises(HTTPException) as exc:
+        service_router.rotate_key(key.id, principal=_admin("other"))
+    assert exc.value.status_code == 404
+
+    keys.revoke(key.id)
+    with pytest.raises(HTTPException) as exc:
+        service_router.rotate_key(key.id, principal=_admin())
+    assert exc.value.status_code == 409
 
 
 def _svc_principal(tenant="nft_gym", scopes=(SCOPE_READ,)):

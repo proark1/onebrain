@@ -84,6 +84,20 @@ def _jobs_migration_module():
     return module
 
 
+def _service_key_lifecycle_migration_module():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "versions"
+        / "0003_service_key_lifecycle.py"
+    )
+    spec = importlib.util.spec_from_file_location("service_key_lifecycle_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_validate_postgres_schema_requires_alembic_version_table():
     conn = FakeConnection(FakeCursor(missing_version_table=True))
 
@@ -126,9 +140,23 @@ def test_baseline_migration_tracks_expected_tables_and_revision():
 def test_jobs_migration_tracks_expected_tables_and_revision():
     migration = _jobs_migration_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision == "0002_postgres_worker_jobs"
     assert migration.down_revision == BASELINE_ALEMBIC_REVISION
     assert {"jobs", "job_files"} == set(migration.JOB_TABLES)
+
+
+def test_service_key_lifecycle_migration_tracks_expected_head():
+    migration = _service_key_lifecycle_migration_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.down_revision == "0002_postgres_worker_jobs"
+    assert {
+        "last_used_at",
+        "last_used_endpoint",
+        "use_count",
+        "rotated_from_id",
+        "revoked_at",
+    } == set(migration.SERVICE_KEY_LIFECYCLE_COLUMNS)
 
 
 def test_migration_embedding_dim_env(monkeypatch):

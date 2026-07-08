@@ -148,6 +148,11 @@ export type ServiceKeyInfo = {
   space_ids: string[];
   purposes: string[];
   status: string;
+  last_used_at: string;
+  last_used_endpoint: string;
+  use_count: number;
+  rotated_from_id: string;
+  revoked_at: string;
 };
 
 export type ProvisioningBundle = {

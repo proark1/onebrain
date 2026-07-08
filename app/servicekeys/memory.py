@@ -10,16 +10,24 @@ from __future__ import annotations
 import json
 import os
 import threading
+from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from app.servicekeys.base import ServiceKey, ServiceKeySummary
+from app.servicekeys.base import ServiceKey, ServiceKeySummary, sanitize_usage_endpoint
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _to_dict(k: ServiceKey) -> dict:
     return {"id": k.id, "key_hash": k.key_hash, "tenant_id": k.tenant_id,
             "scopes": list(k.scopes), "label": k.label, "account_id": k.account_id, "app_id": k.app_id,
             "space_ids": list(k.space_ids), "purposes": list(k.purposes),
-            "status": k.status, "created_at": k.created_at}
+            "status": k.status, "created_at": k.created_at, "last_used_at": k.last_used_at,
+            "last_used_endpoint": k.last_used_endpoint, "use_count": k.use_count,
+            "rotated_from_id": k.rotated_from_id, "revoked_at": k.revoked_at}
 
 
 def _from_dict(d: dict) -> ServiceKey:
@@ -27,7 +35,12 @@ def _from_dict(d: dict) -> ServiceKey:
                       scopes=tuple(d.get("scopes", [])), label=d.get("label", ""),
                       account_id=d.get("account_id", ""), app_id=d.get("app_id", ""),
                       space_ids=tuple(d.get("space_ids", [])), purposes=tuple(d.get("purposes", [])),
-                      status=d.get("status", "active"), created_at=d.get("created_at", ""))
+                      status=d.get("status", "active"), created_at=d.get("created_at", ""),
+                      last_used_at=d.get("last_used_at", ""),
+                      last_used_endpoint=d.get("last_used_endpoint", ""),
+                      use_count=int(d.get("use_count", 0) or 0),
+                      rotated_from_id=d.get("rotated_from_id", ""),
+                      revoked_at=d.get("revoked_at", ""))
 
 
 class MemoryServiceKeyStore:
@@ -56,7 +69,8 @@ class MemoryServiceKeyStore:
             json.dump([_to_dict(k) for k in self._by_id.values()], fh)
 
     def get(self, key_id: str) -> Optional[ServiceKey]:
-        return self._by_id.get(key_id)
+        with self._lock:
+            return self._by_id.get(key_id)
 
     def create(self, key: ServiceKey) -> ServiceKey:
         with self._lock:
@@ -67,7 +81,8 @@ class MemoryServiceKeyStore:
             return key
 
     def list_by_tenant(self, tenant_id: str) -> List[ServiceKey]:
-        return [k for k in self._by_id.values() if k.tenant_id == tenant_id]
+        with self._lock:
+            return [k for k in self._by_id.values() if k.tenant_id == tenant_id]
 
     def revoke(self, key_id: str) -> bool:
         with self._lock:
@@ -75,6 +90,7 @@ class MemoryServiceKeyStore:
             if not key:
                 return False
             key.status = "revoked"
+            key.revoked_at = key.revoked_at or _now()
             self._save()
             return True
 
@@ -87,3 +103,48 @@ class MemoryServiceKeyStore:
         active = sum(1 for key in keys if key.status == "active")
         revoked = sum(1 for key in keys if key.status == "revoked")
         return ServiceKeySummary(total=len(keys), active=active, revoked=revoked)
+
+    def record_usage(self, key_id: str, endpoint: str) -> ServiceKey:
+        with self._lock:
+            key = self._by_id.get(key_id)
+            if not key:
+                raise KeyError(f"unknown service key: {key_id}")
+            if key.status != "active":
+                raise ValueError("cannot record usage for inactive service key")
+            key.last_used_at = _now()
+            key.last_used_endpoint = sanitize_usage_endpoint(endpoint)
+            key.use_count = int(key.use_count or 0) + 1
+            self._save()
+            return key
+
+    def rotate(self, old_key_id: str, new_key: ServiceKey) -> ServiceKey:
+        with self._lock:
+            old = self._by_id.get(old_key_id)
+            if not old:
+                raise KeyError(f"unknown service key: {old_key_id}")
+            if old.status != "active":
+                raise ValueError("cannot rotate inactive service key")
+            if new_key.id in self._by_id:
+                raise ValueError(f"service key id already exists: {new_key.id}")
+            if new_key.tenant_id != old.tenant_id:
+                raise ValueError("rotated service key must stay in the same tenant")
+            rotated = replace(
+                new_key,
+                scopes=old.scopes,
+                label=old.label,
+                account_id=old.account_id,
+                app_id=old.app_id,
+                space_ids=old.space_ids,
+                purposes=old.purposes,
+                status="active",
+                last_used_at="",
+                last_used_endpoint="",
+                use_count=0,
+                rotated_from_id=old.id,
+                revoked_at="",
+            )
+            old.status = "revoked"
+            old.revoked_at = old.revoked_at or _now()
+            self._by_id[rotated.id] = rotated
+            self._save()
+            return rotated

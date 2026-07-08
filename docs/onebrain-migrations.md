@@ -33,6 +33,7 @@ The Alembic baseline covers the current Postgres-backed app schema:
 - platform accounts/spaces/app installations/audit
 - intake records
 - background jobs and job file payloads
+- service-key lifecycle metadata
 
 It does not create control-plane tables yet because the active control plane is still JSON-backed. Add a `PostgresControlPlaneStore` and matching migrations before moving operator release, backup, health, and rollout state into Postgres.
 
@@ -70,6 +71,17 @@ Useful settings:
 - `ONEBRAIN_JOB_MAX_ATTEMPTS`: retry limit for queued jobs.
 - `ONEBRAIN_SCHEMA_WAIT_SECONDS`: deployment worker startup wait for migrated schema.
 - `ONEBRAIN_SCHEMA_WAIT_POLL_SECONDS`: schema wait poll interval.
+
+## Service-Key Lifecycle
+
+Migration `0003_service_key_lifecycle` adds lifecycle metadata to
+`service_keys`: last-used timestamp, last-used endpoint label, use count,
+rotation lineage, and revoked timestamp. Successful service-key authentication
+updates only coarse metadata; it never records bearer tokens, secrets, request
+bodies, document text, or intake content.
+
+Admins can rotate a service key with `POST /api/service-keys/{key_id}/rotate`.
+Rotation returns the new plaintext once and revokes the old key immediately.
 
 ## Embedding Model Changes
 

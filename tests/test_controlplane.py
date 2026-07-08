@@ -279,6 +279,7 @@ def test_operator_can_list_and_revoke_customer_integration_keys(monkeypatch):
         space_ids=("sp_acme_customer",),
         purposes=("customer_service_answer",),
     ))
+    keys.record_usage("key_comm", "service.ask")
     monkeypatch.setattr(operator_router, "get_platform_store", lambda: platform)
     monkeypatch.setattr(operator_router, "get_service_key_store", lambda: keys)
 
@@ -287,12 +288,16 @@ def test_operator_can_list_and_revoke_customer_integration_keys(monkeypatch):
     assert len(listed) == 1
     assert listed[0].id == "key_comm"
     assert listed[0].app_id == "communication"
+    assert listed[0].last_used_endpoint == "service.ask"
+    assert listed[0].use_count == 1
     assert not hasattr(listed[0], "key")
 
     revoked = operator_router.revoke_account_service_key("acme", "key_comm", principal=_admin())
 
     assert revoked == {"revoked": "key_comm"}
     assert keys.get("key_comm").status == "revoked"
+    assert platform.list_audit("acme")[-1].action == "service_key.revoked"
+    assert "secret" not in str(platform.list_audit("acme")[-1].meta)
 
     with pytest.raises(HTTPException) as exc:
         operator_router.list_account_service_keys("missing", principal=_admin())

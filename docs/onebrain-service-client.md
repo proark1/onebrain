@@ -57,3 +57,19 @@ The service API is intentionally narrow. It stores data in the scoped OneBrain
 account/space and returns public-ceiled answers without sources. The operator
 dashboard can inspect metadata, keys, versions, and rollout state, but it does
 not expose customer content.
+
+## Key Lifecycle
+
+Admins can list key metadata with `GET /api/service-keys`. Responses include
+safe lifecycle fields such as `last_used_at`, `last_used_endpoint`,
+`use_count`, `rotated_from_id`, and `revoked_at`. They never include the key
+hash or plaintext secret.
+
+Rotate a key with:
+
+```http
+POST /api/service-keys/{key_id}/rotate
+```
+
+The response returns the new plaintext once. The old key is revoked immediately,
+so update the calling integration before discarding the new value.

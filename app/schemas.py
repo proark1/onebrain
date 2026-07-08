@@ -238,6 +238,7 @@ class MintedKey(BaseModel):
     app_id: str = ""
     space_ids: list[str] = Field(default_factory=list)
     purposes: list[str] = Field(default_factory=list)
+    rotated_from_id: str = ""
 
 
 class ServiceKeyInfo(BaseModel):
@@ -250,3 +251,8 @@ class ServiceKeyInfo(BaseModel):
     space_ids: list[str] = Field(default_factory=list)
     purposes: list[str] = Field(default_factory=list)
     status: str = "active"
+    last_used_at: str = ""
+    last_used_endpoint: str = ""
+    use_count: int = 0
+    rotated_from_id: str = ""
+    revoked_at: str = ""
