@@ -32,7 +32,7 @@ from app.deps import (
     get_store,
 )
 from app.platform.base import AuditEvent
-from app.schemas import ServiceKeyInfo
+from app.schemas import BrandThemeOut, ServiceKeyInfo
 
 router = APIRouter(prefix="/api/operator", tags=["operator"])
 
@@ -181,6 +181,8 @@ class CustomerOverviewOut(BaseModel):
     account: OperatorAccountOut
     spaces: list[OperatorSpaceOut] = Field(default_factory=list)
     apps: list[OperatorAppOut] = Field(default_factory=list)
+    brand_theme: BrandThemeOut
+    brand_themes: list[BrandThemeOut] = Field(default_factory=list)
     service_keys: list[ServiceKeyInfo] = Field(default_factory=list)
     deployment: DeploymentOut | None = None
     modules: list[ModuleOut] = Field(default_factory=list)
@@ -328,6 +330,30 @@ def _service_key_out(k) -> ServiceKeyInfo:
         use_count=k.use_count,
         rotated_from_id=k.rotated_from_id,
         revoked_at=k.revoked_at,
+    )
+
+
+def _brand_theme_out(theme) -> BrandThemeOut:
+    return BrandThemeOut(
+        id=theme.id,
+        account_id=theme.account_id,
+        app_id=theme.app_id,
+        name=theme.name,
+        primary_color=theme.primary_color,
+        secondary_color=theme.secondary_color,
+        accent_color=theme.accent_color,
+        background_color=theme.background_color,
+        surface_color=theme.surface_color,
+        text_color=theme.text_color,
+        muted_color=theme.muted_color,
+        success_color=theme.success_color,
+        warning_color=theme.warning_color,
+        danger_color=theme.danger_color,
+        logo_url=theme.logo_url,
+        source=theme.source,
+        status=theme.status,
+        created_at=theme.created_at,
+        updated_at=theme.updated_at,
     )
 
 
@@ -507,6 +533,8 @@ def list_customers(principal: Principal = Depends(resolve_principal)):
             account=_account_out(account),
             spaces=[_space_out(space) for space in platform_store.list_spaces(account.id)],
             apps=[_app_out(app) for app in platform_store.list_app_installations(account.id)],
+            brand_theme=_brand_theme_out(platform_store.resolve_brand_theme(account.id)),
+            brand_themes=[_brand_theme_out(theme) for theme in platform_store.list_brand_themes(account.id)],
             service_keys=[_service_key_out(key) for key in key_store.list_by_tenant(account.id)],
             deployment=_deployment_out(deployment) if deployment else None,
             modules=[_module_out(module) for module in modules],

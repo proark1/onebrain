@@ -51,6 +51,12 @@ class OneBrainClient:
     def capabilities(self) -> dict[str, Any]:
         return self._request("GET", "api/service/capabilities")
 
+    def brand_theme(self) -> dict[str, Any]:
+        return self._request("GET", "api/service/brand-theme")
+
+    def update_brand_theme(self, **colors: str) -> dict[str, Any]:
+        return self._request("PUT", "api/service/brand-theme", colors)
+
     def ask(
         self,
         question: str,

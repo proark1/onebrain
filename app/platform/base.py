@@ -7,6 +7,7 @@ which installed app may use it for which purpose.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Protocol
 
@@ -40,6 +41,33 @@ PURPOSES = frozenset({
 })
 CUSTOMER_SERVICE_PURPOSES = frozenset({"customer_service_answer", "customer_service_inbox"})
 PRIVATE_SPACE_KINDS = frozenset({"personal", "family"})
+BRAND_COLOR_FIELDS = (
+    "primary_color",
+    "secondary_color",
+    "accent_color",
+    "background_color",
+    "surface_color",
+    "text_color",
+    "muted_color",
+    "success_color",
+    "warning_color",
+    "danger_color",
+)
+DEFAULT_BRAND_THEME = {
+    "name": "Assad Dar",
+    "primary_color": "#16191e",
+    "secondary_color": "#3e5573",
+    "accent_color": "#a66e2f",
+    "background_color": "#f4f2ee",
+    "surface_color": "#ffffff",
+    "text_color": "#101828",
+    "muted_color": "#5f6671",
+    "success_color": "#1f7a4d",
+    "warning_color": "#b98a4e",
+    "danger_color": "#b4453e",
+    "logo_url": "",
+}
+_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 @dataclass(frozen=True)
@@ -72,6 +100,29 @@ class AppInstallation:
     display_name: str = ""
     status: str = "active"
     created_at: str = ""
+
+
+@dataclass(frozen=True)
+class BrandTheme:
+    id: str
+    account_id: str
+    app_id: str = ""
+    name: str = ""
+    primary_color: str = ""
+    secondary_color: str = ""
+    accent_color: str = ""
+    background_color: str = ""
+    surface_color: str = ""
+    text_color: str = ""
+    muted_color: str = ""
+    success_color: str = ""
+    warning_color: str = ""
+    danger_color: str = ""
+    logo_url: str = ""
+    source: str = "operator"
+    status: str = "active"
+    created_at: str = ""
+    updated_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -118,6 +169,14 @@ class PlatformStore(Protocol):
 
     def check_app_access(self, account_id: str, app_id: str, space_id: str, purpose: str) -> AccessDecision: ...
 
+    def upsert_brand_theme(self, theme: BrandTheme) -> BrandTheme: ...
+
+    def get_brand_theme(self, account_id: str, app_id: str = "") -> Optional[BrandTheme]: ...
+
+    def list_brand_themes(self, account_id: str) -> List[BrandTheme]: ...
+
+    def resolve_brand_theme(self, account_id: str, app_id: str = "") -> BrandTheme: ...
+
     def record_audit(self, event: AuditEvent) -> AuditEvent: ...
 
     def list_audit(self, account_id: str) -> List[AuditEvent]: ...
@@ -133,6 +192,45 @@ def normalize_unique(values) -> tuple[str, ...]:
             seen.add(item)
             out.append(item)
     return tuple(out)
+
+
+def normalize_hex_color(value: str) -> str:
+    color = (value or "").strip()
+    if len(color) == 4 and color.startswith("#"):
+        color = "#" + "".join(ch * 2 for ch in color[1:])
+    if not _HEX_RE.match(color):
+        raise ValueError(f"Invalid hex color: {value}")
+    return color.lower()
+
+
+def default_brand_theme(account_id: str, app_id: str = "") -> BrandTheme:
+    return BrandTheme(
+        id=f"brand_{account_id}_{app_id or 'account'}",
+        account_id=account_id,
+        app_id=app_id,
+        source="default",
+        **DEFAULT_BRAND_THEME,
+    )
+
+
+def normalized_brand_theme(theme: BrandTheme) -> BrandTheme:
+    values = {field: normalize_hex_color(getattr(theme, field)) for field in BRAND_COLOR_FIELDS}
+    app_id = (theme.app_id or "").strip()
+    if app_id and app_id not in APP_IDS:
+        raise ValueError(f"Unknown app id: {app_id}")
+    theme_id = theme.id.strip() or f"brand_{theme.account_id}_{app_id or 'account'}"
+    return BrandTheme(
+        id=theme_id,
+        account_id=theme.account_id.strip(),
+        app_id=app_id,
+        name=(theme.name or DEFAULT_BRAND_THEME["name"]).strip(),
+        logo_url=(theme.logo_url or "").strip(),
+        source=(theme.source or "operator").strip(),
+        status=(theme.status or "active").strip(),
+        created_at=theme.created_at,
+        updated_at=theme.updated_at,
+        **values,
+    )
 
 
 def validate_account(account: Account) -> None:
@@ -157,3 +255,12 @@ def validate_installation(installation: AppInstallation) -> None:
         raise ValueError(f"Unknown purposes: {invalid}")
     if not installation.id.strip() or not installation.account_id.strip():
         raise ValueError("Installation id and account id are required.")
+
+
+def validate_brand_theme(theme: BrandTheme) -> None:
+    if not theme.id.strip() or not theme.account_id.strip():
+        raise ValueError("Brand theme id and account id are required.")
+    if theme.app_id and theme.app_id not in APP_IDS:
+        raise ValueError(f"Unknown app id: {theme.app_id}")
+    for field in BRAND_COLOR_FIELDS:
+        normalize_hex_color(getattr(theme, field))

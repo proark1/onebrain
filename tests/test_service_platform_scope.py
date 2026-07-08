@@ -224,6 +224,38 @@ def test_service_capabilities_exposes_key_scope_without_secret():
     assert not hasattr(capabilities, "key")
 
 
+def test_service_brand_theme_can_be_read_and_overridden_by_app_key(monkeypatch):
+    platform = _platform_store()
+    monkeypatch.setattr(service_router, "get_platform_store", lambda: platform)
+    principal = replace(
+        _svc_principal(scopes=(SCOPE_READ, SCOPE_WRITE), tenant="nft_gym"),
+        account_id="nft_gym",
+        app_id="communication",
+        space_ids=frozenset({"sp_customer"}),
+        purposes=frozenset({"customer_service_answer", "customer_service_inbox"}),
+    )
+
+    default_theme = service_router.service_brand_theme(principal=principal)
+    assert default_theme.primary_color == "#16191e"
+
+    updated = service_router.update_service_brand_theme(
+        service_router.ServiceBrandThemeUpdate(primary_color="#123456", name="Communication"),
+        principal=principal,
+    )
+
+    assert updated.app_id == "communication"
+    assert updated.primary_color == "#123456"
+    assert platform.resolve_brand_theme("nft_gym", "communication").primary_color == "#123456"
+    assert platform.list_audit("nft_gym")[-1].action == "brand_theme.updated"
+
+    with pytest.raises(HTTPException) as exc:
+        service_router.update_service_brand_theme(
+            service_router.ServiceBrandThemeUpdate(primary_color="#654321"),
+            principal=replace(principal, scopes=frozenset({SCOPE_READ})),
+        )
+    assert exc.value.status_code == 403
+
+
 def test_service_intake_routes_multi_space_communication_key_to_customer_service(monkeypatch):
     platform = _platform_store()
     intake_store = MemoryIntakeStore()

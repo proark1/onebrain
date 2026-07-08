@@ -13,9 +13,13 @@ from app.platform.base import (
     Account,
     AppInstallation,
     AuditEvent,
+    BrandTheme,
     Space,
+    default_brand_theme,
     normalize_unique,
+    normalized_brand_theme,
     validate_account,
+    validate_brand_theme,
     validate_installation,
     validate_space,
 )
@@ -48,6 +52,7 @@ class PostgresPlatformStore:
                     "platform_accounts",
                     "platform_spaces",
                     "platform_app_installations",
+                    "platform_brand_themes",
                     "platform_audit_events",
                 ),
             )
@@ -64,6 +69,29 @@ class PostgresPlatformStore:
         return AppInstallation(id=r[0], account_id=r[1], app_id=r[2], enabled_space_ids=_split(r[3]),
                                allowed_purposes=_split(r[4]), display_name=r[5], status=r[6],
                                created_at=r[7].isoformat() if r[7] else "")
+
+    def _brand_theme_row(self, r) -> BrandTheme:
+        return BrandTheme(
+            id=r[0],
+            account_id=r[1],
+            app_id=r[2],
+            name=r[3],
+            primary_color=r[4],
+            secondary_color=r[5],
+            accent_color=r[6],
+            background_color=r[7],
+            surface_color=r[8],
+            text_color=r[9],
+            muted_color=r[10],
+            success_color=r[11],
+            warning_color=r[12],
+            danger_color=r[13],
+            logo_url=r[14],
+            source=r[15],
+            status=r[16],
+            created_at=r[17].isoformat() if r[17] else "",
+            updated_at=r[18].isoformat() if r[18] else "",
+        )
 
     def _audit_row(self, r) -> AuditEvent:
         try:
@@ -174,6 +202,116 @@ class PostgresPlatformStore:
             if space_id in installation.enabled_space_ids and purpose in installation.allowed_purposes:
                 return AccessDecision(True)
         return AccessDecision(False, "purpose_or_space_not_enabled")
+
+    def upsert_brand_theme(self, theme: BrandTheme) -> BrandTheme:
+        theme = normalized_brand_theme(theme)
+        validate_brand_theme(theme)
+        if not self.get_account(theme.account_id):
+            raise ValueError(f"unknown account: {theme.account_id}")
+        if theme.app_id:
+            installed = any(
+                installation.app_id == theme.app_id
+                for installation in self.list_app_installations(theme.account_id)
+            )
+            if not installed:
+                raise ValueError(f"app is not installed in this account: {theme.app_id}")
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_brand_themes
+                (id, account_id, app_id, name, primary_color, secondary_color, accent_color,
+                 background_color, surface_color, text_color, muted_color, success_color,
+                 warning_color, danger_color, logo_url, source, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (account_id, app_id) DO UPDATE SET
+                    id = EXCLUDED.id,
+                    name = EXCLUDED.name,
+                    primary_color = EXCLUDED.primary_color,
+                    secondary_color = EXCLUDED.secondary_color,
+                    accent_color = EXCLUDED.accent_color,
+                    background_color = EXCLUDED.background_color,
+                    surface_color = EXCLUDED.surface_color,
+                    text_color = EXCLUDED.text_color,
+                    muted_color = EXCLUDED.muted_color,
+                    success_color = EXCLUDED.success_color,
+                    warning_color = EXCLUDED.warning_color,
+                    danger_color = EXCLUDED.danger_color,
+                    logo_url = EXCLUDED.logo_url,
+                    source = EXCLUDED.source,
+                    status = EXCLUDED.status,
+                    updated_at = now()
+                RETURNING id, account_id, app_id, name, primary_color, secondary_color,
+                    accent_color, background_color, surface_color, text_color, muted_color,
+                    success_color, warning_color, danger_color, logo_url, source, status,
+                    created_at, updated_at
+                """,
+                (
+                    theme.id,
+                    theme.account_id,
+                    theme.app_id,
+                    theme.name,
+                    theme.primary_color,
+                    theme.secondary_color,
+                    theme.accent_color,
+                    theme.background_color,
+                    theme.surface_color,
+                    theme.text_color,
+                    theme.muted_color,
+                    theme.success_color,
+                    theme.warning_color,
+                    theme.danger_color,
+                    theme.logo_url,
+                    theme.source,
+                    theme.status,
+                ),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return self._brand_theme_row(row)
+
+    def get_brand_theme(self, account_id: str, app_id: str = "") -> Optional[BrandTheme]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, account_id, app_id, name, primary_color, secondary_color,
+                    accent_color, background_color, surface_color, text_color, muted_color,
+                    success_color, warning_color, danger_color, logo_url, source, status,
+                    created_at, updated_at
+                FROM platform_brand_themes
+                WHERE account_id = %s AND app_id = %s AND status = 'active'
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (account_id, (app_id or "").strip()),
+            )
+            row = cur.fetchone()
+        return self._brand_theme_row(row) if row else None
+
+    def list_brand_themes(self, account_id: str) -> List[BrandTheme]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, account_id, app_id, name, primary_color, secondary_color,
+                    accent_color, background_color, surface_color, text_color, muted_color,
+                    success_color, warning_color, danger_color, logo_url, source, status,
+                    created_at, updated_at
+                FROM platform_brand_themes
+                WHERE account_id = %s
+                ORDER BY app_id, name, id
+                """,
+                (account_id,),
+            )
+            rows = cur.fetchall()
+        return [self._brand_theme_row(r) for r in rows]
+
+    def resolve_brand_theme(self, account_id: str, app_id: str = "") -> BrandTheme:
+        app_id = (app_id or "").strip()
+        if app_id:
+            app_theme = self.get_brand_theme(account_id, app_id)
+            if app_theme:
+                return app_theme
+        account_theme = self.get_brand_theme(account_id)
+        return account_theme or default_brand_theme(account_id, app_id)
 
     def record_audit(self, event: AuditEvent) -> AuditEvent:
         with self._conn() as conn, conn.cursor() as cur:

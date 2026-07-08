@@ -98,6 +98,20 @@ def _service_key_lifecycle_migration_module():
     return module
 
 
+def _brand_theme_migration_module():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "versions"
+        / "0004_brand_theme_provisioning.py"
+    )
+    spec = importlib.util.spec_from_file_location("brand_theme_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_validate_postgres_schema_requires_alembic_version_table():
     conn = FakeConnection(FakeCursor(missing_version_table=True))
 
@@ -148,7 +162,7 @@ def test_jobs_migration_tracks_expected_tables_and_revision():
 def test_service_key_lifecycle_migration_tracks_expected_head():
     migration = _service_key_lifecycle_migration_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision == "0003_service_key_lifecycle"
     assert migration.down_revision == "0002_postgres_worker_jobs"
     assert {
         "last_used_at",
@@ -157,6 +171,14 @@ def test_service_key_lifecycle_migration_tracks_expected_head():
         "rotated_from_id",
         "revoked_at",
     } == set(migration.SERVICE_KEY_LIFECYCLE_COLUMNS)
+
+
+def test_brand_theme_migration_tracks_expected_head():
+    migration = _brand_theme_migration_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.down_revision == "0003_service_key_lifecycle"
+    assert {"platform_brand_themes"} == set(migration.BRAND_THEME_TABLES)
 
 
 def test_migration_embedding_dim_env(monkeypatch):

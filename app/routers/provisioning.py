@@ -9,8 +9,10 @@ from pydantic import BaseModel, Field
 
 from app.auth.principal import Principal, resolve_principal
 from app.deps import get_control_plane_store, get_platform_store, get_service_key_store
+from app.platform.base import BrandTheme, DEFAULT_BRAND_THEME
 from app.provisioning.bundles import BUNDLES, ProvisioningBundle
 from app.provisioning.service import CustomerProvisioner, ProvisioningResult, normalize_id
+from app.schemas import BrandThemeOut
 
 router = APIRouter(prefix="/api/provisioning", tags=["provisioning"])
 
@@ -22,6 +24,21 @@ class BundleOut(BaseModel):
     spaces: list[str]
     apps: list[str]
     modules: list[str]
+
+
+class BrandThemeInput(BaseModel):
+    name: str = Field(default="", max_length=200)
+    primary_color: str = Field(default=DEFAULT_BRAND_THEME["primary_color"], max_length=7)
+    secondary_color: str = Field(default=DEFAULT_BRAND_THEME["secondary_color"], max_length=7)
+    accent_color: str = Field(default=DEFAULT_BRAND_THEME["accent_color"], max_length=7)
+    background_color: str = Field(default=DEFAULT_BRAND_THEME["background_color"], max_length=7)
+    surface_color: str = Field(default=DEFAULT_BRAND_THEME["surface_color"], max_length=7)
+    text_color: str = Field(default=DEFAULT_BRAND_THEME["text_color"], max_length=7)
+    muted_color: str = Field(default=DEFAULT_BRAND_THEME["muted_color"], max_length=7)
+    success_color: str = Field(default=DEFAULT_BRAND_THEME["success_color"], max_length=7)
+    warning_color: str = Field(default=DEFAULT_BRAND_THEME["warning_color"], max_length=7)
+    danger_color: str = Field(default=DEFAULT_BRAND_THEME["danger_color"], max_length=7)
+    logo_url: str = Field(default="", max_length=500)
 
 
 class CustomerProvisionCreate(BaseModel):
@@ -37,6 +54,8 @@ class CustomerProvisionCreate(BaseModel):
     current_migration: str = Field(default="", max_length=80)
     module_versions: dict[str, str] = Field(default_factory=dict)
     mint_integration_keys: bool = True
+    brand_theme: BrandThemeInput | None = None
+    app_brand_themes: dict[str, BrandThemeInput] = Field(default_factory=dict)
 
 
 class ProvisionedAccountOut(BaseModel):
@@ -96,6 +115,8 @@ class ProvisioningResultOut(BaseModel):
     deployment: ProvisionedDeploymentOut
     modules: list[ProvisionedModuleOut]
     credentials: list[ProvisionedCredentialOut] = Field(default_factory=list)
+    brand_theme: BrandThemeOut
+    app_brand_themes: list[BrandThemeOut] = Field(default_factory=list)
 
 
 def _require_admin(principal: Principal) -> None:
@@ -111,6 +132,53 @@ def _bundle_out(bundle: ProvisioningBundle) -> BundleOut:
         spaces=[space.kind for space in bundle.spaces],
         apps=[app.app_id for app in bundle.apps],
         modules=list(bundle.modules),
+    )
+
+
+def _theme_from_input(account_id: str, body: BrandThemeInput | None, app_id: str = "") -> BrandTheme | None:
+    if body is None:
+        return None
+    return BrandTheme(
+        id=f"brand_{account_id}_{app_id or 'account'}",
+        account_id=account_id,
+        app_id=app_id,
+        name=body.name.strip(),
+        primary_color=body.primary_color,
+        secondary_color=body.secondary_color,
+        accent_color=body.accent_color,
+        background_color=body.background_color,
+        surface_color=body.surface_color,
+        text_color=body.text_color,
+        muted_color=body.muted_color,
+        success_color=body.success_color,
+        warning_color=body.warning_color,
+        danger_color=body.danger_color,
+        logo_url=body.logo_url.strip(),
+        source="provisioning",
+    )
+
+
+def _brand_theme_out(theme: BrandTheme) -> BrandThemeOut:
+    return BrandThemeOut(
+        id=theme.id,
+        account_id=theme.account_id,
+        app_id=theme.app_id,
+        name=theme.name,
+        primary_color=theme.primary_color,
+        secondary_color=theme.secondary_color,
+        accent_color=theme.accent_color,
+        background_color=theme.background_color,
+        surface_color=theme.surface_color,
+        text_color=theme.text_color,
+        muted_color=theme.muted_color,
+        success_color=theme.success_color,
+        warning_color=theme.warning_color,
+        danger_color=theme.danger_color,
+        logo_url=theme.logo_url,
+        source=theme.source,
+        status=theme.status,
+        created_at=theme.created_at,
+        updated_at=theme.updated_at,
     )
 
 
@@ -156,6 +224,8 @@ def _result_out(result: ProvisioningResult) -> ProvisioningResultOut:
             ProvisionedModuleOut(module_id=m.module_id, version=m.version, status=m.status)
             for m in result.modules
         ],
+        brand_theme=_brand_theme_out(result.brand_theme),
+        app_brand_themes=[_brand_theme_out(theme) for theme in result.app_brand_themes],
         credentials=[
             ProvisionedCredentialOut(
                 id=c.id,
@@ -201,6 +271,15 @@ def provision_customer(body: CustomerProvisionCreate, principal: Principal = Dep
             current_migration=body.current_migration,
             module_versions=body.module_versions,
             mint_integration_keys=body.mint_integration_keys,
+            brand_theme=_theme_from_input(account_id, body.brand_theme),
+            app_brand_themes={
+                app_id: theme
+                for app_id, theme in (
+                    (key.strip(), _theme_from_input(account_id, value, key.strip()))
+                    for key, value in body.app_brand_themes.items()
+                )
+                if app_id and theme
+            },
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

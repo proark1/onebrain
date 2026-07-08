@@ -17,6 +17,7 @@ client = OneBrainClient(
 )
 
 print(client.capabilities())
+print(client.brand_theme())
 
 client.intake(
     "Customer asked whether Friday appointments are available.",
@@ -41,6 +42,8 @@ answer = client.ask(
 ## Service Surface
 
 - `GET /api/service/capabilities`
+- `GET /api/service/brand-theme`
+- `PUT /api/service/brand-theme`
 - `POST /api/service/intake`
 - `POST /api/service/capture`
 - `POST /api/service/ask`
@@ -57,6 +60,33 @@ The service API is intentionally narrow. It stores data in the scoped OneBrain
 account/space and returns public-ceiled answers without sources. The operator
 dashboard can inspect metadata, keys, versions, and rollout state, but it does
 not expose customer content.
+
+## Brand Theme
+
+Assistant and communication tools can fetch their resolved customer/app theme
+with:
+
+```http
+GET /api/service/brand-theme
+Authorization: Bearer <service-key>
+```
+
+The response contains normalized color tokens such as `primary_color`,
+`accent_color`, `background_color`, `surface_color`, and `text_color`. Resolution
+uses the app override first, then the account default, then the built-in Assad
+Dar based OneBrain theme.
+
+Tools with a write-scoped app key can store their own app-level override:
+
+```http
+PUT /api/service/brand-theme
+Authorization: Bearer <service-key>
+Content-Type: application/json
+
+{"primary_color":"#123456","accent_color":"#a66e2f"}
+```
+
+The update is limited to the key's pinned account and app.
 
 ## Key Lifecycle
 

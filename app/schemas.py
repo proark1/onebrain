@@ -220,6 +220,28 @@ class ServiceCapabilitiesResponse(BaseModel):
     purposes: list[str] = Field(default_factory=list)
 
 
+class BrandThemeOut(BaseModel):
+    id: str
+    account_id: str
+    app_id: str = ""
+    name: str = ""
+    primary_color: str
+    secondary_color: str
+    accent_color: str
+    background_color: str
+    surface_color: str
+    text_color: str
+    muted_color: str
+    success_color: str
+    warning_color: str
+    danger_color: str
+    logo_url: str = ""
+    source: str = ""
+    status: str = "active"
+    created_at: str = ""
+    updated_at: str = ""
+
+
 class ServiceKeyCreate(BaseModel):
     scopes: list[str]
     label: Optional[str] = None

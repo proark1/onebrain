@@ -11,6 +11,7 @@ from app.auth.principal import Principal
 from app.auth.roles import ROLES
 from app.controlplane.base import CustomerDeployment
 from app.controlplane.memory import MemoryControlPlaneStore
+from app.platform.base import BrandTheme
 from app.platform.memory import MemoryPlatformStore
 from app.provisioning.service import CustomerProvisioner
 from app.servicekeys.base import SCOPE_READ, SCOPE_WRITE, parse_key, verify_secret
@@ -147,6 +148,99 @@ def test_full_stack_provisioning_mints_constrained_integration_keys():
     assert communication.id in platform.list_audit("acme")[-1].meta["service_key_ids"]
 
 
+def test_provisioning_stores_account_brand_and_app_overrides():
+    platform, control = _stores()
+
+    result = CustomerProvisioner(platform, control).provision(
+        account_id="brandco",
+        account_kind="organization",
+        customer_name="BrandCo",
+        owner_user_id="admin@onebrain",
+        bundle_id="full_stack",
+        deployment_id="dep_brandco",
+        deployment_type="dedicated_railway",
+        region="eu-central",
+        release_ring="pilot",
+        initial_version="2026.07.0",
+        brand_theme=BrandTheme(
+            id="",
+            account_id="",
+            name="BrandCo",
+            primary_color="#112233",
+            secondary_color="#223344",
+            accent_color="#334455",
+            background_color="#f4f2ee",
+            surface_color="#ffffff",
+            text_color="#101828",
+            muted_color="#5f6671",
+            success_color="#1f7a4d",
+            warning_color="#b98a4e",
+            danger_color="#b4453e",
+        ),
+        app_brand_themes={
+            "assistant": BrandTheme(
+                id="",
+                account_id="",
+                name="Assistant",
+                primary_color="#445566",
+                secondary_color="#223344",
+                accent_color="#334455",
+                background_color="#f4f2ee",
+                surface_color="#ffffff",
+                text_color="#101828",
+                muted_color="#5f6671",
+                success_color="#1f7a4d",
+                warning_color="#b98a4e",
+                danger_color="#b4453e",
+            ),
+        },
+    )
+
+    assert result.brand_theme.primary_color == "#112233"
+    assert platform.resolve_brand_theme("brandco").primary_color == "#112233"
+    assert platform.resolve_brand_theme("brandco", "assistant").primary_color == "#445566"
+    assert platform.resolve_brand_theme("brandco", "communication").primary_color == "#112233"
+    assert platform.list_audit("brandco")[-1].meta["brand_theme_id"] == "brand_brandco_account"
+    assert "brand_brandco_assistant" in platform.list_audit("brandco")[-1].meta["app_brand_theme_ids"]
+    assert {theme.app_id for theme in result.app_brand_themes} >= {"assistant"}
+
+
+def test_unknown_app_brand_override_is_rejected_before_writes():
+    platform, control = _stores()
+
+    with pytest.raises(ValueError, match="Unknown app theme overrides"):
+        CustomerProvisioner(platform, control).provision(
+            account_id="coreonly",
+            account_kind="organization",
+            customer_name="CoreOnly",
+            owner_user_id="admin@onebrain",
+            bundle_id="onebrain_only",
+            deployment_id="dep_coreonly",
+            deployment_type="dedicated_railway",
+            region="",
+            release_ring="manual",
+            initial_version="0.1.0",
+            app_brand_themes={
+                "assistant": BrandTheme(
+                    id="",
+                    account_id="",
+                    primary_color="#112233",
+                    secondary_color="#223344",
+                    accent_color="#334455",
+                    background_color="#f4f2ee",
+                    surface_color="#ffffff",
+                    text_color="#101828",
+                    muted_color="#5f6671",
+                    success_color="#1f7a4d",
+                    warning_color="#b98a4e",
+                    danger_color="#b4453e",
+                ),
+            },
+        )
+
+    assert platform.list_accounts() == []
+
+
 def test_duplicate_deployment_blocks_before_platform_records_are_created():
     platform, control = _stores()
     control.create_deployment(CustomerDeployment(id="dep_acme", customer_name="Existing"))
@@ -223,3 +317,4 @@ def test_provisioning_router_requires_admin(monkeypatch):
     assert created.bundle_id == "onebrain_only"
     assert [app.app_id for app in created.apps] == ["onebrain_core"]
     assert created.credentials == []
+    assert created.brand_theme.primary_color == "#16191e"

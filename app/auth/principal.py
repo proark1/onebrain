@@ -118,6 +118,8 @@ SERVICE_USAGE_ENDPOINTS = {
     "capabilities": "service.capabilities",
     "intake": "service.intake",
     "capture": "service.capture",
+    "service_brand_theme": "service.brand_theme",
+    "update_service_brand_theme": "service.brand_theme.update",
     "service_ask": "service.ask",
     "create_assistant_record": "service.assistant.records.create",
     "list_assistant_records": "service.assistant.records.list",

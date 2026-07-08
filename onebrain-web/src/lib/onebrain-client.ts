@@ -1,6 +1,8 @@
 import type {
   ApproveDocumentResult,
   AskPayload,
+  BrandTheme,
+  BrandThemeInput,
   ChatScope,
   ChatStreamEvent,
   ConversationDetail,
@@ -159,6 +161,31 @@ export function listPlatformAudit(accountId: string): Promise<PlatformAuditEvent
   return requestJson<PlatformAuditEvent[]>(`/platform/accounts/${encodeURIComponent(accountId)}/audit`);
 }
 
+export function getPlatformBrandTheme(accountId: string, appId = ""): Promise<BrandTheme> {
+  const query = appId ? `?${new URLSearchParams({ app_id: appId }).toString()}` : "";
+  return requestJson<BrandTheme>(`/platform/accounts/${encodeURIComponent(accountId)}/brand-theme${query}`);
+}
+
+export function listPlatformBrandThemes(accountId: string): Promise<BrandTheme[]> {
+  return requestJson<BrandTheme[]>(`/platform/accounts/${encodeURIComponent(accountId)}/brand-themes`);
+}
+
+export function upsertPlatformBrandTheme(
+  accountId: string,
+  input: BrandThemeInput & { app_id?: string },
+): Promise<BrandTheme> {
+  return requestJson<BrandTheme>(`/platform/accounts/${encodeURIComponent(accountId)}/brand-theme`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...input,
+      app_id: input.app_id?.trim() || "",
+      logo_url: input.logo_url?.trim() || "",
+      name: input.name?.trim() || "",
+    }),
+  });
+}
+
 export function listProvisioningBundles(): Promise<ProvisioningBundle[]> {
   return requestJson<ProvisioningBundle[]>("/provisioning/bundles");
 }
@@ -180,6 +207,8 @@ export function provisionCustomer(input: ProvisionCustomerInput): Promise<Provis
       module_versions: input.module_versions || {},
       region: input.region?.trim() || "",
       release_ring: input.release_ring,
+      brand_theme: input.brand_theme,
+      app_brand_themes: input.app_brand_themes || {},
     }),
   });
 }

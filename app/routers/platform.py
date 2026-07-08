@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.auth.principal import Principal, resolve_principal
 from app.deps import get_platform_store
-from app.platform.base import Account, AppInstallation, AuditEvent, Space, normalize_unique
+from app.platform.base import Account, AppInstallation, AuditEvent, BrandTheme, DEFAULT_BRAND_THEME, Space, normalize_unique
+from app.schemas import BrandThemeOut
 
 router = APIRouter(prefix="/api/platform", tags=["platform"])
 
@@ -60,6 +61,22 @@ class AppInstallationOut(BaseModel):
     status: str = "active"
 
 
+class BrandThemeInput(BaseModel):
+    app_id: str = Field(default="", max_length=80)
+    name: str = Field(default="", max_length=200)
+    primary_color: str = Field(default=DEFAULT_BRAND_THEME["primary_color"], max_length=7)
+    secondary_color: str = Field(default=DEFAULT_BRAND_THEME["secondary_color"], max_length=7)
+    accent_color: str = Field(default=DEFAULT_BRAND_THEME["accent_color"], max_length=7)
+    background_color: str = Field(default=DEFAULT_BRAND_THEME["background_color"], max_length=7)
+    surface_color: str = Field(default=DEFAULT_BRAND_THEME["surface_color"], max_length=7)
+    text_color: str = Field(default=DEFAULT_BRAND_THEME["text_color"], max_length=7)
+    muted_color: str = Field(default=DEFAULT_BRAND_THEME["muted_color"], max_length=7)
+    success_color: str = Field(default=DEFAULT_BRAND_THEME["success_color"], max_length=7)
+    warning_color: str = Field(default=DEFAULT_BRAND_THEME["warning_color"], max_length=7)
+    danger_color: str = Field(default=DEFAULT_BRAND_THEME["danger_color"], max_length=7)
+    logo_url: str = Field(default="", max_length=500)
+
+
 class AccessCheckRequest(BaseModel):
     account_id: str
     app_id: str
@@ -108,6 +125,30 @@ def _app_out(installation: AppInstallation) -> AppInstallationOut:
         enabled_space_ids=list(installation.enabled_space_ids),
         allowed_purposes=list(installation.allowed_purposes),
         display_name=installation.display_name, status=installation.status,
+    )
+
+
+def _brand_theme_out(theme: BrandTheme) -> BrandThemeOut:
+    return BrandThemeOut(
+        id=theme.id,
+        account_id=theme.account_id,
+        app_id=theme.app_id,
+        name=theme.name,
+        primary_color=theme.primary_color,
+        secondary_color=theme.secondary_color,
+        accent_color=theme.accent_color,
+        background_color=theme.background_color,
+        surface_color=theme.surface_color,
+        text_color=theme.text_color,
+        muted_color=theme.muted_color,
+        success_color=theme.success_color,
+        warning_color=theme.warning_color,
+        danger_color=theme.danger_color,
+        logo_url=theme.logo_url,
+        source=theme.source,
+        status=theme.status,
+        created_at=theme.created_at,
+        updated_at=theme.updated_at,
     )
 
 
@@ -188,6 +229,65 @@ def install_app(account_id: str, body: AppInstallCreate, principal: Principal = 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _app_out(installation)
+
+
+@router.get("/accounts/{account_id}/brand-themes", response_model=list[BrandThemeOut])
+def list_brand_themes(account_id: str, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    return [_brand_theme_out(theme) for theme in get_platform_store().list_brand_themes(account_id)]
+
+
+@router.get("/accounts/{account_id}/brand-theme", response_model=BrandThemeOut)
+def get_brand_theme(
+    account_id: str,
+    app_id: str = Query(default="", max_length=80),
+    principal: Principal = Depends(resolve_principal),
+):
+    _require_admin(principal)
+    store = get_platform_store()
+    if not store.get_account(account_id):
+        raise HTTPException(status_code=404, detail="Account not found.")
+    return _brand_theme_out(store.resolve_brand_theme(account_id, app_id))
+
+
+@router.put("/accounts/{account_id}/brand-theme", response_model=BrandThemeOut)
+def upsert_brand_theme(account_id: str, body: BrandThemeInput, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    store = get_platform_store()
+    if not store.get_account(account_id):
+        raise HTTPException(status_code=404, detail="Account not found.")
+    app_id = body.app_id.strip()
+    try:
+        theme = store.upsert_brand_theme(BrandTheme(
+            id=f"brand_{account_id}_{app_id or 'account'}",
+            account_id=account_id,
+            app_id=app_id,
+            name=body.name.strip(),
+            primary_color=body.primary_color,
+            secondary_color=body.secondary_color,
+            accent_color=body.accent_color,
+            background_color=body.background_color,
+            surface_color=body.surface_color,
+            text_color=body.text_color,
+            muted_color=body.muted_color,
+            success_color=body.success_color,
+            warning_color=body.warning_color,
+            danger_color=body.danger_color,
+            logo_url=body.logo_url.strip(),
+            source="operator",
+        ))
+        store.record_audit(_audit(
+            principal,
+            "brand_theme.updated",
+            "brand_theme",
+            theme.id,
+            account_id,
+            app_id=theme.app_id,
+            meta={"source": theme.source},
+        ))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _brand_theme_out(theme)
 
 
 @router.post("/access/check", response_model=AccessCheckResponse)

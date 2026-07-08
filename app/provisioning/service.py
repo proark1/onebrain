@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from app.controlplane.base import CustomerDeployment, DeploymentModule, validate_deployment, validate_module
-from app.platform.base import Account, AppInstallation, AuditEvent, Space
+from app.platform.base import Account, AppInstallation, AuditEvent, BrandTheme, BRAND_COLOR_FIELDS, Space, default_brand_theme
 from app.provisioning.bundles import ProvisioningBundle, get_bundle
 from app.servicekeys.base import SCOPE_READ, SCOPE_WRITE, ServiceKey, generate_key, hash_secret
 
@@ -44,6 +44,8 @@ class ProvisioningResult:
     deployment: CustomerDeployment
     modules: List[DeploymentModule]
     credentials: List[ProvisionedCredential]
+    brand_theme: BrandTheme
+    app_brand_themes: List[BrandTheme]
 
 
 PURPOSE_SCOPES = {
@@ -106,6 +108,28 @@ class CustomerProvisioner:
             ))
         return credentials
 
+    def _scoped_theme(
+        self,
+        *,
+        account_id: str,
+        app_id: str = "",
+        customer_name: str,
+        theme: BrandTheme | None = None,
+        source: str,
+    ) -> BrandTheme:
+        base = default_brand_theme(account_id, app_id)
+        colors = {field: getattr(theme, field) if theme else getattr(base, field) for field in BRAND_COLOR_FIELDS}
+        return BrandTheme(
+            id=f"brand_{account_id}_{app_id or 'account'}",
+            account_id=account_id,
+            app_id=app_id,
+            name=(theme.name if theme and theme.name else f"{customer_name} brand").strip(),
+            logo_url=(theme.logo_url if theme else base.logo_url).strip(),
+            source=source,
+            status=theme.status if theme and theme.status else "active",
+            **colors,
+        )
+
     def provision(
         self,
         *,
@@ -122,6 +146,8 @@ class CustomerProvisioner:
         current_migration: str = "",
         module_versions: Optional[Dict[str, str]] = None,
         mint_integration_keys: bool = False,
+        brand_theme: BrandTheme | None = None,
+        app_brand_themes: Optional[Dict[str, BrandTheme]] = None,
     ) -> ProvisioningResult:
         bundle = get_bundle(bundle_id)
         account_id = normalize_id(account_id)
@@ -135,6 +161,11 @@ class CustomerProvisioner:
         unknown_module_versions = sorted(set(module_versions) - set(bundle.modules))
         if unknown_module_versions:
             raise ValueError(f"Unknown module versions for this bundle: {unknown_module_versions}")
+        app_brand_themes = app_brand_themes or {}
+        bundle_app_ids = {app.app_id for app in bundle.apps}
+        unknown_theme_apps = sorted(set(app_brand_themes) - bundle_app_ids)
+        if unknown_theme_apps:
+            raise ValueError(f"Unknown app theme overrides for this bundle: {unknown_theme_apps}")
 
         deployment = CustomerDeployment(
             id=deployment_id,
@@ -193,9 +224,31 @@ class CustomerProvisioner:
             ))
             installations.append(installation)
 
+        created_brand_theme = self.platform_store.upsert_brand_theme(self._scoped_theme(
+            account_id=account_id,
+            customer_name=customer_name,
+            theme=brand_theme,
+            source="provisioning",
+        ))
+        created_app_brand_themes: list[BrandTheme] = []
+        for installation in installations:
+            override = app_brand_themes.get(installation.app_id)
+            if override:
+                created_app_brand_themes.append(self.platform_store.upsert_brand_theme(self._scoped_theme(
+                    account_id=account_id,
+                    app_id=installation.app_id,
+                    customer_name=customer_name,
+                    theme=override,
+                    source="app_override",
+                )))
+
         created_deployment = self.control_plane_store.create_deployment(deployment)
         created_modules = [self.control_plane_store.upsert_module(module) for module in modules]
         credentials = self._mint_credentials(account_id, installations) if mint_integration_keys else []
+        resolved_app_brand_themes = [
+            self.platform_store.resolve_brand_theme(account_id, installation.app_id)
+            for installation in installations
+        ]
 
         self.platform_store.record_audit(AuditEvent(
             id=f"aud_provision_{account_id}",
@@ -210,6 +263,8 @@ class CustomerProvisioner:
                 "deployment_id": created_deployment.id,
                 "modules": {m.module_id: m.version for m in created_modules},
                 "service_key_ids": [credential.id for credential in credentials],
+                "brand_theme_id": created_brand_theme.id,
+                "app_brand_theme_ids": [theme.id for theme in created_app_brand_themes],
             },
         ))
 
@@ -221,4 +276,6 @@ class CustomerProvisioner:
             deployment=created_deployment,
             modules=created_modules,
             credentials=credentials,
+            brand_theme=created_brand_theme,
+            app_brand_themes=resolved_app_brand_themes,
         )

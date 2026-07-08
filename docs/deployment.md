@@ -147,9 +147,12 @@ After deploy:
 7. As an admin, call `GET /api/operator/observability` and confirm it returns
    runtime, retrieval, storage, service-key, and job queue sections without
    customer content.
-8. Mint a temporary service key, call `/api/service/capabilities`, rotate the
+8. Provision a test customer with brand colors and confirm the operator
+   customer row shows the expected swatches.
+9. Mint a temporary service key, call `/api/service/capabilities` and
+   `/api/service/brand-theme`, rotate the
    key, and confirm the old key receives `401` while the new key works.
-9. Check worker logs for `worker started` and `job succeeded`.
+10. Check worker logs for `worker started` and `job succeeded`.
 
 ## Local Docker Checks
 

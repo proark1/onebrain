@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.platform.base import Account, AppInstallation, AuditEvent, Space
+from app.platform.base import Account, AppInstallation, AuditEvent, BrandTheme, Space
 from app.platform.memory import MemoryPlatformStore
 from app.security.policy import AccessFilter, Classification
 
@@ -112,6 +112,92 @@ def test_audit_events_are_account_scoped():
     assert audit[0].app_id == "communication"
     assert audit[0].purpose == "customer_service_answer"
     assert store.list_audit("acct_other") == []
+
+
+def test_brand_theme_resolves_account_default_and_app_override():
+    store = _seed_platform()
+    store.install_app(AppInstallation(
+        id="appi_assistant",
+        account_id="acct_owner",
+        app_id="assistant",
+        enabled_space_ids=("sp_personal",),
+        allowed_purposes=("assistant_context",),
+    ))
+
+    account_theme = store.upsert_brand_theme(BrandTheme(
+        id="brand_acct_owner_account",
+        account_id="acct_owner",
+        name="Owner",
+        primary_color="#123456",
+        secondary_color="#234567",
+        accent_color="#345678",
+        background_color="#f4f2ee",
+        surface_color="#ffffff",
+        text_color="#101828",
+        muted_color="#5f6671",
+        success_color="#1f7a4d",
+        warning_color="#b98a4e",
+        danger_color="#b4453e",
+    ))
+    assert account_theme.primary_color == "#123456"
+    assert store.resolve_brand_theme("acct_owner", "communication").primary_color == "#123456"
+
+    app_theme = store.upsert_brand_theme(BrandTheme(
+        id="brand_acct_owner_assistant",
+        account_id="acct_owner",
+        app_id="assistant",
+        name="Assistant",
+        primary_color="#abcdef",
+        secondary_color="#234567",
+        accent_color="#345678",
+        background_color="#f4f2ee",
+        surface_color="#ffffff",
+        text_color="#101828",
+        muted_color="#5f6671",
+        success_color="#1f7a4d",
+        warning_color="#b98a4e",
+        danger_color="#b4453e",
+    ))
+    assert app_theme.app_id == "assistant"
+    assert store.resolve_brand_theme("acct_owner", "assistant").primary_color == "#abcdef"
+    assert len(store.list_brand_themes("acct_owner")) == 2
+
+
+def test_brand_theme_rejects_invalid_colors_and_uninstalled_app_override():
+    store = _seed_platform()
+
+    with pytest.raises(ValueError, match="Invalid hex color"):
+        store.upsert_brand_theme(BrandTheme(
+            id="brand_bad",
+            account_id="acct_owner",
+            primary_color="blue",
+            secondary_color="#234567",
+            accent_color="#345678",
+            background_color="#f4f2ee",
+            surface_color="#ffffff",
+            text_color="#101828",
+            muted_color="#5f6671",
+            success_color="#1f7a4d",
+            warning_color="#b98a4e",
+            danger_color="#b4453e",
+        ))
+
+    with pytest.raises(ValueError, match="app is not installed"):
+        store.upsert_brand_theme(BrandTheme(
+            id="brand_app",
+            account_id="acct_owner",
+            app_id="assistant",
+            primary_color="#123456",
+            secondary_color="#234567",
+            accent_color="#345678",
+            background_color="#f4f2ee",
+            surface_color="#ffffff",
+            text_color="#101828",
+            muted_color="#5f6671",
+            success_color="#1f7a4d",
+            warning_color="#b98a4e",
+            danger_color="#b4453e",
+        ))
 
 
 def test_access_filter_can_narrow_chunks_to_one_platform_space():

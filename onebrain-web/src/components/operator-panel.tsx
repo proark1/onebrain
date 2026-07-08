@@ -20,6 +20,8 @@ import {
   updateOperatorRollout,
 } from "@/lib/onebrain-client";
 import type {
+  BrandTheme,
+  BrandThemeInput,
   OperatorBackup,
   OperatorCustomer,
   OperatorDeployment,
@@ -72,6 +74,34 @@ const RELEASE_STATUSES = [
   { label: "Draft", value: "draft" },
   { label: "Active", value: "active" },
   { label: "Deprecated", value: "deprecated" },
+];
+
+const DEFAULT_BRAND_THEME: BrandThemeInput = {
+  name: "Assad Dar",
+  primary_color: "#16191e",
+  secondary_color: "#3e5573",
+  accent_color: "#a66e2f",
+  background_color: "#f4f2ee",
+  surface_color: "#ffffff",
+  text_color: "#101828",
+  muted_color: "#5f6671",
+  success_color: "#1f7a4d",
+  warning_color: "#b98a4e",
+  danger_color: "#b4453e",
+  logo_url: "",
+};
+
+const BRAND_COLOR_FIELDS: Array<{ key: keyof BrandThemeInput; label: string }> = [
+  { key: "primary_color", label: "Primary" },
+  { key: "secondary_color", label: "Secondary" },
+  { key: "accent_color", label: "Accent" },
+  { key: "background_color", label: "Background" },
+  { key: "surface_color", label: "Surface" },
+  { key: "text_color", label: "Text" },
+  { key: "muted_color", label: "Muted" },
+  { key: "success_color", label: "Success" },
+  { key: "warning_color", label: "Warning" },
+  { key: "danger_color", label: "Danger" },
 ];
 
 function labelFor(value: string): string {
@@ -132,6 +162,7 @@ export function OperatorPanel() {
   const [provisionType, setProvisionType] = useState("dedicated_railway");
   const [provisionRegion, setProvisionRegion] = useState("");
   const [provisionAccountId, setProvisionAccountId] = useState("");
+  const [provisionBrandTheme, setProvisionBrandTheme] = useState<BrandThemeInput>(DEFAULT_BRAND_THEME);
 
   const [releaseSourceId, setReleaseSourceId] = useState("");
   const [releaseVersion, setReleaseVersion] = useState("");
@@ -264,6 +295,10 @@ export function OperatorPanel() {
     try {
       const result = await provisionCustomer({
         account_id: provisionAccountId,
+        brand_theme: {
+          ...provisionBrandTheme,
+          name: provisionBrandTheme.name?.trim() || provisionName.trim(),
+        },
         bundle_id: provisionBundle,
         customer_name: provisionName,
         deployment_type: provisionType,
@@ -485,6 +520,7 @@ export function OperatorPanel() {
               <TextField label="Region" value={provisionRegion} onChange={setProvisionRegion} />
             </div>
             <TextField label="Optional account id" value={provisionAccountId} onChange={setProvisionAccountId} />
+            <BrandThemeEditor value={provisionBrandTheme} onChange={setProvisionBrandTheme} />
             <button className="primaryButton" disabled={!provisionName.trim() || !provisionBundle || Boolean(busyAction)} type="submit">
               {busyAction === "provision" ? "Provisioning" : "Provision customer"}
             </button>
@@ -698,6 +734,7 @@ function CustomerRow({
             <span key={`${module.module_id}-${module.version}`}>{module.module_id} {module.version}</span>
           ))}
         </div>
+        <ThemeSwatches theme={customer.brand_theme} />
         {customer.service_keys.length ? (
           <div className="serviceKeyList">
             {customer.service_keys.map((key) => (
@@ -751,6 +788,85 @@ function ModulePreview({ row, targetVersion }: { row: DeploymentRow | null; targ
       {row.modules.length === 0 ? <span>No modules on source deployment</span> : null}
       {row.modules.map((module) => (
         <span key={module.module_id}>{module.module_id} {"->"} {targetVersion}</span>
+      ))}
+    </div>
+  );
+}
+
+function BrandThemeEditor({
+  onChange,
+  value,
+}: {
+  onChange: (value: BrandThemeInput) => void;
+  value: BrandThemeInput;
+}) {
+  function update(key: keyof BrandThemeInput, nextValue: string) {
+    onChange({ ...value, [key]: nextValue });
+  }
+
+  return (
+    <section className="brandThemeEditor" aria-label="Brand colors">
+      <div className="panelHead compactHead">
+        <div>
+          <p className="eyebrow">Brand</p>
+          <h2>Theme colors</h2>
+        </div>
+      </div>
+      <TextField label="Theme name" value={value.name || ""} onChange={(next) => update("name", next)} />
+      <div className="brandColorGrid">
+        {BRAND_COLOR_FIELDS.map((field) => (
+          <ColorField
+            key={field.key}
+            label={field.label}
+            value={String(value[field.key] || "")}
+            onChange={(next) => update(field.key, next)}
+          />
+        ))}
+      </div>
+      <ThemeSwatches theme={value} />
+    </section>
+  );
+}
+
+function ColorField({
+  label,
+  onChange,
+  value,
+}: {
+  label: string;
+  onChange: (value: string) => void;
+  value: string;
+}) {
+  return (
+    <label className="brandColorField">
+      <span>{label}</span>
+      <input
+        aria-label={`${label} color`}
+        className="colorInput"
+        type="color"
+        value={value || "#000000"}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <code>{value}</code>
+    </label>
+  );
+}
+
+function ThemeSwatches({ theme }: { theme: BrandTheme | BrandThemeInput }) {
+  const swatches: Array<[string, string]> = [
+    ["Primary", theme.primary_color || "#000000"],
+    ["Accent", theme.accent_color || "#000000"],
+    ["Background", theme.background_color || "#000000"],
+    ["Text", theme.text_color || "#000000"],
+  ];
+
+  return (
+    <div className="themeSwatches" aria-label="Theme preview">
+      {swatches.map(([label, color]) => (
+        <span className="themeSwatch" key={label}>
+          <i aria-hidden="true" style={{ backgroundColor: color }} />
+          {label}
+        </span>
       ))}
     </div>
   );

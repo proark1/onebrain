@@ -14,9 +14,13 @@ from app.platform.base import (
     Account,
     AppInstallation,
     AuditEvent,
+    BrandTheme,
     Space,
+    default_brand_theme,
     normalize_unique,
+    normalized_brand_theme,
     validate_account,
+    validate_brand_theme,
     validate_installation,
     validate_space,
 )
@@ -58,6 +62,54 @@ def _installation_from_dict(d: dict) -> AppInstallation:
     )
 
 
+def _brand_theme_to_dict(t: BrandTheme) -> dict:
+    return {
+        "id": t.id,
+        "account_id": t.account_id,
+        "app_id": t.app_id,
+        "name": t.name,
+        "primary_color": t.primary_color,
+        "secondary_color": t.secondary_color,
+        "accent_color": t.accent_color,
+        "background_color": t.background_color,
+        "surface_color": t.surface_color,
+        "text_color": t.text_color,
+        "muted_color": t.muted_color,
+        "success_color": t.success_color,
+        "warning_color": t.warning_color,
+        "danger_color": t.danger_color,
+        "logo_url": t.logo_url,
+        "source": t.source,
+        "status": t.status,
+        "created_at": t.created_at,
+        "updated_at": t.updated_at,
+    }
+
+
+def _brand_theme_from_dict(d: dict) -> BrandTheme:
+    return BrandTheme(
+        id=d["id"],
+        account_id=d["account_id"],
+        app_id=d.get("app_id", ""),
+        name=d.get("name", ""),
+        primary_color=d.get("primary_color", ""),
+        secondary_color=d.get("secondary_color", ""),
+        accent_color=d.get("accent_color", ""),
+        background_color=d.get("background_color", ""),
+        surface_color=d.get("surface_color", ""),
+        text_color=d.get("text_color", ""),
+        muted_color=d.get("muted_color", ""),
+        success_color=d.get("success_color", ""),
+        warning_color=d.get("warning_color", ""),
+        danger_color=d.get("danger_color", ""),
+        logo_url=d.get("logo_url", ""),
+        source=d.get("source", "operator"),
+        status=d.get("status", "active"),
+        created_at=d.get("created_at", ""),
+        updated_at=d.get("updated_at", ""),
+    )
+
+
 def _audit_to_dict(e: AuditEvent) -> dict:
     return {"id": e.id, "account_id": e.account_id, "actor_id": e.actor_id, "actor_type": e.actor_type,
             "action": e.action, "target_type": e.target_type, "target_id": e.target_id,
@@ -79,6 +131,7 @@ class MemoryPlatformStore:
         self._accounts: Dict[str, Account] = {}
         self._spaces: Dict[str, Space] = {}
         self._installations: Dict[str, AppInstallation] = {}
+        self._brand_themes: Dict[str, BrandTheme] = {}
         self._audit: Dict[str, AuditEvent] = {}
         self._lock = threading.RLock()
         self._persist_path = persist_path
@@ -93,9 +146,10 @@ class MemoryPlatformStore:
             self._accounts = {d["id"]: _account_from_dict(d) for d in data.get("accounts", [])}
             self._spaces = {d["id"]: _space_from_dict(d) for d in data.get("spaces", [])}
             self._installations = {d["id"]: _installation_from_dict(d) for d in data.get("installations", [])}
+            self._brand_themes = {d["id"]: _brand_theme_from_dict(d) for d in data.get("brand_themes", [])}
             self._audit = {d["id"]: _audit_from_dict(d) for d in data.get("audit", [])}
         except Exception:
-            self._accounts, self._spaces, self._installations, self._audit = {}, {}, {}, {}
+            self._accounts, self._spaces, self._installations, self._brand_themes, self._audit = {}, {}, {}, {}, {}
 
     def _save(self) -> None:
         if not self._persist_path:
@@ -106,6 +160,7 @@ class MemoryPlatformStore:
                 "accounts": [_account_to_dict(a) for a in self._accounts.values()],
                 "spaces": [_space_to_dict(s) for s in self._spaces.values()],
                 "installations": [_installation_to_dict(i) for i in self._installations.values()],
+                "brand_themes": [_brand_theme_to_dict(t) for t in self._brand_themes.values()],
                 "audit": [_audit_to_dict(e) for e in self._audit.values()],
             }, fh)
 
@@ -189,6 +244,49 @@ class MemoryPlatformStore:
             if space_id in installation.enabled_space_ids and purpose in installation.allowed_purposes:
                 return AccessDecision(True)
         return AccessDecision(False, "purpose_or_space_not_enabled")
+
+    def upsert_brand_theme(self, theme: BrandTheme) -> BrandTheme:
+        theme = normalized_brand_theme(theme)
+        validate_brand_theme(theme)
+        with self._lock:
+            if theme.account_id not in self._accounts:
+                raise ValueError(f"unknown account: {theme.account_id}")
+            if theme.app_id:
+                installed = any(
+                    i.account_id == theme.account_id and i.app_id == theme.app_id
+                    for i in self._installations.values()
+                )
+                if not installed:
+                    raise ValueError(f"app is not installed in this account: {theme.app_id}")
+            for existing_id, existing in list(self._brand_themes.items()):
+                if existing.account_id == theme.account_id and existing.app_id == theme.app_id and existing_id != theme.id:
+                    del self._brand_themes[existing_id]
+            self._brand_themes[theme.id] = theme
+            self._save()
+            return theme
+
+    def get_brand_theme(self, account_id: str, app_id: str = "") -> Optional[BrandTheme]:
+        app_id = (app_id or "").strip()
+        matches = [
+            theme for theme in self._brand_themes.values()
+            if theme.account_id == account_id and theme.app_id == app_id and theme.status == "active"
+        ]
+        return sorted(matches, key=lambda theme: theme.updated_at or theme.created_at or theme.id)[-1] if matches else None
+
+    def list_brand_themes(self, account_id: str) -> List[BrandTheme]:
+        return sorted(
+            (theme for theme in self._brand_themes.values() if theme.account_id == account_id),
+            key=lambda theme: (theme.app_id, theme.name.lower(), theme.id),
+        )
+
+    def resolve_brand_theme(self, account_id: str, app_id: str = "") -> BrandTheme:
+        app_id = (app_id or "").strip()
+        if app_id:
+            app_theme = self.get_brand_theme(account_id, app_id)
+            if app_theme:
+                return app_theme
+        account_theme = self.get_brand_theme(account_id)
+        return account_theme or default_brand_theme(account_id, app_id)
 
     def record_audit(self, event: AuditEvent) -> AuditEvent:
         with self._lock:

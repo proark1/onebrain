@@ -34,6 +34,7 @@ The Alembic baseline covers the current Postgres-backed app schema:
 - intake records
 - background jobs and job file payloads
 - service-key lifecycle metadata
+- account and app-level brand themes
 
 It does not create control-plane tables yet because the active control plane is still JSON-backed. Add a `PostgresControlPlaneStore` and matching migrations before moving operator release, backup, health, and rollout state into Postgres.
 
@@ -82,6 +83,14 @@ bodies, document text, or intake content.
 
 Admins can rotate a service key with `POST /api/service-keys/{key_id}/rotate`.
 Rotation returns the new plaintext once and revokes the old key immediately.
+
+## Brand Theme Provisioning
+
+Migration `0004_brand_theme_provisioning` adds `platform_brand_themes`.
+Themes are account-scoped with an optional `app_id`, allowing a customer
+default plus assistant or communication overrides. Colors are normalized hex
+tokens and are used by provisioning, the Next.js operator UI, and service-key
+theme resolution.
 
 ## Embedding Model Changes
 

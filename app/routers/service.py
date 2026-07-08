@@ -17,6 +17,7 @@ from dataclasses import replace
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from pydantic import BaseModel, Field
 
 from app.auth.principal import Principal, resolve_principal, resolve_service_principal
 from app.config import get_settings
@@ -27,11 +28,11 @@ from app.deps import (
 from app.intake.base import IntakeRecord
 from app.intake.pipeline import IntakeInput
 from app.jobs.base import JOB_SERVICE_CAPTURE, JOB_SERVICE_INTAKE
-from app.platform.base import AuditEvent, normalize_unique
+from app.platform.base import AuditEvent, BrandTheme, normalize_unique
 from app.routers.jobs import job_status_out
 from app.schemas import (
     JobStatusOut,
-    IntakeRecordOut, MintedKey, ServiceAskRequest, ServiceAskResponse, ServiceCapabilitiesResponse,
+    BrandThemeOut, IntakeRecordOut, MintedKey, ServiceAskRequest, ServiceAskResponse, ServiceCapabilitiesResponse,
     ServiceCaptureRequest, ServiceIntakeRequest, ServiceIntakeResponse, ServiceKeyCreate, ServiceKeyInfo,
 )
 from app.security.policy import CAPTURED_CATEGORY
@@ -41,6 +42,21 @@ from app.servicekeys.base import (
 
 service_router = APIRouter(prefix="/api/service", tags=["service"])
 keys_router = APIRouter(prefix="/api/service-keys", tags=["service-keys"])
+
+
+class ServiceBrandThemeUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    primary_color: str | None = Field(default=None, max_length=7)
+    secondary_color: str | None = Field(default=None, max_length=7)
+    accent_color: str | None = Field(default=None, max_length=7)
+    background_color: str | None = Field(default=None, max_length=7)
+    surface_color: str | None = Field(default=None, max_length=7)
+    text_color: str | None = Field(default=None, max_length=7)
+    muted_color: str | None = Field(default=None, max_length=7)
+    success_color: str | None = Field(default=None, max_length=7)
+    warning_color: str | None = Field(default=None, max_length=7)
+    danger_color: str | None = Field(default=None, max_length=7)
+    logo_url: str | None = Field(default=None, max_length=500)
 
 
 def _platform_scope(body, principal: Principal, default_purpose: str):
@@ -253,6 +269,30 @@ def _service_key_info(k: ServiceKey) -> ServiceKeyInfo:
     )
 
 
+def _brand_theme_out(theme) -> BrandThemeOut:
+    return BrandThemeOut(
+        id=theme.id,
+        account_id=theme.account_id,
+        app_id=theme.app_id,
+        name=theme.name,
+        primary_color=theme.primary_color,
+        secondary_color=theme.secondary_color,
+        accent_color=theme.accent_color,
+        background_color=theme.background_color,
+        surface_color=theme.surface_color,
+        text_color=theme.text_color,
+        muted_color=theme.muted_color,
+        success_color=theme.success_color,
+        warning_color=theme.warning_color,
+        danger_color=theme.danger_color,
+        logo_url=theme.logo_url,
+        source=theme.source,
+        status=theme.status,
+        created_at=theme.created_at,
+        updated_at=theme.updated_at,
+    )
+
+
 def _minted_key_out(k: ServiceKey, plaintext: str) -> MintedKey:
     return MintedKey(
         id=k.id,
@@ -311,6 +351,59 @@ def capabilities(principal: Principal = Depends(resolve_service_principal)):
         space_ids=sorted(principal.space_ids or []),
         purposes=sorted(principal.purposes or []),
     )
+
+
+@service_router.get("/brand-theme", response_model=BrandThemeOut)
+def service_brand_theme(principal: Principal = Depends(resolve_service_principal)):
+    account_id = principal.account_id or principal.tenant_id
+    return _brand_theme_out(get_platform_store().resolve_brand_theme(account_id, principal.app_id))
+
+
+@service_router.put("/brand-theme", response_model=BrandThemeOut)
+def update_service_brand_theme(
+    body: ServiceBrandThemeUpdate,
+    principal: Principal = Depends(resolve_service_principal),
+):
+    _require_scope(principal, SCOPE_WRITE)
+    if not principal.app_id:
+        raise HTTPException(status_code=400, detail="An app-pinned service key is required to update a brand theme.")
+    account_id = principal.account_id or principal.tenant_id
+    store = get_platform_store()
+    current = store.resolve_brand_theme(account_id, principal.app_id)
+    try:
+        theme = store.upsert_brand_theme(BrandTheme(
+            id=f"brand_{account_id}_{principal.app_id}",
+            account_id=account_id,
+            app_id=principal.app_id,
+            name=(body.name if body.name is not None else current.name).strip(),
+            primary_color=body.primary_color or current.primary_color,
+            secondary_color=body.secondary_color or current.secondary_color,
+            accent_color=body.accent_color or current.accent_color,
+            background_color=body.background_color or current.background_color,
+            surface_color=body.surface_color or current.surface_color,
+            text_color=body.text_color or current.text_color,
+            muted_color=body.muted_color or current.muted_color,
+            success_color=body.success_color or current.success_color,
+            warning_color=body.warning_color or current.warning_color,
+            danger_color=body.danger_color or current.danger_color,
+            logo_url=(body.logo_url if body.logo_url is not None else current.logo_url).strip(),
+            source="service_override",
+        ))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    store.record_audit(AuditEvent(
+        id=f"aud_{uuid4().hex}",
+        account_id=account_id,
+        actor_id=principal.user_id,
+        actor_type=principal.principal_type,
+        action="brand_theme.updated",
+        target_type="brand_theme",
+        target_id=theme.id,
+        app_id=theme.app_id,
+        decision="recorded",
+        meta={"source": theme.source},
+    ))
+    return _brand_theme_out(theme)
 
 
 @service_router.post("/intake", response_model=ServiceIntakeResponse | JobStatusOut)

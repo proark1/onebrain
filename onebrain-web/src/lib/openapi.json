@@ -790,6 +790,109 @@
         "title": "Body_upload_api_upload_post",
         "type": "object"
       },
+      "BrandThemeOut": {
+        "properties": {
+          "accent_color": {
+            "title": "Accent Color",
+            "type": "string"
+          },
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "app_id": {
+            "default": "",
+            "title": "App Id",
+            "type": "string"
+          },
+          "background_color": {
+            "title": "Background Color",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "danger_color": {
+            "title": "Danger Color",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "logo_url": {
+            "default": "",
+            "title": "Logo Url",
+            "type": "string"
+          },
+          "muted_color": {
+            "title": "Muted Color",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "primary_color": {
+            "title": "Primary Color",
+            "type": "string"
+          },
+          "secondary_color": {
+            "title": "Secondary Color",
+            "type": "string"
+          },
+          "source": {
+            "default": "",
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "title": "Status",
+            "type": "string"
+          },
+          "success_color": {
+            "title": "Success Color",
+            "type": "string"
+          },
+          "surface_color": {
+            "title": "Surface Color",
+            "type": "string"
+          },
+          "text_color": {
+            "title": "Text Color",
+            "type": "string"
+          },
+          "updated_at": {
+            "default": "",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "warning_color": {
+            "title": "Warning Color",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "primary_color",
+          "secondary_color",
+          "accent_color",
+          "background_color",
+          "surface_color",
+          "text_color",
+          "muted_color",
+          "success_color",
+          "warning_color",
+          "danger_color"
+        ],
+        "title": "BrandThemeOut",
+        "type": "object"
+      },
       "BundleOut": {
         "properties": {
           "apps": {
@@ -908,6 +1011,16 @@
               }
             ]
           },
+          "brand_theme": {
+            "$ref": "#/components/schemas/BrandThemeOut"
+          },
+          "brand_themes": {
+            "items": {
+              "$ref": "#/components/schemas/BrandThemeOut"
+            },
+            "title": "Brand Themes",
+            "type": "array"
+          },
           "deployment": {
             "anyOf": [
               {
@@ -966,7 +1079,8 @@
           }
         },
         "required": [
-          "account"
+          "account",
+          "brand_theme"
         ],
         "title": "CustomerOverviewOut",
         "type": "object"
@@ -990,6 +1104,23 @@
             "pattern": "^(person|organization|family|project)$",
             "title": "Account Kind",
             "type": "string"
+          },
+          "app_brand_themes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/app__routers__provisioning__BrandThemeInput"
+            },
+            "title": "App Brand Themes",
+            "type": "object"
+          },
+          "brand_theme": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/app__routers__provisioning__BrandThemeInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "bundle_id": {
             "default": "full_stack",
@@ -2446,12 +2577,22 @@
           "account": {
             "$ref": "#/components/schemas/ProvisionedAccountOut"
           },
+          "app_brand_themes": {
+            "items": {
+              "$ref": "#/components/schemas/BrandThemeOut"
+            },
+            "title": "App Brand Themes",
+            "type": "array"
+          },
           "apps": {
             "items": {
               "$ref": "#/components/schemas/ProvisionedAppOut"
             },
             "title": "Apps",
             "type": "array"
+          },
+          "brand_theme": {
+            "$ref": "#/components/schemas/BrandThemeOut"
           },
           "bundle_id": {
             "title": "Bundle Id",
@@ -2488,7 +2629,8 @@
           "spaces",
           "apps",
           "deployment",
-          "modules"
+          "modules",
+          "brand_theme"
         ],
         "title": "ProvisioningResultOut",
         "type": "object"
@@ -2792,6 +2934,156 @@
           "answer"
         ],
         "title": "ServiceAskResponse",
+        "type": "object"
+      },
+      "ServiceBrandThemeUpdate": {
+        "properties": {
+          "accent_color": {
+            "anyOf": [
+              {
+                "maxLength": 7,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accent Color"
+          },
+          "background_color": {
+            "anyOf": [
+              {
+                "maxLength": 7,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Background Color"
+          },
+          "danger_color": {
+            "anyOf": [
+              {
+                "maxLength": 7,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Danger Color"
+          },
+          "logo_url": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Url"
+          },
+          "muted_color": {
+            "anyOf": [
+              {
+                "maxLength": 7,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted Color"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "primary_color": {
+            "anyOf": [
+              {
+                "maxLength": 7,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Color"
+          },
+          "secondary_color": {
+            "anyOf": [
+              {
+                "maxLength": 7,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secondary Color"
+          },
+          "success_color": {
+            "anyOf": [
+              {
+                "maxLength": 7,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Success Color"
+          },
+          "surface_color": {
+            "anyOf": [
+              {
+                "maxLength": 7,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Surface Color"
+          },
+          "text_color": {
+            "anyOf": [
+              {
+                "maxLength": 7,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Color"
+          },
+          "warning_color": {
+            "anyOf": [
+              {
+                "maxLength": 7,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning Color"
+          }
+        },
+        "title": "ServiceBrandThemeUpdate",
         "type": "object"
       },
       "ServiceCapabilitiesResponse": {
@@ -3363,6 +3655,168 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "app__routers__platform__BrandThemeInput": {
+        "properties": {
+          "accent_color": {
+            "default": "#a66e2f",
+            "maxLength": 7,
+            "title": "Accent Color",
+            "type": "string"
+          },
+          "app_id": {
+            "default": "",
+            "maxLength": 80,
+            "title": "App Id",
+            "type": "string"
+          },
+          "background_color": {
+            "default": "#f4f2ee",
+            "maxLength": 7,
+            "title": "Background Color",
+            "type": "string"
+          },
+          "danger_color": {
+            "default": "#b4453e",
+            "maxLength": 7,
+            "title": "Danger Color",
+            "type": "string"
+          },
+          "logo_url": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Logo Url",
+            "type": "string"
+          },
+          "muted_color": {
+            "default": "#5f6671",
+            "maxLength": 7,
+            "title": "Muted Color",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Name",
+            "type": "string"
+          },
+          "primary_color": {
+            "default": "#16191e",
+            "maxLength": 7,
+            "title": "Primary Color",
+            "type": "string"
+          },
+          "secondary_color": {
+            "default": "#3e5573",
+            "maxLength": 7,
+            "title": "Secondary Color",
+            "type": "string"
+          },
+          "success_color": {
+            "default": "#1f7a4d",
+            "maxLength": 7,
+            "title": "Success Color",
+            "type": "string"
+          },
+          "surface_color": {
+            "default": "#ffffff",
+            "maxLength": 7,
+            "title": "Surface Color",
+            "type": "string"
+          },
+          "text_color": {
+            "default": "#101828",
+            "maxLength": 7,
+            "title": "Text Color",
+            "type": "string"
+          },
+          "warning_color": {
+            "default": "#b98a4e",
+            "maxLength": 7,
+            "title": "Warning Color",
+            "type": "string"
+          }
+        },
+        "title": "BrandThemeInput",
+        "type": "object"
+      },
+      "app__routers__provisioning__BrandThemeInput": {
+        "properties": {
+          "accent_color": {
+            "default": "#a66e2f",
+            "maxLength": 7,
+            "title": "Accent Color",
+            "type": "string"
+          },
+          "background_color": {
+            "default": "#f4f2ee",
+            "maxLength": 7,
+            "title": "Background Color",
+            "type": "string"
+          },
+          "danger_color": {
+            "default": "#b4453e",
+            "maxLength": 7,
+            "title": "Danger Color",
+            "type": "string"
+          },
+          "logo_url": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Logo Url",
+            "type": "string"
+          },
+          "muted_color": {
+            "default": "#5f6671",
+            "maxLength": 7,
+            "title": "Muted Color",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Name",
+            "type": "string"
+          },
+          "primary_color": {
+            "default": "#16191e",
+            "maxLength": 7,
+            "title": "Primary Color",
+            "type": "string"
+          },
+          "secondary_color": {
+            "default": "#3e5573",
+            "maxLength": 7,
+            "title": "Secondary Color",
+            "type": "string"
+          },
+          "success_color": {
+            "default": "#1f7a4d",
+            "maxLength": 7,
+            "title": "Success Color",
+            "type": "string"
+          },
+          "surface_color": {
+            "default": "#ffffff",
+            "maxLength": 7,
+            "title": "Surface Color",
+            "type": "string"
+          },
+          "text_color": {
+            "default": "#101828",
+            "maxLength": 7,
+            "title": "Text Color",
+            "type": "string"
+          },
+          "warning_color": {
+            "default": "#b98a4e",
+            "maxLength": 7,
+            "title": "Warning Color",
+            "type": "string"
+          }
+        },
+        "title": "BrandThemeInput",
         "type": "object"
       }
     }
@@ -5348,6 +5802,185 @@
         ]
       }
     },
+    "/api/platform/accounts/{account_id}/brand-theme": {
+      "get": {
+        "operationId": "get_brand_theme_api_platform_accounts__account_id__brand_theme_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "app_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 80,
+              "title": "App Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandThemeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Brand Theme",
+        "tags": [
+          "platform"
+        ]
+      },
+      "put": {
+        "operationId": "upsert_brand_theme_api_platform_accounts__account_id__brand_theme_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/app__routers__platform__BrandThemeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandThemeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upsert Brand Theme",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/platform/accounts/{account_id}/brand-themes": {
+      "get": {
+        "operationId": "list_brand_themes_api_platform_accounts__account_id__brand_themes_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BrandThemeOut"
+                  },
+                  "title": "Response List Brand Themes Api Platform Accounts  Account Id  Brand Themes Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Brand Themes",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
     "/api/platform/accounts/{account_id}/spaces": {
       "get": {
         "operationId": "list_spaces_api_platform_accounts__account_id__spaces_get",
@@ -6215,6 +6848,100 @@
         "summary": "Get Assistant Record",
         "tags": [
           "service-assistant"
+        ]
+      }
+    },
+    "/api/service/brand-theme": {
+      "get": {
+        "operationId": "service_brand_theme_api_service_brand_theme_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandThemeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Service Brand Theme",
+        "tags": [
+          "service"
+        ]
+      },
+      "put": {
+        "operationId": "update_service_brand_theme_api_service_brand_theme_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceBrandThemeUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandThemeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Service Brand Theme",
+        "tags": [
+          "service"
         ]
       }
     },

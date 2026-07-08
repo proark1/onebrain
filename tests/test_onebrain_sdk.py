@@ -84,6 +84,23 @@ def test_onebrain_client_capabilities_uses_get():
     assert calls == [("GET", "https://onebrain.example/api/service/capabilities", None)]
 
 
+def test_onebrain_client_reads_and_updates_brand_theme():
+    calls = []
+
+    def transport(method, url, headers, payload, timeout):
+        calls.append((method, url, payload))
+        return {"primary_color": payload.get("primary_color", "#16191e") if payload else "#16191e"}
+
+    client = OneBrainClient("https://onebrain.example", "obk_test_secret", transport=transport)
+
+    assert client.brand_theme()["primary_color"] == "#16191e"
+    assert client.update_brand_theme(primary_color="#123456")["primary_color"] == "#123456"
+    assert calls == [
+        ("GET", "https://onebrain.example/api/service/brand-theme", None),
+        ("PUT", "https://onebrain.example/api/service/brand-theme", {"primary_color": "#123456"}),
+    ]
+
+
 def test_onebrain_client_intake_uses_structured_endpoint():
     calls = []
 

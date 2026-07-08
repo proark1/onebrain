@@ -138,6 +138,43 @@ export type PlatformAuditEvent = {
   meta: Record<string, unknown>;
 };
 
+export type BrandTheme = {
+  id: string;
+  account_id: string;
+  app_id: string;
+  name: string;
+  primary_color: string;
+  secondary_color: string;
+  accent_color: string;
+  background_color: string;
+  surface_color: string;
+  text_color: string;
+  muted_color: string;
+  success_color: string;
+  warning_color: string;
+  danger_color: string;
+  logo_url: string;
+  source: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BrandThemeInput = {
+  name?: string;
+  primary_color: string;
+  secondary_color: string;
+  accent_color: string;
+  background_color: string;
+  surface_color: string;
+  text_color: string;
+  muted_color: string;
+  success_color: string;
+  warning_color: string;
+  danger_color: string;
+  logo_url?: string;
+};
+
 export type ServiceKeyInfo = {
   id: string;
   tenant_id: string;
@@ -177,6 +214,8 @@ export type ProvisionCustomerInput = {
   module_versions?: Record<string, string>;
   region?: string;
   release_ring: string;
+  brand_theme?: BrandThemeInput;
+  app_brand_themes?: Record<string, BrandThemeInput>;
 };
 
 export type ProvisionedCredential = {
@@ -218,6 +257,8 @@ export type ProvisioningResult = {
   };
   modules: Array<{ module_id: string; version: string; status: string }>;
   credentials: ProvisionedCredential[];
+  brand_theme: BrandTheme;
+  app_brand_themes: BrandTheme[];
 };
 
 export type OperatorDeployment = {
@@ -300,6 +341,8 @@ export type OperatorCustomer = {
     allowed_purposes: string[];
     status: string;
   }>;
+  brand_theme: BrandTheme;
+  brand_themes: BrandTheme[];
   service_keys: ServiceKeyInfo[];
   deployment: OperatorDeployment | null;
   modules: OperatorModule[];
