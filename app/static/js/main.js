@@ -6,16 +6,17 @@ import { initChat, loadConversation, newChat } from "./chat.js";
 import { initConversations, refreshConversations } from "./conversations.js";
 import { el, qs, toast } from "./dom.js";
 import { initOperator } from "./operator.js";
-import { CLASS_COLORS } from "./state.js";
+import { CLASS_COLORS, getWorkspaceScope } from "./state.js";
 import { initUpload } from "./upload.js";
+import { initWorkspace } from "./workspace.js";
 
 async function refreshDocuments() {
-  const docs = await listDocuments();
+  const docs = await listDocuments(getWorkspaceScope());
   const list = qs("#docList");
   qs("#docCount").textContent = docs.length;
 
   if (!docs.length) {
-    list.replaceChildren(el("li", { class: "doc-meta", style: "padding:8px 9px" }, "No documents visible to your role."));
+    list.replaceChildren(el("li", { class: "doc-meta", style: "padding:8px 9px" }, "No documents visible here."));
     return;
   }
   list.replaceChildren(...docs.map((doc) => el("li", { class: "doc-item", title: doc.title },
@@ -30,7 +31,7 @@ async function refreshDocuments() {
 async function refreshReview() {
   let pending = [];
   try {
-    pending = await listPending();
+    pending = await listPending(getWorkspaceScope());
   } catch {
     pending = [];   // e.g. a role that can't review — just show nothing
   }
@@ -51,7 +52,7 @@ async function refreshReview() {
       approve.disabled = true;
       approve.textContent = "…";
       try {
-        await approveDocument(doc.doc_id);
+        await approveDocument(doc.doc_id, getWorkspaceScope());
         toast(`Approved "${doc.title}"`);
         await Promise.all([refreshReview(), refreshDocuments()]);
       } catch (err) {
@@ -73,6 +74,14 @@ async function initApp(me) {
   initConversations({ onSelect: (id) => loadConversation(id) });
   initUpload({ onUploaded: () => Promise.all([refreshDocuments(), refreshReview()]) });
   const operator = initOperator(me);
+  await initWorkspace(me, {
+    onChange: () => {
+      operator.showChat();
+      newChat();
+      Promise.all([refreshDocuments(), refreshConversations(), refreshReview()])
+        .catch((err) => toast(err.message));
+    },
+  });
   qs("#newChatBtn").addEventListener("click", () => {
     operator.showChat();
     newChat();

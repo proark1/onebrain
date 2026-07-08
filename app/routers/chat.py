@@ -8,8 +8,9 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from app.auth.principal import Principal, resolve_principal
-from app.conversations.base import Scope
-from app.deps import get_conversation_store, get_retrieval_service
+from app.deps import get_conversation_store, get_platform_store, get_retrieval_service
+from app.platform.scope import scoped_human_principal
+from app.routers.conversations import scope_of
 from app.schemas import AskRequest
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -25,9 +26,10 @@ def _title(question: str) -> str:
 
 @router.post("/ask")
 def ask(body: AskRequest, principal: Principal = Depends(resolve_principal)):
+    principal = scoped_human_principal(body.account_id or "", body.space_id or "", principal, get_platform_store())
     service = get_retrieval_service()
     convs = get_conversation_store()
-    scope = Scope(principal.tenant_id, principal.user_id, principal.role_id)
+    scope = scope_of(principal)
 
     conv = convs.get(body.conversation_id, scope) if body.conversation_id else None
     if conv is None:

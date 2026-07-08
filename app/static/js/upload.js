@@ -2,6 +2,7 @@
 
 import { uploadDocument } from "./api.js";
 import { qs, toast } from "./dom.js";
+import { getWorkspaceScope } from "./state.js";
 
 // The single source of truth for what onebrain can extract. Used to build the
 // native picker's filter AND to reject unsupported drops/picks in the UI.
@@ -128,7 +129,7 @@ export function initUpload({ onUploaded }) {
       data.append("classification", qs("#clsSelect").value);
       data.append("location", qs("#uploadLocation").value);
       data.append("category", qs("#catSelect").value);
-      const doc = await uploadDocument(data);
+      const doc = await uploadDocument(data, getWorkspaceScope());
       if (doc.status === "pending") {
         const why = doc.pii_findings ? " — possible personal data detected" : "";
         toast(`"${doc.title}" submitted for review${why}`);

@@ -31,6 +31,8 @@ class Conversation:
     title: str
     created_at: str = ""
     updated_at: str = ""
+    account_id: str = ""
+    space_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,8 @@ class Scope:
     tenant_id: str
     session_id: str
     role_id: str
+    account_id: str = ""
+    space_id: str = ""
 
 
 class ConversationStore(Protocol):

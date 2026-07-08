@@ -3,6 +3,19 @@
 
 const json = (res) => res.json();
 
+function cleanScope(scope = {}) {
+  const accountId = (scope.account_id || "").trim();
+  const spaceId = (scope.space_id || "").trim();
+  return accountId && spaceId ? { account_id: accountId, space_id: spaceId } : {};
+}
+
+function scopeQuery(scope = {}) {
+  const clean = cleanScope(scope);
+  if (!clean.account_id) return "";
+  const params = new URLSearchParams(clean);
+  return `?${params.toString()}`;
+}
+
 async function requestJson(url, options = {}) {
   const res = await fetch(url, options);
   if (!res.ok) {
@@ -32,22 +45,28 @@ export async function login(email, password) {
 
 export const logout = () => fetch("/api/auth/logout", { method: "POST" });
 
-export const listDocuments = () => fetch("/api/documents").then(json);
-export const listPending = () => fetch("/api/documents/pending").then(json);
+export const listDocuments = (scope = {}) => fetch(`/api/documents${scopeQuery(scope)}`).then(json);
+export const listPending = (scope = {}) => fetch(`/api/documents/pending${scopeQuery(scope)}`).then(json);
 
-export async function approveDocument(id) {
-  const res = await fetch(`/api/documents/${id}/approve`, { method: "POST" });
+export async function approveDocument(id, scope = {}) {
+  const res = await fetch(`/api/documents/${id}/approve${scopeQuery(scope)}`, { method: "POST" });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail || "Approval failed");
   }
   return res.json();
 }
-export const getConversations = () => fetch("/api/conversations").then(json);
-export const getConversation = (id) => fetch(`/api/conversations/${id}`).then(json);
-export const deleteConversation = (id) => fetch(`/api/conversations/${id}`, { method: "DELETE" });
+export const getConversations = (scope = {}) => fetch(`/api/conversations${scopeQuery(scope)}`).then(json);
+export const getConversation = (id, scope = {}) => fetch(`/api/conversations/${id}${scopeQuery(scope)}`).then(json);
+export const deleteConversation = (id, scope = {}) =>
+  fetch(`/api/conversations/${id}${scopeQuery(scope)}`, { method: "DELETE" });
 
-export async function uploadDocument(formData) {
+export async function uploadDocument(formData, scope = {}) {
+  const clean = cleanScope(scope);
+  if (clean.account_id) {
+    formData.set("account_id", clean.account_id);
+    formData.set("space_id", clean.space_id);
+  }
   const res = await fetch("/api/upload", { method: "POST", body: formData });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -125,11 +144,14 @@ export async function updateRollout(rolloutId, payload) {
 }
 
 // Streams the answer via SSE. Sends conversation_id (null starts a new one).
-export async function askStream(question, conversationId, onEvent) {
+export async function askStream(question, conversationId, scopeOrCallback, maybeCallback) {
+  const scope = typeof scopeOrCallback === "function" ? {} : cleanScope(scopeOrCallback || {});
+  const onEvent = typeof scopeOrCallback === "function" ? scopeOrCallback : maybeCallback;
+  const payload = { question, conversation_id: conversationId, ...scope };
   const res = await fetch("/api/ask", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question, conversation_id: conversationId }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok || !res.body) throw new Error("Request failed");
 

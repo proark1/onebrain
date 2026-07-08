@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.auth.principal import Principal, resolve_principal
 from app.config import get_settings
 from app.deps import get_pipeline, get_platform_store, get_store
+from app.platform.scope import scoped_human_principal, selected_space_id
 from app.schemas import DocumentSummary, PendingDocument
 from app.security.policy import STATUS_APPROVED
 
@@ -16,21 +15,8 @@ router = APIRouter(prefix="/api", tags=["documents"])
 
 
 def _space_scope(account_id: str, space_id: str, principal: Principal):
-    account_id = (account_id or "").strip()
-    space_id = (space_id or "").strip()
-    if not account_id and not space_id:
-        return "", "", principal.access_filter()
-    if principal.role_id != "admin":
-        raise HTTPException(status_code=403, detail="Only admin can use platform-scoped document operations.")
-    if not account_id or not space_id:
-        raise HTTPException(status_code=400, detail="account_id and space_id must be provided together.")
-    if account_id != principal.tenant_id:
-        raise HTTPException(status_code=403, detail="This user is not pinned to that account.")
-    space = get_platform_store().get_space(space_id)
-    if not space or space.account_id != account_id:
-        raise HTTPException(status_code=404, detail="Space not found for this account.")
-    scoped = replace(principal, account_id=account_id, space_ids=frozenset({space_id}))
-    return account_id, space_id, scoped.access_filter()
+    scoped = scoped_human_principal(account_id, space_id, principal, get_platform_store())
+    return scoped.account_id, selected_space_id(scoped), scoped.access_filter()
 
 
 def _doc_summary(d: dict) -> DocumentSummary:

@@ -17,7 +17,12 @@ def _now() -> str:
 
 
 def _owns(conv: Conversation, scope: Scope) -> bool:
-    return (conv.tenant_id, conv.session_id, conv.role_id) == (scope.tenant_id, scope.session_id, scope.role_id)
+    return (
+        conv.tenant_id, conv.session_id, conv.role_id,
+        getattr(conv, "account_id", ""), getattr(conv, "space_id", ""),
+    ) == (
+        scope.tenant_id, scope.session_id, scope.role_id, scope.account_id, scope.space_id,
+    )
 
 
 class MemoryConversationStore:
@@ -45,6 +50,7 @@ class MemoryConversationStore:
             conv = Conversation(
                 id=uuid.uuid4().hex, tenant_id=scope.tenant_id, session_id=scope.session_id,
                 role_id=scope.role_id, title=title[:80] or "New chat", created_at=_now(), updated_at=_now(),
+                account_id=scope.account_id, space_id=scope.space_id,
             )
             self._conversations[conv.id] = conv
             self._messages[conv.id] = []

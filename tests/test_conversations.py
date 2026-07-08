@@ -10,6 +10,8 @@ SCOPE_A = Scope("nft_gym", "sess-A", "admin")
 SCOPE_B = Scope("nft_gym", "sess-B", "admin")          # different device
 SCOPE_C = Scope("nft_gym", "sess-A", "front_desk")     # same device, different role
 SCOPE_D = Scope("companyB", "sess-A", "admin")         # different tenant
+SCOPE_E = Scope("nft_gym", "sess-A", "admin", "nft_gym", "sp_customer")
+SCOPE_F = Scope("nft_gym", "sess-A", "admin", "nft_gym", "sp_personal")
 
 
 def test_create_and_load_roundtrip():
@@ -26,10 +28,21 @@ def test_conversations_are_scope_isolated():
     store = MemoryConversationStore()
     conv = store.create(SCOPE_A, "private")
     # Another device, another role, or another tenant cannot see or load it.
-    for other in (SCOPE_B, SCOPE_C, SCOPE_D):
+    for other in (SCOPE_B, SCOPE_C, SCOPE_D, SCOPE_E):
         assert store.get(conv.id, other) is None
         assert conv.id not in {c.id for c in store.list(other)}
     assert conv.id in {c.id for c in store.list(SCOPE_A)}
+
+
+def test_conversations_are_space_isolated():
+    store = MemoryConversationStore()
+    customer = store.create(SCOPE_E, "customer")
+    personal = store.create(SCOPE_F, "personal")
+
+    assert store.get(customer.id, SCOPE_E) is not None
+    assert store.get(customer.id, SCOPE_F) is None
+    assert {c.id for c in store.list(SCOPE_E)} == {customer.id}
+    assert {c.id for c in store.list(SCOPE_F)} == {personal.id}
 
 
 def test_delete_is_scoped():

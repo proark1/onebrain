@@ -36,6 +36,21 @@
         <button id="logoutBtn" class="logout-btn" type="button">Log out</button>
       </div>
 
+      <div id="workspacePanel" class="workspace" hidden>
+        <div class="workspace-head">
+          <span>Workspace</span>
+          <span id="workspaceBadge" class="workspace-badge">All</span>
+        </div>
+        <label class="field workspace-field">
+          <span class="field-label">Account</span>
+          <select id="workspaceAccount" class="select workspace-select" disabled></select>
+        </label>
+        <label class="field workspace-field">
+          <span class="field-label">Space</span>
+          <select id="workspaceSpace" class="select workspace-select"></select>
+        </label>
+      </div>
+
       <button id="newChatBtn" class="btn-newchat" type="button">
         <span class="plus">+</span> New chat
       </button>

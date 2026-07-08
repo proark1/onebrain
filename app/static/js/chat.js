@@ -3,7 +3,7 @@
 
 import { askStream, getConversation } from "./api.js";
 import { el, qs } from "./dom.js";
-import { CLASS_COLORS, getConversationId, setConversationId } from "./state.js";
+import { CLASS_COLORS, getConversationId, getWorkspaceScope, setConversationId } from "./state.js";
 
 const SUGGESTIONS = [
   { q: "What are the opening hours?", hint: "public · everyone can see this" },
@@ -44,7 +44,7 @@ export function newChat() {
 }
 
 export async function loadConversation(id) {
-  const conv = await getConversation(id).catch(() => null);
+  const conv = await getConversation(id, getWorkspaceScope()).catch(() => null);
   if (!conv) return;
   setConversationId(conv.id);
   messages.replaceChildren();
@@ -71,7 +71,7 @@ async function send(raw) {
   scroll();
 
   try {
-    await askStream(question, getConversationId(), (event) => handleEvent(event, answer, body));
+    await askStream(question, getConversationId(), getWorkspaceScope(), (event) => handleEvent(event, answer, body));
   } catch (err) {
     answer.textContent = "Something went wrong reaching the brain. Is the server running?";
   } finally {

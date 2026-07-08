@@ -31,6 +31,7 @@ def me(principal: Principal = Depends(resolve_principal)):
         role_label=principal.role_label,
         clearance=principal.clearance.name.lower(),
         location_label=principal.location_label,
+        tenant_id=principal.tenant_id,
         display_name=principal.display_name,
         email=principal.email,
     )

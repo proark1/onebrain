@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     conversation_id: Optional[str] = None
+    account_id: Optional[str] = Field(default=None, max_length=120)
+    space_id: Optional[str] = Field(default=None, max_length=120)
 
 
 class ConversationSummary(BaseModel):
@@ -68,6 +70,7 @@ class SessionInfo(BaseModel):
     role_label: str
     clearance: str
     location_label: str
+    tenant_id: str = ""
     display_name: str = ""
     email: str = ""
 

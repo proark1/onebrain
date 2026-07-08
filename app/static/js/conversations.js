@@ -3,7 +3,7 @@
 
 import { deleteConversation, getConversations } from "./api.js";
 import { el, qs, toast } from "./dom.js";
-import { getConversationId } from "./state.js";
+import { getConversationId, getWorkspaceScope } from "./state.js";
 
 let onSelect = () => {};
 
@@ -13,7 +13,7 @@ export function initConversations({ onSelect: cb } = {}) {
 
 export async function refreshConversations() {
   const list = qs("#chatList");
-  const convs = await getConversations().catch(() => []);
+  const convs = await getConversations(getWorkspaceScope()).catch(() => []);
   const active = getConversationId();
 
   if (!convs.length) {
@@ -28,7 +28,7 @@ export async function refreshConversations() {
         class: "chat-del", type: "button", "aria-label": "Delete chat",
         onclick: async (e) => {
           e.stopPropagation();
-          await deleteConversation(c.id);
+          await deleteConversation(c.id, getWorkspaceScope());
           toast("Chat deleted");
           refreshConversations();
         },

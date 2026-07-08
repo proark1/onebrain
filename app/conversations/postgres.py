@@ -35,13 +35,21 @@ class PostgresConversationStore:
                     role_id TEXT NOT NULL,
                     title TEXT NOT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    account_id TEXT NOT NULL DEFAULT '',
+                    space_id TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
+            cur.execute("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS account_id TEXT NOT NULL DEFAULT ''")
+            cur.execute("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS space_id TEXT NOT NULL DEFAULT ''")
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS conv_scope_idx "
-                "ON conversations (tenant_id, session_id, role_id, updated_at DESC)"
+                "ON conversations (tenant_id, session_id, role_id, account_id, space_id, updated_at DESC)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS conv_scope_space_idx "
+                "ON conversations (tenant_id, session_id, role_id, account_id, space_id, updated_at DESC)"
             )
             cur.execute(
                 """
@@ -62,38 +70,50 @@ class PostgresConversationStore:
         cid = uuid.uuid4().hex
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO conversations (id, tenant_id, session_id, role_id, title) "
-                "VALUES (%s, %s, %s, %s, %s) RETURNING created_at, updated_at",
-                (cid, scope.tenant_id, scope.session_id, scope.role_id, (title or "New chat")[:80]),
+                "INSERT INTO conversations (id, tenant_id, session_id, role_id, title, account_id, space_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING created_at, updated_at",
+                (
+                    cid, scope.tenant_id, scope.session_id, scope.role_id,
+                    (title or "New chat")[:80], scope.account_id, scope.space_id,
+                ),
             )
             created, updated = cur.fetchone()
             conn.commit()
         return Conversation(cid, scope.tenant_id, scope.session_id, scope.role_id,
-                            (title or "New chat")[:80], _iso(created), _iso(updated))
+                            (title or "New chat")[:80], _iso(created), _iso(updated),
+                            scope.account_id, scope.space_id)
 
     def get(self, conversation_id: str, scope: Scope) -> Optional[Conversation]:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT id, title, created_at, updated_at FROM conversations "
-                "WHERE id = %s AND tenant_id = %s AND session_id = %s AND role_id = %s",
-                (conversation_id, scope.tenant_id, scope.session_id, scope.role_id),
+                "WHERE id = %s AND tenant_id = %s AND session_id = %s AND role_id = %s "
+                "AND account_id = %s AND space_id = %s",
+                (
+                    conversation_id, scope.tenant_id, scope.session_id, scope.role_id,
+                    scope.account_id, scope.space_id,
+                ),
             )
             row = cur.fetchone()
         if not row:
             return None
         return Conversation(row[0], scope.tenant_id, scope.session_id, scope.role_id,
-                            row[1], _iso(row[2]), _iso(row[3]))
+                            row[1], _iso(row[2]), _iso(row[3]), scope.account_id, scope.space_id)
 
     def list(self, scope: Scope, limit: int = 50) -> List[Conversation]:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT id, title, created_at, updated_at FROM conversations "
                 "WHERE tenant_id = %s AND session_id = %s AND role_id = %s "
+                "AND account_id = %s AND space_id = %s "
                 "ORDER BY updated_at DESC LIMIT %s",
-                (scope.tenant_id, scope.session_id, scope.role_id, limit),
+                (scope.tenant_id, scope.session_id, scope.role_id, scope.account_id, scope.space_id, limit),
             )
             rows = cur.fetchall()
-        return [Conversation(r[0], scope.tenant_id, scope.session_id, scope.role_id, r[1], _iso(r[2]), _iso(r[3]))
+        return [Conversation(
+                    r[0], scope.tenant_id, scope.session_id, scope.role_id, r[1], _iso(r[2]), _iso(r[3]),
+                    scope.account_id, scope.space_id,
+                )
                 for r in rows]
 
     def add_message(self, conversation_id: str, role: str, content: str, meta: Optional[dict] = None) -> Message:
@@ -120,8 +140,12 @@ class PostgresConversationStore:
     def delete(self, conversation_id: str, scope: Scope) -> bool:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
-                "DELETE FROM conversations WHERE id = %s AND tenant_id = %s AND session_id = %s AND role_id = %s",
-                (conversation_id, scope.tenant_id, scope.session_id, scope.role_id),
+                "DELETE FROM conversations WHERE id = %s AND tenant_id = %s AND session_id = %s AND role_id = %s "
+                "AND account_id = %s AND space_id = %s",
+                (
+                    conversation_id, scope.tenant_id, scope.session_id, scope.role_id,
+                    scope.account_id, scope.space_id,
+                ),
             )
             removed = cur.rowcount
             conn.commit()
