@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 
 from app.auth.principal import Principal, resolve_principal
 from app.config import get_settings
@@ -12,6 +13,20 @@ from app.schemas import DocumentSummary, PendingDocument
 from app.security.policy import STATUS_APPROVED
 
 router = APIRouter(prefix="/api", tags=["documents"])
+
+UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
+
+
+async def _read_upload_limited(file: UploadFile, max_bytes: int) -> bytes:
+    data = bytearray()
+    while True:
+        chunk = await file.read(UPLOAD_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if len(data) > max_bytes:
+            raise HTTPException(status_code=413, detail="Payload too large")
+    return bytes(data)
 
 
 def _space_scope(account_id: str, space_id: str, principal: Principal):
@@ -61,15 +76,20 @@ async def upload(
         raise HTTPException(status_code=403, detail="Only employees can upload documents.")
     scoped_account, scoped_space, _ = _space_scope(account_id, space_id, principal)
 
-    data = await file.read()
+    settings = get_settings()
+    data = await _read_upload_limited(file, settings.max_body_bytes)
     if not data:
         raise HTTPException(status_code=400, detail="The file is empty.")
 
-    settings = get_settings()
     try:
-        result = get_pipeline().ingest_file(
-            filename=file.filename or "upload.txt", data=data,
-            classification=classification, location=location, category=category,
+        pipeline = get_pipeline()
+        result = await run_in_threadpool(
+            pipeline.ingest_file,
+            filename=file.filename or "upload.txt",
+            data=data,
+            classification=classification,
+            location=location,
+            category=category,
             uploaded_by=principal.user_id,
             tenant=principal.tenant_id,  # server-side — never a caller-supplied field
             require_approval=settings.require_approval,

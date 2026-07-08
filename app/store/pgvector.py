@@ -50,16 +50,21 @@ class PgVectorStore:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
             # If a chunks table already exists with a different embedding
-            # dimension (i.e. the embedding model changed), drop it — vectors
-            # from two models aren't comparable, so the index must be rebuilt.
-            # The app re-seeds automatically when the store is empty.
+            # dimension, refuse to boot rather than deleting customer data.
+            # Vectors from two models are not comparable; a later migration must
+            # re-embed from source text into a versioned/indexed table.
             cur.execute(
                 "SELECT a.atttypmod FROM pg_attribute a JOIN pg_class c "
                 "ON c.oid = a.attrelid WHERE c.relname = 'chunks' AND a.attname = 'embedding'"
             )
             existing = cur.fetchone()
             if existing is not None and existing[0] > 0 and existing[0] != self._dim:
-                cur.execute("DROP TABLE IF EXISTS chunks")
+                raise RuntimeError(
+                    "Existing pgvector chunks table has embedding dimension "
+                    f"{existing[0]}, but the configured embedder uses {self._dim}. "
+                    "Refusing to drop customer data. Run a re-embedding migration "
+                    "or point OneBrain at an empty/vector-compatible database."
+                )
             cur.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS chunks (
