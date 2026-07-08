@@ -5,6 +5,7 @@ import {
   getUpdatePlan,
   latestBackup,
   latestHealth,
+  listAccountServiceKeys,
   listDeploymentModules,
   listDeployments,
   listPlatformAccounts,
@@ -16,6 +17,7 @@ import {
   provisionCustomer,
   recordBackup,
   recordHealth,
+  revokeAccountServiceKey,
   startRollout,
   updateRollout,
 } from "./api.js";
@@ -71,15 +73,51 @@ function renderBundles() {
         chip(moduleCount(bundle), "muted")))));
 }
 
+function renderCredentials(credentials = []) {
+  const section = qs("#credentialSection");
+  const list = qs("#credentialList");
+  qs("#credentialCount").textContent = credentials.length;
+  section.hidden = credentials.length === 0;
+  if (!credentials.length) {
+    list.replaceChildren();
+    return;
+  }
+
+  list.replaceChildren(...credentials.map((credential) => {
+    const copy = el("button", { class: "mini-btn", type: "button" }, "Copy");
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(credential.key);
+        toast(`${credential.app_id} key copied`);
+      } catch {
+        toast("Copy failed");
+      }
+    });
+
+    return el("article", { class: "credential-row" },
+      el("div", { class: "credential-main" },
+        el("div", { class: "operator-row-title" },
+          el("strong", {}, credential.label || credential.app_id),
+          el("code", {}, credential.id)),
+        el("div", { class: "operator-chip-row" },
+          chip(credential.app_id, "module"),
+          ...credential.scopes.map((scope) => chip(scope)),
+          ...credential.purposes.map((purpose) => chip(purpose, "muted"))),
+        el("code", { class: "credential-key" }, credential.key)),
+      copy);
+  }));
+}
+
 async function loadAccounts() {
   const accounts = await listPlatformAccounts();
   qs("#accountCount").textContent = accounts.length;
   const rows = await Promise.all(accounts.map(async (account) => {
-    const [spaces, apps] = await Promise.all([
+    const [spaces, apps, keys] = await Promise.all([
       listPlatformSpaces(account.id),
       listPlatformApps(account.id),
+      listAccountServiceKeys(account.id),
     ]);
-    return { account, spaces, apps };
+    return { account, spaces, apps, keys };
   }));
 
   const list = qs("#accountList");
@@ -88,7 +126,7 @@ async function loadAccounts() {
     return;
   }
 
-  list.replaceChildren(...rows.map(({ account, spaces, apps }) =>
+  list.replaceChildren(...rows.map(({ account, spaces, apps, keys }) =>
     el("article", { class: "operator-row" },
       el("div", { class: "operator-row-main" },
         el("div", { class: "operator-row-title" },
@@ -101,7 +139,28 @@ async function loadAccounts() {
         apps.length
           ? el("div", { class: "operator-app-list" },
             ...apps.map((app) => el("span", {}, `${app.app_id} / ${app.enabled_space_ids.length} spaces`)))
-          : el("span", { class: "operator-muted" }, "No apps")))));
+          : el("span", { class: "operator-muted" }, "No apps"),
+        keys.length
+          ? el("div", { class: "operator-key-list" },
+            ...keys.map((key) => {
+              const revoke = el("button", { class: "rollout-action danger", type: "button" }, "Revoke");
+              revoke.disabled = key.status !== "active";
+              revoke.addEventListener("click", async () => {
+                revoke.disabled = true;
+                try {
+                  await revokeAccountServiceKey(account.id, key.id);
+                  toast(`${key.app_id || key.id} key revoked`);
+                  await loadAccounts();
+                } catch (err) {
+                  toast(err.message);
+                  revoke.disabled = false;
+                }
+              });
+              return el("div", { class: "operator-key-line" },
+                el("span", {}, `${key.app_id || "tenant"} / ${key.status} / ${key.id}`),
+                revoke);
+            }))
+          : el("span", { class: "operator-muted" }, "No integration keys")))));
 }
 
 function renderReleaseRail() {
@@ -301,6 +360,7 @@ async function loadDeployments() {
 
 async function loadOperator() {
   setStatus("Ready");
+  renderCredentials();
   try {
     [bundles] = await Promise.all([listProvisioningBundles()]);
     renderBundles();
@@ -329,6 +389,7 @@ async function submitProvisionForm(event) {
     if (accountId) payload.account_id = accountId;
 
     const result = await provisionCustomer(payload);
+    const credentials = result.credentials || [];
     toast(`Provisioned ${result.account.name}`);
     qs("#provisionForm").reset();
     qs("#provisionBundle").value = payload.bundle_id;
@@ -337,6 +398,8 @@ async function submitProvisionForm(event) {
     qs("#provisionType").value = payload.deployment_type;
     setStatus("Created", "ok");
     await loadOperator();
+    renderCredentials(credentials);
+    setStatus("Created", "ok");
   } catch (err) {
     setStatus("Blocked", "error");
     toast(err.message);

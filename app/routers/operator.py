@@ -21,7 +21,8 @@ from app.controlplane.base import (
     RolloutRun,
     UpdatePlan,
 )
-from app.deps import get_control_plane_store
+from app.deps import get_control_plane_store, get_platform_store, get_service_key_store
+from app.schemas import ServiceKeyInfo
 
 router = APIRouter(prefix="/api/operator", tags=["operator"])
 
@@ -186,6 +187,25 @@ def _rollout_out(r: RolloutRun) -> RolloutOut:
     )
 
 
+def _service_key_out(k) -> ServiceKeyInfo:
+    return ServiceKeyInfo(
+        id=k.id,
+        tenant_id=k.tenant_id,
+        scopes=list(k.scopes),
+        label=k.label,
+        account_id=k.account_id,
+        app_id=k.app_id,
+        space_ids=list(k.space_ids),
+        purposes=list(k.purposes),
+        status=k.status,
+    )
+
+
+def _require_account(account_id: str) -> None:
+    if not get_platform_store().get_account(account_id):
+        raise HTTPException(status_code=404, detail="Account not found.")
+
+
 @router.get("/deployments", response_model=list[DeploymentOut])
 def list_deployments(principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
@@ -210,6 +230,24 @@ def create_deployment(body: DeploymentCreate, principal: Principal = Depends(res
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _deployment_out(deployment)
+
+
+@router.get("/accounts/{account_id}/service-keys", response_model=list[ServiceKeyInfo])
+def list_account_service_keys(account_id: str, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    _require_account(account_id)
+    return [_service_key_out(k) for k in get_service_key_store().list_by_tenant(account_id)]
+
+
+@router.delete("/accounts/{account_id}/service-keys/{key_id}")
+def revoke_account_service_key(account_id: str, key_id: str, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    _require_account(account_id)
+    key = get_service_key_store().get(key_id)
+    if not key or key.tenant_id != account_id:
+        raise HTTPException(status_code=404, detail="Service key not found.")
+    get_service_key_store().revoke(key_id)
+    return {"revoked": key_id}
 
 
 @router.get("/deployments/{deployment_id}/modules", response_model=list[ModuleOut])

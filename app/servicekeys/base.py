@@ -32,6 +32,10 @@ class ServiceKey:
     tenant_id: str
     scopes: tuple
     label: str = ""
+    account_id: str = ""
+    app_id: str = ""
+    space_ids: tuple = ()
+    purposes: tuple = ()
     status: str = "active"          # active | revoked
     created_at: str = ""
 

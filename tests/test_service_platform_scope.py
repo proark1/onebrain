@@ -7,6 +7,8 @@ and retrieval is then narrowed to that exact space.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from fastapi import HTTPException
 
@@ -150,3 +152,50 @@ def test_service_capture_stamps_platform_space_metadata(monkeypatch):
     assert store._chunks[0].meta["account_id"] == "nft_gym"
     assert store._chunks[0].meta["space_id"] == "sp_customer"
     assert store._chunks[0].meta["tenant_id"] == "nft_gym"
+
+
+def test_constrained_service_key_cannot_switch_app_space_or_purpose(monkeypatch):
+    _, _, retrieval = _knowledge_service()
+    platform = _platform_store()
+    monkeypatch.setattr(service_router, "get_retrieval_service", lambda: retrieval)
+    monkeypatch.setattr(service_router, "get_platform_store", lambda: platform)
+    principal = replace(
+        _svc_principal(scopes=(SCOPE_READ,), tenant="nft_gym"),
+        account_id="nft_gym",
+        app_id="communication",
+        space_ids=frozenset({"sp_customer"}),
+        purposes=frozenset({"customer_service_answer"}),
+    )
+
+    response = service_router.service_ask(
+        ServiceAskRequest(question="What are the customer support hours?", space_id="sp_customer"),
+        principal=principal,
+    )
+    assert response.chunks_used >= 1
+
+    attempts = [
+        ServiceAskRequest(
+            question="Can I pretend to be the assistant?",
+            account_id="nft_gym",
+            space_id="sp_customer",
+            app_id="assistant",
+        ),
+        ServiceAskRequest(
+            question="Can I use the private space?",
+            account_id="nft_gym",
+            space_id="sp_personal",
+            app_id="communication",
+        ),
+        ServiceAskRequest(
+            question="Can I use an inbox purpose?",
+            account_id="nft_gym",
+            space_id="sp_customer",
+            app_id="communication",
+            purpose="customer_service_inbox",
+        ),
+    ]
+
+    for request in attempts:
+        with pytest.raises(HTTPException) as exc:
+            service_router.service_ask(request, principal=principal)
+        assert exc.value.status_code == 403

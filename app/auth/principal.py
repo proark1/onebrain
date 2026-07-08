@@ -45,6 +45,8 @@ class Principal:
     scopes: frozenset = frozenset()  # service-key scopes; humans hold none
     account_id: str = ""
     space_ids: Optional[frozenset] = None
+    app_id: str = ""
+    purposes: Optional[frozenset] = None
 
     @property
     def is_employee(self) -> bool:
@@ -139,4 +141,8 @@ def resolve_service_principal(authorization: str = Header(default="")) -> Princi
         principal_type="service",
         scopes=frozenset(key.scopes),
         display_name=key.label,
+        account_id=key.account_id,
+        space_ids=frozenset(key.space_ids) if key.space_ids else None,
+        app_id=key.app_id,
+        purposes=frozenset(key.purposes) if key.purposes else None,
     )

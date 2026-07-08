@@ -17,12 +17,16 @@ from app.servicekeys.base import ServiceKey
 
 def _to_dict(k: ServiceKey) -> dict:
     return {"id": k.id, "key_hash": k.key_hash, "tenant_id": k.tenant_id,
-            "scopes": list(k.scopes), "label": k.label, "status": k.status, "created_at": k.created_at}
+            "scopes": list(k.scopes), "label": k.label, "account_id": k.account_id, "app_id": k.app_id,
+            "space_ids": list(k.space_ids), "purposes": list(k.purposes),
+            "status": k.status, "created_at": k.created_at}
 
 
 def _from_dict(d: dict) -> ServiceKey:
     return ServiceKey(id=d["id"], key_hash=d["key_hash"], tenant_id=d["tenant_id"],
                       scopes=tuple(d.get("scopes", [])), label=d.get("label", ""),
+                      account_id=d.get("account_id", ""), app_id=d.get("app_id", ""),
+                      space_ids=tuple(d.get("space_ids", [])), purposes=tuple(d.get("purposes", [])),
                       status=d.get("status", "active"), created_at=d.get("created_at", ""))
 
 

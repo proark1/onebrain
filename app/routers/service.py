@@ -23,7 +23,7 @@ from app.config import get_settings
 from app.deps import (
     get_pipeline, get_platform_store, get_retrieval_service, get_service_key_store, get_service_rate_limiter,
 )
-from app.platform.base import AuditEvent
+from app.platform.base import AuditEvent, normalize_unique
 from app.schemas import (
     MintedKey, ServiceAskRequest, ServiceAskResponse, ServiceCaptureRequest,
     ServiceKeyCreate, ServiceKeyInfo,
@@ -44,6 +44,13 @@ def _platform_scope(body, principal: Principal, default_purpose: str):
         "app_id": (body.app_id or "").strip(),
         "purpose": (body.purpose or default_purpose).strip(),
     }
+    if not fields["account_id"] and principal.account_id:
+        fields["account_id"] = principal.account_id
+    if not fields["app_id"] and principal.app_id:
+        fields["app_id"] = principal.app_id
+    if not fields["space_id"] and principal.space_ids and len(principal.space_ids) == 1:
+        fields["space_id"] = next(iter(principal.space_ids))
+
     provided = [fields["account_id"], fields["space_id"], fields["app_id"]]
     if not any(provided):
         return None, principal
@@ -54,6 +61,14 @@ def _platform_scope(body, principal: Principal, default_purpose: str):
         )
     if fields["account_id"] != principal.tenant_id:
         raise HTTPException(status_code=403, detail="This service key is not pinned to that account.")
+    if principal.account_id and fields["account_id"] != principal.account_id:
+        raise HTTPException(status_code=403, detail="This service key cannot use that account.")
+    if principal.app_id and fields["app_id"] != principal.app_id:
+        raise HTTPException(status_code=403, detail="This service key cannot use that app.")
+    if principal.space_ids is not None and fields["space_id"] not in principal.space_ids:
+        raise HTTPException(status_code=403, detail="This service key cannot use that space.")
+    if principal.purposes is not None and fields["purpose"] not in principal.purposes:
+        raise HTTPException(status_code=403, detail="This service key cannot use that purpose.")
 
     store = get_platform_store()
     decision = store.check_app_access(
@@ -155,6 +170,12 @@ def mint_key(body: ServiceKeyCreate, principal: Principal = Depends(resolve_prin
     scopes = tuple(s for s in dict.fromkeys(body.scopes) if s in VALID_SCOPES)
     if not scopes:
         raise HTTPException(status_code=400, detail=f"Provide at least one valid scope: {sorted(VALID_SCOPES)}.")
+    app_id = (body.app_id or "").strip()
+    space_ids = normalize_unique(body.space_ids)
+    purposes = normalize_unique(body.purposes)
+    account_id = principal.tenant_id if app_id or space_ids or purposes else ""
+    if (space_ids or purposes) and not app_id:
+        raise HTTPException(status_code=400, detail="app_id is required when space_ids or purposes are constrained.")
     # Cap the active-key surface per tenant.
     active = [k for k in get_service_key_store().list_by_tenant(principal.tenant_id) if k.status == "active"]
     if len(active) >= get_settings().max_service_keys_per_tenant:
@@ -163,17 +184,23 @@ def mint_key(body: ServiceKeyCreate, principal: Principal = Depends(resolve_prin
     # A key is minted for the admin's OWN tenant — no cross-tenant minting.
     get_service_key_store().create(ServiceKey(
         id=key_id, key_hash=hash_secret(secret), tenant_id=principal.tenant_id,
-        scopes=scopes, label=body.label or "",
+        scopes=scopes, label=body.label or "", account_id=account_id, app_id=app_id,
+        space_ids=space_ids, purposes=purposes,
     ))
     return MintedKey(id=key_id, key=plaintext, tenant_id=principal.tenant_id,
-                     scopes=list(scopes), label=body.label or "")
+                     scopes=list(scopes), label=body.label or "", account_id=account_id,
+                     app_id=app_id, space_ids=list(space_ids), purposes=list(purposes))
 
 
 @keys_router.get("", response_model=list[ServiceKeyInfo])
 def list_keys(principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
     return [
-        ServiceKeyInfo(id=k.id, tenant_id=k.tenant_id, scopes=list(k.scopes), label=k.label, status=k.status)
+        ServiceKeyInfo(
+            id=k.id, tenant_id=k.tenant_id, scopes=list(k.scopes), label=k.label,
+            account_id=k.account_id, app_id=k.app_id, space_ids=list(k.space_ids),
+            purposes=list(k.purposes), status=k.status,
+        )
         for k in get_service_key_store().list_by_tenant(principal.tenant_id)
     ]
 

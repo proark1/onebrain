@@ -106,6 +106,9 @@ class ServiceAskResponse(BaseModel):
 class ServiceKeyCreate(BaseModel):
     scopes: list[str]
     label: Optional[str] = None
+    app_id: Optional[str] = Field(default=None, max_length=80)
+    space_ids: list[str] = Field(default_factory=list)
+    purposes: list[str] = Field(default_factory=list)
 
 
 class MintedKey(BaseModel):
@@ -114,6 +117,10 @@ class MintedKey(BaseModel):
     tenant_id: str
     scopes: list[str]
     label: str = ""
+    account_id: str = ""
+    app_id: str = ""
+    space_ids: list[str] = Field(default_factory=list)
+    purposes: list[str] = Field(default_factory=list)
 
 
 class ServiceKeyInfo(BaseModel):
@@ -121,4 +128,8 @@ class ServiceKeyInfo(BaseModel):
     tenant_id: str
     scopes: list[str]
     label: str = ""
+    account_id: str = ""
+    app_id: str = ""
+    space_ids: list[str] = Field(default_factory=list)
+    purposes: list[str] = Field(default_factory=list)
     status: str = "active"

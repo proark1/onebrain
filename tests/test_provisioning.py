@@ -12,6 +12,8 @@ from app.controlplane.base import CustomerDeployment
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.platform.memory import MemoryPlatformStore
 from app.provisioning.service import CustomerProvisioner
+from app.servicekeys.base import SCOPE_READ, SCOPE_WRITE, parse_key, verify_secret
+from app.servicekeys.memory import MemoryServiceKeyStore
 
 
 def _principal(role_id: str = "admin") -> Principal:
@@ -101,6 +103,42 @@ def test_communication_bundle_does_not_install_assistant_modules():
     assert {s.kind for s in platform.list_spaces("supportco")} == {"business", "customer_service", "shared"}
 
 
+def test_full_stack_provisioning_mints_constrained_integration_keys():
+    platform, control = _stores()
+    service_keys = MemoryServiceKeyStore()
+
+    result = CustomerProvisioner(platform, control, service_keys).provision(
+        account_id="acme",
+        account_kind="organization",
+        customer_name="Acme GmbH",
+        owner_user_id="admin@onebrain",
+        bundle_id="full_stack",
+        deployment_id="dep_acme",
+        deployment_type="dedicated_railway",
+        region="eu-central",
+        release_ring="pilot",
+        initial_version="2026.07.0",
+        mint_integration_keys=True,
+    )
+
+    assert {credential.app_id for credential in result.credentials} == {"assistant", "communication"}
+
+    communication = next(credential for credential in result.credentials if credential.app_id == "communication")
+    stored = service_keys.get(communication.id)
+    parsed = parse_key(communication.key)
+    assert parsed is not None
+    _, secret = parsed
+    assert verify_secret(secret, stored.key_hash)
+    assert stored.tenant_id == "acme"
+    assert stored.account_id == "acme"
+    assert stored.app_id == "communication"
+    assert set(stored.scopes) == {SCOPE_READ, SCOPE_WRITE}
+    assert set(stored.purposes) == {"customer_service_answer", "customer_service_inbox"}
+    assert {platform.get_space(space_id).kind for space_id in stored.space_ids} == {"customer_service", "shared"}
+    assert communication.key not in str(platform.list_audit("acme")[-1].meta)
+    assert communication.id in platform.list_audit("acme")[-1].meta["service_key_ids"]
+
+
 def test_duplicate_deployment_blocks_before_platform_records_are_created():
     platform, control = _stores()
     control.create_deployment(CustomerDeployment(id="dep_acme", customer_name="Existing"))
@@ -146,8 +184,10 @@ def test_unknown_module_version_override_is_rejected_before_writes():
 
 def test_provisioning_router_requires_admin(monkeypatch):
     platform, control = _stores()
+    service_keys = MemoryServiceKeyStore()
     monkeypatch.setattr(provisioning_router, "get_platform_store", lambda: platform)
     monkeypatch.setattr(provisioning_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(provisioning_router, "get_service_key_store", lambda: service_keys)
 
     with pytest.raises(HTTPException) as exc:
         provisioning_router.provision_customer(
@@ -174,3 +214,4 @@ def test_provisioning_router_requires_admin(monkeypatch):
     assert created.account.id == "acme"
     assert created.bundle_id == "onebrain_only"
     assert [app.app_id for app in created.apps] == ["onebrain_core"]
+    assert created.credentials == []

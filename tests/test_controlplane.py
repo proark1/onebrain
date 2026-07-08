@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException
 
 import app.routers.operator as operator_router
 from app.auth.principal import Principal
@@ -16,6 +17,10 @@ from app.controlplane.base import (
     RolloutRun,
 )
 from app.controlplane.memory import MemoryControlPlaneStore
+from app.platform.base import Account
+from app.platform.memory import MemoryPlatformStore
+from app.servicekeys.base import SCOPE_READ, ServiceKey, hash_secret
+from app.servicekeys.memory import MemoryServiceKeyStore
 
 
 def _admin() -> Principal:
@@ -243,3 +248,38 @@ def test_operator_endpoints_expose_latest_backup_and_health(monkeypatch):
     assert backup.status == "success"
     assert health is not None
     assert health.status == "success"
+
+
+def test_operator_can_list_and_revoke_customer_integration_keys(monkeypatch):
+    platform = MemoryPlatformStore()
+    keys = MemoryServiceKeyStore()
+    platform.create_account(Account(id="acme", kind="organization", name="Acme"))
+    keys.create(ServiceKey(
+        id="key_comm",
+        key_hash=hash_secret("secret"),
+        tenant_id="acme",
+        scopes=(SCOPE_READ,),
+        label="Communication integration",
+        account_id="acme",
+        app_id="communication",
+        space_ids=("sp_acme_customer",),
+        purposes=("customer_service_answer",),
+    ))
+    monkeypatch.setattr(operator_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(operator_router, "get_service_key_store", lambda: keys)
+
+    listed = operator_router.list_account_service_keys("acme", principal=_admin())
+
+    assert len(listed) == 1
+    assert listed[0].id == "key_comm"
+    assert listed[0].app_id == "communication"
+    assert not hasattr(listed[0], "key")
+
+    revoked = operator_router.revoke_account_service_key("acme", "key_comm", principal=_admin())
+
+    assert revoked == {"revoked": "key_comm"}
+    assert keys.get("key_comm").status == "revoked"
+
+    with pytest.raises(HTTPException) as exc:
+        operator_router.list_account_service_keys("missing", principal=_admin())
+    assert exc.value.status_code == 404

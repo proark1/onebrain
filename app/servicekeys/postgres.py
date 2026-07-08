@@ -28,11 +28,19 @@ class PostgresServiceKeyStore:
                     tenant_id TEXT NOT NULL,
                     scopes TEXT NOT NULL,
                     label TEXT NOT NULL DEFAULT '',
+                    account_id TEXT NOT NULL DEFAULT '',
+                    app_id TEXT NOT NULL DEFAULT '',
+                    space_ids TEXT NOT NULL DEFAULT '',
+                    purposes TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL DEFAULT 'active',
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 )
                 """
             )
+            cur.execute("ALTER TABLE service_keys ADD COLUMN IF NOT EXISTS account_id TEXT NOT NULL DEFAULT ''")
+            cur.execute("ALTER TABLE service_keys ADD COLUMN IF NOT EXISTS app_id TEXT NOT NULL DEFAULT ''")
+            cur.execute("ALTER TABLE service_keys ADD COLUMN IF NOT EXISTS space_ids TEXT NOT NULL DEFAULT ''")
+            cur.execute("ALTER TABLE service_keys ADD COLUMN IF NOT EXISTS purposes TEXT NOT NULL DEFAULT ''")
             cur.execute("CREATE INDEX IF NOT EXISTS service_keys_tenant_idx ON service_keys (tenant_id)")
             conn.commit()
 
@@ -40,10 +48,13 @@ class PostgresServiceKeyStore:
         return ServiceKey(
             id=r[0], key_hash=r[1], tenant_id=r[2],
             scopes=tuple(s for s in (r[3] or "").split(",") if s),
-            label=r[4], status=r[5], created_at=r[6].isoformat() if r[6] else "",
+            label=r[4], account_id=r[5], app_id=r[6],
+            space_ids=tuple(s for s in (r[7] or "").split(",") if s),
+            purposes=tuple(s for s in (r[8] or "").split(",") if s),
+            status=r[9], created_at=r[10].isoformat() if r[10] else "",
         )
 
-    _COLS = "id, key_hash, tenant_id, scopes, label, status, created_at"
+    _COLS = "id, key_hash, tenant_id, scopes, label, account_id, app_id, space_ids, purposes, status, created_at"
 
     def get(self, key_id: str) -> Optional[ServiceKey]:
         with self._conn() as conn, conn.cursor() as cur:
@@ -56,9 +67,13 @@ class PostgresServiceKeyStore:
             # No ON CONFLICT: a duplicate id must raise (mint then surfaces 500)
             # rather than hand the admin a plaintext for an unstored key.
             cur.execute(
-                "INSERT INTO service_keys (id, key_hash, tenant_id, scopes, label, status) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (key.id, key.key_hash, key.tenant_id, ",".join(key.scopes), key.label, key.status),
+                "INSERT INTO service_keys "
+                "(id, key_hash, tenant_id, scopes, label, account_id, app_id, space_ids, purposes, status) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    key.id, key.key_hash, key.tenant_id, ",".join(key.scopes), key.label,
+                    key.account_id, key.app_id, ",".join(key.space_ids), ",".join(key.purposes), key.status,
+                ),
             )
             conn.commit()
         return key

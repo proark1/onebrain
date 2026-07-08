@@ -110,6 +110,15 @@ export const latestBackup = (deploymentId) =>
   requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/backups/latest`);
 export const latestHealth = (deploymentId) =>
   requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/health/latest`);
+export const listAccountServiceKeys = (accountId) =>
+  requestJson(`/api/operator/accounts/${encodeURIComponent(accountId)}/service-keys`);
+
+export async function revokeAccountServiceKey(accountId, keyId) {
+  return requestJson(
+    `/api/operator/accounts/${encodeURIComponent(accountId)}/service-keys/${encodeURIComponent(keyId)}`,
+    { method: "DELETE" },
+  );
+}
 
 export async function recordBackup(deploymentId, payload) {
   return requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/backups`, {

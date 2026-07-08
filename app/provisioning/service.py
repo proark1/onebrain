@@ -9,6 +9,7 @@ from typing import Dict, List, Optional
 from app.controlplane.base import CustomerDeployment, DeploymentModule, validate_deployment, validate_module
 from app.platform.base import Account, AppInstallation, AuditEvent, Space
 from app.provisioning.bundles import ProvisioningBundle, get_bundle
+from app.servicekeys.base import SCOPE_READ, SCOPE_WRITE, ServiceKey, generate_key, hash_secret
 
 
 _ID_RE = re.compile(r"[^a-z0-9_]+")
@@ -22,6 +23,19 @@ def normalize_id(value: str) -> str:
 
 
 @dataclass(frozen=True)
+class ProvisionedCredential:
+    id: str
+    key: str
+    tenant_id: str
+    account_id: str
+    app_id: str
+    label: str
+    scopes: List[str]
+    space_ids: List[str]
+    purposes: List[str]
+
+
+@dataclass(frozen=True)
 class ProvisioningResult:
     bundle: ProvisioningBundle
     account: Account
@@ -29,12 +43,68 @@ class ProvisioningResult:
     installations: List[AppInstallation]
     deployment: CustomerDeployment
     modules: List[DeploymentModule]
+    credentials: List[ProvisionedCredential]
+
+
+PURPOSE_SCOPES = {
+    "assistant_context": (SCOPE_READ,),
+    "assistant_action": (SCOPE_WRITE,),
+    "customer_service_answer": (SCOPE_READ,),
+    "customer_service_inbox": (SCOPE_WRITE,),
+}
+
+EXTERNAL_CREDENTIAL_APPS = frozenset({"assistant", "communication"})
 
 
 class CustomerProvisioner:
-    def __init__(self, platform_store, control_plane_store):
+    def __init__(self, platform_store, control_plane_store, service_key_store=None):
         self.platform_store = platform_store
         self.control_plane_store = control_plane_store
+        self.service_key_store = service_key_store
+
+    def _scopes_for(self, purposes: tuple[str, ...]) -> tuple[str, ...]:
+        scopes: list[str] = []
+        for purpose in purposes:
+            scopes.extend(PURPOSE_SCOPES.get(purpose, ()))
+        return tuple(dict.fromkeys(scopes))
+
+    def _mint_credentials(self, account_id: str, installations: list[AppInstallation]) -> list[ProvisionedCredential]:
+        if not self.service_key_store:
+            return []
+
+        credentials: list[ProvisionedCredential] = []
+        for installation in installations:
+            if installation.app_id not in EXTERNAL_CREDENTIAL_APPS:
+                continue
+            scopes = self._scopes_for(installation.allowed_purposes)
+            if not scopes:
+                continue
+
+            label = f"{installation.display_name or installation.app_id} integration"
+            key_id, secret, plaintext = generate_key()
+            self.service_key_store.create(ServiceKey(
+                id=key_id,
+                key_hash=hash_secret(secret),
+                tenant_id=account_id,
+                scopes=scopes,
+                label=label,
+                account_id=account_id,
+                app_id=installation.app_id,
+                space_ids=installation.enabled_space_ids,
+                purposes=installation.allowed_purposes,
+            ))
+            credentials.append(ProvisionedCredential(
+                id=key_id,
+                key=plaintext,
+                tenant_id=account_id,
+                account_id=account_id,
+                app_id=installation.app_id,
+                label=label,
+                scopes=list(scopes),
+                space_ids=list(installation.enabled_space_ids),
+                purposes=list(installation.allowed_purposes),
+            ))
+        return credentials
 
     def provision(
         self,
@@ -51,6 +121,7 @@ class CustomerProvisioner:
         initial_version: str,
         current_migration: str = "",
         module_versions: Optional[Dict[str, str]] = None,
+        mint_integration_keys: bool = False,
     ) -> ProvisioningResult:
         bundle = get_bundle(bundle_id)
         account_id = normalize_id(account_id)
@@ -124,6 +195,7 @@ class CustomerProvisioner:
 
         created_deployment = self.control_plane_store.create_deployment(deployment)
         created_modules = [self.control_plane_store.upsert_module(module) for module in modules]
+        credentials = self._mint_credentials(account_id, installations) if mint_integration_keys else []
 
         self.platform_store.record_audit(AuditEvent(
             id=f"aud_provision_{account_id}",
@@ -137,6 +209,7 @@ class CustomerProvisioner:
                 "bundle_id": bundle.id,
                 "deployment_id": created_deployment.id,
                 "modules": {m.module_id: m.version for m in created_modules},
+                "service_key_ids": [credential.id for credential in credentials],
             },
         ))
 
@@ -147,4 +220,5 @@ class CustomerProvisioner:
             installations=installations,
             deployment=created_deployment,
             modules=created_modules,
+            credentials=credentials,
         )

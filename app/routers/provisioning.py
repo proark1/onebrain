@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.auth.principal import Principal, resolve_principal
-from app.deps import get_control_plane_store, get_platform_store
+from app.deps import get_control_plane_store, get_platform_store, get_service_key_store
 from app.provisioning.bundles import BUNDLES, ProvisioningBundle
 from app.provisioning.service import CustomerProvisioner, ProvisioningResult, normalize_id
 
@@ -36,6 +36,7 @@ class CustomerProvisionCreate(BaseModel):
     initial_version: str = Field(default="0.1.0", min_length=1, max_length=80)
     current_migration: str = Field(default="", max_length=80)
     module_versions: dict[str, str] = Field(default_factory=dict)
+    mint_integration_keys: bool = True
 
 
 class ProvisionedAccountOut(BaseModel):
@@ -75,6 +76,18 @@ class ProvisionedModuleOut(BaseModel):
     status: str
 
 
+class ProvisionedCredentialOut(BaseModel):
+    id: str
+    key: str
+    tenant_id: str
+    account_id: str
+    app_id: str
+    label: str
+    scopes: list[str]
+    space_ids: list[str]
+    purposes: list[str]
+
+
 class ProvisioningResultOut(BaseModel):
     bundle_id: str
     account: ProvisionedAccountOut
@@ -82,6 +95,7 @@ class ProvisioningResultOut(BaseModel):
     apps: list[ProvisionedAppOut]
     deployment: ProvisionedDeploymentOut
     modules: list[ProvisionedModuleOut]
+    credentials: list[ProvisionedCredentialOut] = Field(default_factory=list)
 
 
 def _require_admin(principal: Principal) -> None:
@@ -142,6 +156,20 @@ def _result_out(result: ProvisioningResult) -> ProvisioningResultOut:
             ProvisionedModuleOut(module_id=m.module_id, version=m.version, status=m.status)
             for m in result.modules
         ],
+        credentials=[
+            ProvisionedCredentialOut(
+                id=c.id,
+                key=c.key,
+                tenant_id=c.tenant_id,
+                account_id=c.account_id,
+                app_id=c.app_id,
+                label=c.label,
+                scopes=c.scopes,
+                space_ids=c.space_ids,
+                purposes=c.purposes,
+            )
+            for c in result.credentials
+        ],
     )
 
 
@@ -157,7 +185,9 @@ def provision_customer(body: CustomerProvisionCreate, principal: Principal = Dep
     account_id = body.account_id or _default_account_id(body.customer_name)
     deployment_id = body.deployment_id or f"dep_{account_id}"
     try:
-        result = CustomerProvisioner(get_platform_store(), get_control_plane_store()).provision(
+        result = CustomerProvisioner(
+            get_platform_store(), get_control_plane_store(), get_service_key_store(),
+        ).provision(
             account_id=account_id,
             account_kind=body.account_kind,
             customer_name=body.customer_name,
@@ -170,8 +200,8 @@ def provision_customer(body: CustomerProvisionCreate, principal: Principal = Dep
             initial_version=body.initial_version,
             current_migration=body.current_migration,
             module_versions=body.module_versions,
+            mint_integration_keys=body.mint_integration_keys,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _result_out(result)
-
