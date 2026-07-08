@@ -5,10 +5,12 @@ from __future__ import annotations
 from dataclasses import replace
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.assistant.contracts import (
     ASSISTANT_APP_ID,
+    ASSISTANT_INTENTS,
+    ASSISTANT_RECORD_TYPES,
     build_assistant_audit_meta,
     build_assistant_metadata,
     default_assistant_intent,
@@ -17,7 +19,7 @@ from app.assistant.contracts import (
 )
 from app.auth.principal import Principal, resolve_service_principal
 from app.deps import get_intake_pipeline, get_intake_store, get_platform_store
-from app.intake.base import IntakeRecord
+from app.intake.base import INTAKE_STATUSES, IntakeRecord
 from app.intake.pipeline import IntakeInput
 from app.platform.base import AuditEvent
 from app.routers.service import _intake_scope, _rate_limit, _require_scope
@@ -25,6 +27,7 @@ from app.schemas import (
     AssistantAuditEventCreate,
     AssistantAuditEventOut,
     AssistantRecordCreate,
+    AssistantRecordListResponse,
     AssistantRecordOut,
     AssistantRecordResponse,
     ServiceIntakeRequest,
@@ -108,6 +111,66 @@ def create_assistant_record(
     return AssistantRecordResponse(record=_assistant_record_out(record))
 
 
+@router.get("/records", response_model=AssistantRecordListResponse)
+def list_assistant_records(
+    record_type: str = Query(default="", max_length=80),
+    intent: str = Query(default="", max_length=80),
+    account_id: str = Query(default="", max_length=120),
+    space_id: str = Query(default="", max_length=120),
+    purpose: str = Query(default="", max_length=80),
+    status: str = Query(default="", max_length=80),
+    limit: int = Query(default=50, ge=1, le=200),
+    principal: Principal = Depends(resolve_service_principal),
+):
+    _require_scope(principal, SCOPE_READ)
+    _rate_limit(principal)
+    filters = _assistant_record_filters(
+        record_type=record_type,
+        intent=intent,
+        account_id=account_id,
+        space_id=space_id,
+        purpose=purpose,
+        status=status,
+        principal=principal,
+    )
+    records = []
+    for record in get_intake_store().list_by_scope(
+        principal.tenant_id,
+        account_id=filters["account_id"],
+        space_id=filters["space_id"],
+    ):
+        if len(records) >= limit:
+            break
+        if not _record_matches_filters(record, filters):
+            continue
+        if not _record_visible_to_principal(record, principal):
+            continue
+        decision = get_platform_store().check_app_access(
+            record.account_id, ASSISTANT_APP_ID, record.space_id, record.purpose,
+        )
+        if decision.allowed:
+            records.append(_assistant_record_out(record))
+
+    _record_assistant_audit(
+        principal,
+        account_id=filters["account_id"] or principal.account_id or principal.tenant_id,
+        space_id=filters["space_id"],
+        purpose=filters["purpose"],
+        action="assistant.records.list",
+        target_type="intake_record",
+        target_id="assistant.records",
+        decision="allowed",
+        meta={
+            "record_type": filters["record_type"],
+            "intent": filters["intent"],
+            "status": filters["status"],
+            "limit": limit,
+            "result_count": len(records),
+        },
+    )
+    return AssistantRecordListResponse(records=records)
+
+
 @router.get("/records/{record_id}", response_model=AssistantRecordResponse)
 def get_assistant_record(
     record_id: str,
@@ -172,6 +235,74 @@ def record_assistant_audit_event(
         meta=meta,
     )
     return _audit_out(event)
+
+
+def _assistant_record_filters(
+    *,
+    record_type: str,
+    intent: str,
+    account_id: str,
+    space_id: str,
+    purpose: str,
+    status: str,
+    principal: Principal,
+) -> dict:
+    requested_space_id = (space_id or "").strip()
+    fields = {
+        "record_type": (record_type or "").strip(),
+        "intent": (intent or "").strip(),
+        "account_id": (
+            account_id or principal.account_id or (principal.tenant_id if requested_space_id else "")
+        ).strip(),
+        "space_id": requested_space_id,
+        "purpose": (purpose or "").strip(),
+        "status": (status or "").strip(),
+    }
+    if not fields["space_id"] and principal.space_ids is not None and len(principal.space_ids) == 1:
+        fields["space_id"] = next(iter(principal.space_ids))
+    if principal.app_id and principal.app_id != ASSISTANT_APP_ID:
+        raise HTTPException(status_code=403, detail="This service key cannot use the assistant app.")
+    if fields["account_id"] and fields["account_id"] != principal.tenant_id:
+        raise HTTPException(status_code=403, detail="This service key is not pinned to that account.")
+    if principal.account_id and fields["account_id"] and fields["account_id"] != principal.account_id:
+        raise HTTPException(status_code=403, detail="This service key cannot use that account.")
+    if principal.space_ids is not None and fields["space_id"] and fields["space_id"] not in principal.space_ids:
+        raise HTTPException(status_code=403, detail="This service key cannot use that space.")
+    if principal.purposes is not None and fields["purpose"] and fields["purpose"] not in principal.purposes:
+        raise HTTPException(status_code=403, detail="This service key cannot use that purpose.")
+    if fields["record_type"] and fields["record_type"] not in ASSISTANT_RECORD_TYPES:
+        raise HTTPException(status_code=422, detail=f"Unknown assistant record_type: {fields['record_type']}")
+    if fields["intent"] and fields["intent"] not in ASSISTANT_INTENTS:
+        raise HTTPException(status_code=422, detail=f"Unknown assistant intent: {fields['intent']}")
+    if fields["status"] and fields["status"] not in INTAKE_STATUSES:
+        raise HTTPException(status_code=422, detail=f"Unknown intake status: {fields['status']}")
+    return fields
+
+
+def _record_matches_filters(record: IntakeRecord, filters: dict) -> bool:
+    if filters.get("account_id") and record.account_id != filters["account_id"]:
+        return False
+    if record.app_id != ASSISTANT_APP_ID:
+        return False
+    for key in ("record_type", "intent", "purpose", "status"):
+        value = filters.get(key)
+        if value and getattr(record, key) != value:
+            return False
+    return True
+
+
+def _record_visible_to_principal(record: IntakeRecord, principal: Principal) -> bool:
+    if record.tenant_id != principal.tenant_id or record.app_id != ASSISTANT_APP_ID:
+        return False
+    if principal.account_id and record.account_id != principal.account_id:
+        return False
+    if principal.app_id and principal.app_id != ASSISTANT_APP_ID:
+        return False
+    if principal.space_ids is not None and record.space_id not in principal.space_ids:
+        return False
+    if principal.purposes is not None and record.purpose not in principal.purposes:
+        return False
+    return True
 
 
 def _assistant_record_out(record: IntakeRecord) -> AssistantRecordOut:

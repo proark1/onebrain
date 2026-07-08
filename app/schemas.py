@@ -180,6 +180,10 @@ class AssistantRecordResponse(BaseModel):
     record: AssistantRecordOut
 
 
+class AssistantRecordListResponse(BaseModel):
+    records: list[AssistantRecordOut] = Field(default_factory=list)
+
+
 class AssistantAuditEventCreate(BaseModel):
     action: str = Field(min_length=1, max_length=120)
     target_type: str = Field(min_length=1, max_length=80)

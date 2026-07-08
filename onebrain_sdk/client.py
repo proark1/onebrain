@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
 
 
@@ -145,6 +145,34 @@ class OneBrainClient:
 
     def get_assistant_record(self, record_id: str) -> dict[str, Any]:
         return self._request("GET", f"api/service/assistant/records/{record_id}")
+
+    def list_assistant_records(
+        self,
+        *,
+        record_type: str = "",
+        intent: str = "",
+        status: str = "",
+        limit: int = 50,
+        purpose: str = "",
+        account_id: str = "",
+        space_id: str = "",
+    ) -> dict[str, Any]:
+        params = {
+            "record_type": record_type,
+            "intent": intent,
+            "status": status,
+            "limit": str(limit),
+            "purpose": purpose or self.purpose,
+            **self._account_space_scope(account_id, space_id),
+        }
+        query = urlencode({key: value for key, value in params.items() if value})
+        path = "api/service/assistant/records"
+        if query:
+            path = f"{path}?{query}"
+        return self._request("GET", path)
+
+    def list_memory_records(self, **filters: Any) -> dict[str, Any]:
+        return self.list_assistant_records(**filters)
 
     def record_assistant_audit(
         self,
