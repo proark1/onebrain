@@ -7,6 +7,8 @@ import type {
   ConversationSummary,
   DocumentSummary,
   PendingDocument,
+  PlatformAccount,
+  PlatformSpace,
   UploadDocumentInput,
 } from "@/lib/onebrain-types";
 import { cleanScope, scopeQuery } from "@/lib/onebrain-types";
@@ -65,6 +67,14 @@ export function uploadDocument(input: UploadDocumentInput, scope: ChatScope = {}
     method: "POST",
     body,
   });
+}
+
+export function listPlatformAccounts(): Promise<PlatformAccount[]> {
+  return requestJson<PlatformAccount[]>("/platform/accounts");
+}
+
+export function listPlatformSpaces(accountId: string): Promise<PlatformSpace[]> {
+  return requestJson<PlatformSpace[]>(`/platform/accounts/${encodeURIComponent(accountId)}/spaces`);
 }
 
 export async function askStream(

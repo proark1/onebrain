@@ -113,6 +113,7 @@ a {
 .composer button:focus-visible,
 .consoleNav a:focus-visible,
 .conversationItem button:focus-visible,
+.compactField select:focus-visible,
 .deleteConversation:focus-visible,
 .dropzone:focus-within,
 .primaryButton:focus-visible,
@@ -244,7 +245,7 @@ a {
 
 .consoleSidebar {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
   gap: 18px;
   min-height: 100vh;
   border-right: 1px solid var(--line);
@@ -286,6 +287,64 @@ a {
 .mutedNav span {
   color: var(--muted);
   opacity: 0.68;
+}
+
+.workspaceSelector {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 12px;
+}
+
+.workspaceSelectorHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.workspaceSelectorHead span,
+.compactField span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 790;
+  text-transform: uppercase;
+}
+
+.workspaceSelectorHead strong {
+  min-width: 0;
+  border-radius: 999px;
+  background: var(--mint);
+  color: var(--green);
+  padding: 4px 7px;
+  font-size: 11px;
+  font-weight: 820;
+}
+
+.compactField {
+  display: grid;
+  gap: 5px;
+}
+
+.compactField select {
+  min-width: 0;
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--ink);
+  padding: 0 9px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 690;
+}
+
+.compactField select:disabled {
+  background: var(--surface-2);
+  color: var(--muted);
 }
 
 .consoleIdentity {

@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import {
   askStream,
   deleteConversation,
   getConversation,
   listConversations,
 } from "@/lib/onebrain-client";
+import { useWorkspace } from "@/components/workspace-provider";
 import type {
   AnswerMeta,
   ChatStreamEvent,
@@ -94,6 +95,7 @@ function metaParts(meta?: AnswerMeta): string[] {
 }
 
 export function ChatPanel({ initialConversations, session }: ChatPanelProps) {
+  const { scope, selectedSpaceKind } = useWorkspace();
   const [conversations, setConversations] = useState<ConversationSummary[]>(initialConversations);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<UiMessage[]>([]);
@@ -108,11 +110,12 @@ export function ChatPanel({ initialConversations, session }: ChatPanelProps) {
     () => conversations.find((conversation) => conversation.id === selectedId) ?? null,
     [conversations, selectedId],
   );
+  const scopeLabel = scope.account_id && scope.space_id ? selectedSpaceKind : session.role_label;
 
-  async function refreshConversations(activeId = selectedId) {
+  const refreshConversations = useCallback(async (activeId: string | null = selectedId) => {
     setLoadingList(true);
     try {
-      const next = await listConversations();
+      const next = await listConversations(scope);
       setConversations(next);
       if (activeId && !next.some((conversation) => conversation.id === activeId)) {
         setSelectedId(null);
@@ -122,11 +125,45 @@ export function ChatPanel({ initialConversations, session }: ChatPanelProps) {
     } finally {
       setLoadingList(false);
     }
-  }
+  }, [scope, selectedId]);
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function refreshForScope() {
+      setSelectedId(null);
+      setMessages([]);
+      setError("");
+      setLoadingList(true);
+      try {
+        const next = await listConversations(scope);
+        if (active) {
+          setConversations(next);
+        }
+      } catch (err) {
+        if (active) {
+          setError(err instanceof Error ? err.message : "Could not load conversations.");
+        }
+      } finally {
+        if (active) {
+          setLoadingList(false);
+        }
+      }
+    }
+
+    queueMicrotask(() => {
+      if (active) {
+        void refreshForScope();
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [scope]);
 
   async function openConversation(id: string) {
     if (busy) {
@@ -136,7 +173,7 @@ export function ChatPanel({ initialConversations, session }: ChatPanelProps) {
     setLoadingConversation(true);
     setError("");
     try {
-      const conversation = await getConversation(id);
+      const conversation = await getConversation(id, scope);
       setMessages(conversation.messages.map((message, index) => ({
         id: `${conversation.id}_${index}`,
         role: message.role === "user" ? "user" : "assistant",
@@ -166,7 +203,7 @@ export function ChatPanel({ initialConversations, session }: ChatPanelProps) {
     }
     setError("");
     try {
-      await deleteConversation(id);
+      await deleteConversation(id, scope);
       if (selectedId === id) {
         setSelectedId(null);
         setMessages([]);
@@ -208,7 +245,7 @@ export function ChatPanel({ initialConversations, session }: ChatPanelProps) {
     ]);
 
     try {
-      await askStream({ question, conversation_id: selectedId }, (event: ChatStreamEvent) => {
+      await askStream({ question, conversation_id: selectedId, ...scope }, (event: ChatStreamEvent) => {
         if (event.type === "conversation") {
           setSelectedId(event.id);
         } else if (event.type === "token") {
@@ -260,7 +297,7 @@ export function ChatPanel({ initialConversations, session }: ChatPanelProps) {
           </div>
           <div className="scopePill">
             <span className="statusDot" />
-            {session.role_label}
+            {scopeLabel}
           </div>
         </header>
 

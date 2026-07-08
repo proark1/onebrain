@@ -1,12 +1,13 @@
 "use client";
 
-import { useMemo, useRef, useState, type DragEvent, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } from "react";
 import {
   approveDocument,
   listDocuments,
   listPendingDocuments,
   uploadDocument,
 } from "@/lib/onebrain-client";
+import { useWorkspace } from "@/components/workspace-provider";
 import type { DocumentSummary, PendingDocument } from "@/lib/onebrain-types";
 
 type DocumentsPanelProps = {
@@ -85,6 +86,7 @@ export function DocumentsPanel({
   initialPending,
   pendingReviewAvailable,
 }: DocumentsPanelProps) {
+  const { scope } = useWorkspace();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [documents, setDocuments] = useState<DocumentSummary[]>(initialDocuments);
   const [pending, setPending] = useState<PendingDocument[]>(initialPending);
@@ -105,13 +107,13 @@ export function DocumentsPanel({
     return { chunks, piiFindings };
   }, [documents]);
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
       const [nextDocuments, nextPending] = await Promise.all([
-        listDocuments(),
-        listPendingDocuments()
+        listDocuments(scope),
+        listPendingDocuments(scope)
           .then((items) => ({ available: true, items }))
           .catch(() => ({ available: false, items: [] as PendingDocument[] })),
       ]);
@@ -123,7 +125,19 @@ export function DocumentsPanel({
     } finally {
       setLoading(false);
     }
-  }
+  }, [scope]);
+
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (active) {
+        void refresh();
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [refresh]);
 
   function chooseFile(file: File | null) {
     setNotice("");
@@ -165,7 +179,7 @@ export function DocumentsPanel({
         classification,
         file: selectedFile,
         location,
-      });
+      }, scope);
       const reviewNote = document.status === "pending" ? " submitted for review" : " added";
       const piiNote = document.pii_findings ? " with possible personal data detected" : "";
       setNotice(`${document.title}${reviewNote}${piiNote}.`);
@@ -183,7 +197,7 @@ export function DocumentsPanel({
     setError("");
     setNotice("");
     try {
-      await approveDocument(document.doc_id);
+      await approveDocument(document.doc_id, scope);
       setNotice(`${document.title} approved.`);
       await refresh();
     } catch (err) {

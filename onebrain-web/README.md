@@ -10,6 +10,8 @@ The Python/FastAPI service remains the source of truth for auth, access control,
 - `/documents` - document library, upload, and pending-review workflow backed by the FastAPI document APIs.
 - `/` - entry point that checks the API/session and redirects signed-in users to `/chat`.
 
+Admins see a compact workspace selector when the Python platform store contains an account matching their session tenant. The selected account/space scope is sent to chat, conversations, documents, upload, and review calls.
+
 ## Run
 
 ```bash

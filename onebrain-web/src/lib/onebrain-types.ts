@@ -65,6 +65,22 @@ export type UploadDocumentInput = {
   location: string;
 };
 
+export type PlatformAccount = {
+  id: string;
+  kind: string;
+  name: string;
+  owner_user_id: string;
+  status: string;
+};
+
+export type PlatformSpace = {
+  id: string;
+  account_id: string;
+  kind: string;
+  name: string;
+  status: string;
+};
+
 export type SourceRecord = {
   title: string;
   classification: string;

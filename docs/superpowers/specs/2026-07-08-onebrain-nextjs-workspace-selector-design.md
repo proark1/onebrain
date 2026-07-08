@@ -87,6 +87,7 @@ Responsibilities:
 - Load accounts from `GET /api/platform/accounts` for admins.
 - Load spaces from `GET /api/platform/accounts/{account_id}/spaces`.
 - Default to the signed-in tenant account when available.
+- Hide the selector when the platform account list does not include the signed-in tenant account.
 - Default to the first available space for that account.
 - Store the active scope in component state.
 - Expose:
