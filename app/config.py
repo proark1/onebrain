@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     # for large document/PDF uploads while rejecting absurd payloads.
     max_body_bytes: int = 50 * 1024 * 1024
 
+    # Product UI handoff. FastAPI is API-first; Next.js owns the browser
+    # console. The old static UI is available only when explicitly enabled.
+    admin_ui_url: str = ""
+    legacy_static_ui_enabled: bool = False
+
     # Per-tier LLM routing (Schrems II): CONFIDENTIAL/RESTRICTED answers route to an
     # EU-sovereign endpoint; PUBLIC/INTERNAL use the default model. Leave
     # sovereign_llm_model empty to disable routing (everything uses the default).

@@ -2,17 +2,17 @@
 
 OneBrain deploys as three services plus Postgres:
 
-- `onebrain-api`: Python/FastAPI API.
+- `onebrain`: Python/FastAPI API.
 - `onebrain-admin-ui`: Next.js UI.
 - `onebrain-workers`: Python background workers.
-- `onebrain-db`: Postgres with pgvector.
+- `Postgres`: Postgres with pgvector.
 
 The backend stays Python. Next.js renders the product UI and proxies browser
 actions to the Python API.
 
 ## Railway Services
 
-### `onebrain-api`
+### `onebrain`
 
 - Root directory: repository root.
 - Builder: Dockerfile.
@@ -72,7 +72,7 @@ Next.js reads Railway's injected `PORT`.
 
 ## Required Variables
 
-Set these on both `onebrain-api` and `onebrain-workers`:
+Set these on both `onebrain` and `onebrain-workers`:
 
 ```text
 ONEBRAIN_VECTOR_STORE=pgvector
@@ -90,6 +90,10 @@ ONEBRAIN_REQUIRE_APPROVAL=false
 ONEBRAIN_BLOCK_PUBLIC_ON_PII=true
 ```
 
+`ONEBRAIN_MIGRATION_EMBEDDING_DIM` must match the embedding provider or the
+existing `chunks.embedding` column. The current Railway database uses
+`3072`; a fresh local-hashing database can use the default `256`.
+
 Worker tuning variables:
 
 ```text
@@ -103,25 +107,39 @@ ONEBRAIN_SCHEMA_WAIT_POLL_SECONDS=2
 Set this on `onebrain-admin-ui`:
 
 ```text
-ONEBRAIN_API_BASE_URL=https://<onebrain-api domain>
+ONEBRAIN_API_BASE_URL=http://${{onebrain.RAILWAY_PRIVATE_DOMAIN}}:8080
 ```
 
-Use Railway's private service URL for `ONEBRAIN_API_BASE_URL` when available.
-The browser still talks to same-origin Next.js routes; the Next.js server
-forwards those calls to FastAPI.
+Railway injects `PORT=8080` in the Python API container. Use the private
+Railway hostname plus that port for `ONEBRAIN_API_BASE_URL`. The browser still
+talks to same-origin Next.js routes; the Next.js server forwards those calls to
+FastAPI.
+
+Optional API root handoff:
+
+```text
+ONEBRAIN_ADMIN_UI_URL=https://<onebrain-admin-ui domain>
+ONEBRAIN_LEGACY_STATIC_UI_ENABLED=false
+```
+
+When `ONEBRAIN_ADMIN_UI_URL` is set, the API service root redirects to the
+Next.js console. The old FastAPI static UI is disabled unless
+`ONEBRAIN_LEGACY_STATIC_UI_ENABLED=true`.
 
 ## Smoke Checks
 
 After deploy:
 
 1. Open `https://<onebrain-api domain>/health`.
-2. Open the Next.js domain and confirm it redirects to login or chat depending
+2. Open the Python API root and confirm it returns API JSON or redirects to the
+   configured Next.js console.
+3. Open the Next.js domain and confirm it redirects to login or chat depending
    on session state.
-3. Sign in with `ONEBRAIN_ADMIN_EMAIL` and `ONEBRAIN_ADMIN_PASSWORD`.
-4. Upload a synthetic test document in Postgres mode.
-5. Confirm the upload returns a job id or appears in the documents list after
+4. Sign in with `ONEBRAIN_ADMIN_EMAIL` and `ONEBRAIN_ADMIN_PASSWORD`.
+5. Upload a synthetic test document in Postgres mode.
+6. Confirm the upload returns a job id or appears in the documents list after
    the worker processes it.
-6. Check worker logs for `worker started` and `job succeeded`.
+7. Check worker logs for `worker started` and `job succeeded`.
 
 ## Local Docker Checks
 
