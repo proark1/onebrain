@@ -83,6 +83,34 @@ class OneBrainClient:
             payload["title"] = title
         return self._request("POST", "api/service/capture", payload)
 
+    def intake(
+        self,
+        content: str,
+        *,
+        title: str = "",
+        source: str = "service",
+        source_ref: str = "",
+        record_type: str = "",
+        intent: str = "",
+        metadata: Mapping[str, Any] | None = None,
+        account_id: str = "",
+        space_id: str = "",
+        app_id: str = "",
+        purpose: str = "",
+    ) -> dict[str, Any]:
+        payload = {
+            "content": content,
+            "source": source,
+            "source_ref": source_ref,
+            "record_type": record_type,
+            "intent": intent,
+            "metadata": dict(metadata or {}),
+            **self._scope(account_id, space_id, app_id, purpose),
+        }
+        if title:
+            payload["title"] = title
+        return self._request("POST", "api/service/intake", payload)
+
     def store_message(
         self,
         *,
@@ -97,19 +125,16 @@ class OneBrainClient:
         app_id: str = "",
         purpose: str = "customer_service_inbox",
     ) -> dict[str, Any]:
-        lines = [
-            f"channel: {channel}",
-            f"sender: {sender}",
-        ]
+        structured = {"channel": channel, "sender": sender, **dict(metadata or {})}
         if external_id:
-            lines.append(f"external_id: {external_id}")
-        for key, value in sorted((metadata or {}).items()):
-            lines.append(f"{key}: {value}")
-        lines.append("")
-        lines.append(text)
-        return self.capture_text(
-            "\n".join(lines),
+            structured["external_id"] = external_id
+        return self.intake(
+            text,
             title=title or f"{channel} message from {sender}",
+            source="communication",
+            source_ref=external_id,
+            record_type="message",
+            metadata=structured,
             account_id=account_id,
             space_id=space_id,
             app_id=app_id,

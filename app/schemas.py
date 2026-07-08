@@ -103,6 +103,45 @@ class ServiceAskResponse(BaseModel):
     chunks_used: int = 0
 
 
+class IntakeRecordOut(BaseModel):
+    id: str
+    tenant_id: str
+    account_id: str
+    space_id: str
+    app_id: str
+    purpose: str
+    source: str
+    source_ref: str = ""
+    record_type: str
+    intent: str
+    classification: str
+    confidence: float
+    status: str
+    title: str
+    summary: str
+    extracted_facts: dict = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict)
+    created_at: str = ""
+
+
+class ServiceIntakeRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=20000)
+    title: Optional[str] = Field(default=None, max_length=200)
+    source: str = Field(default="service", max_length=80)
+    source_ref: str = Field(default="", max_length=200)
+    record_type: str = Field(default="", max_length=80)
+    intent: str = Field(default="", max_length=80)
+    metadata: dict = Field(default_factory=dict)
+    account_id: Optional[str] = Field(default=None, max_length=120)
+    space_id: Optional[str] = Field(default=None, max_length=120)
+    app_id: Optional[str] = Field(default=None, max_length=80)
+    purpose: Optional[str] = Field(default=None, max_length=80)
+
+
+class ServiceIntakeResponse(BaseModel):
+    record: IntakeRecordOut
+
+
 class ServiceCapabilitiesResponse(BaseModel):
     tenant_id: str
     account_id: str = ""

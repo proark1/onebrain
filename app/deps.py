@@ -14,6 +14,7 @@ from app.conversations.factory import build_conversation_store
 from app.users.factory import build_user_store
 from app.embeddings.factory import build_embedder
 from app.ingest.pipeline import IngestPipeline
+from app.intake.pipeline import IntakePipeline
 from app.llm.factory import build_llm
 from app.retrieval.service import RetrievalService
 from app.store.factory import build_store
@@ -89,3 +90,15 @@ def get_control_plane_store():
     from app.controlplane.factory import build_control_plane_store
 
     return build_control_plane_store(get_settings())
+
+
+@lru_cache
+def get_intake_store():
+    from app.intake.factory import build_intake_store
+
+    return build_intake_store(get_settings())
+
+
+@lru_cache
+def get_intake_pipeline() -> IntakePipeline:
+    return IntakePipeline(get_intake_store(), get_settings())

@@ -18,6 +18,13 @@ client = OneBrainClient(
 
 print(client.capabilities())
 
+client.intake(
+    "Customer asked whether Friday appointments are available.",
+    title="Website chat",
+    source="communication",
+    record_type="message",
+)
+
 client.store_message(
     channel="whatsapp",
     sender="+491234567",
@@ -34,12 +41,19 @@ answer = client.ask(
 ## Service Surface
 
 - `GET /api/service/capabilities`
+- `POST /api/service/intake`
 - `POST /api/service/capture`
 - `POST /api/service/ask`
 
 All calls require `Authorization: Bearer <service-key>`.
 
-The service API is intentionally narrow. It stores captured text in the scoped
-OneBrain account/space and returns public-ceiled answers without sources. The
-operator dashboard can inspect metadata, keys, versions, and rollout state, but
-it does not expose customer content.
+`/api/service/intake` is the preferred path for new integrations. It normalizes
+incoming data into a structured OneBrain record with record type, intent,
+classification, confidence, status, summary, safe extracted facts, account,
+space, app, and purpose. `/api/service/capture` remains available for raw legacy
+capture.
+
+The service API is intentionally narrow. It stores data in the scoped OneBrain
+account/space and returns public-ceiled answers without sources. The operator
+dashboard can inspect metadata, keys, versions, and rollout state, but it does
+not expose customer content.

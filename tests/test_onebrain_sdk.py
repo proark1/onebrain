@@ -37,7 +37,7 @@ def test_onebrain_client_sends_bearer_key_and_default_scope():
     }
 
 
-def test_onebrain_client_store_message_maps_to_capture_payload():
+def test_onebrain_client_store_message_maps_to_intake_payload():
     calls = []
 
     def transport(method, url, headers, payload, timeout):
@@ -62,11 +62,13 @@ def test_onebrain_client_store_message_maps_to_capture_payload():
     )
 
     assert result["captured"] == "doc_1"
+    assert calls[0]["content"] == "I need help with my booking."
     assert calls[0]["title"] == "whatsapp message from +491234"
+    assert calls[0]["source"] == "communication"
+    assert calls[0]["record_type"] == "message"
     assert calls[0]["purpose"] == "customer_service_inbox"
-    assert "channel: whatsapp" in calls[0]["text"]
-    assert "external_id: wamid.1" in calls[0]["text"]
-    assert "I need help with my booking." in calls[0]["text"]
+    assert calls[0]["metadata"]["channel"] == "whatsapp"
+    assert calls[0]["metadata"]["external_id"] == "wamid.1"
 
 
 def test_onebrain_client_capabilities_uses_get():
@@ -80,3 +82,26 @@ def test_onebrain_client_capabilities_uses_get():
 
     assert client.capabilities()["tenant_id"] == "acme"
     assert calls == [("GET", "https://onebrain.example/api/service/capabilities", None)]
+
+
+def test_onebrain_client_intake_uses_structured_endpoint():
+    calls = []
+
+    def transport(method, url, headers, payload, timeout):
+        calls.append((method, url, payload))
+        return {"record": {"id": "rec_1"}}
+
+    client = OneBrainClient(
+        "https://onebrain.example",
+        "obk_test_secret",
+        account_id="acme",
+        app_id="assistant",
+        transport=transport,
+    )
+
+    assert client.intake("Remember to prepare the proposal.", intent="task")["record"]["id"] == "rec_1"
+    assert calls[0][0] == "POST"
+    assert calls[0][1] == "https://onebrain.example/api/service/intake"
+    assert calls[0][2]["content"] == "Remember to prepare the proposal."
+    assert calls[0][2]["intent"] == "task"
+    assert calls[0][2]["app_id"] == "assistant"

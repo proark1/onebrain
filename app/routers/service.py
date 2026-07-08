@@ -21,12 +21,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.auth.principal import Principal, resolve_principal, resolve_service_principal
 from app.config import get_settings
 from app.deps import (
-    get_pipeline, get_platform_store, get_retrieval_service, get_service_key_store, get_service_rate_limiter,
+    get_intake_pipeline, get_pipeline, get_platform_store, get_retrieval_service, get_service_key_store,
+    get_service_rate_limiter,
 )
+from app.intake.base import IntakeRecord
+from app.intake.pipeline import IntakeInput
 from app.platform.base import AuditEvent, normalize_unique
 from app.schemas import (
-    MintedKey, ServiceAskRequest, ServiceAskResponse, ServiceCapabilitiesResponse, ServiceCaptureRequest,
-    ServiceKeyCreate, ServiceKeyInfo,
+    IntakeRecordOut, MintedKey, ServiceAskRequest, ServiceAskResponse, ServiceCapabilitiesResponse,
+    ServiceCaptureRequest, ServiceIntakeRequest, ServiceIntakeResponse, ServiceKeyCreate, ServiceKeyInfo,
 )
 from app.security.policy import CAPTURED_CATEGORY
 from app.servicekeys.base import (
@@ -98,6 +101,122 @@ def _platform_scope(body, principal: Principal, default_purpose: str):
     )
 
 
+def _default_intake_purpose(app_id: str) -> str:
+    if app_id == "communication":
+        return "customer_service_inbox"
+    if app_id == "assistant":
+        return "assistant_action"
+    return "knowledge_management"
+
+
+def _preferred_space_kind(app_id: str, purpose: str, content: str) -> tuple[str, ...]:
+    text = (content or "").lower()
+    if purpose.startswith("customer_service") or app_id == "communication":
+        return ("customer_service", "shared", "business")
+    if app_id == "assistant":
+        if any(word in text for word in ("family", "child", "home", "private")):
+            return ("family", "personal", "shared", "business")
+        if any(word in text for word in ("company", "client", "invoice", "project", "business")):
+            return ("business", "shared", "personal")
+        return ("personal", "shared", "business")
+    return ("business", "shared", "customer_service", "personal")
+
+
+def _route_intake_space(account_id: str, app_id: str, purpose: str, content: str, principal: Principal) -> str:
+    if principal.space_ids and len(principal.space_ids) == 1:
+        return next(iter(principal.space_ids))
+
+    store = get_platform_store()
+    allowed_ids = set(principal.space_ids or [])
+    if not allowed_ids:
+        for installation in store.list_app_installations(account_id):
+            if installation.app_id == app_id and installation.status == "active":
+                allowed_ids.update(installation.enabled_space_ids)
+    spaces = [space for space in store.list_spaces(account_id) if space.id in allowed_ids and space.status == "active"]
+    for kind in _preferred_space_kind(app_id, purpose, content):
+        for space in spaces:
+            if space.kind == kind:
+                return space.id
+    return spaces[0].id if spaces else ""
+
+
+def _intake_scope(body: ServiceIntakeRequest, principal: Principal):
+    fields = {
+        "account_id": (body.account_id or principal.account_id or principal.tenant_id or "").strip(),
+        "space_id": (body.space_id or "").strip(),
+        "app_id": (body.app_id or principal.app_id or "").strip(),
+        "purpose": (body.purpose or "").strip(),
+    }
+    if not fields["app_id"]:
+        raise HTTPException(status_code=400, detail="app_id is required for service intake.")
+    if not fields["purpose"]:
+        fields["purpose"] = _default_intake_purpose(fields["app_id"])
+    if not fields["space_id"]:
+        fields["space_id"] = _route_intake_space(
+            fields["account_id"], fields["app_id"], fields["purpose"], body.content, principal,
+        )
+    if not all(fields.values()):
+        raise HTTPException(
+            status_code=400,
+            detail="account_id, space_id, app_id and purpose are required for service intake.",
+        )
+    if fields["account_id"] != principal.tenant_id:
+        raise HTTPException(status_code=403, detail="This service key is not pinned to that account.")
+    if principal.account_id and fields["account_id"] != principal.account_id:
+        raise HTTPException(status_code=403, detail="This service key cannot use that account.")
+    if principal.app_id and fields["app_id"] != principal.app_id:
+        raise HTTPException(status_code=403, detail="This service key cannot use that app.")
+    if principal.space_ids is not None and fields["space_id"] not in principal.space_ids:
+        raise HTTPException(status_code=403, detail="This service key cannot use that space.")
+    if principal.purposes is not None and fields["purpose"] not in principal.purposes:
+        raise HTTPException(status_code=403, detail="This service key cannot use that purpose.")
+
+    store = get_platform_store()
+    decision = store.check_app_access(
+        fields["account_id"], fields["app_id"], fields["space_id"], fields["purpose"],
+    )
+    store.record_audit(AuditEvent(
+        id=f"aud_{uuid4().hex}",
+        account_id=fields["account_id"],
+        actor_id=principal.user_id,
+        actor_type=principal.principal_type,
+        action="service.intake_access_checked",
+        target_type="space",
+        target_id=fields["space_id"],
+        space_id=fields["space_id"],
+        app_id=fields["app_id"],
+        purpose=fields["purpose"],
+        decision="allowed" if decision.allowed else "denied",
+        meta={"reason": decision.reason},
+    ))
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail=f"App access denied: {decision.reason}")
+    return fields
+
+
+def _intake_record_out(record: IntakeRecord) -> IntakeRecordOut:
+    return IntakeRecordOut(
+        id=record.id,
+        tenant_id=record.tenant_id,
+        account_id=record.account_id,
+        space_id=record.space_id,
+        app_id=record.app_id,
+        purpose=record.purpose,
+        source=record.source,
+        source_ref=record.source_ref,
+        record_type=record.record_type,
+        intent=record.intent,
+        classification=record.classification,
+        confidence=record.confidence,
+        status=record.status,
+        title=record.title,
+        summary=record.summary,
+        extracted_facts=record.extracted_facts,
+        metadata=record.metadata,
+        created_at=record.created_at,
+    )
+
+
 def _require_scope(principal: Principal, scope: str) -> None:
     if not principal.has_scope(scope):
         raise HTTPException(status_code=403, detail=f"This service key lacks the '{scope}' scope.")
@@ -123,6 +242,31 @@ def capabilities(principal: Principal = Depends(resolve_service_principal)):
         space_ids=sorted(principal.space_ids or []),
         purposes=sorted(principal.purposes or []),
     )
+
+
+@service_router.post("/intake", response_model=ServiceIntakeResponse)
+def intake(body: ServiceIntakeRequest, principal: Principal = Depends(resolve_service_principal)):
+    _require_scope(principal, SCOPE_WRITE)
+    _rate_limit(principal)
+    fields = _intake_scope(body, principal)
+    try:
+        record = get_intake_pipeline().ingest(IntakeInput(
+            tenant_id=principal.tenant_id,
+            account_id=fields["account_id"],
+            space_id=fields["space_id"],
+            app_id=fields["app_id"],
+            purpose=fields["purpose"],
+            content=body.content,
+            title=body.title or "",
+            source=body.source or "service",
+            source_ref=body.source_ref,
+            record_type=body.record_type,
+            intent=body.intent,
+            metadata=body.metadata,
+        ))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ServiceIntakeResponse(record=_intake_record_out(record))
 
 
 @service_router.post("/capture")

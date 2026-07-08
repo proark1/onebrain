@@ -16,11 +16,14 @@ import app.routers.service as service_router
 from app.auth.principal import Principal
 from app.embeddings.local import LocalEmbedder
 from app.ingest.pipeline import IngestPipeline
+from app.intake.memory import MemoryIntakeStore
+from app.intake.pipeline import IntakePipeline
 from app.llm.local import LocalLLM
 from app.platform.base import Account, AppInstallation, Space
 from app.platform.memory import MemoryPlatformStore
 from app.retrieval.service import RetrievalService
 from app.schemas import ServiceAskRequest, ServiceCaptureRequest
+from app.schemas import ServiceIntakeRequest
 from app.security.policy import Classification
 from app.servicekeys.base import SCOPE_READ, SCOPE_WRITE
 from app.store.memory import MemoryStore
@@ -219,3 +222,35 @@ def test_service_capabilities_exposes_key_scope_without_secret():
     assert capabilities.purposes == ["customer_service_answer", "customer_service_inbox"]
     assert set(capabilities.scopes) == {SCOPE_READ, SCOPE_WRITE}
     assert not hasattr(capabilities, "key")
+
+
+def test_service_intake_routes_multi_space_communication_key_to_customer_service(monkeypatch):
+    platform = _platform_store()
+    intake_store = MemoryIntakeStore()
+    settings = type("Settings", (), {"pii_phase": "dpia_signed", "require_approval": False})()
+    pipeline = IntakePipeline(intake_store, settings)
+    monkeypatch.setattr(service_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(service_router, "get_intake_pipeline", lambda: pipeline)
+    principal = replace(
+        _svc_principal(scopes=(SCOPE_WRITE,), tenant="nft_gym"),
+        account_id="nft_gym",
+        app_id="communication",
+        space_ids=frozenset({"sp_customer", "sp_personal"}),
+        purposes=frozenset({"customer_service_inbox"}),
+    )
+
+    response = service_router.intake(
+        ServiceIntakeRequest(
+            content="Customer wants to reschedule an appointment.",
+            source="communication",
+            source_ref="wamid.42",
+        ),
+        principal=principal,
+    )
+
+    assert response.record.space_id == "sp_customer"
+    assert response.record.record_type == "message"
+    assert response.record.intent == "booking"
+    assert response.record.status == "approved"
+    assert intake_store.get(response.record.id).source_ref == "wamid.42"
+    assert platform.list_audit("nft_gym")[-1].action == "service.intake_access_checked"

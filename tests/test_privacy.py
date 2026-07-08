@@ -12,6 +12,8 @@ from app.conversations.base import Scope
 from app.conversations.memory import MemoryConversationStore
 from app.embeddings.local import LocalEmbedder
 from app.ingest.pipeline import IngestPipeline
+from app.intake.memory import MemoryIntakeStore
+from app.intake.pipeline import IntakeInput, IntakePipeline
 from app.platform.base import Account, Space
 from app.platform.memory import MemoryPlatformStore
 from app.store.memory import MemoryStore
@@ -69,18 +71,46 @@ def _fixtures():
     personal_conv = conversations.create(Scope("acme", "owner@acme", "admin", "acme", "sp_acme_personal"), "Family")
     conversations.add_message(personal_conv.id, "user", "Family dinner reminder")
 
-    return platform, store, conversations, service_doc, personal_doc, service_conv, personal_conv
+    intake = MemoryIntakeStore()
+    intake_pipe = IntakePipeline(
+        intake,
+        type("Settings", (), {"pii_phase": "dpia_signed", "require_approval": False})(),
+    )
+    service_record = intake_pipe.ingest(IntakeInput(
+        tenant_id="acme",
+        account_id="acme",
+        space_id="sp_acme_service",
+        app_id="communication",
+        purpose="customer_service_inbox",
+        source="communication",
+        content="Customer asked about refund timing.",
+    ))
+    personal_record = intake_pipe.ingest(IntakeInput(
+        tenant_id="acme",
+        account_id="acme",
+        space_id="sp_acme_personal",
+        app_id="assistant",
+        purpose="assistant_action",
+        source="assistant",
+        content="Private owner family reminder.",
+    ))
+
+    return (
+        platform, store, conversations, intake, service_doc, personal_doc,
+        service_conv, personal_conv, service_record, personal_record,
+    )
 
 
-def _patch(monkeypatch, platform, store, conversations):
+def _patch(monkeypatch, platform, store, conversations, intake):
     monkeypatch.setattr(privacy_router, "get_platform_store", lambda: platform)
     monkeypatch.setattr(privacy_router, "get_store", lambda: store)
     monkeypatch.setattr(privacy_router, "get_conversation_store", lambda: conversations)
+    monkeypatch.setattr(privacy_router, "get_intake_store", lambda: intake)
 
 
 def test_privacy_export_is_space_scoped_and_audited(monkeypatch):
-    platform, store, conversations, service_doc, _, service_conv, _ = _fixtures()
-    _patch(monkeypatch, platform, store, conversations)
+    platform, store, conversations, intake, service_doc, _, service_conv, _, service_record, _ = _fixtures()
+    _patch(monkeypatch, platform, store, conversations, intake)
 
     exported = privacy_router.export_account_data(
         "acme",
@@ -94,13 +124,18 @@ def test_privacy_export_is_space_scoped_and_audited(monkeypatch):
     assert exported.documents[0]["chunks"][0]["text"] == "Customer asked about refund timing."
     assert [conversation["id"] for conversation in exported.conversations] == [service_conv.id]
     assert exported.conversations[0]["messages"][0]["content"] == "When is my refund paid?"
+    assert [record["id"] for record in exported.intake_records] == [service_record.id]
     assert platform.list_audit("acme")[-1].action == "privacy.exported"
     assert platform.list_audit("acme")[-1].meta["documents"] == 1
+    assert platform.list_audit("acme")[-1].meta["intake_records"] == 1
 
 
 def test_privacy_erase_requires_confirmation_and_deletes_only_scope(monkeypatch):
-    platform, store, conversations, service_doc, personal_doc, service_conv, personal_conv = _fixtures()
-    _patch(monkeypatch, platform, store, conversations)
+    (
+        platform, store, conversations, intake, service_doc, personal_doc,
+        service_conv, personal_conv, service_record, personal_record,
+    ) = _fixtures()
+    _patch(monkeypatch, platform, store, conversations, intake)
 
     with pytest.raises(HTTPException) as exc:
         privacy_router.erase_account_data(
@@ -123,18 +158,22 @@ def test_privacy_erase_requires_confirmation_and_deletes_only_scope(monkeypatch)
     assert erased.documents_deleted == 1
     assert erased.chunks_deleted == 1
     assert erased.conversations_deleted == 1
+    assert erased.intake_records_deleted == 1
     assert store.get_document_meta(service_doc.doc_id) is None
     assert store.get_document_meta(personal_doc.doc_id) is not None
     assert conversations.export_scope("acme", account_id="acme", space_id="sp_acme_service") == []
     assert conversations.export_scope("acme", account_id="acme", space_id="sp_acme_personal")[0]["id"] == personal_conv.id
+    assert intake.get(service_record.id) is None
+    assert intake.get(personal_record.id) is not None
     audit = platform.list_audit("acme")[-1]
     assert audit.action == "privacy.erased"
     assert audit.meta["reason"] == "customer requested deletion"
+    assert audit.meta["intake_records_deleted"] == 1
 
 
 def test_privacy_operations_require_admin_and_valid_scope(monkeypatch):
-    platform, store, conversations, *_ = _fixtures()
-    _patch(monkeypatch, platform, store, conversations)
+    platform, store, conversations, intake, *_ = _fixtures()
+    _patch(monkeypatch, platform, store, conversations, intake)
 
     with pytest.raises(HTTPException) as exc:
         privacy_router.export_account_data("acme", principal=_principal("front_desk"))

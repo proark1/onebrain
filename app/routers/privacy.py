@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.auth.principal import Principal, resolve_principal
-from app.deps import get_conversation_store, get_platform_store, get_store
+from app.deps import get_conversation_store, get_intake_store, get_platform_store, get_store
 from app.platform.base import AuditEvent
 
 router = APIRouter(prefix="/api/privacy", tags=["privacy"])
@@ -36,6 +36,7 @@ class PrivacyExportOut(BaseModel):
     exported_at: str
     documents: list[dict]
     conversations: list[dict]
+    intake_records: list[dict] = Field(default_factory=list)
     audit_events: list[PrivacyAuditOut]
 
 
@@ -51,6 +52,7 @@ class PrivacyEraseOut(BaseModel):
     documents_deleted: int
     chunks_deleted: int
     conversations_deleted: int
+    intake_records_deleted: int = 0
     audit_event_id: str
 
 
@@ -129,6 +131,7 @@ def export_account_data(
     account_id, space_id = _resolve_scope(account_id, space_id)
     documents = get_store().export_documents(account_id, account_id=account_id, space_id=space_id)
     conversations = get_conversation_store().export_scope(account_id, account_id=account_id, space_id=space_id)
+    intake_records = get_intake_store().export_records(account_id, account_id=account_id, space_id=space_id)
     audit_events = [_audit_out(event) for event in get_platform_store().list_audit(account_id)]
     _record_privacy_audit(
         principal,
@@ -140,6 +143,7 @@ def export_account_data(
             "documents": len(documents),
             "chunks": sum(len(doc.get("chunks", [])) for doc in documents),
             "conversations": len(conversations),
+            "intake_records": len(intake_records),
         },
     )
     return PrivacyExportOut(
@@ -148,6 +152,7 @@ def export_account_data(
         exported_at=_now(),
         documents=documents,
         conversations=conversations,
+        intake_records=intake_records,
         audit_events=audit_events,
     )
 
@@ -165,6 +170,7 @@ def erase_account_data(
 
     deleted_docs = get_store().delete_documents_by_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_conversations = get_conversation_store().delete_scope(account_id, account_id=account_id, space_id=space_id)
+    deleted_records = get_intake_store().delete_records_by_scope(account_id, account_id=account_id, space_id=space_id)
     audit = _record_privacy_audit(
         principal,
         account_id=account_id,
@@ -175,6 +181,7 @@ def erase_account_data(
             "documents_deleted": deleted_docs["documents"],
             "chunks_deleted": deleted_docs["chunks"],
             "conversations_deleted": deleted_conversations,
+            "intake_records_deleted": deleted_records,
             "reason": body.reason.strip(),
         },
     )
@@ -184,5 +191,6 @@ def erase_account_data(
         documents_deleted=deleted_docs["documents"],
         chunks_deleted=deleted_docs["chunks"],
         conversations_deleted=deleted_conversations,
+        intake_records_deleted=deleted_records,
         audit_event_id=audit.id,
     )
