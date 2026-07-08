@@ -40,6 +40,13 @@ class ServiceKey:
     created_at: str = ""
 
 
+@dataclass(frozen=True)
+class ServiceKeySummary:
+    total: int
+    active: int = 0
+    revoked: int = 0
+
+
 def generate_key() -> tuple[str, str, str]:
     """Return (key_id, secret, plaintext). Persist only hash_secret(secret)."""
     key_id = secrets.token_hex(6)
@@ -80,3 +87,5 @@ class ServiceKeyStore(Protocol):
     def list_by_tenant(self, tenant_id: str) -> List[ServiceKey]: ...
 
     def revoke(self, key_id: str) -> bool: ...
+
+    def summary(self, tenant_id: str = "") -> ServiceKeySummary: ...

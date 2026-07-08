@@ -12,7 +12,7 @@ import os
 import threading
 from typing import Dict, List, Optional
 
-from app.servicekeys.base import ServiceKey
+from app.servicekeys.base import ServiceKey, ServiceKeySummary
 
 
 def _to_dict(k: ServiceKey) -> dict:
@@ -77,3 +77,13 @@ class MemoryServiceKeyStore:
             key.status = "revoked"
             self._save()
             return True
+
+    def summary(self, tenant_id: str = "") -> ServiceKeySummary:
+        with self._lock:
+            keys = [
+                key for key in self._by_id.values()
+                if not tenant_id or key.tenant_id == tenant_id
+            ]
+        active = sum(1 for key in keys if key.status == "active")
+        revoked = sum(1 for key in keys if key.status == "revoked")
+        return ServiceKeySummary(total=len(keys), active=active, revoked=revoked)

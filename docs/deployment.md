@@ -144,7 +144,10 @@ After deploy:
 5. Upload a synthetic test document in Postgres mode.
 6. Confirm the upload returns a job id or appears in the documents list after
    the worker processes it.
-7. Check worker logs for `worker started` and `job succeeded`.
+7. As an admin, call `GET /api/operator/observability` and confirm it returns
+   runtime, retrieval, storage, service-key, and job queue sections without
+   customer content.
+8. Check worker logs for `worker started` and `job succeeded`.
 
 ## Local Docker Checks
 
