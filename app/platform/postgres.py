@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import List, Optional
 
+from app.db.schema import validate_postgres_schema
 from app.platform.base import (
     CUSTOMER_SERVICE_PURPOSES,
     PRIVATE_SPACE_KINDS,
@@ -34,77 +35,22 @@ class PostgresPlatformStore:
 
         self._psycopg = psycopg
         self._dsn = dsn
-        self._init_schema()
+        self._validate_schema()
 
     def _conn(self):
         return self._psycopg.connect(self._dsn)
 
-    def _init_schema(self) -> None:
-        with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS platform_accounts (
-                    id TEXT PRIMARY KEY,
-                    kind TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    owner_user_id TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT 'active',
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-                """
+    def _validate_schema(self) -> None:
+        with self._conn() as conn:
+            validate_postgres_schema(
+                conn,
+                (
+                    "platform_accounts",
+                    "platform_spaces",
+                    "platform_app_installations",
+                    "platform_audit_events",
+                ),
             )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS platform_spaces (
-                    id TEXT PRIMARY KEY,
-                    account_id TEXT NOT NULL REFERENCES platform_accounts(id) ON DELETE CASCADE,
-                    kind TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'active',
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-                """
-            )
-            cur.execute("CREATE INDEX IF NOT EXISTS platform_spaces_account_idx ON platform_spaces (account_id)")
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS platform_app_installations (
-                    id TEXT PRIMARY KEY,
-                    account_id TEXT NOT NULL REFERENCES platform_accounts(id) ON DELETE CASCADE,
-                    app_id TEXT NOT NULL,
-                    enabled_space_ids TEXT NOT NULL,
-                    allowed_purposes TEXT NOT NULL,
-                    display_name TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT 'active',
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-                """
-            )
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS platform_app_installations_account_idx "
-                "ON platform_app_installations (account_id, app_id)"
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS platform_audit_events (
-                    id TEXT PRIMARY KEY,
-                    account_id TEXT NOT NULL,
-                    actor_id TEXT NOT NULL DEFAULT '',
-                    actor_type TEXT NOT NULL DEFAULT '',
-                    action TEXT NOT NULL,
-                    target_type TEXT NOT NULL,
-                    target_id TEXT NOT NULL,
-                    space_id TEXT NOT NULL DEFAULT '',
-                    app_id TEXT NOT NULL DEFAULT '',
-                    purpose TEXT NOT NULL DEFAULT '',
-                    decision TEXT NOT NULL DEFAULT '',
-                    meta TEXT NOT NULL DEFAULT '{}',
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-                """
-            )
-            cur.execute("CREATE INDEX IF NOT EXISTS platform_audit_account_idx ON platform_audit_events (account_id)")
-            conn.commit()
 
     def _account_row(self, r) -> Account:
         return Account(id=r[0], kind=r[1], name=r[2], owner_user_id=r[3], status=r[4],

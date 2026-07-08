@@ -13,6 +13,7 @@ from typing import List
 
 import numpy as np
 
+from app.db.schema import PostgresSchemaError, validate_postgres_schema
 from app.security.policy import AccessFilter
 from app.store.base import Chunk, Hit
 
@@ -39,51 +40,39 @@ class PgVectorStore:
         self._register_vector = register_vector
         self._dsn = dsn
         self._dim = dim
-        self._init_schema()
+        self._validate_schema()
 
     def _conn(self):
         conn = self._psycopg.connect(self._dsn)
         self._register_vector(conn)
         return conn
 
-    def _init_schema(self) -> None:
-        with self._conn() as conn, conn.cursor() as cur:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            # If a chunks table already exists with a different embedding
-            # dimension, refuse to boot rather than deleting customer data.
-            # Vectors from two models are not comparable; a later migration must
-            # re-embed from source text into a versioned/indexed table.
-            cur.execute(
-                "SELECT a.atttypmod FROM pg_attribute a JOIN pg_class c "
-                "ON c.oid = a.attrelid WHERE c.relname = 'chunks' AND a.attname = 'embedding'"
-            )
-            existing = cur.fetchone()
-            if existing is not None and existing[0] > 0 and existing[0] != self._dim:
+    def _raw_conn(self):
+        return self._psycopg.connect(self._dsn)
+
+    def _validate_schema(self) -> None:
+        with self._raw_conn() as conn:
+            validate_postgres_schema(conn, ("chunks",))
+            # Vectors from two models are not comparable. If the migrated
+            # schema has a different dimension, fail instead of changing data.
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT a.atttypmod FROM pg_attribute a JOIN pg_class c "
+                    "ON c.oid = a.attrelid WHERE c.relname = 'chunks' AND a.attname = 'embedding'"
+                )
+                existing = cur.fetchone()
+            if existing is None or existing[0] <= 0:
+                raise PostgresSchemaError(
+                    "Migrated pgvector chunks table is missing embedding vector dimension. "
+                    "Run `alembic upgrade head` with ONEBRAIN_DATABASE_URL before starting OneBrain."
+                )
+            if existing[0] != self._dim:
                 raise RuntimeError(
                     "Existing pgvector chunks table has embedding dimension "
                     f"{existing[0]}, but the configured embedder uses {self._dim}. "
-                    "Refusing to drop customer data. Run a re-embedding migration "
+                    "Refusing to alter customer data. Run a re-embedding migration "
                     "or point OneBrain at an empty/vector-compatible database."
                 )
-            cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS chunks (
-                    id TEXT PRIMARY KEY,
-                    doc_id TEXT NOT NULL,
-                    text TEXT NOT NULL,
-                    meta JSONB NOT NULL,
-                    embedding vector({self._dim}),
-                    tenant_id TEXT
-                )
-                """
-            )
-            # Idempotent for tables created before the tenant column existed.
-            # (The isolation guarantee is enforced via meta->>'tenant_id' in
-            # AccessFilter.to_sql; this column backs the Phase-1 RLS backstop.)
-            cur.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tenant_id TEXT")
-            cur.execute("CREATE INDEX IF NOT EXISTS chunks_doc_id_idx ON chunks (doc_id)")
-            cur.execute("CREATE INDEX IF NOT EXISTS chunks_tenant_idx ON chunks (tenant_id)")
-            conn.commit()
 
     def add(self, chunks: List[Chunk]) -> None:
         with self._conn() as conn, conn.cursor() as cur:

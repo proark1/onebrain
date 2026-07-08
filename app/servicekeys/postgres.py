@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from app.db.schema import validate_postgres_schema
 from app.servicekeys.base import ServiceKey
 
 
@@ -13,36 +14,14 @@ class PostgresServiceKeyStore:
 
         self._psycopg = psycopg
         self._dsn = dsn
-        self._init_schema()
+        self._validate_schema()
 
     def _conn(self):
         return self._psycopg.connect(self._dsn)
 
-    def _init_schema(self) -> None:
-        with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS service_keys (
-                    id TEXT PRIMARY KEY,
-                    key_hash TEXT NOT NULL,
-                    tenant_id TEXT NOT NULL,
-                    scopes TEXT NOT NULL,
-                    label TEXT NOT NULL DEFAULT '',
-                    account_id TEXT NOT NULL DEFAULT '',
-                    app_id TEXT NOT NULL DEFAULT '',
-                    space_ids TEXT NOT NULL DEFAULT '',
-                    purposes TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT 'active',
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-                """
-            )
-            cur.execute("ALTER TABLE service_keys ADD COLUMN IF NOT EXISTS account_id TEXT NOT NULL DEFAULT ''")
-            cur.execute("ALTER TABLE service_keys ADD COLUMN IF NOT EXISTS app_id TEXT NOT NULL DEFAULT ''")
-            cur.execute("ALTER TABLE service_keys ADD COLUMN IF NOT EXISTS space_ids TEXT NOT NULL DEFAULT ''")
-            cur.execute("ALTER TABLE service_keys ADD COLUMN IF NOT EXISTS purposes TEXT NOT NULL DEFAULT ''")
-            cur.execute("CREATE INDEX IF NOT EXISTS service_keys_tenant_idx ON service_keys (tenant_id)")
-            conn.commit()
+    def _validate_schema(self) -> None:
+        with self._conn() as conn:
+            validate_postgres_schema(conn, ("service_keys",))
 
     def _row(self, r) -> ServiceKey:
         return ServiceKey(

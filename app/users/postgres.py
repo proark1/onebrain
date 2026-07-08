@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from app.db.schema import validate_postgres_schema
 from app.users.base import User
 
 
@@ -13,29 +14,14 @@ class PostgresUserStore:
 
         self._psycopg = psycopg
         self._dsn = dsn
-        self._init_schema()
+        self._validate_schema()
 
     def _conn(self):
         return self._psycopg.connect(self._dsn)
 
-    def _init_schema(self) -> None:
-        with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    id TEXT PRIMARY KEY,
-                    email TEXT UNIQUE NOT NULL,
-                    display_name TEXT NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    tenant_id TEXT NOT NULL,
-                    role_id TEXT NOT NULL,
-                    location TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'active',
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-                """
-            )
-            conn.commit()
+    def _validate_schema(self) -> None:
+        with self._conn() as conn:
+            validate_postgres_schema(conn, ("users",))
 
     def _row(self, r) -> User:
         return User(id=r[0], email=r[1], display_name=r[2], password_hash=r[3],

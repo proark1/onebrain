@@ -7,6 +7,7 @@ import uuid
 from typing import List, Optional
 
 from app.conversations.base import Conversation, Message, Scope
+from app.db.schema import validate_postgres_schema
 
 
 def _iso(ts) -> str:
@@ -32,52 +33,14 @@ class PostgresConversationStore:
 
         self._psycopg = psycopg
         self._dsn = dsn
-        self._init_schema()
+        self._validate_schema()
 
     def _conn(self):
         return self._psycopg.connect(self._dsn)
 
-    def _init_schema(self) -> None:
-        with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS conversations (
-                    id TEXT PRIMARY KEY,
-                    tenant_id TEXT NOT NULL,
-                    session_id TEXT NOT NULL,
-                    role_id TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    account_id TEXT NOT NULL DEFAULT '',
-                    space_id TEXT NOT NULL DEFAULT ''
-                )
-                """
-            )
-            cur.execute("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS account_id TEXT NOT NULL DEFAULT ''")
-            cur.execute("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS space_id TEXT NOT NULL DEFAULT ''")
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS conv_scope_idx "
-                "ON conversations (tenant_id, session_id, role_id, account_id, space_id, updated_at DESC)"
-            )
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS conv_scope_space_idx "
-                "ON conversations (tenant_id, session_id, role_id, account_id, space_id, updated_at DESC)"
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS messages (
-                    id TEXT PRIMARY KEY,
-                    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    meta JSONB,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-                """
-            )
-            cur.execute("CREATE INDEX IF NOT EXISTS msg_conv_idx ON messages (conversation_id, created_at)")
-            conn.commit()
+    def _validate_schema(self) -> None:
+        with self._conn() as conn:
+            validate_postgres_schema(conn, ("conversations", "messages"))
 
     def create(self, scope: Scope, title: str) -> Conversation:
         cid = uuid.uuid4().hex

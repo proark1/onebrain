@@ -6,6 +6,7 @@ numpy>=1.26
 litellm>=1.50
 psycopg[binary]>=3.1
 pgvector>=0.2.5
+alembic>=1.13
 
 # Document extraction
 pypdf>=4.2                # PDF text

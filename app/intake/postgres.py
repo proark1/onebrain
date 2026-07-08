@@ -8,46 +8,21 @@ from typing import List, Optional
 
 import psycopg
 
+from app.db.schema import validate_postgres_schema
 from app.intake.base import IntakeRecord
 
 
 class PostgresIntakeStore:
     def __init__(self, database_url: str):
         self.database_url = database_url
-        self._ensure()
+        self._validate_schema()
 
     def _conn(self):
         return psycopg.connect(self.database_url)
 
-    def _ensure(self) -> None:
-        with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS intake_records (
-                    id TEXT PRIMARY KEY,
-                    tenant_id TEXT NOT NULL,
-                    account_id TEXT NOT NULL,
-                    space_id TEXT NOT NULL,
-                    app_id TEXT NOT NULL,
-                    purpose TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    source_ref TEXT NOT NULL,
-                    record_type TEXT NOT NULL,
-                    intent TEXT NOT NULL,
-                    classification TEXT NOT NULL,
-                    confidence DOUBLE PRECISION NOT NULL,
-                    status TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    summary TEXT NOT NULL,
-                    extracted_facts JSONB NOT NULL,
-                    metadata JSONB NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT ''
-                )
-                """
-            )
-            cur.execute("CREATE INDEX IF NOT EXISTS intake_records_scope_idx ON intake_records (tenant_id, account_id, space_id)")
-            conn.commit()
+    def _validate_schema(self) -> None:
+        with self._conn() as conn:
+            validate_postgres_schema(conn, ("intake_records",))
 
     def _row(self, r) -> IntakeRecord:
         return IntakeRecord(
