@@ -245,6 +245,38 @@
             </form>
           </section>
 
+          <section class="operator-panel operator-wide privacy-panel">
+            <div class="operator-panel-head">
+              <h2>Privacy operations</h2>
+              <span id="privacyStatus" class="operator-status">Ready</span>
+            </div>
+            <form id="privacyForm" class="operator-form privacy-form" autocomplete="off">
+              <div class="privacy-form-grid">
+                <label class="field">
+                  <span class="field-label">Account</span>
+                  <select id="privacyAccount" class="select" required disabled></select>
+                </label>
+                <label class="field">
+                  <span class="field-label">Space</span>
+                  <select id="privacySpace" class="select" disabled></select>
+                </label>
+                <label class="field">
+                  <span class="field-label">Confirm account id</span>
+                  <input id="privacyConfirm" class="text-input" maxlength="120" placeholder="required for erase" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Reason</span>
+                  <input id="privacyReason" class="text-input" maxlength="500" placeholder="GDPR request" />
+                </label>
+              </div>
+              <div class="privacy-actions">
+                <button id="privacyExport" class="mini-btn mini-btn-primary" type="button" disabled>Export JSON</button>
+                <button id="privacyErase" class="mini-btn mini-btn-danger" type="submit" disabled>Erase data</button>
+              </div>
+              <div id="privacyResult" class="plan-result" aria-live="polite"></div>
+            </form>
+          </section>
+
           <section class="operator-panel operator-wide">
             <div class="operator-panel-head">
               <h2>Accounts and spaces</h2>

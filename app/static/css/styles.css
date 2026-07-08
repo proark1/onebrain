@@ -656,6 +656,17 @@ body {
 }
 .operator-form-grid { grid-template-columns: 1fr 1fr; }
 .operator-form .btn-primary { margin-top: 2px; }
+.privacy-form-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(180px, 1.2fr) minmax(180px, 1fr) minmax(160px, 1fr);
+  gap: 12px;
+}
+.privacy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
 .credential-section {
   margin-top: 14px;
   padding-top: 14px;
@@ -927,6 +938,16 @@ body {
   border-color: var(--signal);
 }
 .mini-btn-primary[hidden] { display: none; }
+.mini-btn-danger {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.mini-btn-danger:hover:not(:disabled) {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
 .plan-result {
   min-height: 20px;
   display: flex;
@@ -1036,6 +1057,7 @@ body {
   .operator-grid { grid-template-columns: 1fr; }
   .operator-row { grid-template-columns: 1fr; }
   .operator-form-grid { grid-template-columns: 1fr; }
+  .privacy-form-grid { grid-template-columns: 1fr; }
   .release-form-grid { grid-template-columns: 1fr; }
   .release-form-grid .field:first-child { grid-column: auto; }
   .operator-head h1 { font-size: 21px; }

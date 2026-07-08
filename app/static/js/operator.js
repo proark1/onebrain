@@ -2,6 +2,8 @@
 
 import {
   createRelease,
+  erasePrivacyData,
+  exportPrivacyData,
   getUpdatePlan,
   latestBackup,
   latestHealth,
@@ -26,6 +28,7 @@ import { el, qs, toast } from "./dom.js";
 let bundles = [];
 let releases = [];
 let deploymentRows = [];
+let accountRows = [];
 let loaded = false;
 
 const text = (value) => value || "-";
@@ -108,6 +111,153 @@ function renderCredentials(credentials = []) {
   }));
 }
 
+function selectedAccountRow() {
+  const selectedId = qs("#privacyAccount").value;
+  return accountRows.find(({ account }) => account.id === selectedId);
+}
+
+function setPrivacyStatus(message, tone = "") {
+  const node = qs("#privacyStatus");
+  node.textContent = message;
+  node.className = `operator-status ${tone}`.trim();
+}
+
+function clearPrivacyResult() {
+  qs("#privacyResult").replaceChildren();
+}
+
+function refreshPrivacyEraseState() {
+  const row = selectedAccountRow();
+  const confirm = qs("#privacyConfirm").value.trim();
+  qs("#privacyErase").disabled = !row || confirm !== row.account.id;
+}
+
+function populatePrivacySpaces() {
+  const select = qs("#privacySpace");
+  const row = selectedAccountRow();
+  const previous = select.value;
+  const options = [el("option", { value: "" }, "All account data")];
+  if (row) {
+    options.push(...row.spaces.map((space) =>
+      el("option", { value: space.id }, `${space.kind}: ${space.name}`)));
+  }
+  select.replaceChildren(...options);
+  select.disabled = !row;
+  if (row?.spaces.some((space) => space.id === previous)) select.value = previous;
+  else select.value = "";
+  qs("#privacyExport").disabled = !row;
+  refreshPrivacyEraseState();
+}
+
+function populatePrivacyAccounts() {
+  const select = qs("#privacyAccount");
+  const previous = select.value;
+  if (!accountRows.length) {
+    select.replaceChildren(el("option", { value: "" }, "No accounts"));
+    select.disabled = true;
+    populatePrivacySpaces();
+    return;
+  }
+
+  select.disabled = false;
+  select.replaceChildren(...accountRows.map(({ account }) =>
+    el("option", { value: account.id }, `${account.name} / ${account.id}`)));
+  if (accountRows.some(({ account }) => account.id === previous)) select.value = previous;
+  else select.value = accountRows[0].account.id;
+  populatePrivacySpaces();
+}
+
+const safeFilePart = (value) => (value || "all").replace(/[^a-z0-9._-]+/gi, "-");
+
+function downloadJsonExport(data) {
+  const spacePart = data.space_id ? `-${safeFilePart(data.space_id)}` : "";
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = el("a", {
+    href: url,
+    download: `onebrain-privacy-${safeFilePart(data.account_id)}${spacePart}.json`,
+  });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function renderPrivacyExportResult(data) {
+  const chunks = data.documents.reduce((total, doc) => total + (doc.chunks?.length || 0), 0);
+  qs("#privacyResult").replaceChildren(
+    chip(`${data.documents.length} documents`),
+    chip(`${chunks} chunks`, "muted"),
+    chip(`${data.conversations.length} conversations`, "muted"),
+    chip(`${data.audit_events.length} audit events`, "muted"),
+  );
+}
+
+function renderPrivacyEraseResult(result) {
+  qs("#privacyResult").replaceChildren(
+    chip(`${result.documents_deleted} documents deleted`, "muted"),
+    chip(`${result.chunks_deleted} chunks deleted`, "muted"),
+    chip(`${result.conversations_deleted} conversations deleted`, "muted"),
+    chip(result.audit_event_id, "module"),
+  );
+}
+
+async function exportPrivacySelection() {
+  const row = selectedAccountRow();
+  if (!row) return;
+
+  const button = qs("#privacyExport");
+  button.disabled = true;
+  setPrivacyStatus("Exporting", "busy");
+  try {
+    const data = await exportPrivacyData(row.account.id, qs("#privacySpace").value);
+    downloadJsonExport(data);
+    renderPrivacyExportResult(data);
+    setPrivacyStatus("Exported", "ok");
+    toast("Privacy export downloaded");
+  } catch (err) {
+    setPrivacyStatus("Blocked", "error");
+    toast(err.message);
+  } finally {
+    button.disabled = !selectedAccountRow();
+  }
+}
+
+async function submitPrivacyForm(event) {
+  event.preventDefault();
+  const row = selectedAccountRow();
+  if (!row) return;
+
+  const confirm = qs("#privacyConfirm").value.trim();
+  if (confirm !== row.account.id) {
+    setPrivacyStatus("Confirm id", "error");
+    toast("Confirm the selected account id first.");
+    refreshPrivacyEraseState();
+    return;
+  }
+
+  setPrivacyStatus("Erasing", "busy");
+  qs("#privacyErase").disabled = true;
+  try {
+    const result = await erasePrivacyData(row.account.id, {
+      confirm_account_id: confirm,
+      space_id: qs("#privacySpace").value,
+      reason: qs("#privacyReason").value.trim(),
+    });
+    renderPrivacyEraseResult(result);
+    qs("#privacyConfirm").value = "";
+    qs("#privacyReason").value = "";
+    setPrivacyStatus("Erased", "ok");
+    toast("Privacy erase completed");
+    await loadAccounts();
+  } catch (err) {
+    setPrivacyStatus("Blocked", "error");
+    toast(err.message);
+  } finally {
+    refreshPrivacyEraseState();
+  }
+}
+
 async function loadAccounts() {
   const accounts = await listPlatformAccounts();
   qs("#accountCount").textContent = accounts.length;
@@ -119,6 +269,8 @@ async function loadAccounts() {
     ]);
     return { account, spaces, apps, keys };
   }));
+  accountRows = rows;
+  populatePrivacyAccounts();
 
   const list = qs("#accountList");
   if (!rows.length) {
@@ -482,6 +634,21 @@ export function initOperator(me) {
   });
   qs("#operatorRefresh").addEventListener("click", loadOperator);
   qs("#provisionForm").addEventListener("submit", submitProvisionForm);
+  qs("#privacyForm").addEventListener("submit", submitPrivacyForm);
+  qs("#privacyAccount").addEventListener("change", () => {
+    qs("#privacyConfirm").value = "";
+    populatePrivacySpaces();
+    clearPrivacyResult();
+    setPrivacyStatus("Ready");
+  });
+  qs("#privacySpace").addEventListener("change", () => {
+    qs("#privacyConfirm").value = "";
+    refreshPrivacyEraseState();
+    clearPrivacyResult();
+    setPrivacyStatus("Ready");
+  });
+  qs("#privacyConfirm").addEventListener("input", refreshPrivacyEraseState);
+  qs("#privacyExport").addEventListener("click", exportPrivacySelection);
   qs("#releaseForm").addEventListener("submit", submitReleaseForm);
   qs("#releaseSource").addEventListener("change", () => {
     const row = selectedDeploymentRow();

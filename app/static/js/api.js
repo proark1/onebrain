@@ -113,6 +113,19 @@ export const latestHealth = (deploymentId) =>
 export const listAccountServiceKeys = (accountId) =>
   requestJson(`/api/operator/accounts/${encodeURIComponent(accountId)}/service-keys`);
 
+export const exportPrivacyData = (accountId, spaceId = "") => {
+  const params = spaceId ? `?space_id=${encodeURIComponent(spaceId)}` : "";
+  return requestJson(`/api/privacy/accounts/${encodeURIComponent(accountId)}/export${params}`);
+};
+
+export async function erasePrivacyData(accountId, payload) {
+  return requestJson(`/api/privacy/accounts/${encodeURIComponent(accountId)}/erase`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function revokeAccountServiceKey(accountId, keyId) {
   return requestJson(
     `/api/operator/accounts/${encodeURIComponent(accountId)}/service-keys/${encodeURIComponent(keyId)}`,
