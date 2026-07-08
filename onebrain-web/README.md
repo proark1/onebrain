@@ -40,7 +40,8 @@ For local HTTP login, run the FastAPI API with `ONEBRAIN_COOKIE_SECURE=false` so
 
 Build this directory as its own Railway service with `onebrain-web/Dockerfile`.
 Set `ONEBRAIN_API_BASE_URL` to the deployed FastAPI API URL, preferably the
-private Railway service URL when available.
+private Railway service URL when available. On Railway this is typically
+`http://${{onebrain.RAILWAY_PRIVATE_DOMAIN}}:8080`.
 
 ## API Schema
 

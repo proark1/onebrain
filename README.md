@@ -18,7 +18,8 @@ moving to a self-hosted EU stack later is a config change, not a rewrite.
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 uvicorn app.main:app --reload
-# open http://127.0.0.1:8000
+# API root: http://127.0.0.1:8000
+# Next.js UI: see onebrain-web/README.md
 ```
 
 Run the tests (they prove the access boundary holds):
@@ -102,7 +103,7 @@ ONEBRAIN_DATABASE_URL=postgresql://…
 
 The production deployment shape is three Railway services plus Postgres:
 
-- `onebrain-api` from the root `Dockerfile`
+- `onebrain` from the root `Dockerfile`
 - `onebrain-workers` from `Dockerfile.worker`
 - `onebrain-admin-ui` from `onebrain-web/Dockerfile`
 - a Postgres service with pgvector
@@ -152,6 +153,6 @@ app/
   ingest/       extract → chunk → label → embed
   retrieval/    the gateway: filter → top-k → generate
   routers/      HTTP endpoints
-  static/       the UI (vanilla ES modules, no build step)
+  static/       legacy UI, mounted only with ONEBRAIN_LEGACY_STATIC_UI_ENABLED=true
 tests/          access-boundary + retrieval tests
 ```

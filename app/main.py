@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
@@ -84,11 +84,21 @@ def create_app() -> FastAPI:
     except Exception as exc:
         logging.getLogger("onebrain").warning("Admin bootstrap skipped: %s", exc)
 
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    if settings.legacy_static_ui_enabled:
+        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-    @app.get("/")
+    @app.get("/", include_in_schema=False)
     def index():
-        return FileResponse(STATIC_DIR / "index.html")
+        admin_ui_url = settings.admin_ui_url.strip()
+        if admin_ui_url:
+            return RedirectResponse(admin_ui_url, status_code=307)
+        return {
+            "service": "onebrain-api",
+            "status": "ok",
+            "ui": "nextjs",
+            "docs": "/docs",
+            "health": "/health",
+        }
 
     return app
 
