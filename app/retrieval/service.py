@@ -8,6 +8,7 @@ are never scored) and re-checked here before anything reaches the model.
 
 from __future__ import annotations
 
+import re
 from typing import Iterator, List
 
 from app.auth.principal import Principal
@@ -18,6 +19,49 @@ from app.store.base import Hit
 def _estimate_input_tokens(hits: List[Hit], question: str) -> int:
     chars = sum(len(h.chunk.text) for h in hits) + len(question) + 400  # + system/instructions
     return round(chars / 4)
+
+
+_GREETING_RE = re.compile(
+    r"^(hi|hello|hey|hiya|hallo|servus|moin|guten\s+(morgen|tag|abend)|"
+    r"thanks|thank\s+you|danke|ok|okay|alles\s+klar)[.!?\s]*$",
+    re.IGNORECASE,
+)
+
+
+def _direct_chat_response(question: str) -> str | None:
+    text = " ".join(question.strip().lower().split())
+    if not _GREETING_RE.match(text):
+        return None
+    if any(word in text for word in ("hallo", "guten", "servus", "moin", "danke", "alles klar")):
+        return "Hallo! Was moechtest du ueber die Dokumente wissen, auf die du Zugriff hast?"
+    if text.startswith("thank") or text.startswith("thanks"):
+        return "You're welcome. What would you like to know from the documents you can access?"
+    if text in {"ok", "okay"}:
+        return "Okay. What would you like me to check in OneBrain?"
+    return "Hi! What would you like to know from the documents you can access?"
+
+
+def _source_records(hits: List[Hit]) -> list[dict]:
+    sources: dict[tuple[str, str, str, str], dict] = {}
+    for h in hits:
+        key = (
+            h.chunk.doc_id,
+            h.chunk.meta.get("doc_title", "Untitled"),
+            h.chunk.meta.get("classification_label", "internal"),
+            h.chunk.meta.get("location", "global"),
+        )
+        source = sources.setdefault(key, {
+            "doc_id": h.chunk.doc_id,
+            "title": h.chunk.meta.get("doc_title", "Untitled"),
+            "classification": h.chunk.meta.get("classification_label", "internal"),
+            "location": h.chunk.meta.get("location", "global"),
+            "category": h.chunk.meta.get("category", "general"),
+            "score": round(h.score, 3),
+            "chunks": 0,
+        })
+        source["chunks"] += 1
+        source["score"] = max(source["score"], round(h.score, 3))
+    return list(sources.values())
 
 
 class RetrievalService:
@@ -35,6 +79,25 @@ class RetrievalService:
         return [h for h in hits if access.allows(h.chunk.meta)]
 
     def answer_stream(self, principal: Principal, question: str, history: list | None = None) -> Iterator[dict]:
+        direct_response = _direct_chat_response(question)
+        if direct_response is not None:
+            yield {"type": "token", "text": direct_response}
+            yield {"type": "sources", "sources": []}
+            input_tokens = max(1, round(len(question) / 4))
+            output_tokens = max(1, round(len(direct_response) / 4))
+            yield {
+                "type": "meta",
+                "chunks_used": 0,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "cost_usd": 0,
+                "estimated": False,
+                "llm": "onebrain-direct",
+            }
+            yield {"type": "done"}
+            return
+
         # For a follow-up, fold the previous user turn into the retrieval query
         # so "and the budget for it?" still finds the right chunks. Retrieval is
         # ALWAYS re-filtered by the current principal — history never widens access.
@@ -55,16 +118,7 @@ class RetrievalService:
         # service principal — it would leak org structure to an external caller.
         # Stripped brain-side, before the response leaves, not at the edge.
         is_service = getattr(principal, "principal_type", "human") == "service"
-        yield {"type": "sources", "sources": [] if is_service else [
-            {
-                "title": h.chunk.meta.get("doc_title", "Untitled"),
-                "classification": h.chunk.meta.get("classification_label", "internal"),
-                "location": h.chunk.meta.get("location", "global"),
-                "category": h.chunk.meta.get("category", "general"),
-                "score": round(h.score, 3),
-            }
-            for h in hits
-        ]}
+        yield {"type": "sources", "sources": [] if is_service else _source_records(hits)}
 
         # Prefer the model's real usage; fall back to a char-based estimate.
         input_tokens = stats.get("prompt_tokens") or _estimate_input_tokens(hits, question)

@@ -120,10 +120,21 @@ function addAssistantStatic(content, meta) {
 }
 
 function renderSources(sources) {
+  sources = dedupeSources(sources);
   return el("div", { class: "sources" },
     ...sources.map((s) => el("span", { class: "chip", title: `${s.classification} · ${s.category} · ${s.location}` },
       el("span", { class: "doc-dot", style: `background:${CLASS_COLORS[s.classification] || "var(--muted)"}` }),
       s.title)));
+}
+
+function dedupeSources(sources) {
+  const seen = new Set();
+  return sources.filter((s) => {
+    const key = [s.doc_id || "", s.title || "", s.classification || "", s.category || "", s.location || ""].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function formatCost(usd) {
@@ -141,7 +152,7 @@ function metaLine(e) {
   const approx = e.estimated ? "~" : "";
   const cost = formatCost(e.cost_usd);
   const parts = [];
-  if (e.chunks_used !== undefined && e.chunks_used !== null) {
+  if (e.chunks_used) {
     parts.push(`answered from ${e.chunks_used} chunk${e.chunks_used === 1 ? "" : "s"}`);
   }
   parts.push(`${approx}${(tokens || 0).toLocaleString()} tokens`);
