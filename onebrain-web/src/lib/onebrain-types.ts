@@ -381,6 +381,7 @@ export type AnswerMeta = {
   retrieval_min_score?: number;
   best_score?: number | null;
   filtered_chunks?: number;
+  history_user_turns_used?: number;
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
