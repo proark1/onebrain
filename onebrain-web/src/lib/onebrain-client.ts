@@ -7,8 +7,19 @@ import type {
   ConversationSummary,
   CreatePlatformAccountInput,
   CreatePlatformSpaceInput,
+  CreateOperatorReleaseInput,
   DocumentSummary,
   InstallPlatformAppInput,
+  OperatorBackup,
+  OperatorCustomer,
+  OperatorDeployment,
+  OperatorHealth,
+  OperatorModule,
+  OperatorRelease,
+  OperatorRollout,
+  OperatorRolloutStatusInput,
+  OperatorRunInput,
+  OperatorUpdatePlan,
   PendingDocument,
   PlatformAccessCheckInput,
   PlatformAccessCheckResult,
@@ -19,6 +30,10 @@ import type {
   PrivacyEraseInput,
   PrivacyEraseResult,
   PrivacyExport,
+  ProvisionCustomerInput,
+  ProvisioningBundle,
+  ProvisioningResult,
+  ServiceKeyInfo,
   UploadDocumentInput,
 } from "@/lib/onebrain-types";
 import { cleanScope, scopeQuery } from "@/lib/onebrain-types";
@@ -142,6 +157,128 @@ export function checkPlatformAccess(input: PlatformAccessCheckInput): Promise<Pl
 
 export function listPlatformAudit(accountId: string): Promise<PlatformAuditEvent[]> {
   return requestJson<PlatformAuditEvent[]>(`/platform/accounts/${encodeURIComponent(accountId)}/audit`);
+}
+
+export function listProvisioningBundles(): Promise<ProvisioningBundle[]> {
+  return requestJson<ProvisioningBundle[]>("/provisioning/bundles");
+}
+
+export function provisionCustomer(input: ProvisionCustomerInput): Promise<ProvisioningResult> {
+  return requestJson<ProvisioningResult>("/provisioning/customers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      account_id: input.account_id?.trim() || null,
+      account_kind: input.account_kind || "organization",
+      bundle_id: input.bundle_id,
+      current_migration: input.current_migration?.trim() || "",
+      customer_name: input.customer_name.trim(),
+      deployment_id: input.deployment_id?.trim() || null,
+      deployment_type: input.deployment_type,
+      initial_version: input.initial_version.trim(),
+      mint_integration_keys: input.mint_integration_keys ?? true,
+      module_versions: input.module_versions || {},
+      region: input.region?.trim() || "",
+      release_ring: input.release_ring,
+    }),
+  });
+}
+
+export function listOperatorCustomers(): Promise<OperatorCustomer[]> {
+  return requestJson<OperatorCustomer[]>("/operator/customers");
+}
+
+export function listOperatorDeployments(): Promise<OperatorDeployment[]> {
+  return requestJson<OperatorDeployment[]>("/operator/deployments");
+}
+
+export function listOperatorDeploymentModules(deploymentId: string): Promise<OperatorModule[]> {
+  return requestJson<OperatorModule[]>(`/operator/deployments/${encodeURIComponent(deploymentId)}/modules`);
+}
+
+export function listOperatorReleases(): Promise<OperatorRelease[]> {
+  return requestJson<OperatorRelease[]>("/operator/releases");
+}
+
+export function createOperatorRelease(input: CreateOperatorReleaseInput): Promise<OperatorRelease> {
+  return requestJson<OperatorRelease>("/operator/releases", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      git_sha: input.git_sha.trim(),
+      migration_from: input.migration_from?.trim() || "",
+      migration_to: input.migration_to?.trim() || "",
+      modules: input.modules,
+      rollback_plan: input.rollback_plan?.trim() || "",
+      security_notes: input.security_notes?.trim() || "",
+      status: input.status || "draft",
+      version: input.version.trim(),
+    }),
+  });
+}
+
+export function getOperatorUpdatePlan(deploymentId: string, targetVersion: string): Promise<OperatorUpdatePlan> {
+  return requestJson<OperatorUpdatePlan>(
+    `/operator/deployments/${encodeURIComponent(deploymentId)}/update-plan/${encodeURIComponent(targetVersion)}`,
+  );
+}
+
+export function listOperatorRollouts(deploymentId: string): Promise<OperatorRollout[]> {
+  return requestJson<OperatorRollout[]>(`/operator/deployments/${encodeURIComponent(deploymentId)}/rollouts`);
+}
+
+export function startOperatorRollout(deploymentId: string, targetVersion: string): Promise<OperatorRollout> {
+  return requestJson<OperatorRollout>(`/operator/deployments/${encodeURIComponent(deploymentId)}/rollouts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target_version: targetVersion }),
+  });
+}
+
+export function updateOperatorRollout(
+  rolloutId: string,
+  input: OperatorRolloutStatusInput,
+): Promise<OperatorRollout> {
+  return requestJson<OperatorRollout>(`/operator/rollouts/${encodeURIComponent(rolloutId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notes: input.notes || "", status: input.status }),
+  });
+}
+
+export function latestOperatorBackup(deploymentId: string): Promise<OperatorBackup | null> {
+  return requestJson<OperatorBackup | null>(`/operator/deployments/${encodeURIComponent(deploymentId)}/backups/latest`);
+}
+
+export function recordOperatorBackup(deploymentId: string, input: OperatorRunInput): Promise<OperatorBackup> {
+  return requestJson<OperatorBackup>(`/operator/deployments/${encodeURIComponent(deploymentId)}/backups`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ detail: input.detail || "", id: input.id || null, status: input.status }),
+  });
+}
+
+export function latestOperatorHealth(deploymentId: string): Promise<OperatorHealth | null> {
+  return requestJson<OperatorHealth | null>(`/operator/deployments/${encodeURIComponent(deploymentId)}/health/latest`);
+}
+
+export function recordOperatorHealth(deploymentId: string, input: OperatorRunInput): Promise<OperatorHealth> {
+  return requestJson<OperatorHealth>(`/operator/deployments/${encodeURIComponent(deploymentId)}/health`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ detail: input.detail || "", id: input.id || null, status: input.status }),
+  });
+}
+
+export function listAccountServiceKeys(accountId: string): Promise<ServiceKeyInfo[]> {
+  return requestJson<ServiceKeyInfo[]>(`/operator/accounts/${encodeURIComponent(accountId)}/service-keys`);
+}
+
+export async function revokeAccountServiceKey(accountId: string, keyId: string): Promise<void> {
+  await requestJson<{ revoked: string }>(
+    `/operator/accounts/${encodeURIComponent(accountId)}/service-keys/${encodeURIComponent(keyId)}`,
+    { method: "DELETE" },
+  );
 }
 
 export function exportPrivacyData(accountId: string, spaceId = ""): Promise<PrivacyExport> {

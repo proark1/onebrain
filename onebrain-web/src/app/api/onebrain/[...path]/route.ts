@@ -72,6 +72,10 @@ export function POST(request: Request, context: RouteContext) {
   return proxy(request, context);
 }
 
+export function PATCH(request: Request, context: RouteContext) {
+  return proxy(request, context);
+}
+
 export function DELETE(request: Request, context: RouteContext) {
   return proxy(request, context);
 }

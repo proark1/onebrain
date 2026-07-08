@@ -138,6 +138,194 @@ export type PlatformAuditEvent = {
   meta: Record<string, unknown>;
 };
 
+export type ServiceKeyInfo = {
+  id: string;
+  tenant_id: string;
+  scopes: string[];
+  label: string;
+  account_id: string;
+  app_id: string;
+  space_ids: string[];
+  purposes: string[];
+  status: string;
+};
+
+export type ProvisioningBundle = {
+  id: string;
+  label: string;
+  description: string;
+  spaces: string[];
+  apps: string[];
+  modules: string[];
+};
+
+export type ProvisionCustomerInput = {
+  account_id?: string;
+  account_kind?: string;
+  bundle_id: string;
+  current_migration?: string;
+  customer_name: string;
+  deployment_id?: string;
+  deployment_type: string;
+  initial_version: string;
+  mint_integration_keys?: boolean;
+  module_versions?: Record<string, string>;
+  region?: string;
+  release_ring: string;
+};
+
+export type ProvisionedCredential = {
+  id: string;
+  key: string;
+  tenant_id: string;
+  account_id: string;
+  app_id: string;
+  label: string;
+  scopes: string[];
+  space_ids: string[];
+  purposes: string[];
+};
+
+export type ProvisioningResult = {
+  bundle_id: string;
+  account: {
+    id: string;
+    kind: string;
+    name: string;
+    owner_user_id: string;
+  };
+  spaces: Array<{ id: string; kind: string; name: string }>;
+  apps: Array<{
+    id: string;
+    app_id: string;
+    enabled_space_ids: string[];
+    allowed_purposes: string[];
+    display_name: string;
+  }>;
+  deployment: {
+    id: string;
+    customer_name: string;
+    deployment_type: string;
+    region: string;
+    release_ring: string;
+    current_version: string;
+    current_migration: string;
+  };
+  modules: Array<{ module_id: string; version: string; status: string }>;
+  credentials: ProvisionedCredential[];
+};
+
+export type OperatorDeployment = {
+  id: string;
+  customer_name: string;
+  environment: string;
+  deployment_type: string;
+  region: string;
+  release_ring: string;
+  status: string;
+  current_version: string;
+  current_migration: string;
+};
+
+export type OperatorModule = {
+  deployment_id: string;
+  module_id: string;
+  version: string;
+  status: string;
+};
+
+export type OperatorRelease = {
+  version: string;
+  git_sha: string;
+  modules: Record<string, string>;
+  migration_from: string;
+  migration_to: string;
+  security_notes: string;
+  rollback_plan: string;
+  status: string;
+};
+
+export type OperatorBackup = {
+  id: string;
+  deployment_id: string;
+  status: string;
+  detail: string;
+};
+
+export type OperatorHealth = {
+  id: string;
+  deployment_id: string;
+  status: string;
+  detail: string;
+};
+
+export type OperatorRollout = {
+  id: string;
+  deployment_id: string;
+  target_version: string;
+  status: string;
+  started_by: string;
+  notes: string;
+};
+
+export type OperatorUpdatePlan = {
+  deployment_id: string;
+  target_version: string;
+  allowed: boolean;
+  reason: string;
+  current_modules: Record<string, string>;
+  target_modules: Record<string, string>;
+  modules_to_update: Record<string, string>;
+};
+
+export type OperatorCustomer = {
+  account: {
+    id: string;
+    kind: string;
+    name: string;
+    owner_user_id: string;
+    status: string;
+  };
+  spaces: Array<{ id: string; kind: string; name: string; status: string }>;
+  apps: Array<{
+    id: string;
+    app_id: string;
+    display_name: string;
+    enabled_space_ids: string[];
+    allowed_purposes: string[];
+    status: string;
+  }>;
+  service_keys: ServiceKeyInfo[];
+  deployment: OperatorDeployment | null;
+  modules: OperatorModule[];
+  backup: OperatorBackup | null;
+  health: OperatorHealth | null;
+  latest_rollout: OperatorRollout | null;
+  readiness: string;
+};
+
+export type CreateOperatorReleaseInput = {
+  version: string;
+  git_sha: string;
+  modules: Record<string, string>;
+  migration_from?: string;
+  migration_to?: string;
+  security_notes?: string;
+  rollback_plan?: string;
+  status?: string;
+};
+
+export type OperatorRunInput = {
+  id?: string;
+  status: string;
+  detail?: string;
+};
+
+export type OperatorRolloutStatusInput = {
+  status: string;
+  notes?: string;
+};
+
 export type PrivacyAuditEvent = {
   id: string;
   account_id: string;
