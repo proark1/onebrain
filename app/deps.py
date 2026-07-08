@@ -102,3 +102,10 @@ def get_intake_store():
 @lru_cache
 def get_intake_pipeline() -> IntakePipeline:
     return IntakePipeline(get_intake_store(), get_settings())
+
+
+@lru_cache
+def get_job_store():
+    from app.jobs.factory import build_job_store
+
+    return build_job_store(get_settings())

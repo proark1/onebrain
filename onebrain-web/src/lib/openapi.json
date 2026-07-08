@@ -1045,6 +1045,81 @@
         "title": "IntakeRecordOut",
         "type": "object"
       },
+      "JobStatusOut": {
+        "properties": {
+          "account_id": {
+            "default": "",
+            "title": "Account Id",
+            "type": "string"
+          },
+          "attempts": {
+            "default": 0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "completed_at": {
+            "default": "",
+            "title": "Completed At",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "space_id": {
+            "default": "",
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tenant_id": {
+            "title": "Tenant Id",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          },
+          "updated_at": {
+            "default": "",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "status",
+          "tenant_id"
+        ],
+        "title": "JobStatusOut",
+        "type": "object"
+      },
       "LoginRequest": {
         "properties": {
           "email": {
@@ -3289,6 +3364,68 @@
         ]
       }
     },
+    "/api/jobs/{job_id}": {
+      "get": {
+        "operationId": "get_job_api_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
     "/api/operator/accounts/{account_id}/service-keys": {
       "get": {
         "operationId": "list_account_service_keys_api_operator_accounts__account_id__service_keys_get",
@@ -5234,7 +5371,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ServiceIntakeResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ServiceIntakeResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JobStatusOut"
+                    }
+                  ],
+                  "title": "Response Intake Api Service Intake Post"
                 }
               }
             },
@@ -5380,7 +5525,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DocumentSummary"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DocumentSummary"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JobStatusOut"
+                    }
+                  ],
+                  "title": "Response Upload Api Upload Post"
                 }
               }
             },

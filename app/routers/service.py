@@ -16,18 +16,21 @@ from __future__ import annotations
 from dataclasses import replace
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from app.auth.principal import Principal, resolve_principal, resolve_service_principal
 from app.config import get_settings
 from app.deps import (
-    get_intake_pipeline, get_pipeline, get_platform_store, get_retrieval_service, get_service_key_store,
-    get_service_rate_limiter,
+    get_intake_pipeline, get_job_store, get_pipeline, get_platform_store, get_retrieval_service,
+    get_service_key_store, get_service_rate_limiter,
 )
 from app.intake.base import IntakeRecord
 from app.intake.pipeline import IntakeInput
+from app.jobs.base import JOB_SERVICE_CAPTURE, JOB_SERVICE_INTAKE
 from app.platform.base import AuditEvent, normalize_unique
+from app.routers.jobs import job_status_out
 from app.schemas import (
+    JobStatusOut,
     IntakeRecordOut, MintedKey, ServiceAskRequest, ServiceAskResponse, ServiceCapabilitiesResponse,
     ServiceCaptureRequest, ServiceIntakeRequest, ServiceIntakeResponse, ServiceKeyCreate, ServiceKeyInfo,
 )
@@ -244,11 +247,39 @@ def capabilities(principal: Principal = Depends(resolve_service_principal)):
     )
 
 
-@service_router.post("/intake", response_model=ServiceIntakeResponse)
-def intake(body: ServiceIntakeRequest, principal: Principal = Depends(resolve_service_principal)):
+@service_router.post("/intake", response_model=ServiceIntakeResponse | JobStatusOut)
+def intake(
+    body: ServiceIntakeRequest,
+    response: Response = None,
+    principal: Principal = Depends(resolve_service_principal),
+):
     _require_scope(principal, SCOPE_WRITE)
     _rate_limit(principal)
     fields = _intake_scope(body, principal)
+    settings = get_settings()
+    if settings.use_async_ingestion:
+        job = get_job_store().enqueue(
+            type=JOB_SERVICE_INTAKE,
+            tenant_id=principal.tenant_id,
+            account_id=fields["account_id"],
+            space_id=fields["space_id"],
+            requested_by=principal.user_id,
+            payload={
+                "app_id": fields["app_id"],
+                "purpose": fields["purpose"],
+                "content": body.content,
+                "title": body.title or "",
+                "source": body.source or "service",
+                "source_ref": body.source_ref,
+                "record_type": body.record_type,
+                "intent": body.intent,
+                "metadata": body.metadata,
+            },
+            max_attempts=settings.job_max_attempts,
+        )
+        if response is not None:
+            response.status_code = 202
+        return job_status_out(job)
     try:
         record = get_intake_pipeline().ingest(IntakeInput(
             tenant_id=principal.tenant_id,
@@ -270,11 +301,32 @@ def intake(body: ServiceIntakeRequest, principal: Principal = Depends(resolve_se
 
 
 @service_router.post("/capture")
-def capture(body: ServiceCaptureRequest, principal: Principal = Depends(resolve_service_principal)):
+def capture(
+    body: ServiceCaptureRequest,
+    response: Response = None,
+    principal: Principal = Depends(resolve_service_principal),
+):
     _require_scope(principal, SCOPE_WRITE)
     _rate_limit(principal)
     platform_scope, _ = _platform_scope(body, principal, "customer_service_inbox")
     settings = get_settings()
+    if settings.use_async_ingestion:
+        job = get_job_store().enqueue(
+            type=JOB_SERVICE_CAPTURE,
+            tenant_id=principal.tenant_id,
+            account_id=platform_scope["account_id"] if platform_scope else "",
+            space_id=platform_scope["space_id"] if platform_scope else "",
+            requested_by=principal.user_id,
+            payload={
+                "title": body.title or "captured message",
+                "text": body.text,
+                "pii_phase": settings.pii_phase,
+            },
+            max_attempts=settings.job_max_attempts,
+        )
+        if response is not None:
+            response.status_code = 202
+        return job_status_out(job)
     try:
         # Labels are CLAMPED here, not taken from the caller: a service write can
         # only ever land as INTERNAL/captured_input in its own tenant.

@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -56,6 +57,13 @@ class Settings(BaseSettings):
 
     # pgvector — only used when vector_store = "pgvector"
     database_url: str = ""
+
+    # Background jobs. Postgres mode defaults to async ingestion because OCR,
+    # embedding, and provider calls should not hold request workers open.
+    async_ingestion: Optional[bool] = None
+    worker_poll_seconds: float = 2.0
+    worker_batch_size: int = 1
+    job_max_attempts: int = 3
 
     # Auth — sign session cookies. SET A STRONG SECRET IN PRODUCTION.
     auth_secret: str = "dev-insecure-change-me"
@@ -116,6 +124,12 @@ class Settings(BaseSettings):
             and self.embeddings_provider == "local"
             and self.vector_store == "memory"
         )
+
+    @property
+    def use_async_ingestion(self) -> bool:
+        if self.async_ingestion is not None:
+            return bool(self.async_ingestion)
+        return self.vector_store == "pgvector"
 
 
 @lru_cache

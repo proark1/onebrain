@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
 from app.auth.principal import Principal, resolve_principal
 from app.config import get_settings
-from app.deps import get_pipeline, get_platform_store, get_store
+from app.deps import get_job_store, get_pipeline, get_platform_store, get_store
+from app.jobs.base import JOB_DOCUMENT_INGEST, JobFileInput
 from app.platform.scope import scoped_human_principal, selected_space_id
-from app.schemas import DocumentSummary, PendingDocument
+from app.routers.jobs import job_status_out
+from app.schemas import DocumentSummary, JobStatusOut, PendingDocument
 from app.security.policy import STATUS_APPROVED
 
 router = APIRouter(prefix="/api", tags=["documents"])
@@ -62,8 +64,9 @@ def list_documents(
     return [_doc_summary(d) for d in get_store().list_documents(access)]
 
 
-@router.post("/upload", response_model=DocumentSummary)
+@router.post("/upload", response_model=DocumentSummary | JobStatusOut)
 async def upload(
+    response: Response = None,
     file: UploadFile = File(...),
     classification: str = Form("internal"),
     location: str = Form("global"),
@@ -80,6 +83,32 @@ async def upload(
     data = await _read_upload_limited(file, settings.max_body_bytes)
     if not data:
         raise HTTPException(status_code=400, detail="The file is empty.")
+
+    if getattr(settings, "use_async_ingestion", False):
+        job = get_job_store().enqueue(
+            type=JOB_DOCUMENT_INGEST,
+            tenant_id=principal.tenant_id,
+            account_id=scoped_account,
+            space_id=scoped_space,
+            requested_by=principal.user_id,
+            payload={
+                "classification": classification,
+                "location": location,
+                "category": category,
+                "require_approval": settings.require_approval,
+                "block_public_on_pii": settings.block_public_on_pii,
+                "pii_phase": settings.pii_phase,
+            },
+            file=JobFileInput(
+                filename=file.filename or "upload.txt",
+                content_type=file.content_type or "",
+                data=data,
+            ),
+            max_attempts=settings.job_max_attempts,
+        )
+        if response is not None:
+            response.status_code = 202
+        return job_status_out(job)
 
     try:
         pipeline = get_pipeline()

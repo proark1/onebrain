@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Iterable
 
 
-REQUIRED_ALEMBIC_REVISION = "0001_baseline_onebrain_schema"
+BASELINE_ALEMBIC_REVISION = "0001_baseline_onebrain_schema"
+REQUIRED_ALEMBIC_REVISION = "0002_postgres_worker_jobs"
 MIGRATION_GUIDANCE = (
     "Postgres schema is not migrated. Run `alembic upgrade head` with "
     "ONEBRAIN_DATABASE_URL before starting OneBrain."

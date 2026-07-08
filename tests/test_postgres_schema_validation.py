@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.db.schema import (
+    BASELINE_ALEMBIC_REVISION,
     MIGRATION_GUIDANCE,
     REQUIRED_ALEMBIC_REVISION,
     PostgresSchemaError,
@@ -69,6 +70,20 @@ def _baseline_migration_module():
     return module
 
 
+def _jobs_migration_module():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "versions"
+        / "0002_postgres_worker_jobs.py"
+    )
+    spec = importlib.util.spec_from_file_location("jobs_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_validate_postgres_schema_requires_alembic_version_table():
     conn = FakeConnection(FakeCursor(missing_version_table=True))
 
@@ -76,7 +91,7 @@ def test_validate_postgres_schema_requires_alembic_version_table():
         validate_postgres_schema(conn, ("users",))
 
 
-def test_validate_postgres_schema_requires_current_baseline_revision():
+def test_validate_postgres_schema_requires_current_head_revision():
     conn = FakeConnection(FakeCursor(version="old_revision"))
 
     with pytest.raises(PostgresSchemaError, match=REQUIRED_ALEMBIC_REVISION):
@@ -93,7 +108,7 @@ def test_validate_postgres_schema_reports_missing_tables():
 def test_baseline_migration_tracks_expected_tables_and_revision():
     migration = _baseline_migration_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision == BASELINE_ALEMBIC_REVISION
     assert {
         "chunks",
         "users",
@@ -106,6 +121,14 @@ def test_baseline_migration_tracks_expected_tables_and_revision():
         "platform_audit_events",
         "intake_records",
     } == set(migration.BASELINE_TABLES)
+
+
+def test_jobs_migration_tracks_expected_tables_and_revision():
+    migration = _jobs_migration_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.down_revision == BASELINE_ALEMBIC_REVISION
+    assert {"jobs", "job_files"} == set(migration.JOB_TABLES)
 
 
 def test_migration_embedding_dim_env(monkeypatch):

@@ -32,6 +32,7 @@ The Alembic baseline covers the current Postgres-backed app schema:
 - service keys
 - platform accounts/spaces/app installations/audit
 - intake records
+- background jobs and job file payloads
 
 It does not create control-plane tables yet because the active control plane is still JSON-backed. Add a `PostgresControlPlaneStore` and matching migrations before moving operator release, backup, health, and rollout state into Postgres.
 
@@ -44,8 +45,20 @@ For production, migrations should run with an owner/migration database role befo
 3. Set `ONEBRAIN_MIGRATION_EMBEDDING_DIM` to match the embedding provider used by the deployment.
 4. Run `alembic upgrade head`.
 5. Start or roll FastAPI.
+6. Run a worker process with `python -m app.workers.run` when async ingestion is enabled.
 
 An existing database that has tables but no Alembic stamp must be handled intentionally by an operator. The application does not auto-stamp or self-heal schema.
+
+## Background Jobs
+
+Postgres mode defaults to async ingestion. Uploads, service captures, and service intake requests can enqueue durable jobs and return a job id. Workers claim jobs from the `jobs` table and store small upload payloads in `job_files`.
+
+Useful settings:
+
+- `ONEBRAIN_ASYNC_INGESTION`: defaults to true for `pgvector`, false for memory mode.
+- `ONEBRAIN_WORKER_POLL_SECONDS`: worker idle poll interval.
+- `ONEBRAIN_WORKER_BATCH_SIZE`: number of jobs claimed per poll.
+- `ONEBRAIN_JOB_MAX_ATTEMPTS`: retry limit for queued jobs.
 
 ## Embedding Model Changes
 

@@ -125,6 +125,11 @@ When you outgrow the single-instance memory store (multiple replicas, real
 persistence), switch to Postgres: add a Postgres plugin and set
 `ONEBRAIN_VECTOR_STORE=pgvector` + `ONEBRAIN_DATABASE_URL` — no code change.
 
+Production Postgres deployments must run `python -m alembic upgrade head`
+before starting the API. In Postgres mode, ingestion uses durable background
+jobs by default, so run at least one worker process with
+`python -m app.workers.run`.
+
 ## Layout
 
 ```

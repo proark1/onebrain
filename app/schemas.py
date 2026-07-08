@@ -45,6 +45,21 @@ class DocumentSummary(BaseModel):
     space_id: str = ""
 
 
+class JobStatusOut(BaseModel):
+    id: str
+    type: str
+    status: str
+    tenant_id: str
+    account_id: str = ""
+    space_id: str = ""
+    result: Optional[dict] = None
+    error: str = ""
+    attempts: int = 0
+    created_at: str = ""
+    updated_at: str = ""
+    completed_at: str = ""
+
+
 class PendingDocument(BaseModel):
     doc_id: str
     title: str
