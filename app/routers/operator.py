@@ -143,6 +143,43 @@ class RolloutOut(BaseModel):
     notes: str = ""
 
 
+class OperatorAccountOut(BaseModel):
+    id: str
+    kind: str
+    name: str
+    owner_user_id: str = ""
+    status: str = "active"
+
+
+class OperatorSpaceOut(BaseModel):
+    id: str
+    kind: str
+    name: str
+    status: str = "active"
+
+
+class OperatorAppOut(BaseModel):
+    id: str
+    app_id: str
+    display_name: str = ""
+    enabled_space_ids: list[str] = Field(default_factory=list)
+    allowed_purposes: list[str] = Field(default_factory=list)
+    status: str = "active"
+
+
+class CustomerOverviewOut(BaseModel):
+    account: OperatorAccountOut
+    spaces: list[OperatorSpaceOut] = Field(default_factory=list)
+    apps: list[OperatorAppOut] = Field(default_factory=list)
+    service_keys: list[ServiceKeyInfo] = Field(default_factory=list)
+    deployment: DeploymentOut | None = None
+    modules: list[ModuleOut] = Field(default_factory=list)
+    backup: BackupOut | None = None
+    health: HealthOut | None = None
+    latest_rollout: RolloutOut | None = None
+    readiness: str = "not_deployed"
+
+
 def _require_admin(principal: Principal) -> None:
     if principal.role_id != "admin":
         raise HTTPException(status_code=403, detail="Only admin can manage operator deployments.")
@@ -187,6 +224,31 @@ def _rollout_out(r: RolloutRun) -> RolloutOut:
     )
 
 
+def _account_out(account) -> OperatorAccountOut:
+    return OperatorAccountOut(
+        id=account.id,
+        kind=account.kind,
+        name=account.name,
+        owner_user_id=account.owner_user_id,
+        status=account.status,
+    )
+
+
+def _space_out(space) -> OperatorSpaceOut:
+    return OperatorSpaceOut(id=space.id, kind=space.kind, name=space.name, status=space.status)
+
+
+def _app_out(app) -> OperatorAppOut:
+    return OperatorAppOut(
+        id=app.id,
+        app_id=app.app_id,
+        display_name=app.display_name,
+        enabled_space_ids=list(app.enabled_space_ids),
+        allowed_purposes=list(app.allowed_purposes),
+        status=app.status,
+    )
+
+
 def _service_key_out(k) -> ServiceKeyInfo:
     return ServiceKeyInfo(
         id=k.id,
@@ -204,6 +266,38 @@ def _service_key_out(k) -> ServiceKeyInfo:
 def _require_account(account_id: str) -> None:
     if not get_platform_store().get_account(account_id):
         raise HTTPException(status_code=404, detail="Account not found.")
+
+
+def _deployment_for_account(account, deployments, platform_store):
+    by_id = {deployment.id: deployment for deployment in deployments}
+    default_id = f"dep_{account.id}"
+    if default_id in by_id:
+        return by_id[default_id]
+
+    for event in reversed(platform_store.list_audit(account.id)):
+        deployment_id = (event.meta or {}).get("deployment_id", "")
+        if event.action == "customer.provisioned" and deployment_id in by_id:
+            return by_id[deployment_id]
+
+    name = account.name.strip().lower()
+    matches = [deployment for deployment in deployments if deployment.customer_name.strip().lower() == name]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _readiness(deployment, backup, health, latest_rollout) -> str:
+    if not deployment:
+        return "not_deployed"
+    if latest_rollout and latest_rollout.status in {"pending", "running", "paused"}:
+        return "updating"
+    if latest_rollout and latest_rollout.status == "failed":
+        return "rollout_failed"
+    if health and health.status == "failed":
+        return "health_failed"
+    if backup and backup.status == "failed":
+        return "backup_failed"
+    if health and health.status == "success":
+        return "healthy"
+    return "unknown"
 
 
 @router.get("/deployments", response_model=list[DeploymentOut])
@@ -248,6 +342,38 @@ def revoke_account_service_key(account_id: str, key_id: str, principal: Principa
         raise HTTPException(status_code=404, detail="Service key not found.")
     get_service_key_store().revoke(key_id)
     return {"revoked": key_id}
+
+
+@router.get("/customers", response_model=list[CustomerOverviewOut])
+def list_customers(principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    platform_store = get_platform_store()
+    control_store = get_control_plane_store()
+    key_store = get_service_key_store()
+    deployments = control_store.list_deployments()
+    rows: list[CustomerOverviewOut] = []
+
+    for account in platform_store.list_accounts():
+        deployment = _deployment_for_account(account, deployments, platform_store)
+        modules = control_store.list_modules(deployment.id) if deployment else []
+        backup = control_store.latest_backup(deployment.id) if deployment else None
+        health = control_store.latest_health(deployment.id) if deployment else None
+        rollouts = control_store.list_rollouts(deployment.id) if deployment else []
+        latest_rollout = sorted(rollouts, key=lambda r: r.created_at or r.id)[-1] if rollouts else None
+        rows.append(CustomerOverviewOut(
+            account=_account_out(account),
+            spaces=[_space_out(space) for space in platform_store.list_spaces(account.id)],
+            apps=[_app_out(app) for app in platform_store.list_app_installations(account.id)],
+            service_keys=[_service_key_out(key) for key in key_store.list_by_tenant(account.id)],
+            deployment=_deployment_out(deployment) if deployment else None,
+            modules=[_module_out(module) for module in modules],
+            backup=_backup_out(backup) if backup else None,
+            health=_health_out(health) if health else None,
+            latest_rollout=_rollout_out(latest_rollout) if latest_rollout else None,
+            readiness=_readiness(deployment, backup, health, latest_rollout),
+        ))
+
+    return rows
 
 
 @router.get("/deployments/{deployment_id}/modules", response_model=list[ModuleOut])

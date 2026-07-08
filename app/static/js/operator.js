@@ -10,6 +10,7 @@ import {
   listAccountServiceKeys,
   listDeploymentModules,
   listDeployments,
+  listOperatorCustomers,
   listPlatformAccounts,
   listPlatformApps,
   listPlatformSpaces,
@@ -29,6 +30,7 @@ let bundles = [];
 let releases = [];
 let deploymentRows = [];
 let accountRows = [];
+let customerRows = [];
 let loaded = false;
 
 const text = (value) => value || "-";
@@ -109,6 +111,77 @@ function renderCredentials(credentials = []) {
         el("code", { class: "credential-key" }, credential.key)),
       copy);
   }));
+}
+
+const activeCount = (items = []) => items.filter((item) => item.status === "active").length;
+
+function readinessLabel(value) {
+  return (value || "unknown").replaceAll("_", " ");
+}
+
+function readinessTone(value) {
+  if (value === "healthy") return "success";
+  if (value === "updating") return "running";
+  if (["health_failed", "backup_failed", "rollout_failed"].includes(value)) return "failed";
+  return "";
+}
+
+function renderCustomerSummary() {
+  const summary = qs("#customerSummary");
+  const deployed = customerRows.filter((row) => row.deployment).length;
+  const healthy = customerRows.filter((row) => row.readiness === "healthy").length;
+  const attention = customerRows.filter((row) => ["health_failed", "backup_failed", "rollout_failed"].includes(row.readiness)).length;
+  const keys = customerRows.reduce((total, row) => total + activeCount(row.service_keys), 0);
+
+  summary.replaceChildren(
+    el("div", { class: "customer-metric" }, el("strong", {}, customerRows.length), el("span", {}, "Customers")),
+    el("div", { class: "customer-metric" }, el("strong", {}, deployed), el("span", {}, "Deployed")),
+    el("div", { class: "customer-metric" }, el("strong", {}, healthy), el("span", {}, "Healthy")),
+    el("div", { class: "customer-metric" }, el("strong", {}, attention), el("span", {}, "Attention")),
+    el("div", { class: "customer-metric" }, el("strong", {}, keys), el("span", {}, "Active keys")),
+  );
+}
+
+function renderCustomerRows() {
+  const list = qs("#customerDashboardList");
+  qs("#customerDashboardCount").textContent = customerRows.length;
+  renderCustomerSummary();
+  if (!customerRows.length) {
+    list.replaceChildren(emptyRow("No customers provisioned yet."));
+    return;
+  }
+
+  list.replaceChildren(...customerRows.map((row) => {
+    const deployment = row.deployment;
+    const latestRollout = row.latest_rollout;
+    return el("article", { class: "customer-dashboard-row" },
+      el("div", { class: "customer-dashboard-main" },
+        el("div", { class: "operator-row-title" },
+          el("strong", {}, row.account.name),
+          el("code", {}, row.account.id)),
+        el("div", { class: "operator-row-meta" },
+          deployment
+            ? `${deployment.deployment_type} / ${deployment.release_ring} / ${text(deployment.current_version)}`
+            : `${row.account.kind} / no deployment`),
+        el("div", { class: "operator-chip-row" },
+          chip(`${row.spaces.length} spaces`),
+          chip(`${row.apps.length} apps`),
+          chip(`${activeCount(row.service_keys)} active keys`, "muted"),
+          ...row.modules.slice(0, 5).map((module) => chip(`${module.module_id} ${module.version}`, "module")))),
+      el("div", { class: "customer-dashboard-side" },
+        el("span", { class: `readiness-chip ${readinessTone(row.readiness)}`.trim() }, readinessLabel(row.readiness)),
+        el("span", { class: `readiness-chip ${row.backup?.status || ""}`.trim() },
+          `backup ${row.backup?.status || "none"}`),
+        el("span", { class: `readiness-chip ${row.health?.status || ""}`.trim() },
+          `health ${row.health?.status || "none"}`),
+        el("span", { class: "operator-muted" },
+          latestRollout ? `rollout ${latestRollout.target_version} / ${latestRollout.status}` : "no rollout")));
+  }));
+}
+
+async function loadCustomers() {
+  customerRows = await listOperatorCustomers();
+  renderCustomerRows();
 }
 
 function selectedAccountRow() {
@@ -516,7 +589,7 @@ async function loadOperator() {
   try {
     [bundles] = await Promise.all([listProvisioningBundles()]);
     renderBundles();
-    await Promise.all([loadAccounts(), loadDeployments()]);
+    await Promise.all([loadCustomers(), loadAccounts(), loadDeployments()]);
     loaded = true;
   } catch (err) {
     toast(err.message);

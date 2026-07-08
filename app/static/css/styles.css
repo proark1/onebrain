@@ -667,6 +667,33 @@ body {
   gap: 8px;
   align-items: center;
 }
+.customer-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.customer-metric {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+  padding: 9px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.customer-metric strong {
+  font-family: var(--mono);
+  font-size: 16px;
+  line-height: 1.1;
+}
+.customer-metric span {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .credential-section {
   margin-top: 14px;
   padding-top: 14px;
@@ -815,8 +842,14 @@ body {
   background: var(--accent-soft);
   border-color: var(--accent);
 }
+.readiness-chip.running {
+  color: var(--warn);
+  background: #fbf3db;
+  border-color: var(--warn);
+}
 @media (prefers-color-scheme: dark) {
   .readiness-chip.success { background: #173321; }
+  .readiness-chip.running { background: #332812; }
 }
 .operator-row {
   display: grid;
@@ -884,6 +917,27 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.customer-dashboard-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(190px, 260px);
+  gap: 14px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.customer-dashboard-main,
+.customer-dashboard-side {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+.customer-dashboard-side {
+  justify-items: start;
+  font-size: 12px;
 }
 .release-rail {
   display: flex;
@@ -1056,6 +1110,8 @@ body {
   .operator-shell { padding: 18px; }
   .operator-grid { grid-template-columns: 1fr; }
   .operator-row { grid-template-columns: 1fr; }
+  .customer-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .customer-dashboard-row { grid-template-columns: 1fr; }
   .operator-form-grid { grid-template-columns: 1fr; }
   .privacy-form-grid { grid-template-columns: 1fr; }
   .release-form-grid { grid-template-columns: 1fr; }

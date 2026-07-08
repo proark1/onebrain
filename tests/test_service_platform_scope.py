@@ -199,3 +199,23 @@ def test_constrained_service_key_cannot_switch_app_space_or_purpose(monkeypatch)
         with pytest.raises(HTTPException) as exc:
             service_router.service_ask(request, principal=principal)
         assert exc.value.status_code == 403
+
+
+def test_service_capabilities_exposes_key_scope_without_secret():
+    principal = replace(
+        _svc_principal(scopes=(SCOPE_READ, SCOPE_WRITE), tenant="nft_gym"),
+        account_id="nft_gym",
+        app_id="communication",
+        space_ids=frozenset({"sp_customer"}),
+        purposes=frozenset({"customer_service_answer", "customer_service_inbox"}),
+    )
+
+    capabilities = service_router.capabilities(principal=principal)
+
+    assert capabilities.tenant_id == "nft_gym"
+    assert capabilities.account_id == "nft_gym"
+    assert capabilities.app_id == "communication"
+    assert capabilities.space_ids == ["sp_customer"]
+    assert capabilities.purposes == ["customer_service_answer", "customer_service_inbox"]
+    assert set(capabilities.scopes) == {SCOPE_READ, SCOPE_WRITE}
+    assert not hasattr(capabilities, "key")

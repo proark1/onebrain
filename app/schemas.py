@@ -103,6 +103,15 @@ class ServiceAskResponse(BaseModel):
     chunks_used: int = 0
 
 
+class ServiceCapabilitiesResponse(BaseModel):
+    tenant_id: str
+    account_id: str = ""
+    app_id: str = ""
+    scopes: list[str] = Field(default_factory=list)
+    space_ids: list[str] = Field(default_factory=list)
+    purposes: list[str] = Field(default_factory=list)
+
+
 class ServiceKeyCreate(BaseModel):
     scopes: list[str]
     label: Optional[str] = None

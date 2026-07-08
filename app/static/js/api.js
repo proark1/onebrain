@@ -89,6 +89,7 @@ export const listPlatformAccounts = () => requestJson("/api/platform/accounts");
 export const listPlatformSpaces = (accountId) => requestJson(`/api/platform/accounts/${encodeURIComponent(accountId)}/spaces`);
 export const listPlatformApps = (accountId) => requestJson(`/api/platform/accounts/${encodeURIComponent(accountId)}/apps`);
 
+export const listOperatorCustomers = () => requestJson("/api/operator/customers");
 export const listDeployments = () => requestJson("/api/operator/deployments");
 export const listDeploymentModules = (deploymentId) =>
   requestJson(`/api/operator/deployments/${encodeURIComponent(deploymentId)}/modules`);

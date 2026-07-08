@@ -17,7 +17,7 @@ from app.controlplane.base import (
     RolloutRun,
 )
 from app.controlplane.memory import MemoryControlPlaneStore
-from app.platform.base import Account
+from app.platform.base import Account, AppInstallation, Space
 from app.platform.memory import MemoryPlatformStore
 from app.servicekeys.base import SCOPE_READ, ServiceKey, hash_secret
 from app.servicekeys.memory import MemoryServiceKeyStore
@@ -283,3 +283,57 @@ def test_operator_can_list_and_revoke_customer_integration_keys(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         operator_router.list_account_service_keys("missing", principal=_admin())
     assert exc.value.status_code == 404
+
+
+def test_operator_customer_overview_aggregates_metadata_only(monkeypatch):
+    platform = MemoryPlatformStore()
+    control = MemoryControlPlaneStore()
+    keys = MemoryServiceKeyStore()
+    platform.create_account(Account(id="acme", kind="organization", name="Acme"))
+    platform.create_space(Space(id="sp_acme_service", account_id="acme", kind="customer_service", name="Service"))
+    platform.create_space(Space(id="sp_acme_shared", account_id="acme", kind="shared", name="Shared"))
+    platform.install_app(AppInstallation(
+        id="appi_acme_comm",
+        account_id="acme",
+        app_id="communication",
+        enabled_space_ids=("sp_acme_service", "sp_acme_shared"),
+        allowed_purposes=("customer_service_answer", "customer_service_inbox"),
+        display_name="AI Communication",
+    ))
+    control.create_deployment(CustomerDeployment(
+        id="dep_acme",
+        customer_name="Acme",
+        deployment_type="dedicated_railway",
+        release_ring="pilot",
+        current_version="2026.07.1",
+    ))
+    control.upsert_module(DeploymentModule("dep_acme", "onebrain-api", "2026.07.1"))
+    control.upsert_module(DeploymentModule("dep_acme", "communication-api", "2026.07.1"))
+    control.record_backup(BackupRun("bak_acme", "dep_acme", "success", "ready"))
+    control.record_health(HealthCheckRun("hlth_acme", "dep_acme", "success", "ok"))
+    keys.create(ServiceKey(
+        id="key_comm",
+        key_hash=hash_secret("secret"),
+        tenant_id="acme",
+        scopes=(SCOPE_READ,),
+        label="Communication integration",
+        account_id="acme",
+        app_id="communication",
+        space_ids=("sp_acme_service",),
+        purposes=("customer_service_answer",),
+    ))
+    monkeypatch.setattr(operator_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(operator_router, "get_service_key_store", lambda: keys)
+
+    rows = operator_router.list_customers(principal=_admin())
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.account.id == "acme"
+    assert row.deployment.id == "dep_acme"
+    assert row.readiness == "healthy"
+    assert {space.kind for space in row.spaces} == {"customer_service", "shared"}
+    assert {module.module_id for module in row.modules} == {"onebrain-api", "communication-api"}
+    assert row.service_keys[0].id == "key_comm"
+    assert not hasattr(row.service_keys[0], "key")

@@ -25,7 +25,7 @@ from app.deps import (
 )
 from app.platform.base import AuditEvent, normalize_unique
 from app.schemas import (
-    MintedKey, ServiceAskRequest, ServiceAskResponse, ServiceCaptureRequest,
+    MintedKey, ServiceAskRequest, ServiceAskResponse, ServiceCapabilitiesResponse, ServiceCaptureRequest,
     ServiceKeyCreate, ServiceKeyInfo,
 )
 from app.security.policy import CAPTURED_CATEGORY
@@ -113,6 +113,18 @@ def _rate_limit(principal: Principal) -> None:
 
 
 # --- Service data surface (service-key auth) -----------------------------
+@service_router.get("/capabilities", response_model=ServiceCapabilitiesResponse)
+def capabilities(principal: Principal = Depends(resolve_service_principal)):
+    return ServiceCapabilitiesResponse(
+        tenant_id=principal.tenant_id,
+        account_id=principal.account_id,
+        app_id=principal.app_id,
+        scopes=sorted(principal.scopes),
+        space_ids=sorted(principal.space_ids or []),
+        purposes=sorted(principal.purposes or []),
+    )
+
+
 @service_router.post("/capture")
 def capture(body: ServiceCaptureRequest, principal: Principal = Depends(resolve_service_principal)):
     _require_scope(principal, SCOPE_WRITE)
