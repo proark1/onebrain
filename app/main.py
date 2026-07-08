@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.deps import get_pipeline, get_store, get_user_store
-from app.routers import auth, chat, conversations, documents, operator, platform, provisioning, service, session
+from app.routers import auth, chat, conversations, documents, operator, platform, privacy, provisioning, service, session
 from app.seed import seed_if_empty
 from app.users.seed import seed_admin_from_env, seed_users_if_empty
 
@@ -52,6 +52,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)
     app.include_router(platform.router)
     app.include_router(operator.router)
+    app.include_router(privacy.router)
     app.include_router(provisioning.router)
     app.include_router(service.service_router)
     app.include_router(service.keys_router)

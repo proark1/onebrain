@@ -13,6 +13,19 @@ def _iso(ts) -> str:
     return ts.isoformat() if ts is not None else ""
 
 
+def _privacy_where(tenant_id: str, account_id: str = "", space_id: str = "") -> tuple[str, list]:
+    clauses = ["tenant_id = %s"]
+    params: list = [tenant_id]
+    if space_id:
+        clauses.append("account_id = %s")
+        clauses.append("space_id = %s")
+        params.extend([account_id, space_id])
+    elif account_id:
+        clauses.append("account_id = ANY(%s)")
+        params.append(["", account_id])
+    return " AND ".join(clauses), params
+
+
 class PostgresConversationStore:
     def __init__(self, dsn: str):
         import psycopg
@@ -150,3 +163,52 @@ class PostgresConversationStore:
             removed = cur.rowcount
             conn.commit()
         return removed > 0
+
+    def export_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> List[dict]:
+        where, params = _privacy_where(tenant_id, account_id, space_id)
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, tenant_id, account_id, space_id, session_id, role_id, title, created_at, updated_at "
+                f"FROM conversations WHERE {where} ORDER BY updated_at DESC",
+                params,
+            )
+            conversations = cur.fetchall()
+            ids = [row[0] for row in conversations]
+            messages_by_conv: dict[str, list] = {conversation_id: [] for conversation_id in ids}
+            if ids:
+                cur.execute(
+                    "SELECT conversation_id, id, role, content, meta, created_at FROM messages "
+                    "WHERE conversation_id = ANY(%s) ORDER BY created_at",
+                    (ids,),
+                )
+                for conversation_id, msg_id, role, content, meta, created_at in cur.fetchall():
+                    messages_by_conv.setdefault(conversation_id, []).append({
+                        "id": msg_id,
+                        "role": role,
+                        "content": content,
+                        "created_at": _iso(created_at),
+                        "meta": meta or {},
+                    })
+        return [
+            {
+                "id": row[0],
+                "tenant_id": row[1],
+                "account_id": row[2],
+                "space_id": row[3],
+                "session_id": row[4],
+                "role_id": row[5],
+                "title": row[6],
+                "created_at": _iso(row[7]),
+                "updated_at": _iso(row[8]),
+                "messages": messages_by_conv.get(row[0], []),
+            }
+            for row in conversations
+        ]
+
+    def delete_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> int:
+        where, params = _privacy_where(tenant_id, account_id, space_id)
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(f"DELETE FROM conversations WHERE {where}", params)
+            removed = cur.rowcount
+            conn.commit()
+        return removed

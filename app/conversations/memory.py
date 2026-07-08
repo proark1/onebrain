@@ -25,6 +25,18 @@ def _owns(conv: Conversation, scope: Scope) -> bool:
     )
 
 
+def _matches_privacy_scope(conv: Conversation, tenant_id: str, account_id: str = "", space_id: str = "") -> bool:
+    if conv.tenant_id != tenant_id:
+        return False
+    conv_account = getattr(conv, "account_id", "")
+    conv_space = getattr(conv, "space_id", "")
+    if space_id:
+        return conv_account == account_id and conv_space == space_id
+    if account_id and conv_account not in ("", account_id):
+        return False
+    return True
+
+
 class MemoryConversationStore:
     def __init__(self, persist_path: Optional[str] = None):
         self._conversations: Dict[str, Conversation] = {}
@@ -89,3 +101,49 @@ class MemoryConversationStore:
             self._messages.pop(conversation_id, None)
             self._save()
             return True
+
+    def export_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> List[dict]:
+        with self._lock:
+            conversations = [
+                conv for conv in self._conversations.values()
+                if _matches_privacy_scope(conv, tenant_id, account_id, space_id)
+            ]
+            rows = [
+                {
+                    "id": conv.id,
+                    "tenant_id": conv.tenant_id,
+                    "account_id": getattr(conv, "account_id", ""),
+                    "space_id": getattr(conv, "space_id", ""),
+                    "session_id": conv.session_id,
+                    "role_id": conv.role_id,
+                    "title": conv.title,
+                    "created_at": conv.created_at,
+                    "updated_at": conv.updated_at,
+                    "messages": [
+                        {
+                            "id": msg.id,
+                            "role": msg.role,
+                            "content": msg.content,
+                            "created_at": msg.created_at,
+                            "meta": dict(msg.meta),
+                        }
+                        for msg in self._messages.get(conv.id, [])
+                    ],
+                }
+                for conv in conversations
+            ]
+        rows.sort(key=lambda row: row["updated_at"], reverse=True)
+        return rows
+
+    def delete_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> int:
+        with self._lock:
+            ids = [
+                conv.id for conv in self._conversations.values()
+                if _matches_privacy_scope(conv, tenant_id, account_id, space_id)
+            ]
+            for conversation_id in ids:
+                self._conversations.pop(conversation_id, None)
+                self._messages.pop(conversation_id, None)
+            if ids:
+                self._save()
+        return len(ids)

@@ -17,6 +17,19 @@ from app.security.policy import AccessFilter
 from app.store.base import Chunk, Hit
 
 
+def _privacy_where(tenant_id: str, account_id: str = "", space_id: str = "") -> tuple[str, list]:
+    clauses = ["meta->>'tenant_id' = %s"]
+    params: list = [tenant_id]
+    if space_id:
+        clauses.append("meta->>'account_id' = %s")
+        clauses.append("meta->>'space_id' = %s")
+        params.extend([account_id, space_id])
+    elif account_id:
+        clauses.append("COALESCE(meta->>'account_id', '') = ANY(%s)")
+        params.append(["", account_id])
+    return " AND ".join(clauses), params
+
+
 class PgVectorStore:
     def __init__(self, dsn: str, dim: int):
         import psycopg
@@ -175,6 +188,40 @@ class PgVectorStore:
             removed = cur.rowcount
             conn.commit()
         return removed
+
+    def export_documents(self, tenant_id: str, account_id: str = "", space_id: str = "") -> List[dict]:
+        where, params = _privacy_where(tenant_id, account_id, space_id)
+        sql = f"SELECT id, doc_id, text, meta FROM chunks WHERE {where} ORDER BY doc_id, id"
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+
+        docs: dict[str, dict] = {}
+        for chunk_id, doc_id, text, meta in rows:
+            doc = docs.setdefault(doc_id, {
+                "doc_id": doc_id,
+                "title": meta.get("doc_title", "Untitled"),
+                "tenant_id": meta.get("tenant_id", ""),
+                "account_id": meta.get("account_id", ""),
+                "space_id": meta.get("space_id", ""),
+                "classification": meta.get("classification_label", "internal"),
+                "location": meta.get("location", "global"),
+                "category": meta.get("category", "general"),
+                "status": meta.get("status", "approved"),
+                "uploaded_by": meta.get("uploaded_by", ""),
+                "chunks": [],
+            })
+            doc["chunks"].append({"id": chunk_id, "text": text, "meta": meta})
+        return sorted(docs.values(), key=lambda d: d["title"].lower())
+
+    def delete_documents_by_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> dict:
+        where, params = _privacy_where(tenant_id, account_id, space_id)
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT count(DISTINCT doc_id), count(*) FROM chunks WHERE {where}", params)
+            docs, chunks = cur.fetchone()
+            cur.execute(f"DELETE FROM chunks WHERE {where}", params)
+            conn.commit()
+        return {"documents": int(docs or 0), "chunks": int(chunks or 0)}
 
     def count(self) -> int:
         with self._conn() as conn, conn.cursor() as cur:

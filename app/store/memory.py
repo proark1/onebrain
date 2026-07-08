@@ -18,6 +18,17 @@ from app.security.policy import AccessFilter
 from app.store.base import Chunk, Hit
 
 
+def _matches_privacy_scope(meta: dict, tenant_id: str, account_id: str = "", space_id: str = "") -> bool:
+    if meta.get("tenant_id") != tenant_id:
+        return False
+    meta_account = meta.get("account_id", "")
+    if space_id:
+        return meta_account == account_id and meta.get("space_id", "") == space_id
+    if account_id and meta_account not in ("", account_id):
+        return False
+    return True
+
+
 class MemoryStore:
     def __init__(self, persist_path: Optional[str] = None):
         self._chunks: List[Chunk] = []
@@ -141,6 +152,43 @@ class MemoryStore:
             removed = before - len(self._chunks)
             self._save()
         return removed
+
+    def export_documents(self, tenant_id: str, account_id: str = "", space_id: str = "") -> List[dict]:
+        docs: dict[str, dict] = {}
+        with self._lock:
+            chunks = [c for c in self._chunks if _matches_privacy_scope(c.meta, tenant_id, account_id, space_id)]
+        for c in chunks:
+            doc = docs.setdefault(c.doc_id, {
+                "doc_id": c.doc_id,
+                "title": c.meta.get("doc_title", "Untitled"),
+                "tenant_id": c.meta.get("tenant_id", ""),
+                "account_id": c.meta.get("account_id", ""),
+                "space_id": c.meta.get("space_id", ""),
+                "classification": c.meta.get("classification_label", "internal"),
+                "location": c.meta.get("location", "global"),
+                "category": c.meta.get("category", "general"),
+                "status": c.meta.get("status", "approved"),
+                "uploaded_by": c.meta.get("uploaded_by", ""),
+                "chunks": [],
+            })
+            doc["chunks"].append({
+                "id": c.id,
+                "text": c.text,
+                "meta": dict(c.meta),
+            })
+        return sorted(docs.values(), key=lambda d: d["title"].lower())
+
+    def delete_documents_by_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> dict:
+        with self._lock:
+            removed_chunks = [c for c in self._chunks if _matches_privacy_scope(c.meta, tenant_id, account_id, space_id)]
+            removed_doc_ids = {c.doc_id for c in removed_chunks}
+            if removed_chunks:
+                self._chunks = [
+                    c for c in self._chunks
+                    if not _matches_privacy_scope(c.meta, tenant_id, account_id, space_id)
+                ]
+                self._save()
+        return {"documents": len(removed_doc_ids), "chunks": len(removed_chunks)}
 
     def count(self) -> int:
         with self._lock:
