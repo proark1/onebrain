@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from app.retrieval.service import RetrievalService
+from app.retrieval.service import RetrievalService, _build_retrieval_query
 from app.store.base import Chunk, Hit
 from tests.conftest import principal_for
 
@@ -36,6 +36,7 @@ def test_answer_stream_reports_efficiency_meta(service):
     assert meta["retrieval_min_score"] == 0.05
     assert meta["best_score"] is None or isinstance(meta["best_score"], float)
     assert meta["filtered_chunks"] >= 0
+    assert meta["history_user_turns_used"] == 0
     assert events[-1]["type"] == "done"
 
 
@@ -197,6 +198,7 @@ def test_answer_stream_reports_filtered_chunks_and_best_score():
     assert meta_event["best_score"] == 0.4
     assert meta_event["filtered_chunks"] == 1
     assert meta_event["retrieval_min_score"] == 0.05
+    assert meta_event["history_user_turns_used"] == 0
 
 
 def test_answer_stream_does_not_call_llm_when_all_hits_are_below_min_score():
@@ -238,3 +240,77 @@ def test_answer_stream_does_not_call_llm_when_all_hits_are_below_min_score():
     assert meta_event["best_score"] == 0.01
     assert meta_event["filtered_chunks"] == 1
     assert meta_event["llm"] == "onebrain-retrieval"
+    assert meta_event["history_user_turns_used"] == 0
+
+
+def test_retrieval_query_uses_recent_user_turns_only():
+    history = [
+        {"role": "user", "content": "first topic"},
+        {"role": "assistant", "content": "assistant answer should not steer retrieval"},
+        {"role": "user", "content": "second topic"},
+        {"role": "user", "content": "third topic"},
+        {"role": "user", "content": "fourth topic"},
+    ]
+
+    query, turns_used = _build_retrieval_query("current follow-up", history)
+
+    assert turns_used == 3
+    assert "first topic" not in query
+    assert "assistant answer" not in query
+    assert query.splitlines() == ["second topic", "third topic", "fourth topic", "current follow-up"]
+
+
+def test_retrieval_query_bounds_each_history_turn():
+    long_turn = "x" * 700
+
+    query, turns_used = _build_retrieval_query("current", [{"role": "user", "content": long_turn}])
+
+    assert turns_used == 1
+    assert query.splitlines()[0] == "x" * 500
+
+
+def test_answer_stream_reports_history_user_turn_count():
+    meta = {
+        "tenant_id": "nft_gym",
+        "classification": 0,
+        "classification_label": "public",
+        "location": "global",
+        "category": "general",
+        "status": "approved",
+        "doc_title": "followup.txt",
+    }
+
+    class CapturingEmbedder:
+        def __init__(self):
+            self.query = ""
+
+        def embed_one(self, text):
+            self.query = text
+            return np.array([1.0])
+
+    class StaticStore:
+        def search(self, query, k, access):
+            return [Hit(Chunk("hit", "doc_1", "Evidence answer.", dict(meta)), 0.4)]
+
+    class FakeLLM:
+        name = "fake"
+        model = "fake"
+
+        def stream(self, question, hits, tenant_id="nft_gym", stats=None, history=None):
+            yield "answer"
+
+    embedder = CapturingEmbedder()
+    service = RetrievalService(embedder, StaticStore(), FakeLLM(), min_score=0.05)
+    history = [
+        {"role": "user", "content": "What are the refund rules?"},
+        {"role": "assistant", "content": "Refund context."},
+        {"role": "user", "content": "What about cancellations?"},
+    ]
+
+    events = list(service.answer_stream(principal_for("public"), "And the deadline?", history=history))
+    meta_event = next(e for e in events if e["type"] == "meta")
+
+    assert "What are the refund rules?" in embedder.query
+    assert "What about cancellations?" in embedder.query
+    assert "And the deadline?" in embedder.query
+    assert meta_event["history_user_turns_used"] == 2

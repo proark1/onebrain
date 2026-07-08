@@ -27,6 +27,9 @@ _GREETING_RE = re.compile(
     re.IGNORECASE,
 )
 
+HISTORY_QUERY_USER_TURNS = 3
+HISTORY_QUERY_TURN_CHARS = 500
+
 
 def _no_match_response() -> str:
     return (
@@ -70,6 +73,27 @@ def _source_records(hits: List[Hit]) -> list[dict]:
         source["chunks"] += 1
         source["score"] = max(source["score"], round(h.score, 3))
     return list(sources.values())
+
+
+def _recent_user_turns(history: list | None) -> list[str]:
+    turns: list[str] = []
+    for turn in reversed(history or []):
+        if turn.get("role") != "user":
+            continue
+        content = " ".join(str(turn.get("content") or "").split())
+        if not content:
+            continue
+        turns.append(content[:HISTORY_QUERY_TURN_CHARS])
+        if len(turns) >= HISTORY_QUERY_USER_TURNS:
+            break
+    return list(reversed(turns))
+
+
+def _build_retrieval_query(question: str, history: list | None) -> tuple[str, int]:
+    user_turns = _recent_user_turns(history)
+    if not user_turns:
+        return question, 0
+    return "\n".join([*user_turns, question]), len(user_turns)
 
 
 class RetrievalService:
@@ -117,19 +141,17 @@ class RetrievalService:
                 "retrieval_min_score": self._min_score,
                 "best_score": None,
                 "filtered_chunks": 0,
+                "history_user_turns_used": 0,
             }
             yield {"type": "done"}
             return
 
-        # For a follow-up, fold the previous user turn into the retrieval query
-        # so "and the budget for it?" still finds the right chunks. Retrieval is
+        # For follow-ups, fold recent user turns into the retrieval query so
+        # "and the budget for it?" still finds the right chunks. Retrieval is
         # ALWAYS re-filtered by the current principal — history never widens access.
-        retrieval_query = question
-        if history:
-            last_user = next((t["content"] for t in reversed(history) if t.get("role") == "user"), "")
-            if last_user:
-                retrieval_query = f"{last_user}\n{question}"
+        retrieval_query, history_turns_used = _build_retrieval_query(question, history)
         hits, retrieval_meta = self._retrieve_with_meta(principal, retrieval_query)
+        retrieval_meta["history_user_turns_used"] = history_turns_used
 
         if not hits:
             response = _no_match_response()
