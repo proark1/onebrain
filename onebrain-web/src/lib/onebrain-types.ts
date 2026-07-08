@@ -378,6 +378,9 @@ export type SourceRecord = {
 export type AnswerMeta = {
   sources?: SourceRecord[];
   chunks_used?: number;
+  retrieval_min_score?: number;
+  best_score?: number | null;
+  filtered_chunks?: number;
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
