@@ -208,6 +208,98 @@ def test_assistant_writes_telegram_provider_sync_action_settings_calendar_and_he
     assert "assistant.action.executed" in [event.action for event in platform.list_audit("acme")]
 
 
+def test_assistant_lists_scoped_task_and_followup_records(monkeypatch):
+    platform, _ = _stores(monkeypatch)
+    for record_type, purpose, content in [
+        ("task", "assistant_followup", "Prepare the client proposal."),
+        ("follow_up", "assistant_followup", "Follow up with client about contract review."),
+        ("brief", "assistant_briefing", "Morning brief should not appear in task filter."),
+    ]:
+        assistant_router.create_assistant_record(
+            AssistantRecordCreate(
+                content=content,
+                record_type=record_type,
+                purpose=purpose,
+                space_id="sp_business",
+            ),
+            principal=_service_principal(),
+        )
+
+    tasks = assistant_router.list_assistant_records(
+        record_type="task",
+        intent="",
+        account_id="",
+        space_id="",
+        purpose="",
+        status="",
+        limit=50,
+        principal=_service_principal(),
+    )
+    followups = assistant_router.list_assistant_records(
+        record_type="",
+        intent="follow_up",
+        account_id="acme",
+        space_id="sp_business",
+        purpose="assistant_followup",
+        status="approved",
+        limit=50,
+        principal=_service_principal(),
+    )
+
+    assert [record.content for record in tasks.records] == ["Prepare the client proposal."]
+    assert [record.record_type for record in followups.records] == ["task", "follow_up"]
+    assert platform.list_audit("acme")[-1].action == "assistant.records.list"
+    assert platform.list_audit("acme")[-1].meta["result_count"] == 2
+
+
+def test_assistant_record_list_refuses_disallowed_space_filter(monkeypatch):
+    _stores(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        assistant_router.list_assistant_records(
+            record_type="",
+            intent="",
+            account_id="acme",
+            space_id="sp_other",
+            purpose="",
+            status="",
+            limit=50,
+            principal=_service_principal(),
+        )
+
+    assert exc.value.status_code == 403
+    assert "space" in exc.value.detail
+
+
+def test_assistant_record_list_does_not_expose_raw_secret_values(monkeypatch):
+    _stores(monkeypatch)
+    created = assistant_router.create_assistant_record(
+        AssistantRecordCreate(
+            content="OAuth refresh token stored by reference.",
+            record_type="secret_reference",
+            purpose="assistant_connected_account",
+            space_id="sp_business",
+            metadata={"secret_ref": "secret://assistant/acme/google/refresh/v1"},
+        ),
+        principal=_service_principal(),
+    ).record
+
+    response = assistant_router.list_assistant_records(
+        record_type="secret_reference",
+        intent="",
+        account_id="",
+        space_id="",
+        purpose="assistant_connected_account",
+        status="",
+        limit=50,
+        principal=_service_principal(),
+    )
+
+    assert [record.id for record in response.records] == [created.id]
+    assert response.records[0].metadata["secret_ref"] == "secret://assistant/acme/google/refresh/v1"
+    assert "refresh_token" not in str(response.records[0].metadata)
+
+
 def test_assistant_secret_refs_export_and_delete_without_raw_secret_values(monkeypatch):
     platform, intake = _stores(monkeypatch)
     conversations = MemoryConversationStore()

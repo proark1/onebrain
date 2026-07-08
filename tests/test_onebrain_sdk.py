@@ -143,6 +143,43 @@ def test_brain_client_creates_and_reads_assistant_records():
     assert calls[1] == ("GET", "https://onebrain.example/api/service/assistant/records/rec_1", None)
 
 
+def test_brain_client_lists_assistant_and_memory_records():
+    calls = []
+
+    def transport(method, url, headers, payload, timeout):
+        calls.append((method, url, payload))
+        return {"records": [{"id": "rec_1", "record_type": "task"}]}
+
+    client = BrainClient(
+        "https://onebrain.example",
+        "obk_test_secret",
+        account_id="acme",
+        space_id="sp_business",
+        transport=transport,
+    )
+
+    listed = client.list_assistant_records(
+        record_type="task",
+        intent="follow_up",
+        purpose="assistant_followup",
+        status="approved",
+        limit=25,
+    )
+    memory = client.list_memory_records(record_type="follow_up")
+
+    assert listed["records"][0]["id"] == "rec_1"
+    assert calls[0] == (
+        "GET",
+        "https://onebrain.example/api/service/assistant/records?"
+        "record_type=task&intent=follow_up&status=approved&limit=25&"
+        "purpose=assistant_followup&account_id=acme&space_id=sp_business",
+        None,
+    )
+    assert memory["records"][0]["record_type"] == "task"
+    assert calls[1][0] == "GET"
+    assert "record_type=follow_up" in calls[1][1]
+
+
 def test_brain_client_records_assistant_audit_events():
     calls = []
 

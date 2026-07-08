@@ -498,6 +498,19 @@
         "title": "AssistantRecordCreate",
         "type": "object"
       },
+      "AssistantRecordListResponse": {
+        "properties": {
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/AssistantRecordOut"
+            },
+            "title": "Records",
+            "type": "array"
+          }
+        },
+        "title": "AssistantRecordListResponse",
+        "type": "object"
+      },
       "AssistantRecordOut": {
         "properties": {
           "account_id": {
@@ -3113,22 +3126,6 @@
   },
   "openapi": "3.1.0",
   "paths": {
-    "/": {
-      "get": {
-        "operationId": "index__get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Index"
-      }
-    },
     "/api/ask": {
       "post": {
         "operationId": "ask_api_ask_post",
@@ -5656,6 +5653,125 @@
       }
     },
     "/api/service/assistant/records": {
+      "get": {
+        "operationId": "list_assistant_records_api_service_assistant_records_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "record_type",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 80,
+              "title": "Record Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 80,
+              "title": "Intent",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 120,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 120,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "purpose",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 80,
+              "title": "Purpose",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 80,
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantRecordListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Assistant Records",
+        "tags": [
+          "service-assistant"
+        ]
+      },
       "post": {
         "operationId": "create_assistant_record_api_service_assistant_records_post",
         "parameters": [
