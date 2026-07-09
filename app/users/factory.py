@@ -11,7 +11,7 @@ def build_user_store(settings: Settings):
     if settings.vector_store == "pgvector":
         from app.users.postgres import PostgresUserStore
 
-        return PostgresUserStore(settings.database_url)
+        return PostgresUserStore(settings.pg_database_url)
 
     from app.users.memory import MemoryUserStore
 

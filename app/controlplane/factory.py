@@ -11,7 +11,7 @@ def build_control_plane_store(settings: Settings):
     if settings.vector_store == "pgvector":
         from app.controlplane.postgres import PostgresControlPlaneStore
 
-        return PostgresControlPlaneStore(settings.database_url)
+        return PostgresControlPlaneStore(settings.pg_database_url)
 
     from app.controlplane.memory import MemoryControlPlaneStore
 

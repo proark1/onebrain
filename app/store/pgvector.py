@@ -33,18 +33,21 @@ def _privacy_where(tenant_id: str, account_id: str = "", space_id: str = "") -> 
 
 
 class PgVectorStore:
-    def __init__(self, dsn: str, dim: int):
+    def __init__(self, dsn: str, dim: int, operator_dsn: str | None = None):
         import psycopg
         from pgvector.psycopg import register_vector
 
         self._psycopg = psycopg
         self._register_vector = register_vector
         self._dsn = dsn
+        self._operator_dsn = operator_dsn or dsn
         self._dim = dim
         self._validate_schema()
 
-    def _conn(self):
-        conn = self._psycopg.connect(self._dsn)
+    def _conn(self, *, admin: bool = False):
+        # admin connections use the privileged operator role, which bypasses RLS
+        # by identity (see _onebrain_rls_admin) — never a runtime-settable flag.
+        conn = self._psycopg.connect(self._operator_dsn if admin else self._dsn)
         self._register_vector(conn)
         return conn
 
@@ -166,8 +169,7 @@ class PgVectorStore:
             "max(meta->>'space_id'), max(meta->>'uploaded_by'), max(meta->>'status'), count(*) "
             "FROM chunks WHERE doc_id = %s GROUP BY doc_id"
         )
-        with self._conn() as conn, conn.cursor() as cur:
-            set_rls_scope(conn, admin=True)
+        with self._conn(admin=True) as conn, conn.cursor() as cur:
             cur.execute(sql, (doc_id,))
             r = cur.fetchone()
         if not r:
@@ -181,8 +183,7 @@ class PgVectorStore:
         }
 
     def set_document_status(self, doc_id: str, status: str, approved_by=None) -> int:
-        with self._conn() as conn, conn.cursor() as cur:
-            set_rls_scope(conn, admin=True)
+        with self._conn(admin=True) as conn, conn.cursor() as cur:
             if approved_by is not None:
                 cur.execute(
                     "UPDATE chunks SET meta = jsonb_set(jsonb_set(meta, '{status}', to_jsonb(%s::text)), "
@@ -199,8 +200,7 @@ class PgVectorStore:
         return changed
 
     def delete_document(self, doc_id: str) -> int:
-        with self._conn() as conn, conn.cursor() as cur:
-            set_rls_scope(conn, admin=True)
+        with self._conn(admin=True) as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM chunks WHERE doc_id = %s", (doc_id,))
             removed = cur.rowcount
             conn.commit()
@@ -243,7 +243,6 @@ class PgVectorStore:
         return {"documents": int(docs or 0), "chunks": int(chunks or 0)}
 
     def count(self) -> int:
-        with self._conn() as conn, conn.cursor() as cur:
-            set_rls_scope(conn, admin=True)
+        with self._conn(admin=True) as conn, conn.cursor() as cur:
             cur.execute("SELECT count(*) FROM chunks")
             return int(cur.fetchone()[0])

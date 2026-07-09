@@ -11,7 +11,7 @@ def build_platform_store(settings: Settings):
     if settings.vector_store == "pgvector":
         from app.platform.postgres import PostgresPlatformStore
 
-        return PostgresPlatformStore(settings.database_url)
+        return PostgresPlatformStore(settings.pg_database_url, operator_dsn=settings.pg_operator_database_url)
 
     from app.platform.memory import MemoryPlatformStore
 

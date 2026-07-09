@@ -32,6 +32,7 @@ from app.schemas import (
     AssistantRecordResponse,
     ServiceIntakeRequest,
 )
+from app.security.policy import Classification
 from app.servicekeys.base import SCOPE_READ, SCOPE_WRITE
 
 
@@ -145,6 +146,8 @@ def list_assistant_records(
             continue
         if not _record_visible_to_principal(record, principal):
             continue
+        if not _service_readable(record):
+            continue
         decision = get_platform_store().check_app_access(
             record.account_id, ASSISTANT_APP_ID, record.space_id, record.purpose,
         )
@@ -189,6 +192,10 @@ def get_assistant_record(
     if not record or record.tenant_id != principal.tenant_id or record.app_id != ASSISTANT_APP_ID:
         raise HTTPException(status_code=404, detail="Assistant record not found.")
     _enforce_record_scope(record, principal)
+    if not _service_readable(record):
+        # Pending/quarantined, or above the assistant capture ceiling — treated as
+        # not found so a service key cannot confirm a sensitive record exists.
+        raise HTTPException(status_code=404, detail="Assistant record not found.")
     decision = get_platform_store().check_app_access(
         record.account_id, ASSISTANT_APP_ID, record.space_id, record.purpose,
     )
@@ -310,6 +317,22 @@ def _record_visible_to_principal(record: IntakeRecord, principal: Principal) -> 
     if principal.purposes is not None and record.purpose not in principal.purposes:
         return False
     return True
+
+
+# The assistant service surface returns raw record content, so it must apply the
+# same ceiling the vector retrieval path does (see AccessFilter.allows): never
+# hand a service key a confidential/restricted record, and never hand it anything
+# that is not approved — pending/quarantined content is unvetted. INTERNAL is the
+# assistant's own capture tier, so its approved internal context stays readable.
+# NOTE: once dedicated assistant scopes (e.g. assistant:context:read) land, a plain
+# read:public key should drop this ceiling to PUBLIC.
+ASSISTANT_SERVICE_READ_CEILING = Classification.INTERNAL
+
+
+def _service_readable(record: IntakeRecord) -> bool:
+    if record.status != "approved":
+        return False
+    return Classification.parse(record.classification) <= ASSISTANT_SERVICE_READ_CEILING
 
 
 def _assistant_record_out(record: IntakeRecord) -> AssistantRecordOut:

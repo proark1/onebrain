@@ -57,17 +57,20 @@ def _json(value) -> dict:
 
 
 class PostgresPlatformStore:
-    def __init__(self, dsn: str):
+    def __init__(self, dsn: str, operator_dsn: str | None = None):
         import psycopg
 
         self._psycopg = psycopg
         self._dsn = dsn
+        # Cross-account operator reads connect as the privileged operator role,
+        # which bypasses RLS by identity — never via a runtime-settable flag.
+        self._operator_dsn = operator_dsn or dsn
         self._validate_schema()
 
     def _conn(self, *, account_id: str = "", space_id: str = "", admin: bool = False):
-        conn = self._psycopg.connect(self._dsn)
-        if account_id or space_id or admin:
-            set_rls_scope(conn, account_id=account_id, space_id=space_id, admin=admin)
+        conn = self._psycopg.connect(self._operator_dsn if admin else self._dsn)
+        if account_id or space_id:
+            set_rls_scope(conn, account_id=account_id, space_id=space_id)
         return conn
 
     def _validate_schema(self) -> None:

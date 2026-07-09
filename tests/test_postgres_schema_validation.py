@@ -154,18 +154,21 @@ def _governance_migration_module():
     return module
 
 
-def _rls_migration_module():
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "migrations"
-        / "versions"
-        / "0008_rls_hardening.py"
-    )
-    spec = importlib.util.spec_from_file_location("rls_migration", path)
+def _load_migration_module(filename: str, name: str):
+    path = Path(__file__).resolve().parents[1] / "migrations" / "versions" / filename
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
     spec.loader.exec_module(module)
     return module
+
+
+def _rls_hardening_module():
+    return _load_migration_module("0008_rls_hardening.py", "rls_hardening_migration")
+
+
+def _rls_admin_role_module():
+    return _load_migration_module("0009_rls_admin_role.py", "rls_admin_role_migration")
 
 
 def test_validate_postgres_schema_requires_alembic_version_table():
@@ -278,14 +281,24 @@ def test_governance_migration_extends_provisioning_runs():
     } == set(migration.GOVERNANCE_TABLES)
 
 
-def test_rls_migration_tracks_expected_head():
-    migration = _rls_migration_module()
+def test_rls_hardening_migration_structure():
+    migration = _rls_hardening_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
-    assert len(migration.revision) <= 32
+    assert migration.revision == "0008_rls_hardening"
     assert migration.down_revision == "0007_governance_privacy"
     assert "intake_records" in migration.TENANT_TABLES
     assert "platform_audit_events" in migration.ACCOUNT_TABLES
+
+
+def test_rls_admin_role_migration_is_head():
+    migration = _rls_admin_role_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert len(migration.revision) <= 32
+    assert migration.down_revision == "0008_rls_hardening"
+    # The bypass no longer reads a session GUC; it is bound to the role identity.
+    assert "app.onebrain_admin" not in migration._ROLE_ADMIN_FN
+    assert "pg_has_role" in migration._ROLE_ADMIN_FN
 
 
 def test_migration_embedding_dim_env(monkeypatch):

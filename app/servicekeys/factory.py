@@ -11,7 +11,7 @@ def build_service_key_store(settings: Settings):
     if settings.vector_store == "pgvector":
         from app.servicekeys.postgres import PostgresServiceKeyStore
 
-        return PostgresServiceKeyStore(settings.database_url)
+        return PostgresServiceKeyStore(settings.pg_database_url)
 
     from app.servicekeys.memory import MemoryServiceKeyStore
 

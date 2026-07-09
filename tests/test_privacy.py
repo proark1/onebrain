@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from fastapi import HTTPException
 
@@ -35,7 +37,9 @@ def _principal(role_id: str = "admin") -> Principal:
 
 def _fixtures():
     platform = MemoryPlatformStore()
-    platform.create_account(Account(id="acme", kind="organization", name="Acme GmbH"))
+    # The operating admin (user_id="admin@operator") owns this account, so account
+    # authorization passes. A different admin is denied — see the cross-account test.
+    platform.create_account(Account(id="acme", kind="organization", name="Acme GmbH", owner_user_id="admin@operator"))
     platform.create_space(Space(id="sp_acme_service", account_id="acme", kind="customer_service", name="Service"))
     platform.create_space(Space(id="sp_acme_personal", account_id="acme", kind="personal", name="Owner private"))
     platform.upsert_organization(Organization(id="org_acme", account_id="acme", name="Acme Ops"))
@@ -230,3 +234,31 @@ def test_privacy_operations_require_admin_and_valid_scope(monkeypatch):
     with pytest.raises(HTTPException) as wrong_space:
         privacy_router.export_account_data("acme", space_id="sp_other", principal=_principal("admin"))
     assert wrong_space.value.status_code == 404
+
+
+def test_privacy_cross_account_admin_is_denied(monkeypatch):
+    """An admin who neither owns nor has an admin membership in the account is
+    refused — and gets the same 404 as a missing account, so existence can't be
+    probed. This is the cross-account boundary (e.g. nft_gym admin vs Communication)."""
+    (
+        platform, store, conversations, intake, service_doc, _,
+        _, _, service_record, _,
+    ) = _fixtures()
+    _patch(monkeypatch, platform, store, conversations, intake)
+    outsider = replace(_principal("admin"), user_id="admin@other-account")
+
+    with pytest.raises(HTTPException) as export_denied:
+        privacy_router.export_account_data("acme", principal=outsider)
+    assert export_denied.value.status_code == 404
+
+    with pytest.raises(HTTPException) as erase_denied:
+        privacy_router.erase_account_data(
+            "acme",
+            privacy_router.PrivacyEraseRequest(confirm_account_id="acme"),
+            principal=outsider,
+        )
+    assert erase_denied.value.status_code == 404
+    # Authorization ran before any deletion: the data is untouched despite a
+    # valid confirm_account_id.
+    assert store.get_document_meta(service_doc.doc_id) is not None
+    assert intake.get(service_record.id) is not None

@@ -14,12 +14,15 @@ from app.intake.base import IntakeRecord
 
 
 class PostgresIntakeStore:
-    def __init__(self, database_url: str):
+    def __init__(self, database_url: str, operator_dsn: str | None = None):
         self.database_url = database_url
+        self._operator_dsn = operator_dsn or database_url
         self._validate_schema()
 
-    def _conn(self):
-        return psycopg.connect(self.database_url)
+    def _conn(self, *, admin: bool = False):
+        # admin connections use the privileged operator role (RLS bypass by
+        # identity via _onebrain_rls_admin), never a runtime-settable flag.
+        return psycopg.connect(self._operator_dsn if admin else self.database_url)
 
     def _validate_schema(self) -> None:
         with self._conn() as conn:
@@ -120,7 +123,6 @@ class PostgresIntakeStore:
             return deleted
 
     def count(self) -> int:
-        with self._conn() as conn, conn.cursor() as cur:
-            set_rls_scope(conn, admin=True)
+        with self._conn(admin=True) as conn, conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM intake_records")
             return int(cur.fetchone()[0])

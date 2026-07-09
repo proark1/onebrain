@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.auth.account_access import authorize_account_admin
 from app.auth.principal import Principal, resolve_principal
 from app.deps import get_conversation_store, get_intake_store, get_platform_store, get_store
 from app.platform.base import AuditEvent
@@ -56,11 +57,6 @@ class PrivacyEraseOut(BaseModel):
     intake_records_deleted: int = 0
     governance_deleted: dict = Field(default_factory=dict)
     audit_event_id: str
-
-
-def _require_admin(principal: Principal) -> None:
-    if principal.role_id != "admin":
-        raise HTTPException(status_code=403, detail="Only admin / DPO can run privacy operations.")
 
 
 def _now() -> str:
@@ -129,7 +125,7 @@ def export_account_data(
     space_id: str = "",
     principal: Principal = Depends(resolve_principal),
 ):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     account_id, space_id = _resolve_scope(account_id, space_id)
     documents = get_store().export_documents(account_id, account_id=account_id, space_id=space_id)
     conversations = get_conversation_store().export_scope(account_id, account_id=account_id, space_id=space_id)
@@ -181,7 +177,7 @@ def erase_account_data(
     body: PrivacyEraseRequest,
     principal: Principal = Depends(resolve_principal),
 ):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     account_id, space_id = _resolve_scope(account_id, body.space_id)
     if body.confirm_account_id.strip() != account_id:
         raise HTTPException(status_code=400, detail="confirm_account_id must match the account being erased.")

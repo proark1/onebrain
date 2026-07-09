@@ -11,7 +11,7 @@ def build_provisioning_run_store(settings: Settings):
     if settings.vector_store == "pgvector":
         from app.provisioning.runs import PostgresProvisioningRunStore
 
-        return PostgresProvisioningRunStore(settings.database_url)
+        return PostgresProvisioningRunStore(settings.pg_database_url)
 
     from app.provisioning.runs import MemoryProvisioningRunStore
 

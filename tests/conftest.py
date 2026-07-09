@@ -14,6 +14,22 @@ from app.seed import seed_if_empty
 from app.store.memory import MemoryStore
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _guard_test_database():
+    """Fail fast if a test run is somehow pointed at a real database.
+
+    Tests default to the in-memory store (guaranteed because .env is not
+    auto-loaded under pytest). If ONEBRAIN_VECTOR_STORE=pgvector is set directly
+    in the environment, reuse the same DSN guard the store factories use so a
+    stray production DSN aborts the run instead of writing to live data."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    if settings.vector_store == "pgvector":
+        settings.pg_database_url  # raises on a non-test DSN
+    yield
+
+
 @pytest.fixture
 def store():
     s = MemoryStore(persist_path=None)

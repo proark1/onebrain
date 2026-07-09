@@ -11,7 +11,7 @@ def build_conversation_store(settings: Settings):
     if settings.vector_store == "pgvector":
         from app.conversations.postgres import PostgresConversationStore
 
-        return PostgresConversationStore(settings.database_url)
+        return PostgresConversationStore(settings.pg_database_url, operator_dsn=settings.pg_operator_database_url)
 
     from app.conversations.memory import MemoryConversationStore
 

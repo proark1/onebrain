@@ -11,7 +11,7 @@ def build_intake_store(settings: Settings):
     if settings.vector_store == "pgvector":
         from app.intake.postgres import PostgresIntakeStore
 
-        return PostgresIntakeStore(settings.database_url)
+        return PostgresIntakeStore(settings.pg_database_url, operator_dsn=settings.pg_operator_database_url)
 
     from app.intake.memory import MemoryIntakeStore
 

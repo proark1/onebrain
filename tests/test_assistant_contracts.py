@@ -12,6 +12,7 @@ from app.assistant.contracts import ASSISTANT_PURPOSES
 from app.auth.principal import Principal
 from app.auth.roles import ROLES
 from app.conversations.memory import MemoryConversationStore
+from app.intake.base import IntakeRecord
 from app.intake.memory import MemoryIntakeStore
 from app.intake.pipeline import IntakePipeline
 from app.platform.base import Account, AppInstallation, Space
@@ -57,7 +58,7 @@ def _admin_principal() -> Principal:
 
 def _stores(monkeypatch):
     platform = MemoryPlatformStore()
-    platform.create_account(Account(id="acme", kind="organization", name="Acme GmbH"))
+    platform.create_account(Account(id="acme", kind="organization", name="Acme GmbH", owner_user_id="admin@acme"))
     platform.create_space(Space(id="sp_business", account_id="acme", kind="business", name="Business"))
     platform.install_app(AppInstallation(
         id="appi_assistant",
@@ -85,6 +86,43 @@ def _create(body: AssistantRecordCreate, monkeypatch):
     response = assistant_router.create_assistant_record(body, principal=_service_principal())
     fetched = assistant_router.get_assistant_record(response.record.id, principal=_service_principal())
     return response.record, fetched.record, platform, intake
+
+
+def _seed_record(intake, *, rid, classification, status, purpose="assistant_briefing"):
+    """Insert an in-scope assistant record with a chosen classification/status so
+    only the read-scope gate (not tenant/account/space/purpose) can reject it."""
+    return intake.create(IntakeRecord(
+        id=rid, tenant_id="acme", account_id="acme", space_id="sp_business",
+        app_id="assistant", purpose=purpose, source="assistant", source_ref=f"src:{rid}",
+        record_type="note", intent="internal_note", classification=classification,
+        confidence=0.9, status=status, title="t", content="Assistant note.", summary="Assistant note.",
+    ))
+
+
+def test_assistant_read_refuses_pending_and_sensitive_records(monkeypatch):
+    """A read:public assistant key must not receive pending/quarantined records,
+    nor confidential/restricted content — only approved records at or below the
+    INTERNAL capture ceiling. Its own approved internal context stays readable."""
+    platform, intake = _stores(monkeypatch)
+    _seed_record(intake, rid="rec_ok", classification="internal", status="approved")
+    _seed_record(intake, rid="rec_pending", classification="internal", status="pending")
+    _seed_record(intake, rid="rec_confidential", classification="confidential", status="approved")
+    _seed_record(intake, rid="rec_restricted", classification="restricted", status="approved")
+
+    # get: only the approved internal record is returned; the rest are 404 (so a
+    # service key cannot even confirm a sensitive/pending record exists).
+    assert assistant_router.get_assistant_record("rec_ok", principal=_service_principal()).record.id == "rec_ok"
+    for rid in ("rec_pending", "rec_confidential", "rec_restricted"):
+        with pytest.raises(HTTPException) as exc:
+            assistant_router.get_assistant_record(rid, principal=_service_principal())
+        assert exc.value.status_code == 404
+
+    # list: the sensitive/pending records are silently filtered out.
+    listed = assistant_router.list_assistant_records(
+        record_type="", intent="", account_id="", space_id="", purpose="", status="", limit=50,
+        principal=_service_principal(),
+    )
+    assert [r.id for r in listed.records] == ["rec_ok"]
 
 
 def test_assistant_writes_and_retrieves_core_records(monkeypatch):

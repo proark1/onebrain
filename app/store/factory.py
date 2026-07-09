@@ -11,7 +11,7 @@ def build_store(settings: Settings, dim: int):
     if settings.vector_store == "pgvector":
         from app.store.pgvector import PgVectorStore
 
-        return PgVectorStore(settings.database_url, dim)
+        return PgVectorStore(settings.pg_database_url, dim, operator_dsn=settings.pg_operator_database_url)
 
     from app.store.memory import MemoryStore
 

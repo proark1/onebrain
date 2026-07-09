@@ -27,7 +27,6 @@ RLS_REQUIRED_TABLES = (
 )
 
 
-RLS_ADMIN_FLAG = "app.onebrain_admin"
 RLS_ACCOUNT_ID = "app.account_id"
 RLS_SPACE_ID = "app.space_id"
 RLS_TENANT_ID = "app.tenant_id"
@@ -65,32 +64,21 @@ def set_rls_scope(
     tenant_id: str = "",
     account_id: str = "",
     space_id: str = "",
-    admin: bool = False,
 ) -> None:
     """Set transaction-local RLS scope GUCs for a Postgres connection.
 
-    Policies fail closed when these values are unset. Admin access is still
-    routed through app-level authorization, but the flag gives operator and
-    health paths an explicit database context instead of relying on table-owner
-    bypass behavior.
+    Policies fail closed when these values are unset. There is deliberately no
+    admin/bypass GUC: the RLS admin bypass is bound to the privileged operator DB
+    role (see migration 0009_rls_admin_role and _onebrain_rls_admin), which the
+    runtime role cannot assume — so it can never self-assert admin. Cross-account
+    operator reads connect as the operator DSN instead of setting a flag.
     """
     with conn.cursor() as cur:
         cur.execute(
-            """
-            SELECT
-                set_config(%s, %s, true),
-                set_config(%s, %s, true),
-                set_config(%s, %s, true),
-                set_config(%s, %s, true)
-            """,
+            "SELECT set_config(%s, %s, true), set_config(%s, %s, true), set_config(%s, %s, true)",
             (
-                RLS_TENANT_ID,
-                (tenant_id or "").strip(),
-                RLS_ACCOUNT_ID,
-                (account_id or "").strip(),
-                RLS_SPACE_ID,
-                (space_id or "").strip(),
-                RLS_ADMIN_FLAG,
-                "true" if admin else "false",
+                RLS_TENANT_ID, (tenant_id or "").strip(),
+                RLS_ACCOUNT_ID, (account_id or "").strip(),
+                RLS_SPACE_ID, (space_id or "").strip(),
             ),
         )

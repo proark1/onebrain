@@ -8,16 +8,32 @@ production without touching the rest of the code.
 from __future__ import annotations
 
 import os
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _under_pytest() -> bool:
+    """True when running inside pytest. `pytest` is always imported by the time
+    our modules are collected, so this is reliable even at import time — before
+    any test body runs."""
+    return "pytest" in sys.modules or bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
 def _load_dotenv(path: str = ".env") -> None:
     """Load .env into the environment so provider keys (e.g. MISTRAL_API_KEY)
     reach LiteLLM, not just our own ONEBRAIN_ settings. Existing env vars win."""
+    # Never auto-load a developer .env into a test run. Doing so silently pointed
+    # the suite at the real PostgreSQL DSN and async worker and let tests write to
+    # live data. Under pytest we fall back to the in-code defaults (memory store,
+    # local providers, synchronous ingestion). Set ONEBRAIN_LOAD_DOTENV=1 to opt a
+    # specific test run back in.
+    if _under_pytest() and os.environ.get("ONEBRAIN_LOAD_DOTENV") != "1":
+        return
     file = Path(path)
     if not file.exists():
         return
@@ -29,11 +45,52 @@ def _load_dotenv(path: str = ".env") -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+def _dsn_label(dsn: str) -> str:
+    """host/database only — never credentials — for safe error messages."""
+    try:
+        parts = urlsplit(dsn)
+        return f"{parts.hostname or '?'}/{(parts.path or '').lstrip('/') or '?'}"
+    except Exception:
+        return "<unparseable dsn>"
+
+
+def _looks_like_test_dsn(dsn: str) -> bool:
+    try:
+        return "test" in (urlsplit(dsn).path or "").lstrip("/").lower()
+    except Exception:
+        return False
+
+
+def _guard_pytest_dsn(dsn: str) -> None:
+    """Fail closed if a test run is about to connect to a non-test database.
+
+    The primary defense is not loading .env under pytest; this backstops the case
+    where ONEBRAIN_VECTOR_STORE=pgvector and a real DSN are set directly in the
+    test environment."""
+    if not _under_pytest():
+        return
+    dsn = (dsn or "").strip()
+    if not dsn or os.environ.get("ONEBRAIN_ALLOW_NONTEST_DB") == "1" or _looks_like_test_dsn(dsn):
+        return
+    raise RuntimeError(
+        f"Refusing to use a non-test PostgreSQL database during tests: {_dsn_label(dsn)}. "
+        "Tests default to the in-memory store; to target a disposable test database "
+        "name it with 'test' or set ONEBRAIN_ALLOW_NONTEST_DB=1."
+    )
+
+
 _load_dotenv()
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="ONEBRAIN_", extra="ignore")
+    # Under pytest we do NOT read .env (neither here nor via _load_dotenv above):
+    # a test run must never inherit the real DSN or provider config. See
+    # _under_pytest — pytest is already imported when this class is defined.
+    model_config = SettingsConfigDict(
+        env_file=None if _under_pytest() else ".env",
+        env_prefix="ONEBRAIN_",
+        extra="ignore",
+    )
 
     # Providers — "local" variants need no API key; swap to real for production.
     embeddings_provider: str = "local"   # local | litellm
@@ -60,6 +117,10 @@ class Settings(BaseSettings):
     # pgvector — only used when vector_store = "pgvector"
     database_url: str = ""
     migration_database_url: str = ""
+    # Privileged DSN for cross-account operator/admin reads (list all accounts,
+    # pending queues, dashboards). Must authenticate as a role that owns the
+    # platform tables / bypasses RLS. Falls back to the migration then app DSN.
+    operator_database_url: str = ""
 
     # External customer provisioning through GitHub Actions.
     github_owner: str = ""
@@ -157,6 +218,24 @@ class Settings(BaseSettings):
     @property
     def is_production_like(self) -> bool:
         return self.environment.strip().lower() in {"prod", "production", "staging"}
+
+    @property
+    def pg_database_url(self) -> str:
+        """Postgres DSN for building a store, guarded so a test run can never
+        connect to a non-test database. In production (not under pytest) this
+        returns database_url unchanged."""
+        _guard_pytest_dsn(self.database_url)
+        return self.database_url
+
+    @property
+    def pg_operator_database_url(self) -> str:
+        """Privileged DSN for cross-account operator/admin queries, guarded like
+        pg_database_url. Falls back to the migration (owner) DSN, then the app
+        DSN — so a single-DSN deployment keeps working, though it should point
+        this at a distinct privileged role to close the RLS admin bypass."""
+        dsn = self.operator_database_url.strip() or self.migration_database_url.strip() or self.database_url
+        _guard_pytest_dsn(dsn)
+        return dsn
 
 
 @lru_cache

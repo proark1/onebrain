@@ -9,7 +9,7 @@ def build_job_store(settings: Settings):
     if settings.vector_store == "pgvector":
         from app.jobs.postgres import PostgresJobStore
 
-        return PostgresJobStore(settings.database_url)
+        return PostgresJobStore(settings.pg_database_url)
 
     from app.jobs.memory import MemoryJobStore
 

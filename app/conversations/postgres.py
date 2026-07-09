@@ -29,15 +29,18 @@ def _privacy_where(tenant_id: str, account_id: str = "", space_id: str = "") -> 
 
 
 class PostgresConversationStore:
-    def __init__(self, dsn: str):
+    def __init__(self, dsn: str, operator_dsn: str | None = None):
         import psycopg
 
         self._psycopg = psycopg
         self._dsn = dsn
+        self._operator_dsn = operator_dsn or dsn
         self._validate_schema()
 
-    def _conn(self):
-        return self._psycopg.connect(self._dsn)
+    def _conn(self, *, admin: bool = False):
+        # admin connections use the privileged operator role, which bypasses RLS
+        # by identity (see _onebrain_rls_admin) — no runtime-settable flag.
+        return self._psycopg.connect(self._operator_dsn if admin else self._dsn)
 
     def _validate_schema(self) -> None:
         with self._conn() as conn:
@@ -105,11 +108,9 @@ class PostgresConversationStore:
         scope: Optional[Scope] = None,
     ) -> Message:
         mid = uuid.uuid4().hex
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(admin=scope is None) as conn, conn.cursor() as cur:
             if scope:
                 set_rls_scope(conn, tenant_id=scope.tenant_id, account_id=scope.account_id, space_id=scope.space_id)
-            else:
-                set_rls_scope(conn, admin=True)
             cur.execute(
                 "INSERT INTO messages (id, conversation_id, role, content, meta) VALUES (%s, %s, %s, %s, %s) "
                 "RETURNING created_at",
@@ -127,11 +128,9 @@ class PostgresConversationStore:
         scope: Optional[Scope] = None,
     ) -> List[Message]:
         sql = "SELECT id, role, content, meta, created_at FROM messages WHERE conversation_id = %s ORDER BY created_at"
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(admin=scope is None) as conn, conn.cursor() as cur:
             if scope:
                 set_rls_scope(conn, tenant_id=scope.tenant_id, account_id=scope.account_id, space_id=scope.space_id)
-            else:
-                set_rls_scope(conn, admin=True)
             cur.execute(sql, (conversation_id,))
             rows = cur.fetchall()
         msgs = [Message(role=r[1], content=r[2], id=r[0], created_at=_iso(r[4]), meta=r[3] or {}) for r in rows]

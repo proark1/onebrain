@@ -7,6 +7,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.auth.account_access import authorize_account_admin, authorized_account_ids
 from app.auth.principal import Principal, resolve_principal
 from app.deps import get_platform_store
 from app.platform.base import (
@@ -272,8 +273,12 @@ class CredentialMetadataOut(CredentialMetadataIn):
     created_at: str = ""
 
 
-def _require_admin(principal: Principal) -> None:
-    if principal.role_id != "admin":
+def _require_platform_admin(principal: Principal) -> None:
+    """Role gate for operator-level, non-account-addressable routes (list/create
+    accounts, the global DPA processor/provider registry). Account-addressable
+    routes use authorize_account_admin, which additionally checks the caller is
+    authorized for that specific account."""
+    if principal.principal_type != "human" or principal.role_id != "admin":
         raise HTTPException(status_code=403, detail="Only admin can manage platform setup.")
 
 
@@ -331,13 +336,15 @@ def _audit(actor: Principal, action: str, target_type: str, target_id: str, acco
 
 @router.get("/accounts", response_model=list[AccountOut])
 def list_accounts(principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
-    return [_account_out(a) for a in get_platform_store().list_accounts()]
+    _require_platform_admin(principal)
+    store = get_platform_store()
+    allowed = authorized_account_ids(principal, store)
+    return [_account_out(a) for a in store.list_accounts() if a.id in allowed]
 
 
 @router.post("/accounts", response_model=AccountOut)
 def create_account(body: AccountCreate, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    _require_platform_admin(principal)
     store = get_platform_store()
     account_id = body.id or f"acct_{uuid4().hex[:12]}"
     try:
@@ -352,13 +359,13 @@ def create_account(body: AccountCreate, principal: Principal = Depends(resolve_p
 
 @router.get("/accounts/{account_id}/spaces", response_model=list[SpaceOut])
 def list_spaces(account_id: str, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     return [_space_out(s) for s in get_platform_store().list_spaces(account_id)]
 
 
 @router.post("/accounts/{account_id}/spaces", response_model=SpaceOut)
 def create_space(account_id: str, body: SpaceCreate, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     store = get_platform_store()
     space_id = body.id or f"spc_{uuid4().hex[:12]}"
     try:
@@ -371,13 +378,13 @@ def create_space(account_id: str, body: SpaceCreate, principal: Principal = Depe
 
 @router.get("/accounts/{account_id}/apps", response_model=list[AppInstallationOut])
 def list_apps(account_id: str, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     return [_app_out(i) for i in get_platform_store().list_app_installations(account_id)]
 
 
 @router.post("/accounts/{account_id}/apps", response_model=AppInstallationOut)
 def install_app(account_id: str, body: AppInstallCreate, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     store = get_platform_store()
     installation_id = body.id or f"appi_{uuid4().hex[:12]}"
     try:
@@ -401,7 +408,7 @@ def install_app(account_id: str, body: AppInstallCreate, principal: Principal = 
 
 @router.get("/accounts/{account_id}/brand-themes", response_model=list[BrandThemeOut])
 def list_brand_themes(account_id: str, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     return [_brand_theme_out(theme) for theme in get_platform_store().list_brand_themes(account_id)]
 
 
@@ -411,7 +418,7 @@ def get_brand_theme(
     app_id: str = Query(default="", max_length=80),
     principal: Principal = Depends(resolve_principal),
 ):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     store = get_platform_store()
     if not store.get_account(account_id):
         raise HTTPException(status_code=404, detail="Account not found.")
@@ -420,7 +427,7 @@ def get_brand_theme(
 
 @router.put("/accounts/{account_id}/brand-theme", response_model=BrandThemeOut)
 def upsert_brand_theme(account_id: str, body: BrandThemeInput, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     store = get_platform_store()
     if not store.get_account(account_id):
         raise HTTPException(status_code=404, detail="Account not found.")
@@ -460,8 +467,8 @@ def upsert_brand_theme(account_id: str, body: BrandThemeInput, principal: Princi
 
 @router.post("/access/check", response_model=AccessCheckResponse)
 def check_access(body: AccessCheckRequest, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
     store = get_platform_store()
+    authorize_account_admin(principal, body.account_id, store)
     decision = store.check_app_access(body.account_id, body.app_id, body.space_id, body.purpose)
     store.record_audit(_audit(
         principal, "access.checked", "space", body.space_id, body.account_id,
@@ -473,7 +480,7 @@ def check_access(body: AccessCheckRequest, principal: Principal = Depends(resolv
 
 @router.get("/accounts/{account_id}/audit", response_model=list[AuditOut])
 def list_audit(account_id: str, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     return [
         AuditOut(
             id=e.id, account_id=e.account_id, actor_id=e.actor_id, actor_type=e.actor_type,
@@ -486,13 +493,13 @@ def list_audit(account_id: str, principal: Principal = Depends(resolve_principal
 
 @router.get("/accounts/{account_id}/organizations", response_model=list[OrganizationOut])
 def list_organizations(account_id: str, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     return [OrganizationOut(**org.__dict__) for org in get_platform_store().list_organizations(account_id)]
 
 
 @router.post("/accounts/{account_id}/organizations", response_model=OrganizationOut)
 def upsert_organization(account_id: str, body: OrganizationIn, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     org = Organization(id=body.id or f"org_{uuid4().hex[:12]}", account_id=account_id, name=body.name.strip(), status=body.status)
     try:
         saved = get_platform_store().upsert_organization(org)
@@ -504,13 +511,13 @@ def upsert_organization(account_id: str, body: OrganizationIn, principal: Princi
 
 @router.get("/accounts/{account_id}/memberships", response_model=list[MembershipOut])
 def list_memberships(account_id: str, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     return [MembershipOut(**row.__dict__) for row in get_platform_store().list_memberships(account_id)]
 
 
 @router.post("/accounts/{account_id}/memberships", response_model=MembershipOut)
 def upsert_membership(account_id: str, body: MembershipIn, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     membership = Membership(
         id=body.id or f"mem_{uuid4().hex[:12]}",
         account_id=account_id,
@@ -530,13 +537,13 @@ def upsert_membership(account_id: str, body: MembershipIn, principal: Principal 
 
 @router.get("/accounts/{account_id}/consent", response_model=list[ConsentOut])
 def list_consent(account_id: str, space_id: str = "", principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     return [ConsentOut(**row.__dict__) for row in get_platform_store().list_consent_records(account_id, space_id)]
 
 
 @router.post("/accounts/{account_id}/consent", response_model=ConsentOut)
 def upsert_consent(account_id: str, body: ConsentIn, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     record = ConsentRecord(
         id=body.id or f"cons_{uuid4().hex[:12]}",
         account_id=account_id,
@@ -558,13 +565,13 @@ def upsert_consent(account_id: str, body: ConsentIn, principal: Principal = Depe
 
 @router.get("/accounts/{account_id}/retention", response_model=list[RetentionPolicyOut])
 def list_retention(account_id: str, space_id: str = "", principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     return [RetentionPolicyOut(**row.__dict__) for row in get_platform_store().list_retention_policies(account_id, space_id)]
 
 
 @router.post("/accounts/{account_id}/retention", response_model=RetentionPolicyOut)
 def upsert_retention(account_id: str, body: RetentionPolicyIn, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     policy = RetentionPolicy(
         id=body.id or f"ret_{uuid4().hex[:12]}",
         account_id=account_id,
@@ -586,13 +593,13 @@ def upsert_retention(account_id: str, body: RetentionPolicyIn, principal: Princi
 
 @router.get("/accounts/{account_id}/data-access", response_model=list[DataAccessEventOut])
 def list_data_access(account_id: str, space_id: str = "", principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     return [DataAccessEventOut(**row.__dict__) for row in get_platform_store().list_data_access_events(account_id, space_id)]
 
 
 @router.post("/accounts/{account_id}/data-access", response_model=DataAccessEventOut)
 def record_data_access(account_id: str, body: DataAccessEventIn, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     event = DataAccessEvent(
         id=body.id or f"dae_{uuid4().hex[:12]}",
         account_id=account_id,
@@ -616,13 +623,13 @@ def record_data_access(account_id: str, body: DataAccessEventIn, principal: Prin
 
 @router.get("/processors", response_model=list[ProcessorOut])
 def list_processors(account_id: str = "", principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    _require_platform_admin(principal)
     return [ProcessorOut(**row.__dict__) for row in get_platform_store().list_processors(account_id)]
 
 
 @router.post("/processors", response_model=ProcessorOut)
 def upsert_processor(body: ProcessorIn, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    _require_platform_admin(principal)
     processor = ProcessorRegistration(id=body.id or f"proc_{uuid4().hex[:12]}", **body.model_dump(exclude={"id"}))
     try:
         saved = get_platform_store().upsert_processor(processor)
@@ -633,13 +640,13 @@ def upsert_processor(body: ProcessorIn, principal: Principal = Depends(resolve_p
 
 @router.get("/providers", response_model=list[ProviderOut])
 def list_providers(account_id: str = "", principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    _require_platform_admin(principal)
     return [ProviderOut(**row.__dict__) for row in get_platform_store().list_providers(account_id)]
 
 
 @router.post("/providers", response_model=ProviderOut)
 def upsert_provider(body: ProviderIn, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    _require_platform_admin(principal)
     provider = ProviderRegistration(id=body.id or f"prov_{uuid4().hex[:12]}", **body.model_dump(exclude={"id"}))
     try:
         saved = get_platform_store().upsert_provider(provider)
@@ -650,13 +657,13 @@ def upsert_provider(body: ProviderIn, principal: Principal = Depends(resolve_pri
 
 @router.get("/accounts/{account_id}/credentials", response_model=list[CredentialMetadataOut])
 def list_credentials(account_id: str, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     return [CredentialMetadataOut(**row.__dict__) for row in get_platform_store().list_credential_metadata(account_id)]
 
 
 @router.post("/accounts/{account_id}/credentials", response_model=CredentialMetadataOut)
 def upsert_credential(account_id: str, body: CredentialMetadataIn, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
+    authorize_account_admin(principal, account_id, get_platform_store())
     credential = CredentialMetadata(
         id=body.id or f"cred_{uuid4().hex[:12]}",
         account_id=account_id,
