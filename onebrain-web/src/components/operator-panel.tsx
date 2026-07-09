@@ -170,6 +170,8 @@ export function OperatorPanel() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [activeTab, setActiveTab] = useState<OperatorTab>("customers");
+  const [showProvisionForm, setShowProvisionForm] = useState(false);
+  const [showReleaseForm, setShowReleaseForm] = useState(false);
 
   const [provisionName, setProvisionName] = useState("");
   const [provisionBundle, setProvisionBundle] = useState("full_stack");
@@ -340,6 +342,7 @@ export function OperatorPanel() {
       }
       setProvisionName("");
       setProvisionAccountId("");
+      setShowProvisionForm(false);
       setNotice(result.provisioning_run
         ? `${result.account.name} provisioned; external run ${labelFor(result.provisioning_run.status)}.`
         : `${result.account.name} provisioned.`);
@@ -380,6 +383,7 @@ export function OperatorPanel() {
       setMigrationTo("");
       setSecurityNotes("");
       setRollbackPlan("");
+      setShowReleaseForm(false);
       await loadOperator();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Release creation failed.");
@@ -570,9 +574,21 @@ export function OperatorPanel() {
           </>
         )}
         actions={(
-          <button className="secondaryButton" disabled={Boolean(busyAction)} type="button" onClick={() => void loadOperator()}>
-            {busyAction === "load" ? "Refreshing" : "Refresh"}
-          </button>
+          <>
+            <button className="secondaryButton" disabled={Boolean(busyAction)} type="button" onClick={() => void loadOperator()}>
+              {busyAction === "load" ? "Refreshing" : "Refresh"}
+            </button>
+            <button
+              className="primaryButton"
+              type="button"
+              onClick={() => {
+                setActiveTab("provisioning");
+                setShowProvisionForm(true);
+              }}
+            >
+              Provision
+            </button>
+          </>
         )}
       />
 
@@ -610,54 +626,63 @@ export function OperatorPanel() {
 
       {activeTab === "provisioning" ? (
         <div className="operatorGrid">
-          <Panel eyebrow="Provisioning" title="Create customer" count={bundles.length}>
+          <Panel
+            actions={<button className="secondaryButton" type="button" onClick={() => setShowProvisionForm((current) => !current)}>{showProvisionForm ? "Close" : "Create customer"}</button>}
+            eyebrow="Provisioning"
+            title="Customer setup"
+            count={bundles.length}
+          >
             <BundleList bundles={bundles} />
-            <form className="operatorForm" onSubmit={(event) => void onProvision(event)}>
-              <TextField label="Customer name" value={provisionName} onChange={setProvisionName} />
-              <SelectField
-                label="Bundle"
-                options={bundles.map((bundle) => ({ label: bundle.label, value: bundle.id }))}
-                value={provisionBundle}
-                onChange={setProvisionBundle}
-              />
-              <div className="operatorFormGrid">
-                <TextField label="Initial version" value={provisionVersion} onChange={setProvisionVersion} />
-                <SelectField label="Release ring" options={RELEASE_RINGS} value={provisionRing} onChange={setProvisionRing} />
-                <SelectField label="Deployment type" options={DEPLOYMENT_TYPES} value={provisionType} onChange={setProvisionType} />
-                <TextField label="Region" value={provisionRegion} onChange={setProvisionRegion} />
-              </div>
-              <TextField label="Optional account id" value={provisionAccountId} onChange={setProvisionAccountId} />
-              <div className="operatorChecks" aria-label="External provisioning options">
-                <label>
-                  <input
-                    checked={provisionExternal}
-                    onChange={(event) => setProvisionExternal(event.target.checked)}
-                    type="checkbox"
-                  />
-                  Dispatch external workflow
-                </label>
-                <label>
-                  <input
-                    checked={provisionDryRun}
-                    disabled={!provisionExternal}
-                    onChange={(event) => setProvisionDryRun(event.target.checked)}
-                    type="checkbox"
-                  />
-                  Dry run
-                </label>
-              </div>
-              {provisionExternal ? (
-                <TextField label="Callback URL" value={provisionCallbackUrl} onChange={setProvisionCallbackUrl} />
-              ) : null}
-              <BrandThemeEditor value={provisionBrandTheme} onChange={setProvisionBrandTheme} />
-              <button
-                className="primaryButton"
-                disabled={!provisionName.trim() || !provisionBundle || (provisionExternal && !provisionCallbackUrl.trim()) || Boolean(busyAction)}
-                type="submit"
-              >
-                {busyAction === "provision" ? "Provisioning" : "Provision customer"}
-              </button>
-            </form>
+            {showProvisionForm ? (
+              <form className="operatorForm compactWorkflow" onSubmit={(event) => void onProvision(event)}>
+                <TextField label="Customer name" value={provisionName} onChange={setProvisionName} />
+                <SelectField
+                  label="Bundle"
+                  options={bundles.map((bundle) => ({ label: bundle.label, value: bundle.id }))}
+                  value={provisionBundle}
+                  onChange={setProvisionBundle}
+                />
+                <div className="operatorFormGrid">
+                  <TextField label="Initial version" value={provisionVersion} onChange={setProvisionVersion} />
+                  <SelectField label="Release ring" options={RELEASE_RINGS} value={provisionRing} onChange={setProvisionRing} />
+                  <SelectField label="Deployment type" options={DEPLOYMENT_TYPES} value={provisionType} onChange={setProvisionType} />
+                  <TextField label="Region" value={provisionRegion} onChange={setProvisionRegion} />
+                </div>
+                <TextField label="Optional account id" value={provisionAccountId} onChange={setProvisionAccountId} />
+                <div className="operatorChecks" aria-label="External provisioning options">
+                  <label>
+                    <input
+                      checked={provisionExternal}
+                      onChange={(event) => setProvisionExternal(event.target.checked)}
+                      type="checkbox"
+                    />
+                    Dispatch external workflow
+                  </label>
+                  <label>
+                    <input
+                      checked={provisionDryRun}
+                      disabled={!provisionExternal}
+                      onChange={(event) => setProvisionDryRun(event.target.checked)}
+                      type="checkbox"
+                    />
+                    Dry run
+                  </label>
+                </div>
+                {provisionExternal ? (
+                  <TextField label="Callback URL" value={provisionCallbackUrl} onChange={setProvisionCallbackUrl} />
+                ) : null}
+                <BrandThemeEditor value={provisionBrandTheme} onChange={setProvisionBrandTheme} />
+                <button
+                  className="primaryButton"
+                  disabled={!provisionName.trim() || !provisionBundle || (provisionExternal && !provisionCallbackUrl.trim()) || Boolean(busyAction)}
+                  type="submit"
+                >
+                  {busyAction === "provision" ? "Provisioning" : "Provision customer"}
+                </button>
+              </form>
+            ) : (
+              <p className="mutedLine">Open customer setup when you are ready to provision a new account.</p>
+            )}
             <CredentialPanel credentials={credentials} onCopy={copyCredential} />
           </Panel>
 
@@ -675,43 +700,50 @@ export function OperatorPanel() {
       ) : null}
 
       {activeTab === "releases" ? (
-        <Panel eyebrow="Releases" title="Manifest" count={releases.length}>
+        <Panel
+          actions={<button className="secondaryButton" type="button" onClick={() => setShowReleaseForm((current) => !current)}>{showReleaseForm ? "Close" : "Create release"}</button>}
+          eyebrow="Releases"
+          title="Manifest"
+          count={releases.length}
+        >
           <ReleaseRail releases={releases} />
-          <form className="operatorForm" onSubmit={(event) => void onCreateRelease(event)}>
-            <SelectField
-              label="Source deployment"
-              options={deployments.map((row) => ({
-                label: `${row.deployment.customer_name} / ${row.deployment.id}`,
-                value: row.deployment.id,
-              }))}
-              value={releaseSourceId}
-              onChange={(value) => {
-                setReleaseSourceId(value);
-                const row = deployments.find((item) => item.deployment.id === value);
-                setMigrationFrom(row?.deployment.current_migration || "");
-              }}
-            />
-            <ModulePreview row={releaseSource} targetVersion={releaseModuleVersion || releaseVersion || "target"} />
-            <div className="operatorFormGrid">
-              <TextField label="Release version" value={releaseVersion} onChange={setReleaseVersion} />
-              <TextField label="Module version" value={releaseModuleVersion} onChange={setReleaseModuleVersion} />
-              <TextField label="Git SHA" value={releaseGitSha} onChange={setReleaseGitSha} />
-              <SelectField label="Status" options={RELEASE_STATUSES} value={releaseStatus} onChange={setReleaseStatus} />
-            </div>
-            <div className="operatorFormGrid">
-              <TextField label="Migration from" value={migrationFrom} onChange={setMigrationFrom} />
-              <TextField label="Migration to" value={migrationTo} onChange={setMigrationTo} />
-            </div>
-            <TextareaField label="Security notes" value={securityNotes} onChange={setSecurityNotes} />
-            <TextareaField label="Rollback plan" value={rollbackPlan} onChange={setRollbackPlan} />
-            <button
-              className="primaryButton"
-              disabled={!releaseSource || !releaseVersion.trim() || !releaseGitSha.trim() || Boolean(busyAction)}
-              type="submit"
-            >
-              {busyAction === "release" ? "Creating" : "Create release"}
-            </button>
-          </form>
+          {showReleaseForm ? (
+            <form className="operatorForm compactWorkflow" onSubmit={(event) => void onCreateRelease(event)}>
+              <SelectField
+                label="Source deployment"
+                options={deployments.map((row) => ({
+                  label: `${row.deployment.customer_name} / ${row.deployment.id}`,
+                  value: row.deployment.id,
+                }))}
+                value={releaseSourceId}
+                onChange={(value) => {
+                  setReleaseSourceId(value);
+                  const row = deployments.find((item) => item.deployment.id === value);
+                  setMigrationFrom(row?.deployment.current_migration || "");
+                }}
+              />
+              <ModulePreview row={releaseSource} targetVersion={releaseModuleVersion || releaseVersion || "target"} />
+              <div className="operatorFormGrid">
+                <TextField label="Release version" value={releaseVersion} onChange={setReleaseVersion} />
+                <TextField label="Module version" value={releaseModuleVersion} onChange={setReleaseModuleVersion} />
+                <TextField label="Git SHA" value={releaseGitSha} onChange={setReleaseGitSha} />
+                <SelectField label="Status" options={RELEASE_STATUSES} value={releaseStatus} onChange={setReleaseStatus} />
+              </div>
+              <div className="operatorFormGrid">
+                <TextField label="Migration from" value={migrationFrom} onChange={setMigrationFrom} />
+                <TextField label="Migration to" value={migrationTo} onChange={setMigrationTo} />
+              </div>
+              <TextareaField label="Security notes" value={securityNotes} onChange={setSecurityNotes} />
+              <TextareaField label="Rollback plan" value={rollbackPlan} onChange={setRollbackPlan} />
+              <button
+                className="primaryButton"
+                disabled={!releaseSource || !releaseVersion.trim() || !releaseGitSha.trim() || Boolean(busyAction)}
+                type="submit"
+              >
+                {busyAction === "release" ? "Creating" : "Create release"}
+              </button>
+            </form>
+          ) : null}
         </Panel>
       ) : null}
 

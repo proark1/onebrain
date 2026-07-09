@@ -18,6 +18,8 @@ type DocumentsPanelProps = {
   pendingReviewAvailable: boolean;
 };
 
+type DocumentAction = "library" | "upload" | "review";
+
 const SUPPORTED_EXTS = [
   ".pdf", ".docx", ".xlsx", ".xlsm", ".pptx", ".rtf",
   ".txt", ".md", ".markdown", ".csv", ".tsv", ".json",
@@ -103,7 +105,10 @@ export function DocumentsPanel({
   const [notice, setNotice] = useState("");
   const [query, setQuery] = useState("");
   const [filterClassification, setFilterClassification] = useState("");
+  const [filterCategory, setFilterCategory] = useState("");
+  const [filterLocation, setFilterLocation] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
+  const [activeAction, setActiveAction] = useState<DocumentAction>("library");
 
   const documentStats = useMemo(() => {
     const chunks = documents.reduce((total, document) => total + document.chunks, 0);
@@ -114,6 +119,12 @@ export function DocumentsPanel({
     const normalizedQuery = query.trim().toLowerCase();
     return documents.filter((document) => {
       if (filterClassification && document.classification !== filterClassification) {
+        return false;
+      }
+      if (filterCategory && document.category !== filterCategory) {
+        return false;
+      }
+      if (filterLocation && document.location !== filterLocation) {
         return false;
       }
       if (filterStatus && document.status !== filterStatus) {
@@ -130,7 +141,7 @@ export function DocumentsPanel({
         document.status,
       ].some((value) => value.toLowerCase().includes(normalizedQuery));
     });
-  }, [documents, filterClassification, filterStatus, query]);
+  }, [documents, filterCategory, filterClassification, filterLocation, filterStatus, query]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -236,13 +247,23 @@ export function DocumentsPanel({
     <div className="documentsWorkspace">
       <PageHeader
         actions={(
-          <button className="secondaryButton" disabled={loading} type="button" onClick={() => void refresh()}>
-          {loading ? "Refreshing" : "Refresh"}
-          </button>
+          <>
+            <button className="secondaryButton" disabled={loading} type="button" onClick={() => void refresh()}>
+              {loading ? "Refreshing" : "Refresh"}
+            </button>
+            {canReview ? (
+              <button className="secondaryButton" type="button" onClick={() => setActiveAction("review")}>
+                Review {pending.length}
+              </button>
+            ) : null}
+            <button className="primaryButton" type="button" onClick={() => setActiveAction("upload")}>
+              Upload
+            </button>
+          </>
         )}
-        eyebrow="Knowledge base"
+        eyebrow="Knowledge"
         meta={<span className="scopePill"><span className="statusDot" />Workspace scoped</span>}
-        title="Documents"
+        title="Knowledge library"
       />
 
       {error ? <Notice tone="error">{error}</Notice> : null}
@@ -257,7 +278,82 @@ export function DocumentsPanel({
         ]}
       />
 
-      <div className="documentsGrid">
+      {activeAction === "upload" ? (
+        <Panel
+          actions={<button className="secondaryButton" type="button" onClick={() => setActiveAction("library")}>Close</button>}
+          eyebrow="Upload"
+          title="Add knowledge"
+        >
+          <form className="uploadForm compactWorkflow" onSubmit={(event) => void onSubmit(event)}>
+            <label
+              className={selectedFile ? "dropzone hasFile" : "dropzone"}
+              htmlFor="documentFile"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={onDrop}
+            >
+              <input
+                accept={ACCEPTED_FILES}
+                id="documentFile"
+                hidden
+                onChange={(event) => chooseFile(event.target.files?.[0] ?? null)}
+                ref={fileInputRef}
+                type="file"
+              />
+              {selectedFile ? (
+                <span className="selectedFile">
+                  <span>{selectedFile.name}</span>
+                  <small>{humanSize(selectedFile.size)}</small>
+                </span>
+              ) : (
+                <>
+                  <span className="dropzoneTitle">Drop a file or browse</span>
+                  <small>PDF, Office, image, and text formats</small>
+                </>
+              )}
+            </label>
+
+            <div className="uploadControls inlineControls">
+              <SelectField label="Classification" value={classification} options={CLASSIFICATION_OPTIONS} onChange={setClassification} />
+              <SelectField label="Location" value={location} options={LOCATION_OPTIONS} onChange={setLocation} />
+              <SelectField label="Category" value={category} options={CATEGORY_OPTIONS} onChange={setCategory} />
+            </div>
+
+            <div className="workflowActions">
+              {selectedFile ? (
+                <button className="textButton" type="button" onClick={removeFile}>
+                  Remove file
+                </button>
+              ) : <span className="uploadNote">Labels decide who can retrieve the file after approval.</span>}
+              <button className="primaryButton" disabled={!selectedFile || uploading} type="submit">
+                {uploading ? "Uploading" : "Upload knowledge"}
+              </button>
+            </div>
+          </form>
+        </Panel>
+      ) : null}
+
+      {activeAction === "review" && canReview ? (
+        <Panel
+          actions={<button className="secondaryButton" type="button" onClick={() => setActiveAction("library")}>Close</button>}
+          count={pending.length}
+          eyebrow="Review"
+          title="Pending approval"
+        >
+          <div className="pendingList">
+            {pending.length === 0 ? <p className="mutedLine">No documents waiting for review.</p> : null}
+            {pending.map((document) => (
+              <PendingRow
+                approving={approvingId === document.doc_id}
+                document={document}
+                key={document.doc_id}
+                onApprove={onApprove}
+              />
+            ))}
+          </div>
+        </Panel>
+      ) : null}
+
+      <div className="documentsGrid singleColumn">
         <Panel count={visibleDocuments.length} eyebrow="Approved knowledge" title="Visible documents">
           <div className="filterBar" aria-label="Document filters">
             <label className="field">
@@ -274,6 +370,24 @@ export function DocumentsPanel({
               </select>
             </label>
             <label className="field">
+              <span className="fieldLabel">Category</span>
+              <select className="select" value={filterCategory} onChange={(event) => setFilterCategory(event.target.value)}>
+                <option value="">All categories</option>
+                {CATEGORY_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span className="fieldLabel">Location</span>
+              <select className="select" value={filterLocation} onChange={(event) => setFilterLocation(event.target.value)}>
+                <option value="">All locations</option>
+                {LOCATION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
               <span className="fieldLabel">Status</span>
               <select className="select" value={filterStatus} onChange={(event) => setFilterStatus(event.target.value)}>
                 <option value="">All statuses</option>
@@ -284,7 +398,16 @@ export function DocumentsPanel({
             </label>
           </div>
 
-          <div className="documentList">
+          <div className="documentList knowledgeTable">
+            {visibleDocuments.length ? (
+              <div className="knowledgeTableHead" aria-hidden="true">
+                <span>Title</span>
+                <span>Access</span>
+                <span>Chunks</span>
+                <span>Status</span>
+                <span>PII</span>
+              </div>
+            ) : null}
             {visibleDocuments.length === 0 ? (
               <div className="emptyPanel">
                 <h3>No matching documents</h3>
@@ -296,72 +419,6 @@ export function DocumentsPanel({
             ))}
           </div>
         </Panel>
-
-        <aside className="documentSide">
-          <Panel eyebrow="Ingest" title="Upload document">
-            <form className="uploadForm" onSubmit={(event) => void onSubmit(event)}>
-              <label
-                className={selectedFile ? "dropzone hasFile" : "dropzone"}
-                htmlFor="documentFile"
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={onDrop}
-              >
-                <input
-                  accept={ACCEPTED_FILES}
-                  id="documentFile"
-                  hidden
-                  onChange={(event) => chooseFile(event.target.files?.[0] ?? null)}
-                  ref={fileInputRef}
-                  type="file"
-                />
-                {selectedFile ? (
-                  <span className="selectedFile">
-                    <span>{selectedFile.name}</span>
-                    <small>{humanSize(selectedFile.size)}</small>
-                  </span>
-                ) : (
-                  <>
-                    <span className="dropzoneTitle">Drop a file or browse</span>
-                    <small>PDF, Office, image, and text formats</small>
-                  </>
-                )}
-              </label>
-
-              {selectedFile ? (
-                <button className="textButton" type="button" onClick={removeFile}>
-                  Remove file
-                </button>
-              ) : null}
-
-              <div className="uploadControls">
-                <SelectField label="Classification" value={classification} options={CLASSIFICATION_OPTIONS} onChange={setClassification} />
-                <SelectField label="Location" value={location} options={LOCATION_OPTIONS} onChange={setLocation} />
-                <SelectField label="Category" value={category} options={CATEGORY_OPTIONS} onChange={setCategory} />
-              </div>
-
-              <p className="uploadNote">Labels decide who can retrieve the file after approval.</p>
-              <button className="primaryButton" disabled={!selectedFile || uploading} type="submit">
-                {uploading ? "Uploading" : "Upload"}
-              </button>
-            </form>
-          </Panel>
-
-          {canReview ? (
-            <Panel count={pending.length} eyebrow="Review" title="Pending approval">
-              <div className="pendingList">
-                {pending.length === 0 ? <p className="mutedLine">No documents waiting for review.</p> : null}
-                {pending.map((document) => (
-                  <PendingRow
-                    approving={approvingId === document.doc_id}
-                    document={document}
-                    key={document.doc_id}
-                    onApprove={onApprove}
-                  />
-                ))}
-              </div>
-            </Panel>
-          ) : null}
-        </aside>
       </div>
     </div>
   );
@@ -397,15 +454,15 @@ function DocumentRow({ document }: { document: DocumentSummary }) {
       <span className="classificationRail" aria-hidden="true" />
       <div className="documentInfo">
         <h3>{document.title}</h3>
-        <p>
-          {labelFor(document.classification)} / {labelFor(document.category)} / {labelFor(document.location)}
-        </p>
       </div>
+      <span>{labelFor(document.classification)} / {labelFor(document.category)} / {labelFor(document.location)}</span>
       <div className="documentMeta">
         <span>{document.chunks} chunks</span>
-        <span>{document.status}</span>
-        {document.pii_findings ? <span className="dangerText">{document.pii_findings} PII</span> : null}
       </div>
+      <span>{document.status}</span>
+      <span className={document.pii_findings ? "dangerText" : "mutedInline"}>
+        {document.pii_findings ? `${document.pii_findings} PII` : "clear"}
+      </span>
     </article>
   );
 }

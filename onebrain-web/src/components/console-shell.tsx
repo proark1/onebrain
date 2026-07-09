@@ -13,12 +13,12 @@ type ConsoleShellProps = {
 };
 
 const PRIMARY_NAV: Array<{ id: ConsoleSection; href: string; label: string }> = [
-  { id: "cockpit", href: "/cockpit", label: "Cockpit" },
-  { id: "chat", href: "/chat", label: "Chat" },
-  { id: "documents", href: "/documents", label: "Documents" },
-  { id: "spaces", href: "/spaces", label: "Spaces" },
+  { id: "cockpit", href: "/cockpit", label: "Status" },
+  { id: "chat", href: "/chat", label: "Ask" },
+  { id: "documents", href: "/documents", label: "Knowledge" },
+  { id: "spaces", href: "/spaces", label: "Apps" },
   { id: "privacy", href: "/privacy", label: "Privacy" },
-  { id: "operator", href: "/operator", label: "Operator" },
+  { id: "operator", href: "/operator", label: "Control" },
 ];
 
 export function ConsoleShell({ active, children, session }: ConsoleShellProps) {

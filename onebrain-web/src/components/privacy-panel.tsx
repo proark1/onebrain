@@ -60,6 +60,7 @@ export function PrivacyPanel() {
   const [loadingAccounts, setLoadingAccounts] = useState(true);
   const [loadingSpaces, setLoadingSpaces] = useState(false);
   const [busyAction, setBusyAction] = useState<"export" | "erase" | "">("");
+  const [showErase, setShowErase] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [result, setResult] = useState<PrivacyResult | null>(null);
@@ -81,6 +82,7 @@ export function PrivacyPanel() {
     setLoadingSpaces(false);
     setConfirmation("");
     setReason("");
+    setShowErase(false);
     setResult(null);
     setNotice("");
     setError("");
@@ -210,6 +212,7 @@ export function PrivacyPanel() {
       setNotice("Data erased and audit event recorded.");
       setConfirmation("");
       setReason("");
+      setShowErase(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erase failed.");
     } finally {
@@ -221,13 +224,18 @@ export function PrivacyPanel() {
     <div className="privacyWorkspace">
       <PageHeader
         actions={(
-          <button className="secondaryButton" disabled={loadingAccounts || Boolean(busyAction)} type="button" onClick={() => void loadAccounts()}>
-          {loadingAccounts ? "Loading" : "Refresh"}
-          </button>
+          <>
+            <button className="secondaryButton" disabled={loadingAccounts || Boolean(busyAction)} type="button" onClick={() => void loadAccounts()}>
+              {loadingAccounts ? "Loading" : "Refresh"}
+            </button>
+            <button className="primaryButton" disabled={!selectedAccountId || Boolean(busyAction)} type="button" onClick={() => void onExport()}>
+              {busyAction === "export" ? "Exporting" : "Export JSON"}
+            </button>
+          </>
         )}
-        eyebrow="Privacy center"
+        eyebrow="Data rights"
         meta={selectedAccount ? <span className="scopePill"><span className="statusDot" />{selectedAccount.name}</span> : null}
-        title="Export and erase account data"
+        title="Privacy"
       />
 
       {error ? <Notice tone="error">{error}</Notice> : null}
@@ -286,52 +294,71 @@ export function PrivacyPanel() {
             </div>
           </div>
 
-          <button className="primaryButton" disabled={!selectedAccountId || Boolean(busyAction)} type="button" onClick={() => void onExport()}>
-            {busyAction === "export" ? "Exporting" : "Export JSON"}
-          </button>
         </Panel>
 
-        <section className="adminPanel privacyDanger" aria-labelledby="privacyEraseTitle">
-          <div className="panelHead">
+        {showErase ? (
+          <section className="adminPanel privacyDanger" aria-labelledby="privacyEraseTitle">
+            <div className="panelHead">
+              <div>
+                <p className="eyebrow">Erasure</p>
+                <h2 id="privacyEraseTitle">Delete selected data</h2>
+              </div>
+              <button className="secondaryButton" type="button" onClick={() => setShowErase(false)}>Close</button>
+            </div>
+            <form className="privacyForm" onSubmit={(event) => void onErase(event)}>
+              <div className="privacyScopeCard">
+                <span className="statusDot" aria-hidden="true" />
+                <div>
+                  <strong>{selectedAccount?.name || "No account selected"}</strong>
+                  <p>{selectedSpace ? selectedSpace.name : "All account data"}</p>
+                </div>
+              </div>
+
+              <label className="field">
+                <span className="fieldLabel">Confirm account id</span>
+                <input
+                  className="input"
+                  disabled={!selectedAccountId || Boolean(busyAction)}
+                  placeholder={selectedAccountId || "account id"}
+                  value={confirmation}
+                  onChange={(event) => setConfirmation(event.target.value)}
+                />
+              </label>
+
+              <label className="field">
+                <span className="fieldLabel">Reason</span>
+                <textarea
+                  className="textarea"
+                  disabled={!selectedAccountId || Boolean(busyAction)}
+                  maxLength={500}
+                  rows={4}
+                  value={reason}
+                  onChange={(event) => setReason(event.target.value)}
+                />
+              </label>
+
+              <p className="privacyNote">
+                This removes the selected scope from documents, chunks, conversations, and intake records, then records
+                the action in the Python audit store.
+              </p>
+
+              <button className="dangerButton" disabled={!eraseReady} type="submit">
+                {busyAction === "erase" ? "Erasing" : "Erase data"}
+              </button>
+            </form>
+          </section>
+        ) : (
+          <section className="adminPanel privacyStandby" aria-label="Erasure standby">
             <div>
               <p className="eyebrow">Erasure</p>
-              <h2 id="privacyEraseTitle">Delete selected data</h2>
+              <h2>Protected by confirmation</h2>
+              <p className="operatorMuted">Choose a scope, then prepare erasure when a verified deletion request exists.</p>
             </div>
-          </div>
-          <form className="privacyForm" onSubmit={(event) => void onErase(event)}>
-            <label className="field">
-              <span className="fieldLabel">Confirm account id</span>
-              <input
-                className="input"
-                disabled={!selectedAccountId || Boolean(busyAction)}
-                placeholder={selectedAccountId || "account id"}
-                value={confirmation}
-                onChange={(event) => setConfirmation(event.target.value)}
-              />
-            </label>
-
-            <label className="field">
-              <span className="fieldLabel">Reason</span>
-              <textarea
-                className="textarea"
-                disabled={!selectedAccountId || Boolean(busyAction)}
-                maxLength={500}
-                rows={4}
-                value={reason}
-                onChange={(event) => setReason(event.target.value)}
-              />
-            </label>
-
-            <p className="privacyNote">
-              This removes the selected scope from documents, chunks, conversations, and intake records, then records
-              the action in the Python audit store.
-            </p>
-
-            <button className="dangerButton" disabled={!eraseReady} type="submit">
-              {busyAction === "erase" ? "Erasing" : "Erase data"}
+            <button className="secondaryButton" disabled={!selectedAccountId || Boolean(busyAction)} type="button" onClick={() => setShowErase(true)}>
+              Prepare erasure
             </button>
-          </form>
-        </section>
+          </section>
+        )}
       </div>
 
       {result ? <PrivacyResultPanel result={result} /> : null}
