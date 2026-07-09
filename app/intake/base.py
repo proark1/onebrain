@@ -91,7 +91,13 @@ class IntakeRecord:
 class IntakeStore(Protocol):
     def create(self, record: IntakeRecord) -> IntakeRecord: ...
 
-    def get(self, record_id: str) -> Optional[IntakeRecord]: ...
+    def get(
+        self,
+        record_id: str,
+        tenant_id: str = "",
+        account_id: str = "",
+        space_id: str = "",
+    ) -> Optional[IntakeRecord]: ...
 
     def list_by_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> List[IntakeRecord]: ...
 

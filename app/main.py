@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.deps import get_pipeline, get_store, get_user_store
+from app.deploy.runtime import validate_runtime_safety
 from app.routers import assistant, auth, chat, conversations, documents, jobs, operator, platform, privacy, provisioning, service, session
 from app.seed import seed_if_empty
 from app.users.seed import seed_admin_from_env, seed_users_if_empty
@@ -20,6 +21,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    validate_runtime_safety(settings)
 
     # Fail closed: a weak/default cookie-signing secret means anyone can forge a
     # session token for any user. Refuse to start rather than run insecurely.

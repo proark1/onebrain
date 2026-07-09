@@ -37,8 +37,8 @@ def ask(body: AskRequest, principal: Principal = Depends(resolve_principal)):
 
     # Load prior turns BEFORE recording the new question.
     history = [{"role": m.role, "content": m.content}
-               for m in convs.get_messages(conv.id, limit=HISTORY_TURNS)]
-    convs.add_message(conv.id, "user", body.question)
+               for m in convs.get_messages(conv.id, limit=HISTORY_TURNS, scope=scope)]
+    convs.add_message(conv.id, "user", body.question, scope=scope)
 
     def event_stream():
         yield f"data: {json.dumps({'type': 'conversation', 'id': conv.id, 'title': conv.title})}\n\n"
@@ -62,7 +62,7 @@ def ask(body: AskRequest, principal: Principal = Depends(resolve_principal)):
             "cost_usd": meta.get("cost_usd"),
             "estimated": meta.get("estimated"),
             "llm": meta.get("llm"),
-        })
+        }, scope=scope)
 
     return StreamingResponse(
         event_stream(),

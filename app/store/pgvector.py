@@ -13,6 +13,7 @@ from typing import List
 
 import numpy as np
 
+from app.db.rls import set_rls_scope
 from app.db.schema import PostgresSchemaError, validate_postgres_schema
 from app.security.policy import AccessFilter
 from app.store.base import Chunk, Hit
@@ -77,6 +78,12 @@ class PgVectorStore:
     def add(self, chunks: List[Chunk]) -> None:
         with self._conn() as conn, conn.cursor() as cur:
             for c in chunks:
+                set_rls_scope(
+                    conn,
+                    tenant_id=str(c.meta.get("tenant_id") or ""),
+                    account_id=str(c.meta.get("account_id") or ""),
+                    space_id=str(c.meta.get("space_id") or ""),
+                )
                 cur.execute(
                     "INSERT INTO chunks (id, doc_id, text, meta, embedding, tenant_id) "
                     "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
@@ -93,6 +100,12 @@ class PgVectorStore:
         )
         args = [np.asarray(query), *params, np.asarray(query), k]
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(
+                conn,
+                tenant_id=access.tenant_id,
+                account_id=access.account_id,
+                space_id=next(iter(access.space_ids), "") if access.space_ids else "",
+            )
             cur.execute(sql, args)
             rows = cur.fetchall()
         return [
@@ -108,6 +121,12 @@ class PgVectorStore:
             f"FROM chunks WHERE {where} GROUP BY 1, 2, 3, 4, 5, 6, 7 ORDER BY 2"
         )
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(
+                conn,
+                tenant_id=access.tenant_id,
+                account_id=access.account_id,
+                space_id=next(iter(access.space_ids), "") if access.space_ids else "",
+            )
             cur.execute(sql, params)
             rows = cur.fetchall()
         return [
@@ -127,6 +146,7 @@ class PgVectorStore:
             "GROUP BY doc_id ORDER BY 2"
         )
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, tenant_id=tenant_id)
             cur.execute(sql, (tenant_id,))
             rows = cur.fetchall()
         return [
@@ -147,6 +167,7 @@ class PgVectorStore:
             "FROM chunks WHERE doc_id = %s GROUP BY doc_id"
         )
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, admin=True)
             cur.execute(sql, (doc_id,))
             r = cur.fetchone()
         if not r:
@@ -161,6 +182,7 @@ class PgVectorStore:
 
     def set_document_status(self, doc_id: str, status: str, approved_by=None) -> int:
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, admin=True)
             if approved_by is not None:
                 cur.execute(
                     "UPDATE chunks SET meta = jsonb_set(jsonb_set(meta, '{status}', to_jsonb(%s::text)), "
@@ -178,6 +200,7 @@ class PgVectorStore:
 
     def delete_document(self, doc_id: str) -> int:
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, admin=True)
             cur.execute("DELETE FROM chunks WHERE doc_id = %s", (doc_id,))
             removed = cur.rowcount
             conn.commit()
@@ -187,6 +210,7 @@ class PgVectorStore:
         where, params = _privacy_where(tenant_id, account_id, space_id)
         sql = f"SELECT id, doc_id, text, meta FROM chunks WHERE {where} ORDER BY doc_id, id"
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, tenant_id=tenant_id, account_id=account_id, space_id=space_id)
             cur.execute(sql, params)
             rows = cur.fetchall()
 
@@ -211,6 +235,7 @@ class PgVectorStore:
     def delete_documents_by_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> dict:
         where, params = _privacy_where(tenant_id, account_id, space_id)
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, tenant_id=tenant_id, account_id=account_id, space_id=space_id)
             cur.execute(f"SELECT count(DISTINCT doc_id), count(*) FROM chunks WHERE {where}", params)
             docs, chunks = cur.fetchone()
             cur.execute(f"DELETE FROM chunks WHERE {where}", params)
@@ -219,5 +244,6 @@ class PgVectorStore:
 
     def count(self) -> int:
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, admin=True)
             cur.execute("SELECT count(*) FROM chunks")
             return int(cur.fetchone()[0])

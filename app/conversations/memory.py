@@ -79,8 +79,19 @@ class MemoryConversationStore:
         owned.sort(key=lambda c: c.updated_at, reverse=True)
         return owned[:limit]
 
-    def add_message(self, conversation_id: str, role: str, content: str, meta: Optional[dict] = None) -> Message:
+    def add_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        meta: Optional[dict] = None,
+        scope: Optional[Scope] = None,
+    ) -> Message:
         with self._lock:
+            if scope:
+                conv = self._conversations.get(conversation_id)
+                if not conv or not _owns(conv, scope):
+                    raise KeyError(f"conversation is not in scope: {conversation_id}")
             msg = Message(role=role, content=content, id=uuid.uuid4().hex, created_at=_now(), meta=meta or {})
             self._messages.setdefault(conversation_id, []).append(msg)
             if conversation_id in self._conversations:
@@ -88,7 +99,16 @@ class MemoryConversationStore:
             self._save()
             return msg
 
-    def get_messages(self, conversation_id: str, limit: Optional[int] = None) -> List[Message]:
+    def get_messages(
+        self,
+        conversation_id: str,
+        limit: Optional[int] = None,
+        scope: Optional[Scope] = None,
+    ) -> List[Message]:
+        if scope:
+            conv = self._conversations.get(conversation_id)
+            if not conv or not _owns(conv, scope):
+                return []
         msgs = list(self._messages.get(conversation_id, []))
         return msgs[-limit:] if limit else msgs
 

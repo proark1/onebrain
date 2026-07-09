@@ -55,9 +55,18 @@ class MemoryIntakeStore:
             self._save()
             return record
 
-    def get(self, record_id: str) -> Optional[IntakeRecord]:
+    def get(
+        self,
+        record_id: str,
+        tenant_id: str = "",
+        account_id: str = "",
+        space_id: str = "",
+    ) -> Optional[IntakeRecord]:
         with self._lock:
-            return self._records.get(record_id)
+            record = self._records.get(record_id)
+            if not record or not tenant_id:
+                return record
+            return record if _matches_scope(record, tenant_id, account_id, space_id) else None
 
     def list_by_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> List[IntakeRecord]:
         with self._lock:

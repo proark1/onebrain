@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     embeddings_provider: str = "local"   # local | litellm
     llm_provider: str = "local"          # local | litellm
     vector_store: str = "memory"         # memory | pgvector
+    environment: str = "local"           # local | development | staging | production
 
     # Retrieval
     top_k: int = 8
@@ -151,6 +152,10 @@ class Settings(BaseSettings):
         if self.async_ingestion is not None:
             return bool(self.async_ingestion)
         return self.vector_store == "pgvector"
+
+    @property
+    def is_production_like(self) -> bool:
+        return self.environment.strip().lower() in {"prod", "production", "staging"}
 
 
 @lru_cache

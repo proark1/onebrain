@@ -76,6 +76,7 @@ Set these on both `onebrain` and `onebrain-workers`:
 
 ```text
 ONEBRAIN_VECTOR_STORE=pgvector
+ONEBRAIN_ENVIRONMENT=production
 ONEBRAIN_DATABASE_URL=${{Postgres.DATABASE_URL}}
 ONEBRAIN_MIGRATION_EMBEDDING_DIM=256
 ONEBRAIN_AUTH_SECRET=<strong random secret, at least 32 chars>
@@ -89,7 +90,7 @@ ONEBRAIN_PII_PHASE=synthetic
 ONEBRAIN_REQUIRE_APPROVAL=false
 ONEBRAIN_BLOCK_PUBLIC_ON_PII=true
 ONEBRAIN_RETRIEVAL_MIN_SCORE=0.05
-ONEBRAIN_RLS_ENFORCED=false
+ONEBRAIN_RLS_ENFORCED=true
 ```
 
 `ONEBRAIN_MIGRATION_EMBEDDING_DIM` must match the embedding provider or the
@@ -99,6 +100,10 @@ existing `chunks.embedding` column. The current Railway database uses
 `ONEBRAIN_RETRIEVAL_MIN_SCORE` filters weak vector matches before they reach the
 LLM. Tune it for the active embedding model after checking answer quality on
 representative customer questions.
+
+Production-like environments (`ONEBRAIN_ENVIRONMENT=staging` or `production`)
+refuse to start unless `ONEBRAIN_VECTOR_STORE=pgvector`,
+`ONEBRAIN_DATABASE_URL` is set, and `ONEBRAIN_RLS_ENFORCED=true`.
 
 Worker tuning variables:
 

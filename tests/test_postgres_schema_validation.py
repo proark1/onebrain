@@ -154,6 +154,20 @@ def _governance_migration_module():
     return module
 
 
+def _rls_migration_module():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "versions"
+        / "0008_rls_hardening.py"
+    )
+    spec = importlib.util.spec_from_file_location("rls_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_validate_postgres_schema_requires_alembic_version_table():
     conn = FakeConnection(FakeCursor(missing_version_table=True))
 
@@ -246,10 +260,9 @@ def test_provisioning_runs_migration_tracks_expected_head():
     assert {"provisioning_runs", "one_time_secret_envelopes"} == set(migration.PROVISIONING_TABLES)
 
 
-def test_governance_migration_tracks_expected_head():
+def test_governance_migration_extends_provisioning_runs():
     migration = _governance_migration_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
     assert len(migration.revision) <= 32
     assert migration.down_revision == "0006_provisioning_runs"
     assert {
@@ -263,6 +276,16 @@ def test_governance_migration_tracks_expected_head():
         "platform_credential_metadata",
         "retention_runs",
     } == set(migration.GOVERNANCE_TABLES)
+
+
+def test_rls_migration_tracks_expected_head():
+    migration = _rls_migration_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert len(migration.revision) <= 32
+    assert migration.down_revision == "0007_governance_privacy"
+    assert "intake_records" in migration.TENANT_TABLES
+    assert "platform_audit_events" in migration.ACCOUNT_TABLES
 
 
 def test_migration_embedding_dim_env(monkeypatch):

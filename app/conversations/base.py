@@ -52,9 +52,21 @@ class ConversationStore(Protocol):
 
     def list(self, scope: Scope, limit: int = 50) -> List[Conversation]: ...
 
-    def add_message(self, conversation_id: str, role: str, content: str, meta: Optional[dict] = None) -> Message: ...
+    def add_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        meta: Optional[dict] = None,
+        scope: Optional[Scope] = None,
+    ) -> Message: ...
 
-    def get_messages(self, conversation_id: str, limit: Optional[int] = None) -> List[Message]: ...
+    def get_messages(
+        self,
+        conversation_id: str,
+        limit: Optional[int] = None,
+        scope: Optional[Scope] = None,
+    ) -> List[Message]: ...
 
     def delete(self, conversation_id: str, scope: Scope) -> bool: ...
 

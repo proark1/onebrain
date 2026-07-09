@@ -8,6 +8,7 @@ from typing import List, Optional
 
 import psycopg
 
+from app.db.rls import set_rls_scope
 from app.db.schema import validate_postgres_schema
 from app.intake.base import IntakeRecord
 
@@ -39,6 +40,12 @@ class PostgresIntakeStore:
 
     def create(self, record: IntakeRecord) -> IntakeRecord:
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(
+                conn,
+                tenant_id=record.tenant_id,
+                account_id=record.account_id,
+                space_id=record.space_id,
+            )
             cur.execute(
                 """
                 INSERT INTO intake_records (
@@ -59,9 +66,20 @@ class PostgresIntakeStore:
             conn.commit()
         return record
 
-    def get(self, record_id: str) -> Optional[IntakeRecord]:
+    def get(
+        self,
+        record_id: str,
+        tenant_id: str = "",
+        account_id: str = "",
+        space_id: str = "",
+    ) -> Optional[IntakeRecord]:
         with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(f"SELECT {self._COLS} FROM intake_records WHERE id = %s", (record_id,))
+            if tenant_id:
+                set_rls_scope(conn, tenant_id=tenant_id, account_id=account_id, space_id=space_id)
+            cur.execute(
+                f"SELECT {self._COLS} FROM intake_records WHERE id = %s",
+                (record_id,),
+            )
             row = cur.fetchone()
             return self._row(row) if row else None
 
@@ -75,6 +93,7 @@ class PostgresIntakeStore:
             clauses.append("space_id = %s")
             params.append(space_id)
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, tenant_id=tenant_id, account_id=account_id, space_id=space_id)
             cur.execute(
                 f"SELECT {self._COLS} FROM intake_records WHERE {' AND '.join(clauses)} ORDER BY created_at, id",
                 params,
@@ -94,6 +113,7 @@ class PostgresIntakeStore:
             clauses.append("space_id = %s")
             params.append(space_id)
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, tenant_id=tenant_id, account_id=account_id, space_id=space_id)
             cur.execute(f"DELETE FROM intake_records WHERE {' AND '.join(clauses)}", params)
             deleted = cur.rowcount
             conn.commit()
@@ -101,5 +121,6 @@ class PostgresIntakeStore:
 
     def count(self) -> int:
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, admin=True)
             cur.execute("SELECT COUNT(*) FROM intake_records")
             return int(cur.fetchone()[0])

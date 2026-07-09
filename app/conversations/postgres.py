@@ -7,6 +7,7 @@ import uuid
 from typing import List, Optional
 
 from app.conversations.base import Conversation, Message, Scope
+from app.db.rls import set_rls_scope
 from app.db.schema import validate_postgres_schema
 
 
@@ -45,6 +46,7 @@ class PostgresConversationStore:
     def create(self, scope: Scope, title: str) -> Conversation:
         cid = uuid.uuid4().hex
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, tenant_id=scope.tenant_id, account_id=scope.account_id, space_id=scope.space_id)
             cur.execute(
                 "INSERT INTO conversations (id, tenant_id, session_id, role_id, title, account_id, space_id) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING created_at, updated_at",
@@ -61,6 +63,7 @@ class PostgresConversationStore:
 
     def get(self, conversation_id: str, scope: Scope) -> Optional[Conversation]:
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, tenant_id=scope.tenant_id, account_id=scope.account_id, space_id=scope.space_id)
             cur.execute(
                 "SELECT id, title, created_at, updated_at FROM conversations "
                 "WHERE id = %s AND tenant_id = %s AND session_id = %s AND role_id = %s "
@@ -78,6 +81,7 @@ class PostgresConversationStore:
 
     def list(self, scope: Scope, limit: int = 50) -> List[Conversation]:
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, tenant_id=scope.tenant_id, account_id=scope.account_id, space_id=scope.space_id)
             cur.execute(
                 "SELECT id, title, created_at, updated_at FROM conversations "
                 "WHERE tenant_id = %s AND session_id = %s AND role_id = %s "
@@ -92,9 +96,20 @@ class PostgresConversationStore:
                 )
                 for r in rows]
 
-    def add_message(self, conversation_id: str, role: str, content: str, meta: Optional[dict] = None) -> Message:
+    def add_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        meta: Optional[dict] = None,
+        scope: Optional[Scope] = None,
+    ) -> Message:
         mid = uuid.uuid4().hex
         with self._conn() as conn, conn.cursor() as cur:
+            if scope:
+                set_rls_scope(conn, tenant_id=scope.tenant_id, account_id=scope.account_id, space_id=scope.space_id)
+            else:
+                set_rls_scope(conn, admin=True)
             cur.execute(
                 "INSERT INTO messages (id, conversation_id, role, content, meta) VALUES (%s, %s, %s, %s, %s) "
                 "RETURNING created_at",
@@ -105,9 +120,18 @@ class PostgresConversationStore:
             conn.commit()
         return Message(role=role, content=content, id=mid, created_at=_iso(created), meta=meta or {})
 
-    def get_messages(self, conversation_id: str, limit: Optional[int] = None) -> List[Message]:
+    def get_messages(
+        self,
+        conversation_id: str,
+        limit: Optional[int] = None,
+        scope: Optional[Scope] = None,
+    ) -> List[Message]:
         sql = "SELECT id, role, content, meta, created_at FROM messages WHERE conversation_id = %s ORDER BY created_at"
         with self._conn() as conn, conn.cursor() as cur:
+            if scope:
+                set_rls_scope(conn, tenant_id=scope.tenant_id, account_id=scope.account_id, space_id=scope.space_id)
+            else:
+                set_rls_scope(conn, admin=True)
             cur.execute(sql, (conversation_id,))
             rows = cur.fetchall()
         msgs = [Message(role=r[1], content=r[2], id=r[0], created_at=_iso(r[4]), meta=r[3] or {}) for r in rows]
@@ -115,6 +139,7 @@ class PostgresConversationStore:
 
     def delete(self, conversation_id: str, scope: Scope) -> bool:
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, tenant_id=scope.tenant_id, account_id=scope.account_id, space_id=scope.space_id)
             cur.execute(
                 "DELETE FROM conversations WHERE id = %s AND tenant_id = %s AND session_id = %s AND role_id = %s "
                 "AND account_id = %s AND space_id = %s",
@@ -130,6 +155,7 @@ class PostgresConversationStore:
     def export_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> List[dict]:
         where, params = _privacy_where(tenant_id, account_id, space_id)
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, tenant_id=tenant_id, account_id=account_id, space_id=space_id)
             cur.execute(
                 "SELECT id, tenant_id, account_id, space_id, session_id, role_id, title, created_at, updated_at "
                 f"FROM conversations WHERE {where} ORDER BY updated_at DESC",
@@ -171,6 +197,7 @@ class PostgresConversationStore:
     def delete_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> int:
         where, params = _privacy_where(tenant_id, account_id, space_id)
         with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, tenant_id=tenant_id, account_id=account_id, space_id=space_id)
             cur.execute(f"DELETE FROM conversations WHERE {where}", params)
             removed = cur.rowcount
             conn.commit()

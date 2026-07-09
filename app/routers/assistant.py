@@ -178,7 +178,14 @@ def get_assistant_record(
 ):
     _require_scope(principal, SCOPE_READ)
     _rate_limit(principal)
-    record = get_intake_store().get(record_id)
+    record = get_intake_store().get(
+        record_id,
+        tenant_id=principal.tenant_id,
+        account_id=principal.account_id or "",
+        space_id=next(iter(principal.space_ids), "")
+        if principal.space_ids is not None and len(principal.space_ids) == 1
+        else "",
+    )
     if not record or record.tenant_id != principal.tenant_id or record.app_id != ASSISTANT_APP_ID:
         raise HTTPException(status_code=404, detail="Assistant record not found.")
     _enforce_record_scope(record, principal)

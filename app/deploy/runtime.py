@@ -22,8 +22,26 @@ def is_postgres_mode(settings: Settings) -> bool:
     return settings.vector_store == "pgvector"
 
 
+def validate_runtime_safety(settings: Settings | None = None) -> None:
+    settings = settings or get_settings()
+    if not settings.is_production_like:
+        return
+    if not is_postgres_mode(settings):
+        raise RuntimeError(
+            "Production-like OneBrain environments must set "
+            "ONEBRAIN_VECTOR_STORE=pgvector."
+        )
+    _require_database_url(settings)
+    if not settings.rls_enforced:
+        raise RuntimeError(
+            "Production-like OneBrain environments must set "
+            "ONEBRAIN_RLS_ENFORCED=true."
+        )
+
+
 def run_migrations_if_needed(settings: Settings | None = None) -> None:
     settings = settings or get_settings()
+    validate_runtime_safety(settings)
     if not is_postgres_mode(settings):
         print("Skipping Alembic migrations; ONEBRAIN_VECTOR_STORE is not pgvector.", flush=True)
         return

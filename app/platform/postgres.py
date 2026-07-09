@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import List, Optional
 
+from app.db.rls import set_rls_scope
 from app.db.schema import validate_postgres_schema
 from app.platform.base import (
     CUSTOMER_SERVICE_PURPOSES,
@@ -63,8 +64,11 @@ class PostgresPlatformStore:
         self._dsn = dsn
         self._validate_schema()
 
-    def _conn(self):
-        return self._psycopg.connect(self._dsn)
+    def _conn(self, *, account_id: str = "", space_id: str = "", admin: bool = False):
+        conn = self._psycopg.connect(self._dsn)
+        if account_id or space_id or admin:
+            set_rls_scope(conn, account_id=account_id, space_id=space_id, admin=admin)
+        return conn
 
     def _validate_schema(self) -> None:
         with self._conn() as conn:
@@ -135,7 +139,7 @@ class PostgresPlatformStore:
 
     def create_account(self, account: Account) -> Account:
         validate_account(account)
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(admin=True) as conn, conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO platform_accounts (id, kind, name, owner_user_id, status) VALUES (%s, %s, %s, %s, %s)",
                 (account.id, account.kind, account.name, account.owner_user_id, account.status),
@@ -144,21 +148,21 @@ class PostgresPlatformStore:
         return account
 
     def get_account(self, account_id: str) -> Optional[Account]:
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
             cur.execute("SELECT id, kind, name, owner_user_id, status, created_at FROM platform_accounts WHERE id = %s",
                         (account_id,))
             row = cur.fetchone()
         return self._account_row(row) if row else None
 
     def list_accounts(self) -> List[Account]:
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(admin=True) as conn, conn.cursor() as cur:
             cur.execute("SELECT id, kind, name, owner_user_id, status, created_at FROM platform_accounts ORDER BY name")
             rows = cur.fetchall()
         return [self._account_row(r) for r in rows]
 
     def create_space(self, space: Space) -> Space:
         validate_space(space)
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=space.account_id) as conn, conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO platform_spaces (id, account_id, kind, name, status) VALUES (%s, %s, %s, %s, %s)",
                 (space.id, space.account_id, space.kind, space.name, space.status),
@@ -167,14 +171,14 @@ class PostgresPlatformStore:
         return space
 
     def get_space(self, space_id: str) -> Optional[Space]:
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(admin=True) as conn, conn.cursor() as cur:
             cur.execute("SELECT id, account_id, kind, name, status, created_at FROM platform_spaces WHERE id = %s",
                         (space_id,))
             row = cur.fetchone()
         return self._space_row(row) if row else None
 
     def list_spaces(self, account_id: str) -> List[Space]:
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT id, account_id, kind, name, status, created_at FROM platform_spaces "
                 "WHERE account_id = %s ORDER BY name",
@@ -189,7 +193,7 @@ class PostgresPlatformStore:
             space = self.get_space(space_id)
             if not space or space.account_id != installation.account_id:
                 raise ValueError(f"space is not in this account: {space_id}")
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=installation.account_id) as conn, conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO platform_app_installations "
                 "(id, account_id, app_id, enabled_space_ids, allowed_purposes, display_name, status) "
@@ -201,7 +205,7 @@ class PostgresPlatformStore:
         return installation
 
     def get_app_installation(self, installation_id: str) -> Optional[AppInstallation]:
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(admin=True) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT id, account_id, app_id, enabled_space_ids, allowed_purposes, display_name, status, created_at "
                 "FROM platform_app_installations WHERE id = %s",
@@ -211,7 +215,7 @@ class PostgresPlatformStore:
         return self._installation_row(row) if row else None
 
     def list_app_installations(self, account_id: str) -> List[AppInstallation]:
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT id, account_id, app_id, enabled_space_ids, allowed_purposes, display_name, status, created_at "
                 "FROM platform_app_installations WHERE account_id = %s ORDER BY app_id",
@@ -221,7 +225,14 @@ class PostgresPlatformStore:
         return [self._installation_row(r) for r in rows]
 
     def check_app_access(self, account_id: str, app_id: str, space_id: str, purpose: str) -> AccessDecision:
-        space = self.get_space(space_id)
+        with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, account_id, kind, name, status, created_at "
+                "FROM platform_spaces WHERE id = %s AND account_id = %s",
+                (space_id, account_id),
+            )
+            row = cur.fetchone()
+        space = self._space_row(row) if row else None
         if not space or space.account_id != account_id or space.status != "active":
             return AccessDecision(False, "space_not_found")
         if purpose in CUSTOMER_SERVICE_PURPOSES and space.kind in PRIVATE_SPACE_KINDS:
@@ -245,7 +256,7 @@ class PostgresPlatformStore:
             )
             if not installed:
                 raise ValueError(f"app is not installed in this account: {theme.app_id}")
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=theme.account_id) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO platform_brand_themes
@@ -300,7 +311,7 @@ class PostgresPlatformStore:
         return self._brand_theme_row(row)
 
     def get_brand_theme(self, account_id: str, app_id: str = "") -> Optional[BrandTheme]:
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT id, account_id, app_id, name, primary_color, secondary_color,
@@ -318,7 +329,7 @@ class PostgresPlatformStore:
         return self._brand_theme_row(row) if row else None
 
     def list_brand_themes(self, account_id: str) -> List[BrandTheme]:
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT id, account_id, app_id, name, primary_color, secondary_color,
@@ -344,7 +355,7 @@ class PostgresPlatformStore:
         return account_theme or default_brand_theme(account_id, app_id)
 
     def record_audit(self, event: AuditEvent) -> AuditEvent:
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=event.account_id, space_id=event.space_id) as conn, conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO platform_audit_events "
                 "(id, account_id, actor_id, actor_type, action, target_type, target_id, space_id, app_id, purpose, decision, meta) "
@@ -356,7 +367,7 @@ class PostgresPlatformStore:
         return event
 
     def list_audit(self, account_id: str) -> List[AuditEvent]:
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT id, account_id, actor_id, actor_type, action, target_type, target_id, "
                 "space_id, app_id, purpose, decision, meta, created_at FROM platform_audit_events "
@@ -369,7 +380,7 @@ class PostgresPlatformStore:
     def upsert_organization(self, organization: Organization) -> Organization:
         if not self.get_account(organization.account_id):
             raise ValueError(f"unknown account: {organization.account_id}")
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=organization.account_id) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO platform_organizations (id, account_id, name, status)
@@ -384,7 +395,7 @@ class PostgresPlatformStore:
         return Organization(id=row[0], account_id=row[1], name=row[2], status=row[3], created_at=_iso(row[4]))
 
     def list_organizations(self, account_id: str) -> List[Organization]:
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT id, account_id, name, status, created_at FROM platform_organizations WHERE account_id = %s ORDER BY name",
                 (account_id,),
@@ -399,7 +410,7 @@ class PostgresPlatformStore:
             space = self.get_space(membership.space_id)
             if not space or space.account_id != membership.account_id:
                 raise ValueError(f"space is not in this account: {membership.space_id}")
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=membership.account_id, space_id=membership.space_id) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO platform_memberships
@@ -422,7 +433,7 @@ class PostgresPlatformStore:
                           organization_id=row[5], status=row[6], created_at=_iso(row[7]))
 
     def list_memberships(self, account_id: str) -> List[Membership]:
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT id, account_id, user_id, role_id, space_id, organization_id, status, created_at
@@ -439,7 +450,7 @@ class PostgresPlatformStore:
 
     def upsert_consent_record(self, record: ConsentRecord) -> ConsentRecord:
         self._validate_governance_scope(record.account_id, record.space_id)
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=record.account_id, space_id=record.space_id) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO platform_consent_records
@@ -479,7 +490,7 @@ class PostgresPlatformStore:
         self._validate_governance_scope(policy.account_id, policy.space_id)
         if policy.duration_days < 0:
             raise ValueError("retention duration must be non-negative")
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=policy.account_id, space_id=policy.space_id) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO platform_retention_policies
@@ -518,7 +529,7 @@ class PostgresPlatformStore:
 
     def record_data_access(self, event: DataAccessEvent) -> DataAccessEvent:
         self._validate_governance_scope(event.account_id, event.space_id)
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=event.account_id, space_id=event.space_id) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO platform_data_access_events
@@ -556,7 +567,7 @@ class PostgresPlatformStore:
     def upsert_processor(self, processor: ProcessorRegistration) -> ProcessorRegistration:
         if processor.account_id and not self.get_account(processor.account_id):
             raise ValueError(f"unknown account: {processor.account_id}")
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=processor.account_id) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO platform_processor_register
@@ -589,7 +600,7 @@ class PostgresPlatformStore:
     def upsert_provider(self, provider: ProviderRegistration) -> ProviderRegistration:
         if provider.account_id and not self.get_account(provider.account_id):
             raise ValueError(f"unknown account: {provider.account_id}")
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=provider.account_id) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO platform_provider_register
@@ -622,7 +633,7 @@ class PostgresPlatformStore:
     def upsert_credential_metadata(self, credential: CredentialMetadata) -> CredentialMetadata:
         if not self.get_account(credential.account_id):
             raise ValueError(f"unknown account: {credential.account_id}")
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=credential.account_id) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO platform_credential_metadata
@@ -646,7 +657,7 @@ class PostgresPlatformStore:
                                   meta=_json(row[8]), created_at=_iso(row[9]))
 
     def list_credential_metadata(self, account_id: str) -> List[CredentialMetadata]:
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT id, account_id, provider, app_id, secret_ref, status, rotated_at, last_verified_at, meta, created_at
@@ -666,7 +677,7 @@ class PostgresPlatformStore:
 
     def delete_governance_by_scope(self, account_id: str, space_id: str = "") -> dict[str, int]:
         counts = {}
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=account_id, space_id=space_id) as conn, conn.cursor() as cur:
             if not space_id:
                 cur.execute("DELETE FROM platform_organizations WHERE account_id = %s", (account_id,))
                 counts["organizations"] = cur.rowcount
@@ -703,7 +714,7 @@ class PostgresPlatformStore:
         if space_id:
             clauses.append("space_id = %s")
             params.append(space_id)
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=account_id, space_id=space_id) as conn, conn.cursor() as cur:
             cur.execute(
                 f"SELECT {columns} FROM {table} WHERE {' AND '.join(clauses)} ORDER BY {order}",
                 tuple(params),
@@ -716,7 +727,7 @@ class PostgresPlatformStore:
         if account_id:
             where = "WHERE account_id = '' OR account_id = %s"
             params = (account_id,)
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._conn(account_id=account_id, admin=not bool(account_id)) as conn, conn.cursor() as cur:
             cur.execute(
                 f"""
                 SELECT id, name, category, region, {status_column}, transfer_mechanism, account_id, status, meta, created_at

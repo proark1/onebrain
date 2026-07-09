@@ -47,10 +47,11 @@ def get_conversation(
     principal: Principal = Depends(resolve_principal),
 ):
     store = get_conversation_store()
-    conv = store.get(conversation_id, _scoped_scope(account_id, space_id, principal))
+    scope = _scoped_scope(account_id, space_id, principal)
+    conv = store.get(conversation_id, scope)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found.")
-    messages = store.get_messages(conversation_id)
+    messages = store.get_messages(conversation_id, scope=scope)
     return ConversationDetail(
         id=conv.id, title=conv.title,
         messages=[MessageOut(role=m.role, content=m.content, meta=m.meta or {}) for m in messages],

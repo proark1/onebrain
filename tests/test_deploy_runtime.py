@@ -13,6 +13,11 @@ class FakeSettings:
     vector_store: str = "memory"
     database_url: str = ""
     rls_enforced: bool = False
+    environment: str = "local"
+
+    @property
+    def is_production_like(self) -> bool:
+        return self.environment in {"prod", "production", "staging"}
 
 
 def test_run_migrations_skips_memory_mode(monkeypatch):
@@ -73,3 +78,30 @@ def test_wait_for_schema_skips_memory_mode(monkeypatch):
 def test_rls_enforcement_requires_postgres_mode():
     with pytest.raises(RuntimeError, match="RLS_ENFORCED"):
         runtime.enforce_rls_if_needed(FakeSettings(rls_enforced=True))
+
+
+def test_production_like_runtime_requires_postgres():
+    with pytest.raises(RuntimeError, match="ONEBRAIN_VECTOR_STORE=pgvector"):
+        runtime.validate_runtime_safety(FakeSettings(environment="production"))
+
+
+def test_production_like_runtime_requires_rls():
+    with pytest.raises(RuntimeError, match="ONEBRAIN_RLS_ENFORCED=true"):
+        runtime.validate_runtime_safety(
+            FakeSettings(
+                environment="staging",
+                vector_store="pgvector",
+                database_url="postgresql://user:pass@host/db",
+            )
+        )
+
+
+def test_production_like_runtime_accepts_postgres_with_rls():
+    runtime.validate_runtime_safety(
+        FakeSettings(
+            environment="production",
+            vector_store="pgvector",
+            database_url="postgresql://user:pass@host/db",
+            rls_enforced=True,
+        )
+    )
