@@ -1,6 +1,6 @@
 """Governance records, privacy metadata, and retention runs.
 
-Revision ID: 0007_governance_privacy_retention
+Revision ID: 0007_governance_privacy
 Revises: 0006_provisioning_runs
 Create Date: 2026-07-09
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 from alembic import op
 
 
-revision = "0007_governance_privacy_retention"
+revision = "0007_governance_privacy"
 down_revision = "0006_provisioning_runs"
 branch_labels = None
 depends_on = None

@@ -250,6 +250,7 @@ def test_governance_migration_tracks_expected_head():
     migration = _governance_migration_module()
 
     assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert len(migration.revision) <= 32
     assert migration.down_revision == "0006_provisioning_runs"
     assert {
         "platform_organizations",
