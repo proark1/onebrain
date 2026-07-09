@@ -216,6 +216,9 @@ export type ProvisionCustomerInput = {
   release_ring: string;
   brand_theme?: BrandThemeInput;
   app_brand_themes?: Record<string, BrandThemeInput>;
+  external_provisioning?: boolean;
+  dry_run?: boolean;
+  callback_url?: string;
 };
 
 export type ProvisionedCredential = {
@@ -259,6 +262,37 @@ export type ProvisioningResult = {
   credentials: ProvisionedCredential[];
   brand_theme: BrandTheme;
   app_brand_themes: BrandTheme[];
+  provisioning_run?: ProvisioningRun | null;
+};
+
+export type ProvisioningRun = {
+  id: string;
+  account_id: string;
+  deployment_id: string;
+  bundle_id: string;
+  requested_by: string;
+  status: string;
+  external_provider: string;
+  external_run_id: string;
+  external_run_url: string;
+  railway_project_id: string;
+  railway_environment_id: string;
+  service_urls: Record<string, string>;
+  migration_revision: string;
+  smoke_status: string;
+  failure_reason: string;
+  bootstrap_secret_id: string;
+  retry_of_run_id: string;
+  created_at: string;
+  updated_at: string;
+  dispatched_at: string;
+  completed_at: string;
+  result_payload?: Record<string, unknown>;
+};
+
+export type BootstrapSecretResult = {
+  secret_id: string;
+  plaintext: string;
 };
 
 export type OperatorDeployment = {
@@ -396,6 +430,7 @@ export type PrivacyExport = {
   documents: Array<Record<string, unknown>>;
   conversations: Array<Record<string, unknown>>;
   intake_records: Array<Record<string, unknown>>;
+  governance: Record<string, Array<Record<string, unknown>>>;
   audit_events: PrivacyAuditEvent[];
 };
 
@@ -412,6 +447,7 @@ export type PrivacyEraseResult = {
   chunks_deleted: number;
   conversations_deleted: number;
   intake_records_deleted: number;
+  governance_deleted: Record<string, number>;
   audit_event_id: string;
 };
 

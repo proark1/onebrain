@@ -33,8 +33,10 @@ import type {
   PrivacyEraseResult,
   PrivacyExport,
   ProvisionCustomerInput,
+  ProvisioningRun,
   ProvisioningBundle,
   ProvisioningResult,
+  BootstrapSecretResult,
   ServiceKeyInfo,
   UploadDocumentInput,
 } from "@/lib/onebrain-types";
@@ -209,8 +211,28 @@ export function provisionCustomer(input: ProvisionCustomerInput): Promise<Provis
       release_ring: input.release_ring,
       brand_theme: input.brand_theme,
       app_brand_themes: input.app_brand_themes || {},
+      external_provisioning: input.external_provisioning ?? false,
+      dry_run: input.dry_run ?? true,
+      callback_url: input.callback_url?.trim() || "",
     }),
   });
+}
+
+export function listProvisioningRuns(): Promise<ProvisioningRun[]> {
+  return requestJson<ProvisioningRun[]>("/provisioning/runs");
+}
+
+export function retryProvisioningRun(runId: string): Promise<ProvisioningRun> {
+  return requestJson<ProvisioningRun>(`/provisioning/runs/${encodeURIComponent(runId)}/retry`, {
+    method: "POST",
+  });
+}
+
+export function readBootstrapSecret(runId: string): Promise<BootstrapSecretResult> {
+  return requestJson<BootstrapSecretResult>(
+    `/provisioning/runs/${encodeURIComponent(runId)}/bootstrap-secret/read`,
+    { method: "POST" },
+  );
 }
 
 export function listOperatorCustomers(): Promise<OperatorCustomer[]> {

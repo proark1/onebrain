@@ -4,7 +4,21 @@ from __future__ import annotations
 
 import pytest
 
-from app.platform.base import Account, AppInstallation, AuditEvent, BrandTheme, Space
+from app.platform.base import (
+    Account,
+    AppInstallation,
+    AuditEvent,
+    BrandTheme,
+    ConsentRecord,
+    CredentialMetadata,
+    DataAccessEvent,
+    Membership,
+    Organization,
+    ProcessorRegistration,
+    ProviderRegistration,
+    RetentionPolicy,
+    Space,
+)
 from app.platform.memory import MemoryPlatformStore
 from app.security.policy import AccessFilter, Classification
 
@@ -221,3 +235,98 @@ def test_access_filter_can_narrow_chunks_to_one_platform_space():
     assert access.allows({**base, "account_id": "acct_owner", "space_id": "sp_personal"}) is False
     assert access.allows({**base, "space_id": "sp_customer"}) is False
     assert access.allows({**base, "account_id": "acct_other", "space_id": "sp_customer"}) is False
+
+
+def test_governance_records_are_account_and_space_scoped():
+    store = _seed_platform()
+
+    org = store.upsert_organization(Organization(id="org_1", account_id="acct_owner", name="Ops"))
+    membership = store.upsert_membership(Membership(
+        id="mem_1",
+        account_id="acct_owner",
+        user_id="u_admin",
+        role_id="admin",
+        space_id="sp_business",
+        organization_id=org.id,
+    ))
+    consent = store.upsert_consent_record(ConsentRecord(
+        id="cons_1",
+        account_id="acct_owner",
+        space_id="sp_business",
+        subject_ref="customer:1",
+        purpose="customer_service_answer",
+        status="granted",
+    ))
+    retention = store.upsert_retention_policy(RetentionPolicy(
+        id="ret_1",
+        account_id="acct_owner",
+        space_id="sp_business",
+        domain="intake",
+        record_type="message",
+        action="delete",
+        duration_days=30,
+        legal_basis="customer request",
+    ))
+    access = store.record_data_access(DataAccessEvent(
+        id="dae_1",
+        account_id="acct_owner",
+        space_id="sp_business",
+        actor_id="svc",
+        actor_type="service",
+        action="read",
+        target_type="intake_record",
+        target_id="rec_1",
+        decision="allowed",
+    ))
+    processor = store.upsert_processor(ProcessorRegistration(
+        id="proc_1",
+        account_id="acct_owner",
+        name="Railway",
+        category="hosting",
+        region="EU",
+        dpa_status="signed",
+    ))
+    provider = store.upsert_provider(ProviderRegistration(
+        id="prov_1",
+        name="Gemini",
+        category="ai",
+        region="EU",
+        dpia_status="approved",
+    ))
+    credential = store.upsert_credential_metadata(CredentialMetadata(
+        id="cred_1",
+        account_id="acct_owner",
+        provider="google",
+        app_id="assistant",
+        secret_ref="secret://assistant/google/oauth",
+    ))
+
+    assert store.list_organizations("acct_owner") == [org]
+    assert store.list_memberships("acct_owner") == [membership]
+    assert store.list_consent_records("acct_owner", "sp_business") == [consent]
+    assert store.list_retention_policies("acct_owner", "sp_business") == [retention]
+    assert store.list_data_access_events("acct_owner", "sp_business") == [access]
+    assert store.list_processors("acct_owner") == [processor]
+    assert store.list_providers("acct_owner") == [provider]
+    assert store.list_credential_metadata("acct_owner") == [credential]
+    assert "oauth" in credential.secret_ref
+    assert "raw-secret" not in str(credential)
+
+
+def test_governance_delete_by_scope_leaves_other_spaces_and_global_registers():
+    store = _seed_platform()
+    store.upsert_organization(Organization(id="org_1", account_id="acct_owner", name="Ops"))
+    store.upsert_membership(Membership(id="mem_biz", account_id="acct_owner", user_id="u1", role_id="admin", space_id="sp_business"))
+    store.upsert_membership(Membership(id="mem_customer", account_id="acct_owner", user_id="u2", role_id="admin", space_id="sp_customer"))
+    store.upsert_consent_record(ConsentRecord(id="cons_biz", account_id="acct_owner", subject_ref="s", purpose="p", status="granted", space_id="sp_business"))
+    store.upsert_consent_record(ConsentRecord(id="cons_customer", account_id="acct_owner", subject_ref="s", purpose="p", status="granted", space_id="sp_customer"))
+    store.upsert_processor(ProcessorRegistration(id="proc_global", name="Railway", category="hosting", region="EU", dpa_status="signed"))
+
+    deleted = store.delete_governance_by_scope("acct_owner", "sp_business")
+
+    assert deleted["memberships"] == 1
+    assert deleted["consent_records"] == 1
+    assert store.list_organizations("acct_owner")[0].id == "org_1"
+    assert [row.id for row in store.list_memberships("acct_owner")] == ["mem_customer"]
+    assert [row.id for row in store.list_consent_records("acct_owner")] == ["cons_customer"]
+    assert store.list_processors("acct_owner")[0].id == "proc_global"

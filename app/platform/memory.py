@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from dataclasses import asdict
 from typing import Dict, List, Optional
 
 from app.platform.base import (
@@ -15,6 +16,14 @@ from app.platform.base import (
     AppInstallation,
     AuditEvent,
     BrandTheme,
+    ConsentRecord,
+    CredentialMetadata,
+    DataAccessEvent,
+    Membership,
+    Organization,
+    ProcessorRegistration,
+    ProviderRegistration,
+    RetentionPolicy,
     Space,
     default_brand_theme,
     normalize_unique,
@@ -133,6 +142,14 @@ class MemoryPlatformStore:
         self._installations: Dict[str, AppInstallation] = {}
         self._brand_themes: Dict[str, BrandTheme] = {}
         self._audit: Dict[str, AuditEvent] = {}
+        self._organizations: Dict[str, Organization] = {}
+        self._memberships: Dict[str, Membership] = {}
+        self._consent_records: Dict[str, ConsentRecord] = {}
+        self._retention_policies: Dict[str, RetentionPolicy] = {}
+        self._data_access_events: Dict[str, DataAccessEvent] = {}
+        self._processors: Dict[str, ProcessorRegistration] = {}
+        self._providers: Dict[str, ProviderRegistration] = {}
+        self._credential_metadata: Dict[str, CredentialMetadata] = {}
         self._lock = threading.RLock()
         self._persist_path = persist_path
         self._load()
@@ -148,8 +165,18 @@ class MemoryPlatformStore:
             self._installations = {d["id"]: _installation_from_dict(d) for d in data.get("installations", [])}
             self._brand_themes = {d["id"]: _brand_theme_from_dict(d) for d in data.get("brand_themes", [])}
             self._audit = {d["id"]: _audit_from_dict(d) for d in data.get("audit", [])}
+            self._organizations = {d["id"]: Organization(**d) for d in data.get("organizations", [])}
+            self._memberships = {d["id"]: Membership(**d) for d in data.get("memberships", [])}
+            self._consent_records = {d["id"]: ConsentRecord(**d) for d in data.get("consent_records", [])}
+            self._retention_policies = {d["id"]: RetentionPolicy(**d) for d in data.get("retention_policies", [])}
+            self._data_access_events = {d["id"]: DataAccessEvent(**d) for d in data.get("data_access_events", [])}
+            self._processors = {d["id"]: ProcessorRegistration(**d) for d in data.get("processors", [])}
+            self._providers = {d["id"]: ProviderRegistration(**d) for d in data.get("providers", [])}
+            self._credential_metadata = {d["id"]: CredentialMetadata(**d) for d in data.get("credential_metadata", [])}
         except Exception:
             self._accounts, self._spaces, self._installations, self._brand_themes, self._audit = {}, {}, {}, {}, {}
+            self._organizations, self._memberships, self._consent_records, self._retention_policies = {}, {}, {}, {}
+            self._data_access_events, self._processors, self._providers, self._credential_metadata = {}, {}, {}, {}
 
     def _save(self) -> None:
         if not self._persist_path:
@@ -162,6 +189,14 @@ class MemoryPlatformStore:
                 "installations": [_installation_to_dict(i) for i in self._installations.values()],
                 "brand_themes": [_brand_theme_to_dict(t) for t in self._brand_themes.values()],
                 "audit": [_audit_to_dict(e) for e in self._audit.values()],
+                "organizations": [asdict(v) for v in self._organizations.values()],
+                "memberships": [asdict(v) for v in self._memberships.values()],
+                "consent_records": [asdict(v) for v in self._consent_records.values()],
+                "retention_policies": [asdict(v) for v in self._retention_policies.values()],
+                "data_access_events": [asdict(v) for v in self._data_access_events.values()],
+                "processors": [asdict(v) for v in self._processors.values()],
+                "providers": [asdict(v) for v in self._providers.values()],
+                "credential_metadata": [asdict(v) for v in self._credential_metadata.values()],
             }, fh)
 
     def create_account(self, account: Account) -> Account:
@@ -298,3 +333,157 @@ class MemoryPlatformStore:
 
     def list_audit(self, account_id: str) -> List[AuditEvent]:
         return [e for e in self._audit.values() if e.account_id == account_id]
+
+    def _require_account(self, account_id: str) -> None:
+        if account_id and account_id not in self._accounts:
+            raise ValueError(f"unknown account: {account_id}")
+
+    def _require_space(self, account_id: str, space_id: str) -> None:
+        if not space_id:
+            return
+        space = self._spaces.get(space_id)
+        if not space or space.account_id != account_id:
+            raise ValueError(f"space is not in this account: {space_id}")
+
+    def upsert_organization(self, organization: Organization) -> Organization:
+        self._require_account(organization.account_id)
+        with self._lock:
+            self._organizations[organization.id] = organization
+            self._save()
+            return organization
+
+    def list_organizations(self, account_id: str) -> List[Organization]:
+        return sorted((v for v in self._organizations.values() if v.account_id == account_id), key=lambda v: v.name.lower())
+
+    def upsert_membership(self, membership: Membership) -> Membership:
+        self._require_account(membership.account_id)
+        self._require_space(membership.account_id, membership.space_id)
+        with self._lock:
+            self._memberships[membership.id] = membership
+            self._save()
+            return membership
+
+    def list_memberships(self, account_id: str) -> List[Membership]:
+        return sorted((v for v in self._memberships.values() if v.account_id == account_id), key=lambda v: (v.user_id, v.id))
+
+    def upsert_consent_record(self, record: ConsentRecord) -> ConsentRecord:
+        self._require_account(record.account_id)
+        self._require_space(record.account_id, record.space_id)
+        with self._lock:
+            self._consent_records[record.id] = record
+            self._save()
+            return record
+
+    def list_consent_records(self, account_id: str, space_id: str = "") -> List[ConsentRecord]:
+        rows = [v for v in self._consent_records.values() if v.account_id == account_id]
+        if space_id:
+            rows = [v for v in rows if v.space_id == space_id]
+        return sorted(rows, key=lambda v: (v.created_at, v.id))
+
+    def upsert_retention_policy(self, policy: RetentionPolicy) -> RetentionPolicy:
+        self._require_account(policy.account_id)
+        self._require_space(policy.account_id, policy.space_id)
+        if policy.duration_days < 0:
+            raise ValueError("retention duration must be non-negative")
+        with self._lock:
+            self._retention_policies[policy.id] = policy
+            self._save()
+            return policy
+
+    def list_retention_policies(self, account_id: str, space_id: str = "") -> List[RetentionPolicy]:
+        rows = [v for v in self._retention_policies.values() if v.account_id == account_id]
+        if space_id:
+            rows = [v for v in rows if v.space_id == space_id]
+        return sorted(rows, key=lambda v: (v.domain, v.record_type, v.id))
+
+    def record_data_access(self, event: DataAccessEvent) -> DataAccessEvent:
+        self._require_account(event.account_id)
+        self._require_space(event.account_id, event.space_id)
+        with self._lock:
+            if event.id in self._data_access_events:
+                raise ValueError(f"data access event already exists: {event.id}")
+            self._data_access_events[event.id] = event
+            self._save()
+            return event
+
+    def list_data_access_events(self, account_id: str, space_id: str = "") -> List[DataAccessEvent]:
+        rows = [v for v in self._data_access_events.values() if v.account_id == account_id]
+        if space_id:
+            rows = [v for v in rows if v.space_id == space_id]
+        return sorted(rows, key=lambda v: (v.created_at, v.id))
+
+    def upsert_processor(self, processor: ProcessorRegistration) -> ProcessorRegistration:
+        self._require_account(processor.account_id)
+        with self._lock:
+            self._processors[processor.id] = processor
+            self._save()
+            return processor
+
+    def list_processors(self, account_id: str = "") -> List[ProcessorRegistration]:
+        rows = list(self._processors.values())
+        if account_id:
+            rows = [v for v in rows if v.account_id in {"", account_id}]
+        return sorted(rows, key=lambda v: (v.name.lower(), v.id))
+
+    def upsert_provider(self, provider: ProviderRegistration) -> ProviderRegistration:
+        self._require_account(provider.account_id)
+        with self._lock:
+            self._providers[provider.id] = provider
+            self._save()
+            return provider
+
+    def list_providers(self, account_id: str = "") -> List[ProviderRegistration]:
+        rows = list(self._providers.values())
+        if account_id:
+            rows = [v for v in rows if v.account_id in {"", account_id}]
+        return sorted(rows, key=lambda v: (v.name.lower(), v.id))
+
+    def upsert_credential_metadata(self, credential: CredentialMetadata) -> CredentialMetadata:
+        self._require_account(credential.account_id)
+        with self._lock:
+            self._credential_metadata[credential.id] = credential
+            self._save()
+            return credential
+
+    def list_credential_metadata(self, account_id: str) -> List[CredentialMetadata]:
+        return sorted((v for v in self._credential_metadata.values() if v.account_id == account_id), key=lambda v: (v.provider, v.id))
+
+    def delete_governance_by_scope(self, account_id: str, space_id: str = "") -> dict[str, int]:
+        with self._lock:
+            counts = {
+                "organizations": 0,
+                "memberships": 0,
+                "consent_records": 0,
+                "retention_policies": 0,
+                "data_access_events": 0,
+                "credential_metadata": 0,
+            }
+            if not space_id:
+                counts["organizations"] = self._delete_matching(self._organizations, lambda v: v.account_id == account_id)
+                counts["credential_metadata"] = self._delete_matching(
+                    self._credential_metadata, lambda v: v.account_id == account_id,
+                )
+            counts["memberships"] = self._delete_matching(
+                self._memberships,
+                lambda v: v.account_id == account_id and (not space_id or v.space_id == space_id),
+            )
+            counts["consent_records"] = self._delete_matching(
+                self._consent_records,
+                lambda v: v.account_id == account_id and (not space_id or v.space_id == space_id),
+            )
+            counts["retention_policies"] = self._delete_matching(
+                self._retention_policies,
+                lambda v: v.account_id == account_id and (not space_id or v.space_id == space_id),
+            )
+            counts["data_access_events"] = self._delete_matching(
+                self._data_access_events,
+                lambda v: v.account_id == account_id and (not space_id or v.space_id == space_id),
+            )
+            self._save()
+            return counts
+
+    def _delete_matching(self, values: dict, predicate) -> int:
+        keys = [key for key, value in values.items() if predicate(value)]
+        for key in keys:
+            del values[key]
+        return len(keys)

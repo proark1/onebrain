@@ -14,9 +14,10 @@ from app.auth.roles import ROLES
 from app.embeddings.local import LocalEmbedder
 from app.ingest.pipeline import IngestPipeline
 from app.intake.memory import MemoryIntakeStore
-from app.intake.pipeline import IntakePipeline
+from app.intake.pipeline import IntakeInput, IntakePipeline
 from app.jobs.base import (
     JOB_DOCUMENT_INGEST,
+    JOB_RETENTION_RUN,
     JOB_SERVICE_CAPTURE,
     JOB_SERVICE_INTAKE,
     STATUS_FAILED,
@@ -26,7 +27,7 @@ from app.jobs.base import (
     JobFileInput,
 )
 from app.jobs.memory import MemoryJobStore
-from app.platform.base import Account, AppInstallation, Space
+from app.platform.base import Account, AppInstallation, RetentionPolicy, Space
 from app.platform.memory import MemoryPlatformStore
 from app.schemas import ServiceCaptureRequest, ServiceIntakeRequest
 from app.security.policy import Classification
@@ -212,6 +213,56 @@ def test_worker_processes_service_intake_job(monkeypatch):
     assert job.status == STATUS_SUCCEEDED
     assert job.result["record"]["intent"] == "booking"
     assert intake_store.count() == 1
+
+
+def test_worker_processes_retention_run_with_dry_run_and_enforcement(monkeypatch):
+    platform = _platform_store()
+    platform.upsert_retention_policy(RetentionPolicy(
+        id="ret_intake",
+        account_id="nft_gym",
+        space_id="sp_customer",
+        domain="intake",
+        record_type="message",
+        action="delete",
+        duration_days=0,
+        legal_basis="test policy",
+    ))
+    intake_store = MemoryIntakeStore()
+    settings = SimpleNamespace(pii_phase="dpia_signed", require_approval=False)
+    IntakePipeline(intake_store, settings).ingest(IntakeInput(
+        tenant_id="nft_gym",
+        account_id="nft_gym",
+        space_id="sp_customer",
+        app_id="communication",
+        purpose="customer_service_inbox",
+        content="Customer retention sample.",
+        source="communication",
+    ))
+    job_store = MemoryJobStore()
+    monkeypatch.setattr(app.deps, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(app.deps, "get_intake_store", lambda: intake_store)
+
+    dry = job_store.enqueue(
+        type=JOB_RETENTION_RUN,
+        tenant_id="nft_gym",
+        account_id="nft_gym",
+        space_id="sp_customer",
+        payload={"domain": "intake", "dry_run": True},
+    )
+    Worker(job_store, worker_id="worker_test").run_once()
+    assert job_store.get(dry.id).result["counts"]["intake_records"] == 1
+    assert intake_store.count() == 1
+
+    enforce = job_store.enqueue(
+        type=JOB_RETENTION_RUN,
+        tenant_id="nft_gym",
+        account_id="nft_gym",
+        space_id="sp_customer",
+        payload={"domain": "intake", "dry_run": False},
+    )
+    Worker(job_store, worker_id="worker_test").run_once()
+    assert job_store.get(enforce.id).result["counts"]["intake_records_deleted"] == 1
+    assert intake_store.count() == 0
 
 
 def test_worker_marks_permanent_validation_failures_failed(monkeypatch):

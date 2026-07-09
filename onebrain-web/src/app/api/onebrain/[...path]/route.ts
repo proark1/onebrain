@@ -22,13 +22,21 @@ function upstreamUrl(path: string[], search: string): string {
 
 function forwardedHeaders(request: Request): Headers {
   const headers = new Headers();
+  const authorization = request.headers.get("authorization");
   const cookie = request.headers.get("cookie");
   const contentType = request.headers.get("content-type");
+  const callbackKeyId = request.headers.get("x-onebrain-callback-key-id");
+  if (authorization) {
+    headers.set("authorization", authorization);
+  }
   if (cookie) {
     headers.set("cookie", cookie);
   }
   if (contentType) {
     headers.set("content-type", contentType);
+  }
+  if (callbackKeyId) {
+    headers.set("x-onebrain-callback-key-id", callbackKeyId);
   }
   return headers;
 }

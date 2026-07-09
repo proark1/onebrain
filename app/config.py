@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     secret_encryption_key: str = ""
     secret_encryption_key_version: str = "v1"
     bootstrap_secret_ttl_seconds: int = 3600
+    postgres_app_role: str = ""
+    postgres_service_role: str = ""
+    rls_enforced: bool = False
 
     # Background jobs. Postgres mode defaults to async ingestion because OCR,
     # embedding, and provider calls should not hold request workers open.

@@ -140,6 +140,20 @@ def _provisioning_runs_migration_module():
     return module
 
 
+def _governance_migration_module():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "versions"
+        / "0007_governance_privacy_retention.py"
+    )
+    spec = importlib.util.spec_from_file_location("governance_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_validate_postgres_schema_requires_alembic_version_table():
     conn = FakeConnection(FakeCursor(missing_version_table=True))
 
@@ -227,9 +241,27 @@ def test_control_plane_migration_tracks_expected_head():
 def test_provisioning_runs_migration_tracks_expected_head():
     migration = _provisioning_runs_migration_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision == "0006_provisioning_runs"
     assert migration.down_revision == "0005_control_plane_postgres"
     assert {"provisioning_runs", "one_time_secret_envelopes"} == set(migration.PROVISIONING_TABLES)
+
+
+def test_governance_migration_tracks_expected_head():
+    migration = _governance_migration_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.down_revision == "0006_provisioning_runs"
+    assert {
+        "platform_organizations",
+        "platform_memberships",
+        "platform_consent_records",
+        "platform_retention_policies",
+        "platform_data_access_events",
+        "platform_processor_register",
+        "platform_provider_register",
+        "platform_credential_metadata",
+        "retention_runs",
+    } == set(migration.GOVERNANCE_TABLES)
 
 
 def test_migration_embedding_dim_env(monkeypatch):

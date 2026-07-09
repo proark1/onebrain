@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.intake.pipeline import IntakeInput
-from app.jobs.base import JOB_DOCUMENT_INGEST, JOB_SERVICE_CAPTURE, JOB_SERVICE_INTAKE, Job, JobStore
+from app.jobs.base import JOB_DOCUMENT_INGEST, JOB_RETENTION_RUN, JOB_SERVICE_CAPTURE, JOB_SERVICE_INTAKE, Job, JobStore
 from app.security.policy import CAPTURED_CATEGORY
 
 
@@ -52,6 +52,8 @@ def handle_job(job: Job, store: JobStore) -> dict:
         return _handle_service_capture(job)
     if job.type == JOB_SERVICE_INTAKE:
         return _handle_service_intake(job)
+    if job.type == JOB_RETENTION_RUN:
+        return _handle_retention_run(job)
     raise ValueError(f"unknown job type: {job.type}")
 
 
@@ -119,3 +121,15 @@ def _handle_service_intake(job: Job) -> dict:
         metadata=payload.get("metadata") or {},
     ))
     return {"record": _intake_record(record)}
+
+
+def _handle_retention_run(job: Job) -> dict:
+    from app.retention.service import run_retention
+
+    payload = job.payload
+    return run_retention(
+        account_id=job.account_id or payload.get("account_id") or job.tenant_id,
+        space_id=job.space_id or payload.get("space_id", ""),
+        domain=payload.get("domain", ""),
+        dry_run=bool(payload.get("dry_run", True)),
+    )

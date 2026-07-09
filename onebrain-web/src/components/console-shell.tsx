@@ -20,10 +20,9 @@ const PRIMARY_NAV: Array<{ id: ConsoleSection; href: string; label: string }> = 
   { id: "operator", href: "/operator", label: "Operator" },
 ];
 
-const FUTURE_NAV: string[] = [];
-
 export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
   const identity = session.display_name || session.email;
+  const activeLabel = PRIMARY_NAV.find((item) => item.id === active)?.label || "Console";
 
   return (
     <WorkspaceProvider session={session}>
@@ -50,25 +49,29 @@ export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
             ))}
           </nav>
 
-          <WorkspaceSelector />
-
-          {FUTURE_NAV.length ? (
-            <nav className="consoleNav mutedNav" aria-label="Future sections">
-              {FUTURE_NAV.map((item) => (
-                <span aria-disabled="true" key={item}>{item}</span>
-              ))}
-            </nav>
-          ) : null}
-
           <div className="consoleIdentity">
             <span>{session.role_label}</span>
             <small>{session.location_label}</small>
           </div>
         </aside>
 
-        <section className="consoleContent">
-          {children}
-        </section>
+        <div className="consoleFrame">
+          <header className="commandBar">
+            <div className="commandContext">
+              <span>OneBrain</span>
+              <strong>{activeLabel}</strong>
+            </div>
+            <WorkspaceSelector />
+            <div className="commandIdentity">
+              <span>{session.role_label}</span>
+              <small>{identity}</small>
+            </div>
+          </header>
+
+          <section className="consoleContent">
+            {children}
+          </section>
+        </div>
       </main>
     </WorkspaceProvider>
   );

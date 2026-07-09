@@ -582,6 +582,10 @@ class GitHubWorkflowDispatcher:
     def dispatch(self, run: ProvisioningRun) -> ProvisioningRun:
         if not self.enabled:
             raise RuntimeError("GitHub provisioning dispatch is not configured.")
+        callback_url = str(run.request_payload.get("callback_url", "")).strip()
+        if not callback_url:
+            raise RuntimeError("Provisioning callback URL is required.")
+        callback_url = callback_url.replace("{run_id}", run.id)
         url = (
             f"https://api.github.com/repos/{self.settings.github_owner}/"
             f"{self.settings.github_repo}/actions/workflows/"
@@ -601,7 +605,7 @@ class GitHubWorkflowDispatcher:
                 "initial_version": str(run.request_payload.get("initial_version", "")),
                 "module_versions_json": json.dumps(run.request_payload.get("module_versions", {})),
                 "brand_theme_json": json.dumps(run.request_payload.get("brand_theme", {})),
-                "callback_url": str(run.request_payload.get("callback_url", "")),
+                "callback_url": callback_url,
                 "callback_key_id": self.settings.provisioning_callback_key_id,
                 "dry_run": "true" if run.request_payload.get("dry_run", True) else "false",
             },

@@ -9,7 +9,23 @@ from pydantic import BaseModel, Field
 
 from app.auth.principal import Principal, resolve_principal
 from app.deps import get_platform_store
-from app.platform.base import Account, AppInstallation, AuditEvent, BrandTheme, DEFAULT_BRAND_THEME, Space, normalize_unique
+from app.platform.base import (
+    Account,
+    AppInstallation,
+    AuditEvent,
+    BrandTheme,
+    ConsentRecord,
+    CredentialMetadata,
+    DEFAULT_BRAND_THEME,
+    DataAccessEvent,
+    Membership,
+    Organization,
+    ProcessorRegistration,
+    ProviderRegistration,
+    RetentionPolicy,
+    Space,
+    normalize_unique,
+)
 from app.schemas import BrandThemeOut
 
 router = APIRouter(prefix="/api/platform", tags=["platform"])
@@ -102,6 +118,158 @@ class AuditOut(BaseModel):
     purpose: str = ""
     decision: str = ""
     meta: dict = Field(default_factory=dict)
+
+
+class OrganizationIn(BaseModel):
+    id: str | None = Field(default=None, max_length=120)
+    name: str = Field(min_length=1, max_length=200)
+    status: str = Field(default="active", max_length=40)
+
+
+class OrganizationOut(BaseModel):
+    id: str
+    account_id: str
+    name: str
+    status: str = "active"
+    created_at: str = ""
+
+
+class MembershipIn(BaseModel):
+    id: str | None = Field(default=None, max_length=120)
+    user_id: str = Field(min_length=1, max_length=200)
+    role_id: str = Field(min_length=1, max_length=80)
+    space_id: str = Field(default="", max_length=120)
+    organization_id: str = Field(default="", max_length=120)
+    status: str = Field(default="active", max_length=40)
+
+
+class MembershipOut(BaseModel):
+    id: str
+    account_id: str
+    user_id: str
+    role_id: str
+    space_id: str = ""
+    organization_id: str = ""
+    status: str = "active"
+    created_at: str = ""
+
+
+class ConsentIn(BaseModel):
+    id: str | None = Field(default=None, max_length=120)
+    subject_ref: str = Field(min_length=1, max_length=200)
+    purpose: str = Field(min_length=1, max_length=80)
+    status: str = Field(default="granted", max_length=40)
+    space_id: str = Field(default="", max_length=120)
+    source: str = Field(default="", max_length=200)
+    withdrawn_at: str = Field(default="", max_length=80)
+
+
+class ConsentOut(BaseModel):
+    id: str
+    account_id: str
+    subject_ref: str
+    purpose: str
+    status: str
+    space_id: str = ""
+    source: str = ""
+    captured_by: str = ""
+    withdrawn_at: str = ""
+    created_at: str = ""
+
+
+class RetentionPolicyIn(BaseModel):
+    id: str | None = Field(default=None, max_length=120)
+    domain: str = Field(min_length=1, max_length=80)
+    record_type: str = Field(default="", max_length=80)
+    action: str = Field(default="delete", max_length=40)
+    duration_days: int = Field(ge=0)
+    legal_basis: str = Field(default="", max_length=200)
+    space_id: str = Field(default="", max_length=120)
+    status: str = Field(default="active", max_length=40)
+
+
+class RetentionPolicyOut(BaseModel):
+    id: str
+    account_id: str
+    domain: str
+    record_type: str
+    action: str
+    duration_days: int
+    legal_basis: str
+    space_id: str = ""
+    status: str = "active"
+    created_at: str = ""
+
+
+class DataAccessEventIn(BaseModel):
+    id: str | None = Field(default=None, max_length=120)
+    actor_id: str = Field(min_length=1, max_length=200)
+    actor_type: str = Field(default="service", max_length=80)
+    action: str = Field(min_length=1, max_length=120)
+    target_type: str = Field(min_length=1, max_length=120)
+    target_id: str = Field(min_length=1, max_length=200)
+    space_id: str = Field(default="", max_length=120)
+    app_id: str = Field(default="", max_length=80)
+    purpose: str = Field(default="", max_length=80)
+    decision: str = Field(default="", max_length=80)
+    meta: dict = Field(default_factory=dict)
+
+
+class DataAccessEventOut(DataAccessEventIn):
+    id: str
+    account_id: str
+    created_at: str = ""
+
+
+class ProcessorIn(BaseModel):
+    id: str | None = Field(default=None, max_length=120)
+    name: str = Field(min_length=1, max_length=200)
+    category: str = Field(default="", max_length=120)
+    region: str = Field(default="", max_length=120)
+    dpa_status: str = Field(default="", max_length=120)
+    transfer_mechanism: str = Field(default="", max_length=200)
+    account_id: str = Field(default="", max_length=120)
+    status: str = Field(default="active", max_length=40)
+    meta: dict = Field(default_factory=dict)
+
+
+class ProcessorOut(ProcessorIn):
+    id: str
+    created_at: str = ""
+
+
+class ProviderIn(BaseModel):
+    id: str | None = Field(default=None, max_length=120)
+    name: str = Field(min_length=1, max_length=200)
+    category: str = Field(default="", max_length=120)
+    region: str = Field(default="", max_length=120)
+    dpia_status: str = Field(default="", max_length=120)
+    transfer_mechanism: str = Field(default="", max_length=200)
+    account_id: str = Field(default="", max_length=120)
+    status: str = Field(default="active", max_length=40)
+    meta: dict = Field(default_factory=dict)
+
+
+class ProviderOut(ProviderIn):
+    id: str
+    created_at: str = ""
+
+
+class CredentialMetadataIn(BaseModel):
+    id: str | None = Field(default=None, max_length=120)
+    provider: str = Field(min_length=1, max_length=120)
+    app_id: str = Field(default="", max_length=80)
+    secret_ref: str = Field(min_length=1, max_length=300)
+    status: str = Field(default="active", max_length=40)
+    rotated_at: str = Field(default="", max_length=80)
+    last_verified_at: str = Field(default="", max_length=80)
+    meta: dict = Field(default_factory=dict)
+
+
+class CredentialMetadataOut(CredentialMetadataIn):
+    id: str
+    account_id: str
+    created_at: str = ""
 
 
 def _require_admin(principal: Principal) -> None:
@@ -314,3 +482,197 @@ def list_audit(account_id: str, principal: Principal = Depends(resolve_principal
         )
         for e in get_platform_store().list_audit(account_id)
     ]
+
+
+@router.get("/accounts/{account_id}/organizations", response_model=list[OrganizationOut])
+def list_organizations(account_id: str, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    return [OrganizationOut(**org.__dict__) for org in get_platform_store().list_organizations(account_id)]
+
+
+@router.post("/accounts/{account_id}/organizations", response_model=OrganizationOut)
+def upsert_organization(account_id: str, body: OrganizationIn, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    org = Organization(id=body.id or f"org_{uuid4().hex[:12]}", account_id=account_id, name=body.name.strip(), status=body.status)
+    try:
+        saved = get_platform_store().upsert_organization(org)
+        get_platform_store().record_audit(_audit(principal, "organization.upserted", "organization", saved.id, account_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return OrganizationOut(**saved.__dict__)
+
+
+@router.get("/accounts/{account_id}/memberships", response_model=list[MembershipOut])
+def list_memberships(account_id: str, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    return [MembershipOut(**row.__dict__) for row in get_platform_store().list_memberships(account_id)]
+
+
+@router.post("/accounts/{account_id}/memberships", response_model=MembershipOut)
+def upsert_membership(account_id: str, body: MembershipIn, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    membership = Membership(
+        id=body.id or f"mem_{uuid4().hex[:12]}",
+        account_id=account_id,
+        user_id=body.user_id.strip(),
+        role_id=body.role_id.strip(),
+        space_id=body.space_id.strip(),
+        organization_id=body.organization_id.strip(),
+        status=body.status,
+    )
+    try:
+        saved = get_platform_store().upsert_membership(membership)
+        get_platform_store().record_audit(_audit(principal, "membership.upserted", "membership", saved.id, account_id, space_id=saved.space_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return MembershipOut(**saved.__dict__)
+
+
+@router.get("/accounts/{account_id}/consent", response_model=list[ConsentOut])
+def list_consent(account_id: str, space_id: str = "", principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    return [ConsentOut(**row.__dict__) for row in get_platform_store().list_consent_records(account_id, space_id)]
+
+
+@router.post("/accounts/{account_id}/consent", response_model=ConsentOut)
+def upsert_consent(account_id: str, body: ConsentIn, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    record = ConsentRecord(
+        id=body.id or f"cons_{uuid4().hex[:12]}",
+        account_id=account_id,
+        subject_ref=body.subject_ref.strip(),
+        purpose=body.purpose.strip(),
+        status=body.status,
+        space_id=body.space_id.strip(),
+        source=body.source.strip(),
+        captured_by=principal.user_id,
+        withdrawn_at=body.withdrawn_at.strip(),
+    )
+    try:
+        saved = get_platform_store().upsert_consent_record(record)
+        get_platform_store().record_audit(_audit(principal, "consent.upserted", "consent", saved.id, account_id, space_id=saved.space_id, purpose=saved.purpose))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ConsentOut(**saved.__dict__)
+
+
+@router.get("/accounts/{account_id}/retention", response_model=list[RetentionPolicyOut])
+def list_retention(account_id: str, space_id: str = "", principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    return [RetentionPolicyOut(**row.__dict__) for row in get_platform_store().list_retention_policies(account_id, space_id)]
+
+
+@router.post("/accounts/{account_id}/retention", response_model=RetentionPolicyOut)
+def upsert_retention(account_id: str, body: RetentionPolicyIn, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    policy = RetentionPolicy(
+        id=body.id or f"ret_{uuid4().hex[:12]}",
+        account_id=account_id,
+        domain=body.domain.strip(),
+        record_type=body.record_type.strip(),
+        action=body.action.strip(),
+        duration_days=body.duration_days,
+        legal_basis=body.legal_basis.strip(),
+        space_id=body.space_id.strip(),
+        status=body.status,
+    )
+    try:
+        saved = get_platform_store().upsert_retention_policy(policy)
+        get_platform_store().record_audit(_audit(principal, "retention_policy.upserted", "retention_policy", saved.id, account_id, space_id=saved.space_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return RetentionPolicyOut(**saved.__dict__)
+
+
+@router.get("/accounts/{account_id}/data-access", response_model=list[DataAccessEventOut])
+def list_data_access(account_id: str, space_id: str = "", principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    return [DataAccessEventOut(**row.__dict__) for row in get_platform_store().list_data_access_events(account_id, space_id)]
+
+
+@router.post("/accounts/{account_id}/data-access", response_model=DataAccessEventOut)
+def record_data_access(account_id: str, body: DataAccessEventIn, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    event = DataAccessEvent(
+        id=body.id or f"dae_{uuid4().hex[:12]}",
+        account_id=account_id,
+        actor_id=body.actor_id.strip(),
+        actor_type=body.actor_type.strip(),
+        action=body.action.strip(),
+        target_type=body.target_type.strip(),
+        target_id=body.target_id.strip(),
+        space_id=body.space_id.strip(),
+        app_id=body.app_id.strip(),
+        purpose=body.purpose.strip(),
+        decision=body.decision.strip(),
+        meta=body.meta,
+    )
+    try:
+        saved = get_platform_store().record_data_access(event)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return DataAccessEventOut(**saved.__dict__)
+
+
+@router.get("/processors", response_model=list[ProcessorOut])
+def list_processors(account_id: str = "", principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    return [ProcessorOut(**row.__dict__) for row in get_platform_store().list_processors(account_id)]
+
+
+@router.post("/processors", response_model=ProcessorOut)
+def upsert_processor(body: ProcessorIn, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    processor = ProcessorRegistration(id=body.id or f"proc_{uuid4().hex[:12]}", **body.model_dump(exclude={"id"}))
+    try:
+        saved = get_platform_store().upsert_processor(processor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ProcessorOut(**saved.__dict__)
+
+
+@router.get("/providers", response_model=list[ProviderOut])
+def list_providers(account_id: str = "", principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    return [ProviderOut(**row.__dict__) for row in get_platform_store().list_providers(account_id)]
+
+
+@router.post("/providers", response_model=ProviderOut)
+def upsert_provider(body: ProviderIn, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    provider = ProviderRegistration(id=body.id or f"prov_{uuid4().hex[:12]}", **body.model_dump(exclude={"id"}))
+    try:
+        saved = get_platform_store().upsert_provider(provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ProviderOut(**saved.__dict__)
+
+
+@router.get("/accounts/{account_id}/credentials", response_model=list[CredentialMetadataOut])
+def list_credentials(account_id: str, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    return [CredentialMetadataOut(**row.__dict__) for row in get_platform_store().list_credential_metadata(account_id)]
+
+
+@router.post("/accounts/{account_id}/credentials", response_model=CredentialMetadataOut)
+def upsert_credential(account_id: str, body: CredentialMetadataIn, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    credential = CredentialMetadata(
+        id=body.id or f"cred_{uuid4().hex[:12]}",
+        account_id=account_id,
+        provider=body.provider.strip(),
+        app_id=body.app_id.strip(),
+        secret_ref=body.secret_ref.strip(),
+        status=body.status,
+        rotated_at=body.rotated_at.strip(),
+        last_verified_at=body.last_verified_at.strip(),
+        meta=body.meta,
+    )
+    if "secret" in str(body.meta).lower() or "password" in str(body.meta).lower():
+        raise HTTPException(status_code=400, detail="Credential metadata cannot contain raw secret-like fields.")
+    try:
+        saved = get_platform_store().upsert_credential_metadata(credential)
+        get_platform_store().record_audit(_audit(principal, "credential_metadata.upserted", "credential_metadata", saved.id, account_id, app_id=saved.app_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return CredentialMetadataOut(**saved.__dict__)

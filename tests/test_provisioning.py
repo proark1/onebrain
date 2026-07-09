@@ -461,6 +461,7 @@ def test_external_provisioning_without_github_config_creates_visible_failed_run(
             deployment_id="dep_acme",
             initial_version="0.1.0",
             external_provisioning=True,
+            callback_url="https://admin.example/api/onebrain/provisioning/runs/{run_id}/callback",
         ),
         principal=_principal("admin"),
     )
@@ -469,3 +470,50 @@ def test_external_provisioning_without_github_config_creates_visible_failed_run(
     assert created.provisioning_run.status == "dispatch_failed"
     assert "not configured" in created.provisioning_run.failure_reason
     assert runs.list_runs(account_id="acme")[0].id == created.provisioning_run.id
+
+
+def test_external_provisioning_requires_callback_url_before_writes(monkeypatch):
+    platform, control = _stores()
+    service_keys = MemoryServiceKeyStore()
+    runs = MemoryProvisioningRunStore()
+    monkeypatch.setattr(provisioning_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(provisioning_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(provisioning_router, "get_service_key_store", lambda: service_keys)
+    monkeypatch.setattr(provisioning_router, "get_provisioning_run_store", lambda: runs)
+
+    with pytest.raises(HTTPException) as exc:
+        provisioning_router.provision_customer(
+            provisioning_router.CustomerProvisionCreate(
+                customer_name="Acme",
+                bundle_id="onebrain_only",
+                account_id="acme",
+                deployment_id="dep_acme",
+                initial_version="0.1.0",
+                external_provisioning=True,
+            ),
+            principal=_principal("admin"),
+        )
+
+    assert exc.value.status_code == 400
+    assert platform.list_accounts() == []
+    assert control.list_deployments() == []
+    assert runs.list_runs() == []
+
+
+def test_retry_rejects_non_failed_provisioning_run(monkeypatch):
+    runs = MemoryProvisioningRunStore()
+    run = create_run(
+        runs,
+        account_id="acme",
+        deployment_id="dep_acme",
+        bundle_id="onebrain_only",
+        requested_by="admin",
+        payload={"dry_run": True},
+    )
+    monkeypatch.setattr(provisioning_router, "get_provisioning_run_store", lambda: runs)
+
+    with pytest.raises(HTTPException) as exc:
+        provisioning_router.retry_provisioning_run(run.id, principal=_principal("admin"))
+
+    assert exc.value.status_code == 409
+    assert len(runs.list_runs()) == 1

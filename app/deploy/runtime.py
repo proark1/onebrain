@@ -9,6 +9,7 @@ import time
 from collections.abc import Iterable
 
 from app.config import Settings, get_settings
+from app.db.rls import validate_rls_enabled
 from app.db.schema import REQUIRED_ALEMBIC_REVISION, validate_postgres_schema
 
 
@@ -30,6 +31,7 @@ def run_migrations_if_needed(settings: Settings | None = None) -> None:
     _require_database_url(settings)
     print("Running Alembic migrations before API startup.", flush=True)
     subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], check=True)
+    enforce_rls_if_needed(settings)
 
 
 def wait_for_schema_if_needed(
@@ -59,6 +61,8 @@ def wait_for_schema_if_needed(
         try:
             with psycopg.connect(database_url) as conn:
                 validate_postgres_schema(conn, required_tables)
+                if settings.rls_enforced:
+                    validate_rls_enabled(conn)
             print(
                 f"Postgres schema is ready at Alembic revision {REQUIRED_ALEMBIC_REVISION}.",
                 flush=True,
@@ -75,6 +79,21 @@ def wait_for_schema_if_needed(
 
         print(f"Waiting for Postgres schema: {last_error}", flush=True)
         time.sleep(max(0.1, poll_seconds))
+
+
+def enforce_rls_if_needed(settings: Settings | None = None) -> None:
+    settings = settings or get_settings()
+    if not settings.rls_enforced:
+        return
+    if not is_postgres_mode(settings):
+        raise RuntimeError("ONEBRAIN_RLS_ENFORCED=true requires ONEBRAIN_VECTOR_STORE=pgvector.")
+    database_url = _require_database_url(settings)
+
+    import psycopg
+
+    with psycopg.connect(database_url) as conn:
+        validate_rls_enabled(conn)
+    print("Postgres RLS enforcement check passed.", flush=True)
 
 
 def api_command() -> list[str]:

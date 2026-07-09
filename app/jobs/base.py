@@ -10,6 +10,7 @@ from typing import Optional, Protocol
 JOB_DOCUMENT_INGEST = "document_ingest"
 JOB_SERVICE_CAPTURE = "service_capture"
 JOB_SERVICE_INTAKE = "service_intake"
+JOB_RETENTION_RUN = "retention_run"
 
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"

@@ -896,6 +896,98 @@ h2 {
   gap: 10px;
 }
 
+.operatorChecks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 10px;
+}
+
+.operatorChecks label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.operatorChecks input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.runLedger {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.compactList {
+  gap: 9px;
+}
+
+.compactRow {
+  padding: 11px;
+}
+
+.credentialSecret {
+  display: block;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 10px;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.operatorMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.operatorMeta span,
+.operatorMeta a,
+.statusPill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.operatorMeta a:hover {
+  border-color: rgb(var(--brand-secondary-rgb) / 32%);
+  color: var(--green);
+}
+
+.statusPill.success {
+  border-color: rgb(var(--brand-success-rgb) / 28%);
+  background: rgb(var(--brand-success-rgb) / 11%);
+  color: var(--brand-success);
+}
+
+.statusPill.running {
+  border-color: rgb(var(--brand-warning-rgb) / 32%);
+  background: rgb(var(--brand-warning-rgb) / 12%);
+  color: var(--brand-warning-text);
+}
+
+.statusPill.failed {
+  border-color: rgb(var(--brand-danger-rgb) / 28%);
+  background: rgb(var(--brand-danger-rgb) / 10%);
+  color: var(--red);
+}
+
 .brandThemeEditor {
   display: grid;
   gap: 10px;

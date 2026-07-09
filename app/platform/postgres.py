@@ -14,6 +14,14 @@ from app.platform.base import (
     AppInstallation,
     AuditEvent,
     BrandTheme,
+    ConsentRecord,
+    CredentialMetadata,
+    DataAccessEvent,
+    Membership,
+    Organization,
+    ProcessorRegistration,
+    ProviderRegistration,
+    RetentionPolicy,
     Space,
     default_brand_theme,
     normalize_unique,
@@ -31,6 +39,20 @@ def _join(values: tuple[str, ...]) -> str:
 
 def _split(value: str) -> tuple[str, ...]:
     return normalize_unique((value or "").split(","))
+
+
+def _iso(value) -> str:
+    return value.isoformat() if value else ""
+
+
+def _json(value) -> dict:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        return json.loads(value or "{}")
+    return dict(value)
 
 
 class PostgresPlatformStore:
@@ -54,6 +76,14 @@ class PostgresPlatformStore:
                     "platform_app_installations",
                     "platform_brand_themes",
                     "platform_audit_events",
+                    "platform_organizations",
+                    "platform_memberships",
+                    "platform_consent_records",
+                    "platform_retention_policies",
+                    "platform_data_access_events",
+                    "platform_processor_register",
+                    "platform_provider_register",
+                    "platform_credential_metadata",
                 ),
             )
 
@@ -335,3 +365,365 @@ class PostgresPlatformStore:
             )
             rows = cur.fetchall()
         return [self._audit_row(r) for r in rows]
+
+    def upsert_organization(self, organization: Organization) -> Organization:
+        if not self.get_account(organization.account_id):
+            raise ValueError(f"unknown account: {organization.account_id}")
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_organizations (id, account_id, name, status)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, status = EXCLUDED.status
+                RETURNING id, account_id, name, status, created_at
+                """,
+                (organization.id, organization.account_id, organization.name, organization.status),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return Organization(id=row[0], account_id=row[1], name=row[2], status=row[3], created_at=_iso(row[4]))
+
+    def list_organizations(self, account_id: str) -> List[Organization]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, account_id, name, status, created_at FROM platform_organizations WHERE account_id = %s ORDER BY name",
+                (account_id,),
+            )
+            rows = cur.fetchall()
+        return [Organization(id=r[0], account_id=r[1], name=r[2], status=r[3], created_at=_iso(r[4])) for r in rows]
+
+    def upsert_membership(self, membership: Membership) -> Membership:
+        if not self.get_account(membership.account_id):
+            raise ValueError(f"unknown account: {membership.account_id}")
+        if membership.space_id:
+            space = self.get_space(membership.space_id)
+            if not space or space.account_id != membership.account_id:
+                raise ValueError(f"space is not in this account: {membership.space_id}")
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_memberships
+                (id, account_id, user_id, role_id, space_id, organization_id, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    user_id = EXCLUDED.user_id, role_id = EXCLUDED.role_id,
+                    space_id = EXCLUDED.space_id, organization_id = EXCLUDED.organization_id,
+                    status = EXCLUDED.status
+                RETURNING id, account_id, user_id, role_id, space_id, organization_id, status, created_at
+                """,
+                (
+                    membership.id, membership.account_id, membership.user_id, membership.role_id,
+                    membership.space_id, membership.organization_id, membership.status,
+                ),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return Membership(id=row[0], account_id=row[1], user_id=row[2], role_id=row[3], space_id=row[4],
+                          organization_id=row[5], status=row[6], created_at=_iso(row[7]))
+
+    def list_memberships(self, account_id: str) -> List[Membership]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, account_id, user_id, role_id, space_id, organization_id, status, created_at
+                FROM platform_memberships WHERE account_id = %s ORDER BY user_id, id
+                """,
+                (account_id,),
+            )
+            rows = cur.fetchall()
+        return [
+            Membership(id=r[0], account_id=r[1], user_id=r[2], role_id=r[3], space_id=r[4],
+                       organization_id=r[5], status=r[6], created_at=_iso(r[7]))
+            for r in rows
+        ]
+
+    def upsert_consent_record(self, record: ConsentRecord) -> ConsentRecord:
+        self._validate_governance_scope(record.account_id, record.space_id)
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_consent_records
+                (id, account_id, subject_ref, purpose, status, space_id, source, captured_by, withdrawn_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    subject_ref = EXCLUDED.subject_ref, purpose = EXCLUDED.purpose,
+                    status = EXCLUDED.status, space_id = EXCLUDED.space_id,
+                    source = EXCLUDED.source, captured_by = EXCLUDED.captured_by,
+                    withdrawn_at = EXCLUDED.withdrawn_at
+                RETURNING id, account_id, subject_ref, purpose, status, space_id, source, captured_by, withdrawn_at, created_at
+                """,
+                (record.id, record.account_id, record.subject_ref, record.purpose, record.status,
+                 record.space_id, record.source, record.captured_by, record.withdrawn_at),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return ConsentRecord(id=row[0], account_id=row[1], subject_ref=row[2], purpose=row[3], status=row[4],
+                             space_id=row[5], source=row[6], captured_by=row[7], withdrawn_at=row[8],
+                             created_at=_iso(row[9]))
+
+    def list_consent_records(self, account_id: str, space_id: str = "") -> List[ConsentRecord]:
+        rows = self._list_scope(
+            "platform_consent_records",
+            "id, account_id, subject_ref, purpose, status, space_id, source, captured_by, withdrawn_at, created_at",
+            account_id,
+            space_id,
+            "created_at, id",
+        )
+        return [
+            ConsentRecord(id=r[0], account_id=r[1], subject_ref=r[2], purpose=r[3], status=r[4],
+                          space_id=r[5], source=r[6], captured_by=r[7], withdrawn_at=r[8], created_at=_iso(r[9]))
+            for r in rows
+        ]
+
+    def upsert_retention_policy(self, policy: RetentionPolicy) -> RetentionPolicy:
+        self._validate_governance_scope(policy.account_id, policy.space_id)
+        if policy.duration_days < 0:
+            raise ValueError("retention duration must be non-negative")
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_retention_policies
+                (id, account_id, domain, record_type, action, duration_days, legal_basis, space_id, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    domain = EXCLUDED.domain, record_type = EXCLUDED.record_type,
+                    action = EXCLUDED.action, duration_days = EXCLUDED.duration_days,
+                    legal_basis = EXCLUDED.legal_basis, space_id = EXCLUDED.space_id,
+                    status = EXCLUDED.status
+                RETURNING id, account_id, domain, record_type, action, duration_days, legal_basis, space_id, status, created_at
+                """,
+                (policy.id, policy.account_id, policy.domain, policy.record_type, policy.action,
+                 policy.duration_days, policy.legal_basis, policy.space_id, policy.status),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return RetentionPolicy(id=row[0], account_id=row[1], domain=row[2], record_type=row[3], action=row[4],
+                               duration_days=int(row[5]), legal_basis=row[6], space_id=row[7], status=row[8],
+                               created_at=_iso(row[9]))
+
+    def list_retention_policies(self, account_id: str, space_id: str = "") -> List[RetentionPolicy]:
+        rows = self._list_scope(
+            "platform_retention_policies",
+            "id, account_id, domain, record_type, action, duration_days, legal_basis, space_id, status, created_at",
+            account_id,
+            space_id,
+            "domain, record_type, id",
+        )
+        return [
+            RetentionPolicy(id=r[0], account_id=r[1], domain=r[2], record_type=r[3], action=r[4],
+                            duration_days=int(r[5]), legal_basis=r[6], space_id=r[7], status=r[8],
+                            created_at=_iso(r[9]))
+            for r in rows
+        ]
+
+    def record_data_access(self, event: DataAccessEvent) -> DataAccessEvent:
+        self._validate_governance_scope(event.account_id, event.space_id)
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_data_access_events
+                (id, account_id, actor_id, actor_type, action, target_type, target_id,
+                 space_id, app_id, purpose, decision, meta)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, account_id, actor_id, actor_type, action, target_type, target_id,
+                    space_id, app_id, purpose, decision, meta, created_at
+                """,
+                (event.id, event.account_id, event.actor_id, event.actor_type, event.action,
+                 event.target_type, event.target_id, event.space_id, event.app_id, event.purpose,
+                 event.decision, json.dumps(event.meta)),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return DataAccessEvent(id=row[0], account_id=row[1], actor_id=row[2], actor_type=row[3], action=row[4],
+                               target_type=row[5], target_id=row[6], space_id=row[7], app_id=row[8],
+                               purpose=row[9], decision=row[10], meta=_json(row[11]), created_at=_iso(row[12]))
+
+    def list_data_access_events(self, account_id: str, space_id: str = "") -> List[DataAccessEvent]:
+        rows = self._list_scope(
+            "platform_data_access_events",
+            "id, account_id, actor_id, actor_type, action, target_type, target_id, space_id, app_id, purpose, decision, meta, created_at",
+            account_id,
+            space_id,
+            "created_at, id",
+        )
+        return [
+            DataAccessEvent(id=r[0], account_id=r[1], actor_id=r[2], actor_type=r[3], action=r[4],
+                            target_type=r[5], target_id=r[6], space_id=r[7], app_id=r[8],
+                            purpose=r[9], decision=r[10], meta=_json(r[11]), created_at=_iso(r[12]))
+            for r in rows
+        ]
+
+    def upsert_processor(self, processor: ProcessorRegistration) -> ProcessorRegistration:
+        if processor.account_id and not self.get_account(processor.account_id):
+            raise ValueError(f"unknown account: {processor.account_id}")
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_processor_register
+                (id, name, category, region, dpa_status, transfer_mechanism, account_id, status, meta)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name, category = EXCLUDED.category, region = EXCLUDED.region,
+                    dpa_status = EXCLUDED.dpa_status, transfer_mechanism = EXCLUDED.transfer_mechanism,
+                    account_id = EXCLUDED.account_id, status = EXCLUDED.status, meta = EXCLUDED.meta
+                RETURNING id, name, category, region, dpa_status, transfer_mechanism, account_id, status, meta, created_at
+                """,
+                (processor.id, processor.name, processor.category, processor.region, processor.dpa_status,
+                 processor.transfer_mechanism, processor.account_id, processor.status, json.dumps(processor.meta)),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return ProcessorRegistration(id=row[0], name=row[1], category=row[2], region=row[3], dpa_status=row[4],
+                                     transfer_mechanism=row[5], account_id=row[6], status=row[7],
+                                     meta=_json(row[8]), created_at=_iso(row[9]))
+
+    def list_processors(self, account_id: str = "") -> List[ProcessorRegistration]:
+        rows = self._list_register("platform_processor_register", "dpa_status", account_id)
+        return [
+            ProcessorRegistration(id=r[0], name=r[1], category=r[2], region=r[3], dpa_status=r[4],
+                                  transfer_mechanism=r[5], account_id=r[6], status=r[7],
+                                  meta=_json(r[8]), created_at=_iso(r[9]))
+            for r in rows
+        ]
+
+    def upsert_provider(self, provider: ProviderRegistration) -> ProviderRegistration:
+        if provider.account_id and not self.get_account(provider.account_id):
+            raise ValueError(f"unknown account: {provider.account_id}")
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_provider_register
+                (id, name, category, region, dpia_status, transfer_mechanism, account_id, status, meta)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name, category = EXCLUDED.category, region = EXCLUDED.region,
+                    dpia_status = EXCLUDED.dpia_status, transfer_mechanism = EXCLUDED.transfer_mechanism,
+                    account_id = EXCLUDED.account_id, status = EXCLUDED.status, meta = EXCLUDED.meta
+                RETURNING id, name, category, region, dpia_status, transfer_mechanism, account_id, status, meta, created_at
+                """,
+                (provider.id, provider.name, provider.category, provider.region, provider.dpia_status,
+                 provider.transfer_mechanism, provider.account_id, provider.status, json.dumps(provider.meta)),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return ProviderRegistration(id=row[0], name=row[1], category=row[2], region=row[3], dpia_status=row[4],
+                                    transfer_mechanism=row[5], account_id=row[6], status=row[7],
+                                    meta=_json(row[8]), created_at=_iso(row[9]))
+
+    def list_providers(self, account_id: str = "") -> List[ProviderRegistration]:
+        rows = self._list_register("platform_provider_register", "dpia_status", account_id)
+        return [
+            ProviderRegistration(id=r[0], name=r[1], category=r[2], region=r[3], dpia_status=r[4],
+                                 transfer_mechanism=r[5], account_id=r[6], status=r[7],
+                                 meta=_json(r[8]), created_at=_iso(r[9]))
+            for r in rows
+        ]
+
+    def upsert_credential_metadata(self, credential: CredentialMetadata) -> CredentialMetadata:
+        if not self.get_account(credential.account_id):
+            raise ValueError(f"unknown account: {credential.account_id}")
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_credential_metadata
+                (id, account_id, provider, app_id, secret_ref, status, rotated_at, last_verified_at, meta)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    provider = EXCLUDED.provider, app_id = EXCLUDED.app_id,
+                    secret_ref = EXCLUDED.secret_ref, status = EXCLUDED.status,
+                    rotated_at = EXCLUDED.rotated_at, last_verified_at = EXCLUDED.last_verified_at,
+                    meta = EXCLUDED.meta
+                RETURNING id, account_id, provider, app_id, secret_ref, status, rotated_at, last_verified_at, meta, created_at
+                """,
+                (credential.id, credential.account_id, credential.provider, credential.app_id,
+                 credential.secret_ref, credential.status, credential.rotated_at,
+                 credential.last_verified_at, json.dumps(credential.meta)),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return CredentialMetadata(id=row[0], account_id=row[1], provider=row[2], app_id=row[3], secret_ref=row[4],
+                                  status=row[5], rotated_at=row[6], last_verified_at=row[7],
+                                  meta=_json(row[8]), created_at=_iso(row[9]))
+
+    def list_credential_metadata(self, account_id: str) -> List[CredentialMetadata]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, account_id, provider, app_id, secret_ref, status, rotated_at, last_verified_at, meta, created_at
+                FROM platform_credential_metadata
+                WHERE account_id = %s
+                ORDER BY provider, id
+                """,
+                (account_id,),
+            )
+            rows = cur.fetchall()
+        return [
+            CredentialMetadata(id=r[0], account_id=r[1], provider=r[2], app_id=r[3], secret_ref=r[4],
+                               status=r[5], rotated_at=r[6], last_verified_at=r[7],
+                               meta=_json(r[8]), created_at=_iso(r[9]))
+            for r in rows
+        ]
+
+    def delete_governance_by_scope(self, account_id: str, space_id: str = "") -> dict[str, int]:
+        counts = {}
+        with self._conn() as conn, conn.cursor() as cur:
+            if not space_id:
+                cur.execute("DELETE FROM platform_organizations WHERE account_id = %s", (account_id,))
+                counts["organizations"] = cur.rowcount
+                cur.execute("DELETE FROM platform_credential_metadata WHERE account_id = %s", (account_id,))
+                counts["credential_metadata"] = cur.rowcount
+            else:
+                counts["organizations"] = 0
+                counts["credential_metadata"] = 0
+            for key, table in [
+                ("memberships", "platform_memberships"),
+                ("consent_records", "platform_consent_records"),
+                ("retention_policies", "platform_retention_policies"),
+                ("data_access_events", "platform_data_access_events"),
+            ]:
+                if space_id:
+                    cur.execute(f"DELETE FROM {table} WHERE account_id = %s AND space_id = %s", (account_id, space_id))
+                else:
+                    cur.execute(f"DELETE FROM {table} WHERE account_id = %s", (account_id,))
+                counts[key] = cur.rowcount
+            conn.commit()
+        return counts
+
+    def _validate_governance_scope(self, account_id: str, space_id: str = "") -> None:
+        if not self.get_account(account_id):
+            raise ValueError(f"unknown account: {account_id}")
+        if space_id:
+            space = self.get_space(space_id)
+            if not space or space.account_id != account_id:
+                raise ValueError(f"space is not in this account: {space_id}")
+
+    def _list_scope(self, table: str, columns: str, account_id: str, space_id: str, order: str):
+        clauses = ["account_id = %s"]
+        params = [account_id]
+        if space_id:
+            clauses.append("space_id = %s")
+            params.append(space_id)
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {columns} FROM {table} WHERE {' AND '.join(clauses)} ORDER BY {order}",
+                tuple(params),
+            )
+            return cur.fetchall()
+
+    def _list_register(self, table: str, status_column: str, account_id: str):
+        where = ""
+        params = ()
+        if account_id:
+            where = "WHERE account_id = '' OR account_id = %s"
+            params = (account_id,)
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT id, name, category, region, {status_column}, transfer_mechanism, account_id, status, meta, created_at
+                FROM {table}
+                {where}
+                ORDER BY name, id
+                """,
+                params,
+            )
+            return cur.fetchall()

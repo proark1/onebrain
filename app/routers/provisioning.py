@@ -16,6 +16,9 @@ from app.provisioning.runs import (
     GitHubWorkflowDispatcher,
     ProvisioningCallback,
     ProvisioningRun,
+    STATUS_CANCELLED,
+    STATUS_DISPATCH_FAILED,
+    STATUS_FAILED,
     apply_callback,
     create_run,
     mark_dispatch_failed,
@@ -164,6 +167,7 @@ class ProvisioningRunOut(BaseModel):
     migration_revision: str = ""
     smoke_status: str = ""
     failure_reason: str = ""
+    result_payload: dict = Field(default_factory=dict)
     bootstrap_secret_id: str = ""
     retry_of_run_id: str = ""
     created_at: str = ""
@@ -265,6 +269,7 @@ def _run_out(run: ProvisioningRun) -> ProvisioningRunOut:
         migration_revision=run.migration_revision,
         smoke_status=run.smoke_status,
         failure_reason=run.failure_reason,
+        result_payload=run.result_payload,
         bootstrap_secret_id=run.bootstrap_secret_id,
         retry_of_run_id=run.retry_of_run_id,
         created_at=run.created_at,
@@ -346,6 +351,8 @@ def list_bundles(principal: Principal = Depends(resolve_principal)):
 @router.post("/customers", response_model=ProvisioningResultOut)
 def provision_customer(body: CustomerProvisionCreate, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
+    if body.external_provisioning and not body.callback_url.strip():
+        raise HTTPException(status_code=400, detail="External provisioning requires a callback URL.")
     account_id = body.account_id or _default_account_id(body.customer_name)
     deployment_id = body.deployment_id or f"dep_{account_id}"
     try:
@@ -429,6 +436,8 @@ def retry_provisioning_run(run_id: str, principal: Principal = Depends(resolve_p
     run = store.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Provisioning run not found.")
+    if run.status not in {STATUS_FAILED, STATUS_CANCELLED, STATUS_DISPATCH_FAILED}:
+        raise HTTPException(status_code=409, detail="Only failed, cancelled, or dispatch-failed runs can be retried.")
     retry = create_run(
         store,
         account_id=run.account_id,

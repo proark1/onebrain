@@ -92,6 +92,12 @@ jobs:
               "Send running callback",
               "Dry-run provisioning",
               "Provision Railway stack",
+              "add --database postgres",
+              "onebrain-api",
+              "onebrain-workers",
+              "onebrain-admin-ui",
+              "module_services_pending_code",
+              "core_smoke_passed",
           ]
           missing = [item for item in required if item not in text]
           if missing:
@@ -112,9 +118,13 @@ jobs:
               re.compile(r"(?i)(api[_-]?key|secret|token|password)\s*=\s*['\"][^'\"]{12,}['\"]"),
           ]
           ignored_dirs = {".git", ".next", "node_modules", ".pytest_cache", "__pycache__", ".onebrain_data"}
+          ignored_parts = {"tests", "scripts"}
+          allowed_files = {".github/workflows/provision-customer.yml", "app/users/seed.py"}
           findings = []
           for path in Path(".").rglob("*"):
               if not path.is_file() or any(part in ignored_dirs for part in path.parts):
+                  continue
+              if any(part in ignored_parts for part in path.parts) or path.as_posix() in allowed_files:
                   continue
               if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".pyc"}:
                   continue

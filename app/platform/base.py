@@ -148,6 +148,114 @@ class AuditEvent:
     created_at: str = ""
 
 
+@dataclass(frozen=True)
+class Organization:
+    id: str
+    account_id: str
+    name: str
+    status: str = "active"
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
+class Membership:
+    id: str
+    account_id: str
+    user_id: str
+    role_id: str
+    space_id: str = ""
+    organization_id: str = ""
+    status: str = "active"
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
+class ConsentRecord:
+    id: str
+    account_id: str
+    subject_ref: str
+    purpose: str
+    status: str
+    space_id: str = ""
+    source: str = ""
+    captured_by: str = ""
+    withdrawn_at: str = ""
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
+class RetentionPolicy:
+    id: str
+    account_id: str
+    domain: str
+    record_type: str
+    action: str
+    duration_days: int
+    legal_basis: str
+    space_id: str = ""
+    status: str = "active"
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
+class DataAccessEvent:
+    id: str
+    account_id: str
+    actor_id: str
+    actor_type: str
+    action: str
+    target_type: str
+    target_id: str
+    space_id: str = ""
+    app_id: str = ""
+    purpose: str = ""
+    decision: str = ""
+    meta: Dict = field(default_factory=dict)
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
+class ProcessorRegistration:
+    id: str
+    name: str
+    category: str
+    region: str
+    dpa_status: str
+    transfer_mechanism: str = ""
+    account_id: str = ""
+    status: str = "active"
+    meta: Dict = field(default_factory=dict)
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
+class ProviderRegistration:
+    id: str
+    name: str
+    category: str
+    region: str
+    dpia_status: str
+    transfer_mechanism: str = ""
+    account_id: str = ""
+    status: str = "active"
+    meta: Dict = field(default_factory=dict)
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
+class CredentialMetadata:
+    id: str
+    account_id: str
+    provider: str
+    app_id: str
+    secret_ref: str
+    status: str = "active"
+    rotated_at: str = ""
+    last_verified_at: str = ""
+    meta: Dict = field(default_factory=dict)
+    created_at: str = ""
+
+
 class PlatformStore(Protocol):
     def create_account(self, account: Account) -> Account: ...
 
@@ -180,6 +288,40 @@ class PlatformStore(Protocol):
     def record_audit(self, event: AuditEvent) -> AuditEvent: ...
 
     def list_audit(self, account_id: str) -> List[AuditEvent]: ...
+
+    def upsert_organization(self, organization: Organization) -> Organization: ...
+
+    def list_organizations(self, account_id: str) -> List[Organization]: ...
+
+    def upsert_membership(self, membership: Membership) -> Membership: ...
+
+    def list_memberships(self, account_id: str) -> List[Membership]: ...
+
+    def upsert_consent_record(self, record: ConsentRecord) -> ConsentRecord: ...
+
+    def list_consent_records(self, account_id: str, space_id: str = "") -> List[ConsentRecord]: ...
+
+    def upsert_retention_policy(self, policy: RetentionPolicy) -> RetentionPolicy: ...
+
+    def list_retention_policies(self, account_id: str, space_id: str = "") -> List[RetentionPolicy]: ...
+
+    def record_data_access(self, event: DataAccessEvent) -> DataAccessEvent: ...
+
+    def list_data_access_events(self, account_id: str, space_id: str = "") -> List[DataAccessEvent]: ...
+
+    def upsert_processor(self, processor: ProcessorRegistration) -> ProcessorRegistration: ...
+
+    def list_processors(self, account_id: str = "") -> List[ProcessorRegistration]: ...
+
+    def upsert_provider(self, provider: ProviderRegistration) -> ProviderRegistration: ...
+
+    def list_providers(self, account_id: str = "") -> List[ProviderRegistration]: ...
+
+    def upsert_credential_metadata(self, credential: CredentialMetadata) -> CredentialMetadata: ...
+
+    def list_credential_metadata(self, account_id: str) -> List[CredentialMetadata]: ...
+
+    def delete_governance_by_scope(self, account_id: str, space_id: str = "") -> Dict[str, int]: ...
 
 
 def normalize_unique(values) -> tuple[str, ...]:

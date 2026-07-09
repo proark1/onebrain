@@ -12,9 +12,12 @@ import {
   listOperatorReleases,
   listOperatorRollouts,
   listProvisioningBundles,
+  listProvisioningRuns,
   provisionCustomer,
+  readBootstrapSecret,
   recordOperatorBackup,
   recordOperatorHealth,
+  retryProvisioningRun,
   revokeAccountServiceKey,
   startOperatorRollout,
   updateOperatorRollout,
@@ -32,6 +35,7 @@ import type {
   OperatorUpdatePlan,
   ProvisionedCredential,
   ProvisioningBundle,
+  ProvisioningRun,
   ServiceKeyInfo,
 } from "@/lib/onebrain-types";
 
@@ -53,6 +57,8 @@ type BusyAction =
   | "health"
   | "status"
   | "revoke"
+  | "retry"
+  | "secret"
   | "";
 
 const DEPLOYMENT_TYPES = [
@@ -126,13 +132,13 @@ function readinessTone(readiness: string): string {
 }
 
 function runTone(status = ""): string {
-  if (status === "success") {
+  if (status === "success" || status === "succeeded") {
     return "success";
   }
-  if (status === "running" || status === "pending" || status === "paused") {
+  if (status === "running" || status === "pending" || status === "paused" || status === "dispatched") {
     return "running";
   }
-  if (status === "failed") {
+  if (status === "failed" || status === "dispatch_failed" || status === "cancelled") {
     return "failed";
   }
   return "";
@@ -142,12 +148,18 @@ function safeCredentialLabel(credential: ProvisionedCredential): string {
   return credential.label || credential.app_id || credential.id;
 }
 
+function stringListPayload(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+}
+
 export function OperatorPanel() {
   const [bundles, setBundles] = useState<ProvisioningBundle[]>([]);
   const [customers, setCustomers] = useState<OperatorCustomer[]>([]);
   const [deployments, setDeployments] = useState<DeploymentRow[]>([]);
   const [releases, setReleases] = useState<OperatorRelease[]>([]);
+  const [provisioningRuns, setProvisioningRuns] = useState<ProvisioningRun[]>([]);
   const [credentials, setCredentials] = useState<ProvisionedCredential[]>([]);
+  const [bootstrapSecrets, setBootstrapSecrets] = useState<Record<string, string>>({});
   const [plans, setPlans] = useState<Record<string, OperatorUpdatePlan>>({});
   const [targetReleaseByDeployment, setTargetReleaseByDeployment] = useState<Record<string, string>>({});
   const [busyAction, setBusyAction] = useState<BusyAction>("");
@@ -162,6 +174,11 @@ export function OperatorPanel() {
   const [provisionType, setProvisionType] = useState("dedicated_railway");
   const [provisionRegion, setProvisionRegion] = useState("");
   const [provisionAccountId, setProvisionAccountId] = useState("");
+  const [provisionExternal, setProvisionExternal] = useState(false);
+  const [provisionDryRun, setProvisionDryRun] = useState(true);
+  const [provisionCallbackUrl, setProvisionCallbackUrl] = useState(() =>
+    typeof window === "undefined" ? "" : `${window.location.origin}/api/onebrain/provisioning/runs/{run_id}/callback`,
+  );
   const [provisionBrandTheme, setProvisionBrandTheme] = useState<BrandThemeInput>(DEFAULT_BRAND_THEME);
 
   const [releaseSourceId, setReleaseSourceId] = useState("");
@@ -192,11 +209,12 @@ export function OperatorPanel() {
     setBusyId("");
     setError("");
     try {
-      const [nextBundles, nextCustomers, nextDeployments, nextReleases] = await Promise.all([
+      const [nextBundles, nextCustomers, nextDeployments, nextReleases, nextProvisioningRuns] = await Promise.all([
         listProvisioningBundles(),
         listOperatorCustomers(),
         listOperatorDeployments(),
         listOperatorReleases(),
+        listProvisioningRuns(),
       ]);
       const nextRows = await Promise.all(nextDeployments.map(async (deployment) => {
         const [modules, rollouts, backup, health] = await Promise.all([
@@ -212,6 +230,7 @@ export function OperatorPanel() {
       setCustomers(nextCustomers);
       setDeployments(nextRows);
       setReleases(nextReleases);
+      setProvisioningRuns(nextProvisioningRuns);
       setProvisionBundle((current) => nextBundles.some((bundle) => bundle.id === current) ? current : nextBundles[0]?.id ?? "");
       setReleaseSourceId((current) => current && nextRows.some((row) => row.deployment.id === current)
         ? current
@@ -240,11 +259,12 @@ export function OperatorPanel() {
       setBusyAction("load");
       setError("");
       try {
-        const [nextBundles, nextCustomers, nextDeployments, nextReleases] = await Promise.all([
+        const [nextBundles, nextCustomers, nextDeployments, nextReleases, nextProvisioningRuns] = await Promise.all([
           listProvisioningBundles(),
           listOperatorCustomers(),
           listOperatorDeployments(),
           listOperatorReleases(),
+          listProvisioningRuns(),
         ]);
         const nextRows = await Promise.all(nextDeployments.map(async (deployment) => {
           const [modules, rollouts, backup, health] = await Promise.all([
@@ -262,6 +282,7 @@ export function OperatorPanel() {
         setCustomers(nextCustomers);
         setDeployments(nextRows);
         setReleases(nextReleases);
+        setProvisioningRuns(nextProvisioningRuns);
         setProvisionBundle(nextBundles[0]?.id ?? "full_stack");
         setReleaseSourceId(nextRows[0]?.deployment.id ?? "");
         setTargetReleaseByDeployment(Object.fromEntries(nextRows.map((row) => [
@@ -303,13 +324,21 @@ export function OperatorPanel() {
         customer_name: provisionName,
         deployment_type: provisionType,
         initial_version: provisionVersion,
+        external_provisioning: provisionExternal,
+        dry_run: provisionDryRun,
+        callback_url: provisionExternal ? provisionCallbackUrl : "",
         region: provisionRegion,
         release_ring: provisionRing,
       });
       setCredentials(result.credentials || []);
+      if (result.provisioning_run) {
+        setProvisioningRuns((current) => [result.provisioning_run as ProvisioningRun, ...current]);
+      }
       setProvisionName("");
       setProvisionAccountId("");
-      setNotice(`${result.account.name} provisioned.`);
+      setNotice(result.provisioning_run
+        ? `${result.account.name} provisioned; external run ${labelFor(result.provisioning_run.status)}.`
+        : `${result.account.name} provisioned.`);
       await loadOperator();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Provisioning failed.");
@@ -472,6 +501,48 @@ export function OperatorPanel() {
     }
   }
 
+  async function onRetryRun(run: ProvisioningRun) {
+    if (busyAction) {
+      return;
+    }
+    setBusyAction("retry");
+    setBusyId(run.id);
+    setError("");
+    setNotice("");
+    try {
+      const retried = await retryProvisioningRun(run.id);
+      setProvisioningRuns((current) => [retried, ...current]);
+      setNotice(`Retry ${retried.id} started.`);
+      await loadOperator();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not retry provisioning run.");
+    } finally {
+      setBusyAction("");
+      setBusyId("");
+    }
+  }
+
+  async function onReadSecret(run: ProvisioningRun) {
+    if (busyAction || !run.bootstrap_secret_id) {
+      return;
+    }
+    setBusyAction("secret");
+    setBusyId(run.id);
+    setError("");
+    setNotice("");
+    try {
+      const secret = await readBootstrapSecret(run.id);
+      setBootstrapSecrets((current) => ({ ...current, [run.id]: secret.plaintext }));
+      setNotice(`Bootstrap secret ${secret.secret_id} read once.`);
+      await loadOperator();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not read bootstrap secret.");
+    } finally {
+      setBusyAction("");
+      setBusyId("");
+    }
+  }
+
   return (
     <div className="operatorWorkspace">
       <header className="documentsTopbar">
@@ -520,8 +591,34 @@ export function OperatorPanel() {
               <TextField label="Region" value={provisionRegion} onChange={setProvisionRegion} />
             </div>
             <TextField label="Optional account id" value={provisionAccountId} onChange={setProvisionAccountId} />
+            <div className="operatorChecks" aria-label="External provisioning options">
+              <label>
+                <input
+                  checked={provisionExternal}
+                  onChange={(event) => setProvisionExternal(event.target.checked)}
+                  type="checkbox"
+                />
+                Dispatch external workflow
+              </label>
+              <label>
+                <input
+                  checked={provisionDryRun}
+                  disabled={!provisionExternal}
+                  onChange={(event) => setProvisionDryRun(event.target.checked)}
+                  type="checkbox"
+                />
+                Dry run
+              </label>
+            </div>
+            {provisionExternal ? (
+              <TextField label="Callback URL" value={provisionCallbackUrl} onChange={setProvisionCallbackUrl} />
+            ) : null}
             <BrandThemeEditor value={provisionBrandTheme} onChange={setProvisionBrandTheme} />
-            <button className="primaryButton" disabled={!provisionName.trim() || !provisionBundle || Boolean(busyAction)} type="submit">
+            <button
+              className="primaryButton"
+              disabled={!provisionName.trim() || !provisionBundle || (provisionExternal && !provisionCallbackUrl.trim()) || Boolean(busyAction)}
+              type="submit"
+            >
               {busyAction === "provision" ? "Provisioning" : "Provision customer"}
             </button>
           </form>
@@ -548,6 +645,14 @@ export function OperatorPanel() {
               />
             ))}
           </div>
+          <ProvisioningRunList
+            bootstrapSecrets={bootstrapSecrets}
+            busyAction={busyAction}
+            busyId={busyId}
+            onReadSecret={onReadSecret}
+            onRetry={onRetryRun}
+            runs={provisioningRuns}
+          />
         </section>
       </div>
 
@@ -698,6 +803,98 @@ function CredentialPanel({
           </button>
         </article>
       ))}
+    </section>
+  );
+}
+
+function ProvisioningRunList({
+  bootstrapSecrets,
+  busyAction,
+  busyId,
+  onReadSecret,
+  onRetry,
+  runs,
+}: {
+  bootstrapSecrets: Record<string, string>;
+  busyAction: BusyAction;
+  busyId: string;
+  onReadSecret: (run: ProvisioningRun) => void;
+  onRetry: (run: ProvisioningRun) => void;
+  runs: ProvisioningRun[];
+}) {
+  const visibleRuns = runs.slice(0, 8);
+  const retryable = new Set(["failed", "cancelled", "dispatch_failed"]);
+
+  return (
+    <section className="runLedger" aria-labelledby="provisioningRunsTitle">
+      <div className="panelHead compact">
+        <div>
+          <p className="eyebrow">Runs</p>
+          <h3 id="provisioningRunsTitle">Provisioning ledger</h3>
+        </div>
+        <span>{runs.length}</span>
+      </div>
+      <div className="operatorList compactList">
+        {visibleRuns.length === 0 ? <p className="mutedLine">No external runs yet.</p> : null}
+        {visibleRuns.map((run) => {
+          const pendingModules = stringListPayload(run.result_payload?.module_services_pending_code);
+          return (
+          <article className="operatorRow compactRow" key={run.id}>
+            <div className="operatorRowMain">
+              <div className="operatorRowTitle">
+                <strong>{run.account_id}</strong>
+                <span className={`statusPill ${runTone(run.status)}`}>{labelFor(run.status)}</span>
+              </div>
+              <p>{run.deployment_id}</p>
+              <div className="operatorMeta">
+                <span>{run.bundle_id}</span>
+                {run.railway_project_id ? <span>{run.railway_project_id}</span> : null}
+                {run.external_run_url ? (
+                  <a href={run.external_run_url} rel="noreferrer" target="_blank">workflow</a>
+                ) : null}
+                {run.smoke_status ? <span>{labelFor(run.smoke_status)}</span> : null}
+              </div>
+              {Object.entries(run.service_urls || {}).length ? (
+                <div className="operatorMeta">
+                  {Object.entries(run.service_urls).map(([label, url]) => (
+                    url.startsWith("http") ? (
+                      <a href={url} key={label} rel="noreferrer" target="_blank">{labelFor(label)}</a>
+                    ) : (
+                      <span key={label}>{labelFor(label)}</span>
+                    )
+                  ))}
+                </div>
+              ) : null}
+              {pendingModules.length ? (
+                <div className="operatorMeta">
+                  {pendingModules.map((module) => <span key={module}>{module} pending image</span>)}
+                </div>
+              ) : null}
+              {run.failure_reason ? <p className="operatorMuted">{run.failure_reason}</p> : null}
+              {bootstrapSecrets[run.id] ? <code className="credentialSecret">{bootstrapSecrets[run.id]}</code> : null}
+            </div>
+            <div className="operatorButtonGrid">
+              <button
+                className="secondaryButton"
+                disabled={Boolean(busyAction) || !retryable.has(run.status)}
+                onClick={() => onRetry(run)}
+                type="button"
+              >
+                {busyAction === "retry" && busyId === run.id ? "Retrying" : "Retry"}
+              </button>
+              <button
+                className="secondaryButton"
+                disabled={Boolean(busyAction) || !run.bootstrap_secret_id || Boolean(bootstrapSecrets[run.id])}
+                onClick={() => onReadSecret(run)}
+                type="button"
+              >
+                {busyAction === "secret" && busyId === run.id ? "Reading" : "Secret"}
+              </button>
+            </div>
+          </article>
+          );
+        })}
+      </div>
     </section>
   );
 }

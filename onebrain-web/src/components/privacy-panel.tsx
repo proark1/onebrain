@@ -356,6 +356,7 @@ function SummaryStat({ label, value }: { label: string; value: number | string }
 function PrivacyResultPanel({ result }: { result: PrivacyResult }) {
   if (result.kind === "erase") {
     const eraseData = result.eraseData;
+    const governanceDeleted = Object.values(eraseData.governance_deleted || {}).reduce((total, value) => total + value, 0);
     return (
       <section className="privacyPanel resultPanel" aria-labelledby="privacyResultTitle">
         <div className="panelHead">
@@ -370,6 +371,7 @@ function PrivacyResultPanel({ result }: { result: PrivacyResult }) {
           <SummaryStat label="chunks" value={eraseData.chunks_deleted} />
           <SummaryStat label="conversations" value={eraseData.conversations_deleted} />
           <SummaryStat label="intake" value={eraseData.intake_records_deleted} />
+          <SummaryStat label="governance" value={governanceDeleted} />
         </div>
         <p className="auditLine">Audit event: {eraseData.audit_event_id}</p>
       </section>
@@ -377,6 +379,10 @@ function PrivacyResultPanel({ result }: { result: PrivacyResult }) {
   }
 
   const exportData = result.exportData;
+  const governanceRecords = Object.values(exportData.governance || {}).reduce(
+    (total, records) => total + records.length,
+    0,
+  );
   return (
     <section className="privacyPanel resultPanel" aria-labelledby="privacyResultTitle">
       <div className="panelHead">
@@ -391,6 +397,7 @@ function PrivacyResultPanel({ result }: { result: PrivacyResult }) {
         <SummaryStat label="chunks" value={result.chunks} />
         <SummaryStat label="conversations" value={exportData.conversations.length} />
         <SummaryStat label="intake" value={exportData.intake_records.length} />
+        <SummaryStat label="governance" value={governanceRecords} />
         <SummaryStat label="audit events" value={exportData.audit_events.length} />
       </div>
       <p className="auditLine">Exported at: {exportData.exported_at}</p>

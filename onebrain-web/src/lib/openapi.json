@@ -790,6 +790,24 @@
         "title": "Body_upload_api_upload_post",
         "type": "object"
       },
+      "BootstrapSecretOut": {
+        "properties": {
+          "plaintext": {
+            "title": "Plaintext",
+            "type": "string"
+          },
+          "secret_id": {
+            "title": "Secret Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "secret_id",
+          "plaintext"
+        ],
+        "title": "BootstrapSecretOut",
+        "type": "object"
+      },
       "BrandThemeOut": {
         "properties": {
           "accent_color": {
@@ -940,6 +958,122 @@
         "title": "BundleOut",
         "type": "object"
       },
+      "ConsentIn": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "purpose": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Purpose",
+            "type": "string"
+          },
+          "source": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Source",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "granted",
+            "maxLength": 40,
+            "title": "Status",
+            "type": "string"
+          },
+          "subject_ref": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Subject Ref",
+            "type": "string"
+          },
+          "withdrawn_at": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Withdrawn At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject_ref",
+          "purpose"
+        ],
+        "title": "ConsentIn",
+        "type": "object"
+      },
+      "ConsentOut": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "captured_by": {
+            "default": "",
+            "title": "Captured By",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "source": {
+            "default": "",
+            "title": "Source",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "subject_ref": {
+            "title": "Subject Ref",
+            "type": "string"
+          },
+          "withdrawn_at": {
+            "default": "",
+            "title": "Withdrawn At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "subject_ref",
+          "purpose",
+          "status"
+        ],
+        "title": "ConsentOut",
+        "type": "object"
+      },
       "ConversationDetail": {
         "properties": {
           "id": {
@@ -987,6 +1121,135 @@
           "updated_at"
         ],
         "title": "ConversationSummary",
+        "type": "object"
+      },
+      "CredentialMetadataIn": {
+        "properties": {
+          "app_id": {
+            "default": "",
+            "maxLength": 80,
+            "title": "App Id",
+            "type": "string"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "last_verified_at": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Last Verified At",
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "provider": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Provider",
+            "type": "string"
+          },
+          "rotated_at": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Rotated At",
+            "type": "string"
+          },
+          "secret_ref": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Secret Ref",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "maxLength": 40,
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "secret_ref"
+        ],
+        "title": "CredentialMetadataIn",
+        "type": "object"
+      },
+      "CredentialMetadataOut": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "app_id": {
+            "default": "",
+            "maxLength": 80,
+            "title": "App Id",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "last_verified_at": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Last Verified At",
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "provider": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Provider",
+            "type": "string"
+          },
+          "rotated_at": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Rotated At",
+            "type": "string"
+          },
+          "secret_ref": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Secret Ref",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "maxLength": 40,
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "secret_ref",
+          "account_id"
+        ],
+        "title": "CredentialMetadataOut",
         "type": "object"
       },
       "CustomerOverviewOut": {
@@ -1128,6 +1391,12 @@
             "title": "Bundle Id",
             "type": "string"
           },
+          "callback_url": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Callback Url",
+            "type": "string"
+          },
           "current_migration": {
             "default": "",
             "maxLength": 80,
@@ -1157,6 +1426,16 @@
             "maxLength": 80,
             "title": "Deployment Type",
             "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "external_provisioning": {
+            "default": false,
+            "title": "External Provisioning",
+            "type": "boolean"
           },
           "initial_version": {
             "default": "0.1.0",
@@ -1194,6 +1473,175 @@
           "customer_name"
         ],
         "title": "CustomerProvisionCreate",
+        "type": "object"
+      },
+      "DataAccessEventIn": {
+        "properties": {
+          "action": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Action",
+            "type": "string"
+          },
+          "actor_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "actor_type": {
+            "default": "service",
+            "maxLength": 80,
+            "title": "Actor Type",
+            "type": "string"
+          },
+          "app_id": {
+            "default": "",
+            "maxLength": 80,
+            "title": "App Id",
+            "type": "string"
+          },
+          "decision": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Decision",
+            "type": "string"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "purpose": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Purpose",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "target_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Target Id",
+            "type": "string"
+          },
+          "target_type": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Target Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "actor_id",
+          "action",
+          "target_type",
+          "target_id"
+        ],
+        "title": "DataAccessEventIn",
+        "type": "object"
+      },
+      "DataAccessEventOut": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "action": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Action",
+            "type": "string"
+          },
+          "actor_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "actor_type": {
+            "default": "service",
+            "maxLength": 80,
+            "title": "Actor Type",
+            "type": "string"
+          },
+          "app_id": {
+            "default": "",
+            "maxLength": 80,
+            "title": "App Id",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decision": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Decision",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "purpose": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Purpose",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "target_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Target Id",
+            "type": "string"
+          },
+          "target_type": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Target Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "actor_id",
+          "action",
+          "target_type",
+          "target_id",
+          "account_id"
+        ],
+        "title": "DataAccessEventOut",
         "type": "object"
       },
       "DeploymentCreate": {
@@ -1639,6 +2087,106 @@
           "password"
         ],
         "title": "LoginRequest",
+        "type": "object"
+      },
+      "MembershipIn": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "organization_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "role_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Role Id",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "maxLength": 40,
+            "title": "Status",
+            "type": "string"
+          },
+          "user_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "role_id"
+        ],
+        "title": "MembershipIn",
+        "type": "object"
+      },
+      "MembershipOut": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "organization_id": {
+            "default": "",
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "role_id": {
+            "title": "Role Id",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "title": "Status",
+            "type": "string"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "user_id",
+          "role_id"
+        ],
+        "title": "MembershipOut",
         "type": "object"
       },
       "MessageOut": {
@@ -2101,6 +2649,72 @@
         "title": "OperatorStorageOut",
         "type": "object"
       },
+      "OrganizationIn": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "maxLength": 40,
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "OrganizationIn",
+        "type": "object"
+      },
+      "OrganizationOut": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "name"
+        ],
+        "title": "OrganizationOut",
+        "type": "object"
+      },
       "PendingDocument": {
         "properties": {
           "account_id": {
@@ -2249,6 +2863,11 @@
             "title": "Documents Deleted",
             "type": "integer"
           },
+          "governance_deleted": {
+            "additionalProperties": true,
+            "title": "Governance Deleted",
+            "type": "object"
+          },
           "intake_records_deleted": {
             "default": 0,
             "title": "Intake Records Deleted",
@@ -2330,6 +2949,11 @@
             "title": "Exported At",
             "type": "string"
           },
+          "governance": {
+            "additionalProperties": true,
+            "title": "Governance",
+            "type": "object"
+          },
           "intake_records": {
             "items": {
               "additionalProperties": true,
@@ -2352,6 +2976,274 @@
           "audit_events"
         ],
         "title": "PrivacyExportOut",
+        "type": "object"
+      },
+      "ProcessorIn": {
+        "properties": {
+          "account_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "category": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Category",
+            "type": "string"
+          },
+          "dpa_status": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Dpa Status",
+            "type": "string"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "region": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Region",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "maxLength": 40,
+            "title": "Status",
+            "type": "string"
+          },
+          "transfer_mechanism": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Transfer Mechanism",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ProcessorIn",
+        "type": "object"
+      },
+      "ProcessorOut": {
+        "properties": {
+          "account_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "category": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Category",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dpa_status": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Dpa Status",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "region": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Region",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "maxLength": 40,
+            "title": "Status",
+            "type": "string"
+          },
+          "transfer_mechanism": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Transfer Mechanism",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ProcessorOut",
+        "type": "object"
+      },
+      "ProviderIn": {
+        "properties": {
+          "account_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "category": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Category",
+            "type": "string"
+          },
+          "dpia_status": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Dpia Status",
+            "type": "string"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "region": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Region",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "maxLength": 40,
+            "title": "Status",
+            "type": "string"
+          },
+          "transfer_mechanism": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Transfer Mechanism",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ProviderIn",
+        "type": "object"
+      },
+      "ProviderOut": {
+        "properties": {
+          "account_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "category": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Category",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dpia_status": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Dpia Status",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "region": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Region",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "maxLength": 40,
+            "title": "Status",
+            "type": "string"
+          },
+          "transfer_mechanism": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Transfer Mechanism",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ProviderOut",
         "type": "object"
       },
       "ProvisionedAccountOut": {
@@ -2572,6 +3464,80 @@
         "title": "ProvisionedSpaceOut",
         "type": "object"
       },
+      "ProvisioningCallbackIn": {
+        "properties": {
+          "bootstrap_password": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Bootstrap Password",
+            "type": "string"
+          },
+          "external_run_id": {
+            "default": "",
+            "maxLength": 200,
+            "title": "External Run Id",
+            "type": "string"
+          },
+          "external_run_url": {
+            "default": "",
+            "maxLength": 500,
+            "title": "External Run Url",
+            "type": "string"
+          },
+          "failure_reason": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Failure Reason",
+            "type": "string"
+          },
+          "migration_revision": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Migration Revision",
+            "type": "string"
+          },
+          "railway_environment_id": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Railway Environment Id",
+            "type": "string"
+          },
+          "railway_project_id": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Railway Project Id",
+            "type": "string"
+          },
+          "result_payload": {
+            "additionalProperties": true,
+            "title": "Result Payload",
+            "type": "object"
+          },
+          "service_urls": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Service Urls",
+            "type": "object"
+          },
+          "smoke_status": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Smoke Status",
+            "type": "string"
+          },
+          "status": {
+            "maxLength": 40,
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "ProvisioningCallbackIn",
+        "type": "object"
+      },
       "ProvisioningResultOut": {
         "properties": {
           "account": {
@@ -2615,6 +3581,16 @@
             "title": "Modules",
             "type": "array"
           },
+          "provisioning_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProvisioningRunOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "spaces": {
             "items": {
               "$ref": "#/components/schemas/ProvisionedSpaceOut"
@@ -2633,6 +3609,121 @@
           "brand_theme"
         ],
         "title": "ProvisioningResultOut",
+        "type": "object"
+      },
+      "ProvisioningRunOut": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "bootstrap_secret_id": {
+            "default": "",
+            "title": "Bootstrap Secret Id",
+            "type": "string"
+          },
+          "bundle_id": {
+            "title": "Bundle Id",
+            "type": "string"
+          },
+          "completed_at": {
+            "default": "",
+            "title": "Completed At",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "deployment_id": {
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "dispatched_at": {
+            "default": "",
+            "title": "Dispatched At",
+            "type": "string"
+          },
+          "external_provider": {
+            "default": "",
+            "title": "External Provider",
+            "type": "string"
+          },
+          "external_run_id": {
+            "default": "",
+            "title": "External Run Id",
+            "type": "string"
+          },
+          "external_run_url": {
+            "default": "",
+            "title": "External Run Url",
+            "type": "string"
+          },
+          "failure_reason": {
+            "default": "",
+            "title": "Failure Reason",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "migration_revision": {
+            "default": "",
+            "title": "Migration Revision",
+            "type": "string"
+          },
+          "railway_environment_id": {
+            "default": "",
+            "title": "Railway Environment Id",
+            "type": "string"
+          },
+          "railway_project_id": {
+            "default": "",
+            "title": "Railway Project Id",
+            "type": "string"
+          },
+          "requested_by": {
+            "title": "Requested By",
+            "type": "string"
+          },
+          "retry_of_run_id": {
+            "default": "",
+            "title": "Retry Of Run Id",
+            "type": "string"
+          },
+          "service_urls": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Service Urls",
+            "type": "object"
+          },
+          "smoke_status": {
+            "default": "",
+            "title": "Smoke Status",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "default": "",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "deployment_id",
+          "bundle_id",
+          "requested_by",
+          "status"
+        ],
+        "title": "ProvisioningRunOut",
         "type": "object"
       },
       "ReleaseCreate": {
@@ -2735,6 +3826,127 @@
           "modules"
         ],
         "title": "ReleaseOut",
+        "type": "object"
+      },
+      "RetentionPolicyIn": {
+        "properties": {
+          "action": {
+            "default": "delete",
+            "maxLength": 40,
+            "title": "Action",
+            "type": "string"
+          },
+          "domain": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Domain",
+            "type": "string"
+          },
+          "duration_days": {
+            "minimum": 0.0,
+            "title": "Duration Days",
+            "type": "integer"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "legal_basis": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Legal Basis",
+            "type": "string"
+          },
+          "record_type": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Record Type",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "maxLength": 40,
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain",
+          "duration_days"
+        ],
+        "title": "RetentionPolicyIn",
+        "type": "object"
+      },
+      "RetentionPolicyOut": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "domain": {
+            "title": "Domain",
+            "type": "string"
+          },
+          "duration_days": {
+            "title": "Duration Days",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "legal_basis": {
+            "title": "Legal Basis",
+            "type": "string"
+          },
+          "record_type": {
+            "title": "Record Type",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "domain",
+          "record_type",
+          "action",
+          "duration_days",
+          "legal_basis"
+        ],
+        "title": "RetentionPolicyOut",
         "type": "object"
       },
       "RoleInfo": {
@@ -5981,6 +7193,732 @@
         ]
       }
     },
+    "/api/platform/accounts/{account_id}/consent": {
+      "get": {
+        "operationId": "list_consent_api_platform_accounts__account_id__consent_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ConsentOut"
+                  },
+                  "title": "Response List Consent Api Platform Accounts  Account Id  Consent Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Consent",
+        "tags": [
+          "platform"
+        ]
+      },
+      "post": {
+        "operationId": "upsert_consent_api_platform_accounts__account_id__consent_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upsert Consent",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/platform/accounts/{account_id}/credentials": {
+      "get": {
+        "operationId": "list_credentials_api_platform_accounts__account_id__credentials_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CredentialMetadataOut"
+                  },
+                  "title": "Response List Credentials Api Platform Accounts  Account Id  Credentials Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Credentials",
+        "tags": [
+          "platform"
+        ]
+      },
+      "post": {
+        "operationId": "upsert_credential_api_platform_accounts__account_id__credentials_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialMetadataIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialMetadataOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upsert Credential",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/platform/accounts/{account_id}/data-access": {
+      "get": {
+        "operationId": "list_data_access_api_platform_accounts__account_id__data_access_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DataAccessEventOut"
+                  },
+                  "title": "Response List Data Access Api Platform Accounts  Account Id  Data Access Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Data Access",
+        "tags": [
+          "platform"
+        ]
+      },
+      "post": {
+        "operationId": "record_data_access_api_platform_accounts__account_id__data_access_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DataAccessEventIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataAccessEventOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record Data Access",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/platform/accounts/{account_id}/memberships": {
+      "get": {
+        "operationId": "list_memberships_api_platform_accounts__account_id__memberships_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MembershipOut"
+                  },
+                  "title": "Response List Memberships Api Platform Accounts  Account Id  Memberships Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Memberships",
+        "tags": [
+          "platform"
+        ]
+      },
+      "post": {
+        "operationId": "upsert_membership_api_platform_accounts__account_id__memberships_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MembershipIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembershipOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upsert Membership",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/platform/accounts/{account_id}/organizations": {
+      "get": {
+        "operationId": "list_organizations_api_platform_accounts__account_id__organizations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/OrganizationOut"
+                  },
+                  "title": "Response List Organizations Api Platform Accounts  Account Id  Organizations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Organizations",
+        "tags": [
+          "platform"
+        ]
+      },
+      "post": {
+        "operationId": "upsert_organization_api_platform_accounts__account_id__organizations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrganizationIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upsert Organization",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/platform/accounts/{account_id}/retention": {
+      "get": {
+        "operationId": "list_retention_api_platform_accounts__account_id__retention_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RetentionPolicyOut"
+                  },
+                  "title": "Response List Retention Api Platform Accounts  Account Id  Retention Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Retention",
+        "tags": [
+          "platform"
+        ]
+      },
+      "post": {
+        "operationId": "upsert_retention_api_platform_accounts__account_id__retention_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetentionPolicyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetentionPolicyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upsert Retention",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
     "/api/platform/accounts/{account_id}/spaces": {
       "get": {
         "operationId": "list_spaces_api_platform_accounts__account_id__spaces_get",
@@ -6092,6 +8030,222 @@
           }
         },
         "summary": "Create Space",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/platform/processors": {
+      "get": {
+        "operationId": "list_processors_api_platform_processors_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProcessorOut"
+                  },
+                  "title": "Response List Processors Api Platform Processors Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Processors",
+        "tags": [
+          "platform"
+        ]
+      },
+      "post": {
+        "operationId": "upsert_processor_api_platform_processors_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessorIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upsert Processor",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/platform/providers": {
+      "get": {
+        "operationId": "list_providers_api_platform_providers_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderOut"
+                  },
+                  "title": "Response List Providers Api Platform Providers Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Providers",
+        "tags": [
+          "platform"
+        ]
+      },
+      "post": {
+        "operationId": "upsert_provider_api_platform_providers_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upsert Provider",
         "tags": [
           "platform"
         ]
@@ -6316,6 +8470,301 @@
           }
         },
         "summary": "Provision Customer",
+        "tags": [
+          "provisioning"
+        ]
+      }
+    },
+    "/api/provisioning/runs": {
+      "get": {
+        "operationId": "list_provisioning_runs_api_provisioning_runs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "deployment_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProvisioningRunOut"
+                  },
+                  "title": "Response List Provisioning Runs Api Provisioning Runs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Provisioning Runs",
+        "tags": [
+          "provisioning"
+        ]
+      }
+    },
+    "/api/provisioning/runs/{run_id}": {
+      "get": {
+        "operationId": "get_provisioning_run_api_provisioning_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisioningRunOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Provisioning Run",
+        "tags": [
+          "provisioning"
+        ]
+      }
+    },
+    "/api/provisioning/runs/{run_id}/bootstrap-secret/read": {
+      "post": {
+        "operationId": "read_bootstrap_secret_api_provisioning_runs__run_id__bootstrap_secret_read_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapSecretOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Bootstrap Secret",
+        "tags": [
+          "provisioning"
+        ]
+      }
+    },
+    "/api/provisioning/runs/{run_id}/callback": {
+      "post": {
+        "operationId": "provisioning_callback_api_provisioning_runs__run_id__callback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-onebrain-callback-key-id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "X-Onebrain-Callback-Key-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProvisioningCallbackIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisioningRunOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Provisioning Callback",
+        "tags": [
+          "provisioning"
+        ]
+      }
+    },
+    "/api/provisioning/runs/{run_id}/retry": {
+      "post": {
+        "operationId": "retry_provisioning_run_api_provisioning_runs__run_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisioningRunOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Provisioning Run",
         "tags": [
           "provisioning"
         ]

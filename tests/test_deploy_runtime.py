@@ -12,6 +12,7 @@ from app.deploy import runtime
 class FakeSettings:
     vector_store: str = "memory"
     database_url: str = ""
+    rls_enforced: bool = False
 
 
 def test_run_migrations_skips_memory_mode(monkeypatch):
@@ -30,6 +31,7 @@ def test_run_migrations_runs_alembic_for_postgres(monkeypatch):
         calls.append((command, check))
 
     monkeypatch.setattr(runtime.subprocess, "run", fake_run)
+    monkeypatch.setattr(runtime, "enforce_rls_if_needed", lambda settings: None)
 
     runtime.run_migrations_if_needed(
         FakeSettings(vector_store="pgvector", database_url="postgresql://user:pass@host/db")
@@ -66,3 +68,8 @@ def test_wait_for_schema_skips_memory_mode(monkeypatch):
     monkeypatch.setattr(runtime, "_float_env", lambda *args, **kwargs: pytest.fail("should not read wait env"))
 
     runtime.wait_for_schema_if_needed(FakeSettings())
+
+
+def test_rls_enforcement_requires_postgres_mode():
+    with pytest.raises(RuntimeError, match="RLS_ENFORCED"):
+        runtime.enforce_rls_if_needed(FakeSettings(rls_enforced=True))

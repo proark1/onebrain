@@ -89,6 +89,7 @@ ONEBRAIN_PII_PHASE=synthetic
 ONEBRAIN_REQUIRE_APPROVAL=false
 ONEBRAIN_BLOCK_PUBLIC_ON_PII=true
 ONEBRAIN_RETRIEVAL_MIN_SCORE=0.05
+ONEBRAIN_RLS_ENFORCED=false
 ```
 
 `ONEBRAIN_MIGRATION_EMBEDDING_DIM` must match the embedding provider or the
@@ -119,6 +120,44 @@ Railway injects `PORT=8080` in the Python API container. Use the private
 Railway hostname plus that port for `ONEBRAIN_API_BASE_URL`. The browser still
 talks to same-origin Next.js routes, including `/login`; the Next.js server
 forwards those calls to FastAPI.
+
+External customer provisioning variables for `onebrain`:
+
+```text
+ONEBRAIN_GITHUB_OWNER=<github owner>
+ONEBRAIN_GITHUB_REPO=<repo>
+ONEBRAIN_GITHUB_WORKFLOW=provision-customer.yml
+ONEBRAIN_GITHUB_REF=main
+ONEBRAIN_GITHUB_DISPATCH_TOKEN=<token allowed to dispatch the workflow>
+ONEBRAIN_PROVISIONING_CALLBACK_KEY_ID=callback-v1
+ONEBRAIN_PROVISIONING_CALLBACK_KEY_HASH=<sha256 hash from app.provisioning.runs.hash_callback_secret>
+ONEBRAIN_SECRET_ENCRYPTION_KEY=<Fernet key or 32-byte hex>
+ONEBRAIN_SECRET_ENCRYPTION_KEY_VERSION=v1
+ONEBRAIN_BOOTSTRAP_SECRET_TTL_SECONDS=3600
+```
+
+Set these as GitHub Actions repository secrets:
+
+```text
+ONEBRAIN_PROVISIONING_CALLBACK_KEY=<plaintext callback key matching the hash>
+RAILWAY_API_TOKEN=<Railway account/workspace token that can create projects>
+RAILWAY_TOKEN=<fallback Railway token if RAILWAY_API_TOKEN is not used>
+RAILWAY_WORKSPACE=<optional Railway workspace id or name>
+GEMINI_API_KEY=<optional provider key for provisioned stacks>
+ONEBRAIN_MIGRATION_EMBEDDING_DIM=<optional override, defaults to 3072 with Gemini>
+ASSISTANT_SERVICE_IMAGE=<optional Docker image for assistant-service>
+COMMUNICATION_API_IMAGE=<optional Docker image for communication-api>
+COMMUNICATION_WIDGET_IMAGE=<optional Docker image for communication-widget>
+COMMUNICATION_VOICE_IMAGE=<optional Docker image for communication-voice>
+COMMUNICATION_WORKERS_IMAGE=<optional Docker image for communication-workers>
+```
+
+Use workflow dry-run mode for the first contract test. Real Railway provisioning
+runs only when `dry_run=false` and the required GitHub secrets are present. The
+workflow creates the OneBrain API, worker, admin UI, and Postgres services from
+this repo. Bundle module services are created too; when an optional image secret
+is absent, the service is recorded as pending deployable code in the
+provisioning run result payload.
 
 Optional API root handoff:
 

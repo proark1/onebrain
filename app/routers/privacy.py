@@ -37,6 +37,7 @@ class PrivacyExportOut(BaseModel):
     documents: list[dict]
     conversations: list[dict]
     intake_records: list[dict] = Field(default_factory=list)
+    governance: dict = Field(default_factory=dict)
     audit_events: list[PrivacyAuditOut]
 
 
@@ -53,6 +54,7 @@ class PrivacyEraseOut(BaseModel):
     chunks_deleted: int
     conversations_deleted: int
     intake_records_deleted: int = 0
+    governance_deleted: dict = Field(default_factory=dict)
     audit_event_id: str
 
 
@@ -132,6 +134,20 @@ def export_account_data(
     documents = get_store().export_documents(account_id, account_id=account_id, space_id=space_id)
     conversations = get_conversation_store().export_scope(account_id, account_id=account_id, space_id=space_id)
     intake_records = get_intake_store().export_records(account_id, account_id=account_id, space_id=space_id)
+    platform = get_platform_store()
+    governance = {
+        "organizations": [row.__dict__ for row in ([] if space_id else platform.list_organizations(account_id))],
+        "memberships": [
+            row.__dict__ for row in platform.list_memberships(account_id)
+            if not space_id or row.space_id == space_id
+        ],
+        "consent_records": [row.__dict__ for row in platform.list_consent_records(account_id, space_id)],
+        "retention_policies": [row.__dict__ for row in platform.list_retention_policies(account_id, space_id)],
+        "data_access_events": [row.__dict__ for row in platform.list_data_access_events(account_id, space_id)],
+        "processors": [row.__dict__ for row in ([] if space_id else platform.list_processors(account_id))],
+        "providers": [row.__dict__ for row in ([] if space_id else platform.list_providers(account_id))],
+        "credential_metadata": [row.__dict__ for row in ([] if space_id else platform.list_credential_metadata(account_id))],
+    }
     audit_events = [_audit_out(event) for event in get_platform_store().list_audit(account_id)]
     _record_privacy_audit(
         principal,
@@ -144,6 +160,7 @@ def export_account_data(
             "chunks": sum(len(doc.get("chunks", [])) for doc in documents),
             "conversations": len(conversations),
             "intake_records": len(intake_records),
+            "governance": {key: len(value) for key, value in governance.items()},
         },
     )
     return PrivacyExportOut(
@@ -153,6 +170,7 @@ def export_account_data(
         documents=documents,
         conversations=conversations,
         intake_records=intake_records,
+        governance=governance,
         audit_events=audit_events,
     )
 
@@ -171,6 +189,7 @@ def erase_account_data(
     deleted_docs = get_store().delete_documents_by_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_conversations = get_conversation_store().delete_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_records = get_intake_store().delete_records_by_scope(account_id, account_id=account_id, space_id=space_id)
+    deleted_governance = get_platform_store().delete_governance_by_scope(account_id, space_id=space_id)
     audit = _record_privacy_audit(
         principal,
         account_id=account_id,
@@ -182,6 +201,7 @@ def erase_account_data(
             "chunks_deleted": deleted_docs["chunks"],
             "conversations_deleted": deleted_conversations,
             "intake_records_deleted": deleted_records,
+            "governance_deleted": deleted_governance,
             "reason": body.reason.strip(),
         },
     )
@@ -192,5 +212,6 @@ def erase_account_data(
         chunks_deleted=deleted_docs["chunks"],
         conversations_deleted=deleted_conversations,
         intake_records_deleted=deleted_records,
+        governance_deleted=deleted_governance,
         audit_event_id=audit.id,
     )
