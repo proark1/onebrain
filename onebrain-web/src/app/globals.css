@@ -643,6 +643,7 @@ button:disabled,
 }
 
 .documentsWorkspace,
+.cockpitWorkspace,
 .privacyWorkspace,
 .spacesWorkspace,
 .operatorWorkspace {
@@ -688,6 +689,18 @@ button:disabled,
 
 .operatorGrid.wide {
   grid-template-columns: minmax(340px, 0.8fr) minmax(0, 1.2fr);
+}
+
+.cockpitGrid {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.95fr) minmax(0, 1.05fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.cockpitGrid .adminPanel:first-child,
+.cockpitGrid .adminPanel:last-child {
+  grid-column: 1 / -1;
 }
 
 .adminPanel,
@@ -791,6 +804,7 @@ button:disabled,
 }
 
 .conversationList,
+.cockpitList,
 .documentList,
 .pendingList,
 .accountList,
@@ -807,6 +821,115 @@ button:disabled,
   align-content: start;
   gap: 7px;
   min-height: 0;
+}
+
+.signalRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  padding: 10px 12px;
+}
+
+.signalRow.success {
+  border-color: rgb(var(--brand-success-rgb) / 26%);
+  background: rgb(var(--brand-success-rgb) / 7%);
+}
+
+.signalRow.warning {
+  border-color: rgb(var(--brand-warning-rgb) / 30%);
+  background: rgb(var(--brand-warning-rgb) / 9%);
+}
+
+.signalRow.danger {
+  border-color: rgb(var(--brand-danger-rgb) / 28%);
+  background: rgb(var(--brand-danger-rgb) / 8%);
+}
+
+.signalRow > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.signalRow strong {
+  overflow-wrap: anywhere;
+  color: var(--brand-primary);
+  font-size: 14px;
+  font-weight: 730;
+}
+
+.signalRow span,
+.signalRow small {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  font-weight: 650;
+}
+
+.signalRow small {
+  color: #6f431d;
+}
+
+.statusMatrix {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.signalTile {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 11px 12px 12px;
+}
+
+.signalTile span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.signalTile strong {
+  overflow-wrap: anywhere;
+  color: var(--brand-primary);
+  font-size: 16px;
+  line-height: 1.2;
+  font-weight: 760;
+}
+
+.signalDot {
+  position: absolute;
+  top: 11px;
+  right: 11px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--muted);
+}
+
+.signalDot.success {
+  background: var(--green);
+}
+
+.signalDot.warning,
+.signalDot.running {
+  background: var(--amber);
+}
+
+.signalDot.danger {
+  background: var(--red);
 }
 
 .conversationList {
@@ -1702,6 +1825,7 @@ button:disabled,
 @media (max-width: 880px) {
   .consoleShell,
   .chatWorkspace,
+  .cockpitGrid,
   .documentsGrid,
   .privacyGrid,
   .spacesGrid,
@@ -1787,8 +1911,10 @@ button:disabled,
   .filterBar,
   .inlineForm,
   .brandColorGrid,
+  .statusMatrix,
   .operatorFormGrid,
   .operatorRow,
+  .signalRow,
   .credentialRow,
   .operatorButtonGrid,
   .releaseRail,

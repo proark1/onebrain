@@ -23,10 +23,10 @@ actions to the Python API.
 The container starts with:
 
 ```bash
-python -m app.deploy.start_api
+python -m app.deploy.start
 ```
 
-In Postgres mode the launcher runs:
+In API mode the launcher runs:
 
 ```bash
 python -m alembic upgrade head
@@ -42,18 +42,19 @@ mismatch instead of rewriting customer data.
 
 - Root directory: repository root.
 - Builder: Dockerfile.
-- Dockerfile path: `Dockerfile.worker`.
-- Health check path: none.
+- Dockerfile path: `Dockerfile`.
+- Health check path: `/health`.
 - Public domain: no.
 
 The container starts with:
 
 ```bash
-python -m app.deploy.start_worker
+ONEBRAIN_PROCESS=worker python -m app.deploy.start
 ```
 
 In Postgres mode the launcher waits for the expected Alembic schema before it
-starts processing jobs.
+starts processing jobs. Railway injects `PORT`; the worker exposes a lightweight
+`/health` endpoint on that port when health checks are enabled.
 
 ### `onebrain-admin-ui`
 
@@ -87,7 +88,7 @@ ONEBRAIN_EMBEDDINGS_PROVIDER=litellm
 GEMINI_API_KEY=<provider key>
 ONEBRAIN_ADMIN_EMAIL=<admin email>
 ONEBRAIN_ADMIN_PASSWORD=<strong admin password>
-ONEBRAIN_PII_PHASE=synthetic
+ONEBRAIN_PII_PHASE=dpia_signed
 ONEBRAIN_REQUIRE_APPROVAL=false
 ONEBRAIN_BLOCK_PUBLIC_ON_PII=true
 ONEBRAIN_RETRIEVAL_MIN_SCORE=0.05
@@ -114,12 +115,18 @@ refuse to start unless `ONEBRAIN_VECTOR_STORE=pgvector`,
 Worker tuning variables:
 
 ```text
+ONEBRAIN_PROCESS=worker
 ONEBRAIN_WORKER_POLL_SECONDS=2
 ONEBRAIN_WORKER_BATCH_SIZE=1
 ONEBRAIN_JOB_MAX_ATTEMPTS=3
 ONEBRAIN_SCHEMA_WAIT_SECONDS=60
 ONEBRAIN_SCHEMA_WAIT_POLL_SECONDS=2
+ONEBRAIN_WORKER_HEALTH_SERVER=true
 ```
+
+Use `ONEBRAIN_PII_PHASE=dpia_signed` only on controlled environments where real
+customer or personal data testing is intended. Keep `synthetic` for local demos,
+public demos, and isolated test stacks that must reject personal data.
 
 Set this on `onebrain-admin-ui`:
 
@@ -203,6 +210,8 @@ After deploy:
    `/api/service/brand-theme`, rotate the
    key, and confirm the old key receives `401` while the new key works.
 10. Check worker logs for `worker started` and `job succeeded`.
+11. Open the Next.js `/cockpit` route as an admin and confirm there are no
+    critical alerts. Warnings should be reviewed before real traffic.
 
 ## Local Docker Checks
 
@@ -215,7 +224,7 @@ docker build -t onebrain-api .
 Build the worker image:
 
 ```bash
-docker build -f Dockerfile.worker -t onebrain-workers .
+docker build -t onebrain-workers .
 ```
 
 Build the Next.js image:
@@ -228,6 +237,16 @@ Run API locally in memory mode:
 
 ```bash
 docker run --rm -p 8000:8000 -e ONEBRAIN_AUTH_SECRET=local-secret-local-secret-local-secret onebrain-api
+```
+
+Run the worker image locally:
+
+```bash
+docker run --rm -p 8001:8001 \
+  -e PORT=8001 \
+  -e ONEBRAIN_PROCESS=worker \
+  -e ONEBRAIN_AUTH_SECRET=local-secret-local-secret-local-secret \
+  onebrain-workers
 ```
 
 For local HTTP login, also set:

@@ -31,6 +31,7 @@ from app.deps import (
     get_service_key_store,
     get_store,
 )
+from app.monitoring import MonitoringSummary, monitoring_snapshot
 from app.platform.base import AuditEvent
 from app.schemas import BrandThemeOut, ServiceKeyInfo
 
@@ -236,6 +237,48 @@ class OperatorJobsOut(BaseModel):
     recent_failures: list[OperatorJobFailureOut] = Field(default_factory=list)
 
 
+class OperatorSecurityOut(BaseModel):
+    environment: str
+    production_like: bool
+    pgvector_required: bool
+    database_url_configured: bool
+    rls_enforced: bool
+    cookie_secure: bool
+    pii_phase: str
+
+
+class OperatorWorkerOut(BaseModel):
+    expected: bool
+    pending_jobs: int
+    running_jobs: int
+    failed_jobs: int
+    status: str
+
+
+class OperatorAuthOut(BaseModel):
+    total_failures: int
+    login_failures: int
+    service_key_failures: int
+    lockouts: int
+    last_failure_at: str = ""
+
+
+class OperatorApiOut(BaseModel):
+    errors_5xx: int
+    last_error_at: str = ""
+    last_error_route: str = ""
+    last_error_status: int = 0
+
+
+class OperatorAlertOut(BaseModel):
+    id: str
+    severity: str
+    title: str
+    detail: str
+    action: str
+    signal: str
+
+
 class OperatorObservabilityOut(BaseModel):
     generated_at: str
     runtime: OperatorRuntimeOut
@@ -243,6 +286,11 @@ class OperatorObservabilityOut(BaseModel):
     storage: OperatorStorageOut
     service_keys: OperatorServiceKeysOut
     jobs: OperatorJobsOut
+    security: OperatorSecurityOut
+    worker: OperatorWorkerOut
+    auth: OperatorAuthOut
+    api: OperatorApiOut
+    alerts: list[OperatorAlertOut] = Field(default_factory=list)
 
 
 def _require_admin(principal: Principal) -> None:
@@ -417,12 +465,176 @@ def _readiness(deployment, backup, health, latest_rollout) -> str:
     return "unknown"
 
 
+def _status_count(job_summary, *statuses: str) -> int:
+    return sum(int(job_summary.by_status.get(status, 0)) for status in statuses)
+
+
+def _worker_signal(settings, job_summary) -> OperatorWorkerOut:
+    pending = _status_count(job_summary, "queued", "retrying")
+    running = _status_count(job_summary, "running")
+    failed = _status_count(job_summary, "failed")
+    if not settings.use_async_ingestion:
+        status = "not_required"
+    elif failed:
+        status = "attention"
+    elif pending:
+        status = "backlog"
+    elif running:
+        status = "running"
+    else:
+        status = "clear"
+    return OperatorWorkerOut(
+        expected=settings.use_async_ingestion,
+        pending_jobs=pending,
+        running_jobs=running,
+        failed_jobs=failed,
+        status=status,
+    )
+
+
+def _security_signal(settings) -> OperatorSecurityOut:
+    return OperatorSecurityOut(
+        environment=settings.environment,
+        production_like=settings.is_production_like,
+        pgvector_required=settings.is_production_like,
+        database_url_configured=bool(settings.database_url.strip()),
+        rls_enforced=settings.rls_enforced,
+        cookie_secure=settings.cookie_secure,
+        pii_phase=settings.pii_phase,
+    )
+
+
+def _auth_signal(metrics: MonitoringSummary) -> OperatorAuthOut:
+    return OperatorAuthOut(
+        total_failures=metrics.auth_total,
+        login_failures=metrics.login_failures,
+        service_key_failures=metrics.service_key_failures,
+        lockouts=metrics.lockouts,
+        last_failure_at=metrics.last_auth_failure_at,
+    )
+
+
+def _api_signal(metrics: MonitoringSummary) -> OperatorApiOut:
+    return OperatorApiOut(
+        errors_5xx=metrics.api_errors_5xx,
+        last_error_at=metrics.last_api_error_at,
+        last_error_route=metrics.last_api_error_route,
+        last_error_status=metrics.last_api_error_status,
+    )
+
+
+def _alert(
+    *,
+    id: str,
+    severity: str,
+    title: str,
+    detail: str,
+    action: str,
+    signal: str,
+) -> OperatorAlertOut:
+    return OperatorAlertOut(
+        id=id,
+        severity=severity,
+        title=title,
+        detail=detail,
+        action=action,
+        signal=signal,
+    )
+
+
+def _alerts(
+    security: OperatorSecurityOut,
+    worker: OperatorWorkerOut,
+    auth: OperatorAuthOut,
+    api: OperatorApiOut,
+) -> list[OperatorAlertOut]:
+    alerts: list[OperatorAlertOut] = []
+    if security.production_like and not security.database_url_configured:
+        alerts.append(_alert(
+            id="database-url-missing",
+            severity="critical",
+            title="Database URL missing",
+            detail="A production-like OneBrain process must run against Postgres.",
+            action="Set ONEBRAIN_DATABASE_URL before accepting traffic.",
+            signal="database",
+        ))
+    if security.production_like and not security.rls_enforced:
+        alerts.append(_alert(
+            id="rls-not-enforced",
+            severity="critical",
+            title="RLS is not enforced",
+            detail="Production-like environments must keep tenant isolation enforced at database level.",
+            action="Set ONEBRAIN_RLS_ENFORCED=true and rerun the RLS validation.",
+            signal="rls",
+        ))
+    if security.production_like and security.pii_phase != "dpia_signed":
+        alerts.append(_alert(
+            id="real-data-disabled",
+            severity="warning",
+            title="Real-data ingest is blocked",
+            detail="The PII phase is not set to dpia_signed, so real personal data will be refused.",
+            action="Use dpia_signed only for approved controlled real-data environments.",
+            signal="privacy",
+        ))
+    if security.production_like and not security.cookie_secure:
+        alerts.append(_alert(
+            id="cookie-secure-disabled",
+            severity="warning",
+            title="Secure cookies disabled",
+            detail="Session cookies should be HTTPS-only outside local development.",
+            action="Set ONEBRAIN_COOKIE_SECURE=true on staging and production.",
+            signal="auth",
+        ))
+    if worker.failed_jobs:
+        alerts.append(_alert(
+            id="job-failures",
+            severity="warning",
+            title="Failed jobs need review",
+            detail=f"{worker.failed_jobs} jobs are currently marked failed.",
+            action="Open recent failures, fix the cause, then retry or archive them.",
+            signal="jobs",
+        ))
+    if worker.expected and worker.pending_jobs:
+        alerts.append(_alert(
+            id="worker-backlog",
+            severity="warning",
+            title="Worker backlog present",
+            detail=f"{worker.pending_jobs} jobs are queued or retrying.",
+            action="Check the worker /health endpoint and worker logs.",
+            signal="worker",
+        ))
+    if auth.total_failures:
+        alerts.append(_alert(
+            id="auth-failures",
+            severity="warning",
+            title="Authentication failures observed",
+            detail=f"{auth.total_failures} failed login or service-key auth attempts were observed by this process.",
+            action="Review service-key usage and failed-login patterns.",
+            signal="auth",
+        ))
+    if api.errors_5xx:
+        alerts.append(_alert(
+            id="api-errors",
+            severity="warning",
+            title="API 5xx errors observed",
+            detail=f"{api.errors_5xx} server errors were observed by this process.",
+            action="Inspect application logs for the reported route template.",
+            signal="api",
+        ))
+    return alerts
+
+
 @router.get("/observability", response_model=OperatorObservabilityOut)
 def operator_observability(principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
     settings = get_settings()
     service_key_summary = get_service_key_store().summary()
     job_summary = get_job_store().summary(recent_failures_limit=10)
+    metrics = monitoring_snapshot()
+    security = _security_signal(settings)
+    worker = _worker_signal(settings, job_summary)
+    auth = _auth_signal(metrics)
+    api = _api_signal(metrics)
     return OperatorObservabilityOut(
         generated_at=datetime.now(timezone.utc).isoformat(),
         runtime=OperatorRuntimeOut(
@@ -465,6 +677,11 @@ def operator_observability(principal: Principal = Depends(resolve_principal)):
                 for job in job_summary.recent_failures
             ],
         ),
+        security=security,
+        worker=worker,
+        auth=auth,
+        api=api,
+        alerts=_alerts(security, worker, auth, api),
     )
 
 

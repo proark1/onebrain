@@ -17,5 +17,5 @@ export default async function Home() {
     return <SignedOutState loginHref={loginHref("/chat")} />;
   }
 
-  redirect("/chat");
+  redirect(sessionResult.session.role_id === "admin" ? "/cockpit" : "/chat");
 }

@@ -139,17 +139,20 @@ def _usage_endpoint_from_request(request: Request | None) -> str:
 
 def service_principal_from_authorization(authorization: str, usage_endpoint: str = "service.auth") -> Principal:
     from app.deps import get_service_key_store
+    from app.monitoring import record_auth_failure
     from app.servicekeys.base import parse_key, verify_secret
 
     token = authorization[7:].strip() if authorization.startswith("Bearer ") else ""
     parsed = parse_key(token) if token else None
     if not parsed:
+        record_auth_failure("service_key_malformed")
         raise HTTPException(status_code=401, detail="Missing or malformed service key")
 
     key_id, secret = parsed
     key = get_service_key_store().get(key_id)
     # Fail closed: unknown key, revoked key, or a secret mismatch all deny.
     if not key or key.status != "active" or not verify_secret(secret, key.key_hash):
+        record_auth_failure("service_key_invalid")
         raise HTTPException(status_code=401, detail="Invalid service key")
     key = get_service_key_store().record_usage(key.id, usage_endpoint)
 

@@ -22,6 +22,7 @@ from app.intake.base import IntakeRecord
 from app.intake.memory import MemoryIntakeStore
 from app.jobs.base import JOB_DOCUMENT_INGEST, JOB_SERVICE_CAPTURE
 from app.jobs.memory import MemoryJobStore
+from app.monitoring import record_api_error, record_auth_failure, reset_monitoring_metrics
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.platform.base import Account, AppInstallation, Space
 from app.platform.memory import MemoryPlatformStore
@@ -359,6 +360,7 @@ def test_operator_customer_overview_aggregates_metadata_only(monkeypatch):
 
 
 def test_operator_observability_aggregates_current_onebrain_state(monkeypatch):
+    reset_monitoring_metrics()
     vector_store = MemoryStore()
     vector_store.add([
         Chunk(
@@ -419,6 +421,12 @@ def test_operator_observability_aggregates_current_onebrain_state(monkeypatch):
             vector_store="memory",
             llm_provider="local",
             embeddings_provider="local",
+            environment="local",
+            is_production_like=False,
+            database_url="",
+            rls_enforced=False,
+            cookie_secure=False,
+            pii_phase="synthetic",
             top_k=4,
             retrieval_min_score=0.12,
             use_async_ingestion=False,
@@ -428,6 +436,8 @@ def test_operator_observability_aggregates_current_onebrain_state(monkeypatch):
     monkeypatch.setattr(operator_router, "get_intake_store", lambda: intake_store)
     monkeypatch.setattr(operator_router, "get_service_key_store", lambda: key_store)
     monkeypatch.setattr(operator_router, "get_job_store", lambda: job_store)
+    record_auth_failure("service_key_invalid")
+    record_api_error(route="/api/service/intake", status_code=500)
 
     snapshot = operator_router.operator_observability(principal=_admin())
 
@@ -444,6 +454,16 @@ def test_operator_observability_aggregates_current_onebrain_state(monkeypatch):
     assert snapshot.jobs.by_status["failed"] == 1
     assert snapshot.jobs.by_status["queued"] == 1
     assert snapshot.jobs.by_type[JOB_DOCUMENT_INGEST] == 1
+    assert snapshot.security.production_like is False
+    assert snapshot.security.pii_phase == "synthetic"
+    assert snapshot.worker.failed_jobs == 1
+    assert snapshot.worker.pending_jobs == 1
+    assert snapshot.worker.status == "not_required"
+    assert snapshot.auth.service_key_failures == 1
+    assert snapshot.auth.total_failures == 1
+    assert snapshot.api.errors_5xx == 1
+    assert snapshot.api.last_error_route == "/api/service/intake"
+    assert {alert.id for alert in snapshot.alerts} == {"api-errors", "auth-failures", "job-failures"}
     failure = snapshot.jobs.recent_failures[0]
     assert failure.id == failed.id
     assert failure.error == "embedding provider timeout"

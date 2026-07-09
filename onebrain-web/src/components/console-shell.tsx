@@ -4,7 +4,7 @@ import { WorkspaceProvider } from "@/components/workspace-provider";
 import { WorkspaceSelector } from "@/components/workspace-selector";
 import type { SessionInfo } from "@/lib/onebrain-types";
 
-type ConsoleSection = "chat" | "documents" | "spaces" | "privacy" | "operator";
+type ConsoleSection = "chat" | "cockpit" | "documents" | "spaces" | "privacy" | "operator";
 
 type ConsoleShellProps = {
   active: ConsoleSection;
@@ -13,6 +13,7 @@ type ConsoleShellProps = {
 };
 
 const PRIMARY_NAV: Array<{ id: ConsoleSection; href: string; label: string }> = [
+  { id: "cockpit", href: "/cockpit", label: "Cockpit" },
   { id: "chat", href: "/chat", label: "Chat" },
   { id: "documents", href: "/documents", label: "Documents" },
   { id: "spaces", href: "/spaces", label: "Spaces" },

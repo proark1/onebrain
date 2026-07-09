@@ -5,12 +5,17 @@ company documents; the brain answers questions **only from what the asker's role
 is allowed to see**. The language model never sees a chunk the caller isn't
 entitled to — access is enforced in code and the datastore, not in a prompt.
 
-This is the **Stage 0 prototype**: it runs online, cheap, with **no API keys and
-no database**, on synthetic data. Every moving part sits behind an interface, so
-moving to a self-hosted EU stack later is a config change, not a rewrite.
+By default the local stack still runs cheaply with local providers and the memory
+store. Production-like deployments are expected to run with Postgres/pgvector,
+enforced RLS, real auth secrets, service keys, and the Next.js admin console.
+Every moving part sits behind an interface, so changing providers remains a
+config change rather than a rewrite.
 
-> ⚠️ Do not load real member or employee PII into this prototype. Test on
-> synthetic / anonymized data until it's on EU infrastructure with a DPIA.
+> Do not load real member or employee PII into local/demo stacks. Controlled
+> real-data testing belongs only on a production-like stack where
+> `ONEBRAIN_VECTOR_STORE=pgvector`, `ONEBRAIN_RLS_ENFORCED=true`, HTTPS cookies,
+> service keys, retention/privacy controls, and `ONEBRAIN_PII_PHASE=dpia_signed`
+> are intentionally configured.
 
 ## Run it
 
@@ -104,7 +109,7 @@ ONEBRAIN_DATABASE_URL=postgresql://…
 The production deployment shape is three Railway services plus Postgres:
 
 - `onebrain` from the root `Dockerfile`
-- `onebrain-workers` from `Dockerfile.worker`
+- `onebrain-workers` from the root `Dockerfile` with `ONEBRAIN_PROCESS=worker`
 - `onebrain-admin-ui` from `onebrain-web/Dockerfile`
 - a Postgres service with pgvector
 
@@ -127,8 +132,9 @@ Railway builds the API `Dockerfile` automatically (config in `railway.json`).
 3. **Persist uploads** (optional) — add a **Volume** mounted at `/data`.
    Without it, uploaded docs reset on each redeploy (the seed data always
    reloads). The container already points `ONEBRAIN_DATA_DIR` at `/data`.
-4. Pick an **EU region** and keep to **synthetic data** until the compliance
-   groundwork is done.
+4. Pick an **EU region**. Use `ONEBRAIN_PII_PHASE=dpia_signed` only for a
+   controlled real-data environment; keep `synthetic` for local demos and public
+   test stacks.
 
 Railway injects `$PORT`; the container binds to it. Health check: `/health`.
 
@@ -139,7 +145,7 @@ persistence), switch to Postgres: add a Postgres plugin and set
 Production Postgres deployments run `python -m alembic upgrade head` through
 the API startup launcher before serving traffic. In Postgres mode, ingestion
 uses durable background jobs by default, so run at least one worker process with
-`python -m app.deploy.start_worker`.
+`ONEBRAIN_PROCESS=worker`.
 
 ## Layout
 
