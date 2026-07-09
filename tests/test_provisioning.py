@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi import HTTPException
+from cryptography.fernet import Fernet
 
 import app.routers.provisioning as provisioning_router
 from app.assistant.contracts import ASSISTANT_PURPOSES
@@ -13,6 +16,14 @@ from app.controlplane.base import CustomerDeployment
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.platform.base import BrandTheme
 from app.platform.memory import MemoryPlatformStore
+from app.provisioning.runs import (
+    MemoryProvisioningRunStore,
+    ProvisioningCallback,
+    apply_callback,
+    create_run,
+    hash_callback_secret,
+    read_one_time_secret,
+)
 from app.provisioning.service import CustomerProvisioner
 from app.servicekeys.base import SCOPE_READ, SCOPE_WRITE, parse_key, verify_secret
 from app.servicekeys.memory import MemoryServiceKeyStore
@@ -34,6 +45,23 @@ def _principal(role_id: str = "admin") -> Principal:
 
 def _stores():
     return MemoryPlatformStore(), MemoryControlPlaneStore()
+
+
+def _secret_settings(**overrides):
+    data = {
+        "secret_encryption_key": Fernet.generate_key().decode("utf-8"),
+        "secret_encryption_key_version": "test",
+        "bootstrap_secret_ttl_seconds": 3600,
+        "github_owner": "",
+        "github_repo": "",
+        "github_workflow": "provision-customer.yml",
+        "github_ref": "main",
+        "github_dispatch_token": "",
+        "provisioning_callback_key_id": "",
+        "provisioning_callback_key_hash": "",
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
 
 
 def test_full_stack_provisioning_separates_private_and_customer_service_spaces():
@@ -318,3 +346,126 @@ def test_provisioning_router_requires_admin(monkeypatch):
     assert [app.app_id for app in created.apps] == ["onebrain_core"]
     assert created.credentials == []
     assert created.brand_theme.primary_color == "#16191e"
+
+
+def test_provisioning_run_callbacks_store_bootstrap_secret_once():
+    store = MemoryProvisioningRunStore()
+    settings = _secret_settings()
+    run = create_run(
+        store,
+        account_id="acme",
+        deployment_id="dep_acme",
+        bundle_id="full_stack",
+        requested_by="admin",
+        payload={"dry_run": True},
+    )
+
+    running = apply_callback(store, settings, run.id, ProvisioningCallback(status="running"))
+    assert running.status == "running"
+
+    succeeded = apply_callback(
+        store,
+        settings,
+        run.id,
+        ProvisioningCallback(
+            status="succeeded",
+            external_run_id="gh_123",
+            external_run_url="https://github.example/run",
+            railway_project_id="rail_proj",
+            service_urls={"api": "https://api.example"},
+            migration_revision="0006_provisioning_runs",
+            smoke_status="passed",
+            bootstrap_password="temporary-admin-password",
+        ),
+    )
+
+    assert succeeded.status == "succeeded"
+    assert succeeded.bootstrap_secret_id.startswith("ots_")
+    assert "temporary-admin-password" not in str(succeeded)
+    assert read_one_time_secret(store, settings, succeeded.bootstrap_secret_id) == "temporary-admin-password"
+    with pytest.raises(ValueError, match="already been read"):
+        read_one_time_secret(store, settings, succeeded.bootstrap_secret_id)
+
+
+def test_provisioning_run_refuses_stale_and_terminal_callbacks():
+    store = MemoryProvisioningRunStore()
+    settings = _secret_settings()
+    run = create_run(
+        store,
+        account_id="acme",
+        deployment_id="dep_acme",
+        bundle_id="full_stack",
+        requested_by="admin",
+        payload={},
+    )
+    apply_callback(store, settings, run.id, ProvisioningCallback(status="running"))
+
+    with pytest.raises(ValueError, match="backward"):
+        apply_callback(store, settings, run.id, ProvisioningCallback(status="dispatched"))
+
+    apply_callback(store, settings, run.id, ProvisioningCallback(status="failed", failure_reason="railway failed"))
+    with pytest.raises(ValueError, match="terminal"):
+        apply_callback(store, settings, run.id, ProvisioningCallback(status="running"))
+
+
+def test_provisioning_callback_endpoint_requires_dedicated_callback_key(monkeypatch):
+    store = MemoryProvisioningRunStore()
+    settings = _secret_settings(
+        provisioning_callback_key_id="cb_1",
+        provisioning_callback_key_hash=hash_callback_secret("callback-secret"),
+    )
+    run = create_run(
+        store,
+        account_id="acme",
+        deployment_id="dep_acme",
+        bundle_id="full_stack",
+        requested_by="admin",
+        payload={},
+    )
+    monkeypatch.setattr(provisioning_router, "get_provisioning_run_store", lambda: store)
+    monkeypatch.setattr(provisioning_router, "get_settings", lambda: settings)
+
+    with pytest.raises(HTTPException) as denied:
+        provisioning_router.provisioning_callback(
+            run.id,
+            provisioning_router.ProvisioningCallbackIn(status="running"),
+            authorization="Bearer wrong",
+            x_onebrain_callback_key_id="cb_1",
+        )
+    assert denied.value.status_code == 401
+
+    accepted = provisioning_router.provisioning_callback(
+        run.id,
+        provisioning_router.ProvisioningCallbackIn(status="running"),
+        authorization="Bearer callback-secret",
+        x_onebrain_callback_key_id="cb_1",
+    )
+    assert accepted.status == "running"
+
+
+def test_external_provisioning_without_github_config_creates_visible_failed_run(monkeypatch):
+    platform, control = _stores()
+    service_keys = MemoryServiceKeyStore()
+    runs = MemoryProvisioningRunStore()
+    monkeypatch.setattr(provisioning_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(provisioning_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(provisioning_router, "get_service_key_store", lambda: service_keys)
+    monkeypatch.setattr(provisioning_router, "get_provisioning_run_store", lambda: runs)
+    monkeypatch.setattr(provisioning_router, "get_settings", lambda: _secret_settings())
+
+    created = provisioning_router.provision_customer(
+        provisioning_router.CustomerProvisionCreate(
+            customer_name="Acme",
+            bundle_id="onebrain_only",
+            account_id="acme",
+            deployment_id="dep_acme",
+            initial_version="0.1.0",
+            external_provisioning=True,
+        ),
+        principal=_principal("admin"),
+    )
+
+    assert created.provisioning_run is not None
+    assert created.provisioning_run.status == "dispatch_failed"
+    assert "not configured" in created.provisioning_run.failure_reason
+    assert runs.list_runs(account_id="acme")[0].id == created.provisioning_run.id
