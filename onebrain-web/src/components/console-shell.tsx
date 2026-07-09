@@ -30,8 +30,8 @@ export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
         <aside className="consoleSidebar" aria-label="OneBrain console">
           <div className="brandBlock">
             <Link className="brand" href="/chat">
-              <span className="brandMark">one</span>
-              <span>brain</span>
+              <span className="brandMark">AD</span>
+              <span>OneBrain</span>
             </Link>
             <p>{identity}</p>
           </div>
@@ -58,7 +58,7 @@ export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
         <div className="consoleFrame">
           <header className="commandBar">
             <div className="commandContext">
-              <span>OneBrain</span>
+              <span>Assad Dar</span>
               <strong>{activeLabel}</strong>
             </div>
             <WorkspaceSelector />
