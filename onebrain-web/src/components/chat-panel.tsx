@@ -292,20 +292,24 @@ export function ChatPanel({ initialConversations, session }: ChatPanelProps) {
 
       <section className="chatMain">
         <PageHeader
-          eyebrow="OneBrain chat"
+          eyebrow={selectedConversation?.title ? `Chat / ${selectedConversation.title}` : "OneBrain chat"}
           meta={<span className="scopePill"><span className="statusDot" />{scopeLabel}</span>}
-          title={selectedConversation?.title || "New conversation"}
+          title="Ask OneBrain"
         />
 
-        {error ? <Notice tone="error">{error}</Notice> : null}
+        <div className="chatBody">
+          <div className="chatNoticeSlot">
+            {error ? <Notice tone="error">{error}</Notice> : null}
+          </div>
 
-        <MessageThread
-          busy={busy}
-          loading={loadingConversation}
-          messages={messages}
-          onPrompt={setDraft}
-          threadRef={threadRef}
-        />
+          <MessageThread
+            busy={busy}
+            loading={loadingConversation}
+            messages={messages}
+            onPrompt={setDraft}
+            threadRef={threadRef}
+          />
+        </div>
 
         <Composer
           busy={busy}
@@ -411,7 +415,6 @@ function EmptyChat({ onPrompt }: { onPrompt: (prompt: string) => void }) {
   ];
   return (
     <div className="emptyState">
-      <div className="emptyMark">ob</div>
       <h2>Ask from approved knowledge</h2>
       <p>Answers are generated only from documents your current role can access.</p>
       <div className="promptGrid">
