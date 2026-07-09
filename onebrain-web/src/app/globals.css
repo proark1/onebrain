@@ -501,6 +501,7 @@ button:disabled,
 .dropzone:focus-within,
 .dangerButton:focus-visible,
 .input:focus,
+.promptGrid button:focus-visible,
 .primaryButton:focus-visible,
 .secondaryButton:focus-visible,
 .reviewButton:focus-visible,
@@ -542,7 +543,12 @@ button:disabled,
   color: #7c5a25;
 }
 
-.metricStrip,
+.metricStrip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
 .documentStats,
 .privacySummary,
 .operatorSummary,
@@ -550,10 +556,6 @@ button:disabled,
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
-}
-
-.operatorSummary {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .metricCard,
@@ -763,6 +765,17 @@ button:disabled,
   gap: 9px;
 }
 
+.filterBar {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) repeat(2, minmax(150px, 220px));
+  align-items: end;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 10px;
+}
+
 .conversationRail {
   grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
@@ -784,6 +797,7 @@ button:disabled,
 .spaceList,
 .appList,
 .auditList,
+.credentialList,
 .operatorList,
 .operatorTokenList,
 .releaseRail,
@@ -974,6 +988,24 @@ button:disabled,
   color: var(--muted);
   font-size: 12px;
   font-weight: 660;
+}
+
+.promptGrid button {
+  min-height: 58px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--muted);
+  padding: 10px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 660;
+}
+
+.promptGrid button:hover {
+  border-color: rgb(var(--brand-accent-rgb) / 34%);
+  background: rgb(var(--brand-accent-rgb) / 8%);
+  color: var(--brand-primary);
 }
 
 .messageRow {
@@ -1309,6 +1341,34 @@ button:disabled,
   grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
   gap: 14px;
   align-items: start;
+}
+
+.overviewGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.overviewGrid div {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 11px;
+}
+
+.overviewGrid strong {
+  color: var(--brand-primary);
+  font-size: 21px;
+  line-height: 1;
+}
+
+.overviewGrid span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 760;
+  text-transform: uppercase;
 }
 
 .inlineForm {
@@ -1721,6 +1781,7 @@ button:disabled,
 
   .workspaceSelector,
   .composer,
+  .filterBar,
   .inlineForm,
   .brandColorGrid,
   .operatorFormGrid,
@@ -1731,6 +1792,7 @@ button:disabled,
   .serviceKeyLine,
   .rolloutLine,
   .choiceGrid,
+  .overviewGrid,
   .auditRow,
   .spaceRow,
   .documentRow,

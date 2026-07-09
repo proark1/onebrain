@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { MetricStrip, Notice, PageHeader, Panel, Tabs } from "@/components/admin-ui";
 import {
   createOperatorRelease,
   getOperatorUpdatePlan,
@@ -60,6 +61,8 @@ type BusyAction =
   | "retry"
   | "secret"
   | "";
+
+type OperatorTab = "customers" | "provisioning" | "releases" | "rollouts" | "credentials";
 
 const DEPLOYMENT_TYPES = [
   { label: "Dedicated Railway", value: "dedicated_railway" },
@@ -166,6 +169,7 @@ export function OperatorPanel() {
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [activeTab, setActiveTab] = useState<OperatorTab>("customers");
 
   const [provisionName, setProvisionName] = useState("");
   const [provisionBundle, setProvisionBundle] = useState("full_stack");
@@ -543,96 +547,52 @@ export function OperatorPanel() {
     }
   }
 
+  const operatorTabs = [
+    { id: "customers", label: "Customers", meta: customers.length },
+    { id: "provisioning", label: "Provisioning", meta: provisioningRuns.length },
+    { id: "releases", label: "Releases", meta: releases.length },
+    { id: "rollouts", label: "Rollouts", meta: deployments.length },
+    { id: "credentials", label: "Credentials", meta: credentials.length },
+  ] satisfies Array<{ id: OperatorTab; label: string; meta: number }>;
+
   return (
     <div className="operatorWorkspace">
-      <header className="documentsTopbar">
-        <div>
-          <p className="eyebrow">Control plane</p>
-          <h1>Operator</h1>
-        </div>
-        <button className="secondaryButton" disabled={Boolean(busyAction)} type="button" onClick={() => void loadOperator()}>
-          {busyAction === "load" ? "Refreshing" : "Refresh"}
-        </button>
-      </header>
+      <PageHeader
+        eyebrow="Control plane"
+        title="Operator"
+        meta={(
+          <>
+            <span className="scopePill">
+              <span aria-hidden="true" className="statusDot" />
+              {busyAction ? labelFor(busyAction) : "Live"}
+            </span>
+            <span className="scopePill">{deployments.length} deployments</span>
+          </>
+        )}
+        actions={(
+          <button className="secondaryButton" disabled={Boolean(busyAction)} type="button" onClick={() => void loadOperator()}>
+            {busyAction === "load" ? "Refreshing" : "Refresh"}
+          </button>
+        )}
+      />
 
-      {error ? <div className="inlineError">{error}</div> : null}
-      {notice ? <div className="inlineNotice">{notice}</div> : null}
+      {error ? <Notice tone="error">{error}</Notice> : null}
+      {notice ? <Notice tone="success">{notice}</Notice> : null}
 
-      <section className="operatorSummary" aria-label="Operator summary">
-        <SummaryStat label="customers" value={customers.length} />
-        <SummaryStat label="deployed" value={customerStats.deployed} />
-        <SummaryStat label="healthy" value={customerStats.healthy} />
-        <SummaryStat label="attention" value={customerStats.attention} />
-        <SummaryStat label="active keys" value={customerStats.activeKeys} />
-      </section>
+      <MetricStrip
+        metrics={[
+          { label: "customers", value: customers.length },
+          { label: "deployed", value: customerStats.deployed },
+          { label: "healthy", tone: "success", value: customerStats.healthy },
+          { label: "attention", tone: customerStats.attention ? "danger" : undefined, value: customerStats.attention },
+          { label: "active keys", value: customerStats.activeKeys },
+        ]}
+      />
 
-      <div className="operatorGrid">
-        <section className="operatorPanel" aria-labelledby="provisionTitle">
-          <div className="panelHead">
-            <div>
-              <p className="eyebrow">Provisioning</p>
-              <h2 id="provisionTitle">Create customer</h2>
-            </div>
-            <span>{bundles.length}</span>
-          </div>
-          <BundleList bundles={bundles} />
-          <form className="operatorForm" onSubmit={(event) => void onProvision(event)}>
-            <TextField label="Customer name" value={provisionName} onChange={setProvisionName} />
-            <SelectField
-              label="Bundle"
-              options={bundles.map((bundle) => ({ label: bundle.label, value: bundle.id }))}
-              value={provisionBundle}
-              onChange={setProvisionBundle}
-            />
-            <div className="operatorFormGrid">
-              <TextField label="Initial version" value={provisionVersion} onChange={setProvisionVersion} />
-              <SelectField label="Release ring" options={RELEASE_RINGS} value={provisionRing} onChange={setProvisionRing} />
-              <SelectField label="Deployment type" options={DEPLOYMENT_TYPES} value={provisionType} onChange={setProvisionType} />
-              <TextField label="Region" value={provisionRegion} onChange={setProvisionRegion} />
-            </div>
-            <TextField label="Optional account id" value={provisionAccountId} onChange={setProvisionAccountId} />
-            <div className="operatorChecks" aria-label="External provisioning options">
-              <label>
-                <input
-                  checked={provisionExternal}
-                  onChange={(event) => setProvisionExternal(event.target.checked)}
-                  type="checkbox"
-                />
-                Dispatch external workflow
-              </label>
-              <label>
-                <input
-                  checked={provisionDryRun}
-                  disabled={!provisionExternal}
-                  onChange={(event) => setProvisionDryRun(event.target.checked)}
-                  type="checkbox"
-                />
-                Dry run
-              </label>
-            </div>
-            {provisionExternal ? (
-              <TextField label="Callback URL" value={provisionCallbackUrl} onChange={setProvisionCallbackUrl} />
-            ) : null}
-            <BrandThemeEditor value={provisionBrandTheme} onChange={setProvisionBrandTheme} />
-            <button
-              className="primaryButton"
-              disabled={!provisionName.trim() || !provisionBundle || (provisionExternal && !provisionCallbackUrl.trim()) || Boolean(busyAction)}
-              type="submit"
-            >
-              {busyAction === "provision" ? "Provisioning" : "Provision customer"}
-            </button>
-          </form>
-          <CredentialPanel credentials={credentials} onCopy={copyCredential} />
-        </section>
+      <Tabs active={activeTab} items={operatorTabs} label="Operator sections" onChange={(tab) => setActiveTab(tab)} />
 
-        <section className="operatorPanel" aria-labelledby="customerReadinessTitle">
-          <div className="panelHead">
-            <div>
-              <p className="eyebrow">Readiness</p>
-              <h2 id="customerReadinessTitle">Customers</h2>
-            </div>
-            <span>{customers.length}</span>
-          </div>
+      {activeTab === "customers" ? (
+        <Panel eyebrow="Readiness" title="Customers" count={customers.length}>
           <div className="operatorList">
             {customers.length === 0 ? <p className="mutedLine">No customers provisioned yet.</p> : null}
             {customers.map((customer) => (
@@ -645,26 +605,77 @@ export function OperatorPanel() {
               />
             ))}
           </div>
-          <ProvisioningRunList
-            bootstrapSecrets={bootstrapSecrets}
-            busyAction={busyAction}
-            busyId={busyId}
-            onReadSecret={onReadSecret}
-            onRetry={onRetryRun}
-            runs={provisioningRuns}
-          />
-        </section>
-      </div>
+        </Panel>
+      ) : null}
 
-      <div className="operatorGrid wide">
-        <section className="operatorPanel" aria-labelledby="releaseTitle">
-          <div className="panelHead">
-            <div>
-              <p className="eyebrow">Releases</p>
-              <h2 id="releaseTitle">Manifest</h2>
-            </div>
-            <span>{releases.length}</span>
-          </div>
+      {activeTab === "provisioning" ? (
+        <div className="operatorGrid">
+          <Panel eyebrow="Provisioning" title="Create customer" count={bundles.length}>
+            <BundleList bundles={bundles} />
+            <form className="operatorForm" onSubmit={(event) => void onProvision(event)}>
+              <TextField label="Customer name" value={provisionName} onChange={setProvisionName} />
+              <SelectField
+                label="Bundle"
+                options={bundles.map((bundle) => ({ label: bundle.label, value: bundle.id }))}
+                value={provisionBundle}
+                onChange={setProvisionBundle}
+              />
+              <div className="operatorFormGrid">
+                <TextField label="Initial version" value={provisionVersion} onChange={setProvisionVersion} />
+                <SelectField label="Release ring" options={RELEASE_RINGS} value={provisionRing} onChange={setProvisionRing} />
+                <SelectField label="Deployment type" options={DEPLOYMENT_TYPES} value={provisionType} onChange={setProvisionType} />
+                <TextField label="Region" value={provisionRegion} onChange={setProvisionRegion} />
+              </div>
+              <TextField label="Optional account id" value={provisionAccountId} onChange={setProvisionAccountId} />
+              <div className="operatorChecks" aria-label="External provisioning options">
+                <label>
+                  <input
+                    checked={provisionExternal}
+                    onChange={(event) => setProvisionExternal(event.target.checked)}
+                    type="checkbox"
+                  />
+                  Dispatch external workflow
+                </label>
+                <label>
+                  <input
+                    checked={provisionDryRun}
+                    disabled={!provisionExternal}
+                    onChange={(event) => setProvisionDryRun(event.target.checked)}
+                    type="checkbox"
+                  />
+                  Dry run
+                </label>
+              </div>
+              {provisionExternal ? (
+                <TextField label="Callback URL" value={provisionCallbackUrl} onChange={setProvisionCallbackUrl} />
+              ) : null}
+              <BrandThemeEditor value={provisionBrandTheme} onChange={setProvisionBrandTheme} />
+              <button
+                className="primaryButton"
+                disabled={!provisionName.trim() || !provisionBundle || (provisionExternal && !provisionCallbackUrl.trim()) || Boolean(busyAction)}
+                type="submit"
+              >
+                {busyAction === "provision" ? "Provisioning" : "Provision customer"}
+              </button>
+            </form>
+            <CredentialPanel credentials={credentials} onCopy={copyCredential} />
+          </Panel>
+
+          <Panel eyebrow="Runs" title="Provisioning ledger" count={provisioningRuns.length}>
+            <ProvisioningRunList
+              bootstrapSecrets={bootstrapSecrets}
+              busyAction={busyAction}
+              busyId={busyId}
+              onReadSecret={onReadSecret}
+              onRetry={onRetryRun}
+              runs={provisioningRuns}
+            />
+          </Panel>
+        </div>
+      ) : null}
+
+      {activeTab === "releases" ? (
+        <Panel eyebrow="Releases" title="Manifest" count={releases.length}>
           <ReleaseRail releases={releases} />
           <form className="operatorForm" onSubmit={(event) => void onCreateRelease(event)}>
             <SelectField
@@ -701,16 +712,11 @@ export function OperatorPanel() {
               {busyAction === "release" ? "Creating" : "Create release"}
             </button>
           </form>
-        </section>
+        </Panel>
+      ) : null}
 
-        <section className="operatorPanel" aria-labelledby="deploymentTitle">
-          <div className="panelHead">
-            <div>
-              <p className="eyebrow">Rollouts</p>
-              <h2 id="deploymentTitle">Deployments</h2>
-            </div>
-            <span>{deployments.length}</span>
-          </div>
+      {activeTab === "rollouts" ? (
+        <Panel eyebrow="Rollouts" title="Deployments" count={deployments.length}>
           <div className="operatorList">
             {deployments.length === 0 ? <p className="mutedLine">No deployments tracked yet.</p> : null}
             {deployments.map((row) => (
@@ -737,17 +743,18 @@ export function OperatorPanel() {
               />
             ))}
           </div>
-        </section>
-      </div>
-    </div>
-  );
-}
+        </Panel>
+      ) : null}
 
-function SummaryStat({ label, value }: { label: string; value: number | string }) {
-  return (
-    <div>
-      <strong>{value}</strong>
-      <span>{label}</span>
+      {activeTab === "credentials" ? (
+        <Panel eyebrow="Service keys" title="Provisioned credentials" count={credentials.length}>
+          {credentials.length ? (
+            <CredentialPanel credentials={credentials} onCopy={copyCredential} />
+          ) : (
+            <p className="mutedLine">Provision a customer to display newly issued keys.</p>
+          )}
+        </Panel>
+      ) : null}
     </div>
   );
 }
@@ -783,12 +790,9 @@ function CredentialPanel({
     return null;
   }
   return (
-    <section className="credentialPanel" aria-label="Provisioned credentials">
-      <div className="panelHead compactHead">
-        <div>
-          <p className="eyebrow">Credentials</p>
-          <h2>New keys</h2>
-        </div>
+    <div className="credentialList" aria-label="Provisioned credentials">
+      <div className="sectionHead">
+        <span>New keys</span>
         <span>{credentials.length}</span>
       </div>
       {credentials.map((credential) => (
@@ -803,7 +807,7 @@ function CredentialPanel({
           </button>
         </article>
       ))}
-    </section>
+    </div>
   );
 }
 
