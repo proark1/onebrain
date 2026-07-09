@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { MetricStrip, Notice, PageHeader, Panel, StatusBadge } from "@/components/admin-ui";
 import { getOperatorObservability, listOperatorCustomers } from "@/lib/onebrain-client";
 import type { OperatorCustomer, OperatorObservability } from "@/lib/onebrain-types";
@@ -114,12 +115,37 @@ export function CockpitPanel() {
   const rlsTone = !databaseRequired ? "neutral" : observability?.security.rls_enforced ? "success" : "danger";
   const databaseValue = !databaseRequired ? "not required" : observability?.security.database_url_configured ? "configured" : "missing";
   const databaseTone = !databaseRequired ? "neutral" : observability?.security.database_url_configured ? "success" : "warning";
+  const brainTone = criticalAlerts
+    ? "danger"
+    : warningAlerts || failedJobs || pendingJobs
+      ? "warning"
+      : connectedApps.length === 0
+        ? "running"
+        : "success";
+  const brainLabel = brainTone === "danger"
+    ? "Blocked"
+    : brainTone === "warning"
+      ? "Needs attention"
+      : brainTone === "running"
+        ? "Ready, not connected"
+        : "Healthy";
+  const brainDetail = observability
+    ? criticalAlerts
+      ? "OneBrain needs intervention before it should be trusted as the shared data layer."
+      : warningAlerts || failedJobs
+        ? "OneBrain is online, but one or more signals should be reviewed."
+        : connectedApps.length === 0
+          ? "OneBrain is online. Connect the assistant and communication apps so it can start learning from real flows."
+          : "OneBrain is online, governed, and ready to serve connected apps."
+    : "Loading the current runtime, data, worker, and security posture.";
+  const nextAction = observability?.alerts[0]?.action
+    || (connectedApps.length === 0 ? "Connect the assistant and communication apps." : "Keep monitoring Cockpit before adding new data.");
 
   return (
     <div className="cockpitWorkspace">
       <PageHeader
-        eyebrow="Cockpit"
-        title="OneBrain status"
+        eyebrow="Brain status"
+        title="OneBrain"
         meta={observability ? (
           <>
             <StatusBadge tone={statusTone(observability.security.environment)}>
@@ -141,6 +167,23 @@ export function CockpitPanel() {
       />
 
       {error ? <Notice tone="error">{error}</Notice> : null}
+
+      <section className={`brainSummary ${brainTone}`} aria-label="OneBrain decision">
+        <div className="brainDecision">
+          <span className="eyebrow">Current answer</span>
+          <strong>{brainLabel}</strong>
+          <p>{brainDetail}</p>
+        </div>
+        <div className="brainNextAction">
+          <span>Next action</span>
+          <strong>{nextAction}</strong>
+          <div className="brainActionRail">
+            <Link className="primaryButton" href="/documents">Knowledge</Link>
+            <Link className="secondaryButton" href="/spaces">Apps</Link>
+            <Link className="secondaryButton" href="/operator">Control</Link>
+          </div>
+        </div>
+      </section>
 
       <MetricStrip
         metrics={[

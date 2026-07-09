@@ -101,6 +101,9 @@ export function SpacesPanel() {
   const [checkPurpose, setCheckPurpose] = useState("assistant_context");
   const [accessResult, setAccessResult] = useState<PlatformAccessCheckResult | null>(null);
   const [activeTab, setActiveTab] = useState<SpaceTab>("overview");
+  const [showCreateAccount, setShowCreateAccount] = useState(false);
+  const [showCreateSpace, setShowCreateSpace] = useState(false);
+  const [showInstallApp, setShowInstallApp] = useState(false);
   const [busyAction, setBusyAction] = useState<BusyAction>("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -257,6 +260,7 @@ export function SpacesPanel() {
       });
       setAccountId("");
       setAccountName("");
+      setShowCreateAccount(false);
       setNotice(`${account.name} created.`);
       await loadAccounts(account.id);
     } catch (err) {
@@ -282,6 +286,7 @@ export function SpacesPanel() {
       });
       setSpaceId("");
       setSpaceName("");
+      setShowCreateSpace(false);
       setNotice(`${space.name} created.`);
       await loadDetails();
     } catch (err) {
@@ -309,6 +314,7 @@ export function SpacesPanel() {
       });
       setInstallId("");
       setInstallDisplayName("");
+      setShowInstallApp(false);
       setNotice(`${app.display_name || labelFor(app.app_id)} installed.`);
       await loadDetails();
     } catch (err) {
@@ -347,13 +353,18 @@ export function SpacesPanel() {
     <div className="spacesWorkspace">
       <PageHeader
         actions={(
-          <button className="secondaryButton" disabled={Boolean(busyAction)} type="button" onClick={() => void loadAccounts()}>
-          {loadingAccounts || loadingDetails ? "Refreshing" : "Refresh"}
-          </button>
+          <>
+            <button className="secondaryButton" disabled={Boolean(busyAction)} type="button" onClick={() => void loadAccounts()}>
+              {loadingAccounts || loadingDetails ? "Refreshing" : "Refresh"}
+            </button>
+            <button className="primaryButton" type="button" onClick={() => setShowCreateAccount(true)}>
+              Create account
+            </button>
+          </>
         )}
-        eyebrow="Platform admin"
+        eyebrow="Connected apps"
         meta={selectedAccount ? <span className="scopePill"><span className="statusDot" />{selectedAccount.name}</span> : null}
-        title="Spaces"
+        title="Accounts and app access"
       />
 
       {error ? <Notice tone="error">{error}</Notice> : null}
@@ -369,12 +380,17 @@ export function SpacesPanel() {
       />
 
       <div className="spacesGrid">
-        <Panel count={accounts.length} eyebrow="Accounts" title="Platform tenants">
+        <Panel
+          actions={<button className="secondaryButton" type="button" onClick={() => setShowCreateAccount((current) => !current)}>{showCreateAccount ? "Close" : "Create"}</button>}
+          count={accounts.length}
+          eyebrow="Accounts"
+          title="Tenants"
+        >
           <div className="accountList">
             {accounts.length === 0 ? (
               <div className="emptyPanel">
                 <h3>No accounts</h3>
-                <p>Create the first account to start organizing spaces.</p>
+                <p>Create the first account to organize spaces and app access.</p>
               </div>
             ) : null}
             {accounts.map((account) => (
@@ -393,20 +409,16 @@ export function SpacesPanel() {
             ))}
           </div>
 
-          <form className="spacesForm" onSubmit={(event) => void onCreateAccount(event)}>
-            <div className="panelHead compactHead">
-              <div>
-                <p className="eyebrow">Create</p>
-                <h2>Account</h2>
-              </div>
-            </div>
-            <SelectField label="Kind" options={ACCOUNT_KINDS} value={accountKind} onChange={setAccountKind} />
-            <TextField label="Name" value={accountName} onChange={setAccountName} />
-            <TextField label="Optional id" value={accountId} onChange={setAccountId} />
-            <button className="primaryButton" disabled={!accountName.trim() || Boolean(busyAction)} type="submit">
-              {busyAction === "createAccount" ? "Creating" : "Create account"}
-            </button>
-          </form>
+          {showCreateAccount ? (
+            <form className="spacesForm compactWorkflow" onSubmit={(event) => void onCreateAccount(event)}>
+              <SelectField label="Kind" options={ACCOUNT_KINDS} value={accountKind} onChange={setAccountKind} />
+              <TextField label="Name" value={accountName} onChange={setAccountName} />
+              <TextField label="Optional id" value={accountId} onChange={setAccountId} />
+              <button className="primaryButton" disabled={!accountName.trim() || Boolean(busyAction)} type="submit">
+                {busyAction === "createAccount" ? "Creating" : "Create account"}
+              </button>
+            </form>
+          ) : null}
         </Panel>
 
         <section className="spacesDetail" aria-label="Selected account details">
@@ -446,7 +458,12 @@ export function SpacesPanel() {
           ) : null}
 
           {activeTab === "spaces" ? (
-            <Panel count={spaces.length} eyebrow="Selected account" title={selectedAccount?.name || "No account selected"}>
+            <Panel
+              actions={<button className="secondaryButton" disabled={!selectedAccountId} type="button" onClick={() => setShowCreateSpace((current) => !current)}>{showCreateSpace ? "Close" : "Create space"}</button>}
+              count={spaces.length}
+              eyebrow="Selected account"
+              title={selectedAccount?.name || "No account selected"}
+            >
               <div className="spaceList">
                 {spaces.length === 0 ? (
                   <div className="emptyPanel">
@@ -465,19 +482,26 @@ export function SpacesPanel() {
                 ))}
               </div>
 
-              <form className="spacesForm inlineForm" onSubmit={(event) => void onCreateSpace(event)}>
-                <SelectField label="Space kind" options={SPACE_KINDS} value={spaceKind} onChange={setSpaceKind} />
-                <TextField label="Name" value={spaceName} onChange={setSpaceName} />
-                <TextField label="Optional id" value={spaceId} onChange={setSpaceId} />
-                <button className="primaryButton" disabled={!selectedAccountId || !spaceName.trim() || Boolean(busyAction)} type="submit">
-                  {busyAction === "createSpace" ? "Creating" : "Create space"}
-                </button>
-              </form>
+              {showCreateSpace ? (
+                <form className="spacesForm inlineForm compactWorkflow" onSubmit={(event) => void onCreateSpace(event)}>
+                  <SelectField label="Space kind" options={SPACE_KINDS} value={spaceKind} onChange={setSpaceKind} />
+                  <TextField label="Name" value={spaceName} onChange={setSpaceName} />
+                  <TextField label="Optional id" value={spaceId} onChange={setSpaceId} />
+                  <button className="primaryButton" disabled={!selectedAccountId || !spaceName.trim() || Boolean(busyAction)} type="submit">
+                    {busyAction === "createSpace" ? "Creating" : "Create space"}
+                  </button>
+                </form>
+              ) : null}
             </Panel>
           ) : null}
 
           {activeTab === "apps" ? (
-            <Panel count={apps.length} eyebrow="Apps" title="Installations">
+            <Panel
+              actions={<button className="secondaryButton" disabled={!selectedAccountId} type="button" onClick={() => setShowInstallApp((current) => !current)}>{showInstallApp ? "Close" : "Install app"}</button>}
+              count={apps.length}
+              eyebrow="Apps"
+              title="Installations"
+            >
               <div className="appList">
                 {apps.length === 0 ? <p className="mutedLine">No apps installed for this account.</p> : null}
                 {apps.map((app) => (
@@ -494,35 +518,37 @@ export function SpacesPanel() {
                 ))}
               </div>
 
-              <form className="spacesForm" onSubmit={(event) => void onInstallApp(event)}>
-                <SelectField
-                  label="App"
-                  options={APP_IDS.map((app) => ({ label: labelFor(app), value: app }))}
-                  value={installAppId}
-                  onChange={setInstallAppId}
-                />
-                <TextField label="Display name" value={installDisplayName} onChange={setInstallDisplayName} />
-                <TextField label="Optional id" value={installId} onChange={setInstallId} />
-                <CheckboxGroup
-                  label="Enabled spaces"
-                  options={spaces.map((space) => ({ label: space.name, value: space.id }))}
-                  values={installSpaceIds}
-                  onToggle={(value) => setInstallSpaceIds((current) => toggleValue(current, value))}
-                />
-                <CheckboxGroup
-                  label="Allowed purposes"
-                  options={PURPOSES.map((purpose) => ({ label: labelFor(purpose), value: purpose }))}
-                  values={installPurposes}
-                  onToggle={(value) => setInstallPurposes((current) => toggleValue(current, value))}
-                />
-                <button
-                  className="primaryButton"
-                  disabled={!selectedAccountId || !installSpaceIds.length || !installPurposes.length || Boolean(busyAction)}
-                  type="submit"
-                >
-                  {busyAction === "installApp" ? "Installing" : "Install app"}
-                </button>
-              </form>
+              {showInstallApp ? (
+                <form className="spacesForm compactWorkflow" onSubmit={(event) => void onInstallApp(event)}>
+                  <SelectField
+                    label="App"
+                    options={APP_IDS.map((app) => ({ label: labelFor(app), value: app }))}
+                    value={installAppId}
+                    onChange={setInstallAppId}
+                  />
+                  <TextField label="Display name" value={installDisplayName} onChange={setInstallDisplayName} />
+                  <TextField label="Optional id" value={installId} onChange={setInstallId} />
+                  <CheckboxGroup
+                    label="Enabled spaces"
+                    options={spaces.map((space) => ({ label: space.name, value: space.id }))}
+                    values={installSpaceIds}
+                    onToggle={(value) => setInstallSpaceIds((current) => toggleValue(current, value))}
+                  />
+                  <CheckboxGroup
+                    label="Allowed purposes"
+                    options={PURPOSES.map((purpose) => ({ label: labelFor(purpose), value: purpose }))}
+                    values={installPurposes}
+                    onToggle={(value) => setInstallPurposes((current) => toggleValue(current, value))}
+                  />
+                  <button
+                    className="primaryButton"
+                    disabled={!selectedAccountId || !installSpaceIds.length || !installPurposes.length || Boolean(busyAction)}
+                    type="submit"
+                  >
+                    {busyAction === "installApp" ? "Installing" : "Install app"}
+                  </button>
+                </form>
+              ) : null}
             </Panel>
           ) : null}
 
