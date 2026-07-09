@@ -40,6 +40,8 @@
   --radius: 8px;
   --radius-sm: 6px;
   --shadow: 0 12px 30px rgb(var(--brand-text-rgb) / 8%);
+  --shadow-soft: 0 1px 2px rgb(var(--brand-text-rgb) / 4%);
+  --shadow-panel: 0 10px 24px rgb(var(--brand-text-rgb) / 5%);
 }
 
 * {
@@ -242,7 +244,7 @@ pre {
   align-items: center;
   gap: 16px;
   min-height: 56px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid rgb(var(--brand-text-rgb) / 9%);
   background: rgb(var(--brand-surface-rgb) / 96%);
   padding: 8px 20px;
   backdrop-filter: blur(12px);
@@ -390,7 +392,7 @@ pre {
   width: 100%;
   min-width: 0;
   min-height: 36px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid rgb(var(--brand-text-rgb) / 14%);
   border-radius: var(--radius-sm);
   background: #fff;
   color: var(--ink);
@@ -432,11 +434,18 @@ pre {
   padding: 0 12px;
   font-size: 13px;
   font-weight: 720;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    color 140ms ease,
+    transform 140ms ease;
 }
 
 .primaryButton {
   background: var(--copper);
   color: #15181d;
+  box-shadow: 0 1px 0 rgb(var(--brand-text-rgb) / 8%), 0 8px 18px rgb(var(--brand-accent-rgb) / 14%);
 }
 
 .newChatButton:hover,
@@ -446,17 +455,21 @@ pre {
 .stateAction:hover {
   background: #8c5a24;
   color: #fff;
+  transform: translateY(-1px);
 }
 
 .secondaryButton {
-  border-color: var(--line-strong);
+  border-color: rgb(var(--brand-text-rgb) / 12%);
   background: #fff;
   color: var(--brand-primary);
+  box-shadow: var(--shadow-soft);
 }
 
 .secondaryButton:hover {
-  border-color: rgb(var(--brand-secondary-rgb) / 42%);
-  background: rgb(var(--brand-secondary-rgb) / 7%);
+  border-color: rgb(var(--brand-accent-rgb) / 30%);
+  background: rgb(var(--brand-accent-rgb) / 7%);
+  color: var(--brand-primary);
+  transform: translateY(-1px);
 }
 
 .dangerButton {
@@ -488,9 +501,11 @@ button:disabled,
 .primaryButton:disabled,
 .secondaryButton:disabled,
 .reviewButton:disabled {
-  border-color: var(--line);
+  border-color: rgb(var(--brand-text-rgb) / 8%);
   background: #f1ece2;
   color: #8b8376;
+  box-shadow: none;
+  transform: none;
 }
 
 .newChatButton:focus-visible,
@@ -517,11 +532,12 @@ button:disabled,
 .notice,
 .inlineError,
 .inlineNotice {
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius);
   padding: 10px 12px;
   font-size: 13px;
   font-weight: 650;
+  box-shadow: var(--shadow-soft);
 }
 
 .notice.error,
@@ -554,12 +570,12 @@ button:disabled,
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
   gap: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-left: 5px solid var(--green);
   border-radius: var(--radius);
   background: #fff;
   padding: 16px;
-  box-shadow: 0 1px 0 rgb(var(--brand-text-rgb) / 4%);
+  box-shadow: var(--shadow-panel);
 }
 
 .brainSummary.warning {
@@ -599,7 +615,7 @@ button:disabled,
 }
 
 .brainNextAction {
-  border-left: 1px solid var(--line);
+  border-left: 1px solid rgb(var(--brand-text-rgb) / 8%);
   padding-left: 14px;
 }
 
@@ -635,10 +651,11 @@ button:disabled,
   display: grid;
   min-width: 0;
   gap: 2px;
-  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
+  border: 1px solid rgb(var(--brand-text-rgb) / 7%);
   border-radius: var(--radius);
   background: #fff;
   padding: 10px 12px;
+  box-shadow: var(--shadow-soft);
 }
 
 .metricCard strong,
@@ -679,36 +696,55 @@ button:disabled,
 .tabBar {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  border-bottom: 1px solid rgb(var(--brand-text-rgb) / 8%);
-  padding-bottom: 8px;
+  align-items: center;
+  align-content: center;
+  align-self: start;
+  gap: 4px;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
+  border-radius: 10px;
+  background: rgb(var(--brand-surface-rgb) / 86%);
+  padding: 4px;
+  box-shadow: var(--shadow-soft);
+  scrollbar-width: none;
+}
+
+.tabBar::-webkit-scrollbar {
+  display: none;
 }
 
 .tabBar button {
   display: inline-flex;
-  align-items: baseline;
-  gap: 7px;
-  min-height: 34px;
+  flex: 0 0 auto;
+  align-self: center;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
   border: 1px solid transparent;
-  border-radius: 999px;
-  background: #fff;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--muted);
-  padding: 0 11px;
+  padding: 0 12px;
   font-size: 13px;
   font-weight: 720;
+  white-space: nowrap;
 }
 
 .tabBar button:hover,
 .tabBar button.active {
-  border-color: rgb(var(--brand-accent-rgb) / 34%);
+  border-color: rgb(var(--brand-accent-rgb) / 18%);
   background: rgb(var(--brand-accent-rgb) / 11%);
   color: var(--brand-primary);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 50%);
 }
 
 .tabBar small {
-  color: var(--muted);
+  color: inherit;
   font-size: 11px;
   font-weight: 720;
+  opacity: 0.72;
 }
 
 .documentsWorkspace,
@@ -792,11 +828,11 @@ button:disabled,
   display: grid;
   align-content: start;
   gap: 12px;
-  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
+  border: 1px solid rgb(var(--brand-text-rgb) / 7%);
   border-radius: var(--radius);
   background: #fff;
   padding: 16px;
-  box-shadow: 0 1px 0 rgb(var(--brand-text-rgb) / 4%);
+  box-shadow: var(--shadow-panel);
 }
 
 .messageThread {
@@ -829,9 +865,9 @@ button:disabled,
 .countBadge,
 .panelHead > span {
   min-width: 28px;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: 999px;
-  background: var(--surface-2);
+  background: #fff;
   color: var(--muted);
   padding: 4px 8px;
   text-align: center;
@@ -860,10 +896,11 @@ button:disabled,
   grid-template-columns: minmax(180px, 1fr) repeat(4, minmax(130px, 190px));
   align-items: end;
   gap: 8px;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius);
-  background: var(--surface-2);
+  background: #fff;
   padding: 10px;
+  box-shadow: var(--shadow-soft);
 }
 
 .conversationRail {
@@ -910,10 +947,11 @@ button:disabled,
   align-items: start;
   gap: 10px;
   min-width: 0;
-  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
+  border: 1px solid rgb(var(--brand-text-rgb) / 7%);
   border-radius: var(--radius);
   background: #fff;
   padding: 10px 12px;
+  box-shadow: var(--shadow-soft);
 }
 
 .signalRow.success {
@@ -969,10 +1007,11 @@ button:disabled,
   min-width: 0;
   gap: 5px;
   overflow: hidden;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius);
-  background: var(--surface-2);
+  background: #fff;
   padding: 11px 12px 12px;
+  box-shadow: var(--shadow-soft);
 }
 
 .signalTile span {
@@ -1021,14 +1060,16 @@ button:disabled,
   display: grid;
   grid-template-columns: minmax(0, 1fr) 30px;
   align-items: stretch;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius-sm);
   background: #fff;
+  box-shadow: var(--shadow-soft);
 }
 
 .conversationItem.active {
   border-color: rgb(var(--brand-accent-rgb) / 30%);
   background: rgb(var(--brand-accent-rgb) / 8%);
+  box-shadow: inset 3px 0 0 var(--copper), var(--shadow-soft);
 }
 
 .conversationItem > button:first-child {
@@ -1084,11 +1125,11 @@ button:disabled,
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius);
   background: rgb(var(--brand-surface-rgb) / 94%);
   padding: 18px;
-  box-shadow: 0 1px 0 rgb(var(--brand-text-rgb) / 4%);
+  box-shadow: var(--shadow-panel);
 }
 
 .chatBody {
@@ -1107,9 +1148,9 @@ button:disabled,
   min-height: 24px;
   width: max-content;
   max-width: 100%;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: 999px;
-  background: var(--surface-2);
+  background: #fff;
   color: var(--muted);
   padding: 4px 8px;
   font-size: 11px;
@@ -1196,7 +1237,7 @@ button:disabled,
 }
 
 .promptGrid span {
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius-sm);
   background: #fff;
   padding: 10px;
@@ -1207,7 +1248,7 @@ button:disabled,
 
 .promptGrid button {
   min-height: 44px;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius-sm);
   background: #fff;
   color: var(--muted);
@@ -1234,11 +1275,11 @@ button:disabled,
 
 .messageBubble {
   max-width: min(760px, 78%);
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: 14px;
   background: #fff;
   padding: 11px 13px;
-  box-shadow: 0 1px 0 rgb(var(--brand-text-rgb) / 3%);
+  box-shadow: var(--shadow-soft);
 }
 
 .messageRow.user .messageBubble {
@@ -1278,9 +1319,9 @@ button:disabled,
 .operatorMeta a {
   max-width: 100%;
   overflow: hidden;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: 999px;
-  background: var(--surface-2);
+  background: #fff;
   color: var(--muted);
   padding: 4px 8px;
   text-overflow: ellipsis;
@@ -1332,11 +1373,11 @@ button:disabled,
   align-items: end;
   gap: 8px;
   margin-top: 12px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid rgb(var(--brand-text-rgb) / 12%);
   border-radius: 16px;
   background: #fff;
   padding: 8px;
-  box-shadow: 0 10px 24px rgb(var(--brand-text-rgb) / 6%);
+  box-shadow: var(--shadow-panel);
 }
 
 .composer textarea {
@@ -1393,10 +1434,26 @@ button:disabled,
   display: grid;
   min-width: 0;
   gap: 8px;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius);
   background: #fff;
   padding: 10px 12px;
+  box-shadow: var(--shadow-soft);
+}
+
+.documentRow:hover,
+.pendingRow:hover,
+.operatorToken:hover,
+.operatorRow:hover,
+.deploymentCard:hover,
+.credentialRow:hover,
+.accountItem:hover,
+.spaceRow:hover,
+.appRow:hover,
+.auditRow:hover,
+.releaseToken:hover {
+  border-color: rgb(var(--brand-accent-rgb) / 22%);
+  box-shadow: 0 6px 16px rgb(var(--brand-text-rgb) / 6%);
 }
 
 .documentRow,
@@ -1419,7 +1476,7 @@ button:disabled,
   display: grid;
   grid-template-columns: minmax(220px, 1.2fr) minmax(210px, 0.9fr) minmax(90px, 0.35fr) minmax(90px, 0.35fr) minmax(70px, 0.3fr);
   gap: 8px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid rgb(var(--brand-text-rgb) / 8%);
   padding: 0 12px 7px 16px;
   color: var(--muted);
   font-size: 11px;
@@ -1525,10 +1582,11 @@ button:disabled,
 }
 
 .compactWorkflow {
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius);
-  background: var(--surface-2);
+  background: #fff;
   padding: 12px;
+  box-shadow: var(--shadow-soft);
 }
 
 .dropzone {
@@ -1536,9 +1594,9 @@ button:disabled,
   place-items: center;
   gap: 6px;
   min-height: 104px;
-  border: 1px dashed var(--line-strong);
+  border: 1px dashed rgb(var(--brand-text-rgb) / 16%);
   border-radius: var(--radius);
-  background: var(--surface-2);
+  background: #fff;
   color: var(--muted);
   padding: 16px;
   text-align: center;
@@ -1596,10 +1654,11 @@ button:disabled,
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 10px;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius);
-  background: var(--surface-2);
+  background: #fff;
   padding: 12px;
+  box-shadow: var(--shadow-soft);
 }
 
 .privacyScopeCard strong {
@@ -1609,7 +1668,7 @@ button:disabled,
 }
 
 .resultPanel {
-  box-shadow: none;
+  box-shadow: var(--shadow-panel);
 }
 
 .spacesTwoColumn {
@@ -1628,10 +1687,11 @@ button:disabled,
 .overviewGrid div {
   display: grid;
   gap: 3px;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius);
-  background: var(--surface-2);
+  background: #fff;
   padding: 11px;
+  box-shadow: var(--shadow-soft);
 }
 
 .overviewGrid strong {
@@ -1663,7 +1723,11 @@ button:disabled,
 .accountItem:hover,
 .accountItem.active {
   border-color: rgb(var(--brand-accent-rgb) / 34%);
-  background: rgb(var(--brand-accent-rgb) / 8%);
+  background: #fff;
+}
+
+.accountItem.active {
+  box-shadow: inset 3px 0 0 var(--copper), 0 6px 16px rgb(var(--brand-text-rgb) / 6%);
 }
 
 .choiceField {
@@ -1693,10 +1757,11 @@ button:disabled,
   align-items: center;
   gap: 7px;
   min-height: 32px;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius-sm);
   background: #fff;
   padding: 7px 9px;
+  box-shadow: var(--shadow-soft);
 }
 
 .choiceItem input,
@@ -1718,9 +1783,9 @@ button:disabled,
 .planResult {
   display: grid;
   gap: 5px;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius);
-  background: var(--surface-2);
+  background: #fff;
   padding: 11px;
 }
 
@@ -1749,10 +1814,11 @@ button:disabled,
   display: flex;
   flex-wrap: wrap;
   gap: 10px 14px;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius);
-  background: var(--surface-2);
+  background: #fff;
   padding: 10px;
+  box-shadow: var(--shadow-soft);
 }
 
 .operatorChecks label {
@@ -1783,9 +1849,9 @@ button:disabled,
 .credentialSecret {
   max-width: 100%;
   overflow-wrap: anywhere;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius-sm);
-  background: var(--surface-2);
+  background: #fff;
   color: var(--muted);
   padding: 4px 6px;
   font-size: 11px;
@@ -1810,7 +1876,7 @@ button:disabled,
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid rgb(var(--brand-text-rgb) / 8%);
   padding-top: 8px;
 }
 
@@ -1837,7 +1903,7 @@ button:disabled,
 .runLedger {
   display: grid;
   gap: 10px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid rgb(var(--brand-text-rgb) / 8%);
   padding-top: 12px;
 }
 
@@ -1852,7 +1918,7 @@ button:disabled,
 .brandThemeEditor {
   display: grid;
   gap: 9px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid rgb(var(--brand-text-rgb) / 8%);
   padding-top: 10px;
 }
 
@@ -1880,7 +1946,7 @@ button:disabled,
 .colorInput {
   width: 32px;
   height: 30px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid rgb(var(--brand-text-rgb) / 14%);
   border-radius: var(--radius-sm);
   background: var(--surface);
   padding: 2px;
@@ -1897,9 +1963,9 @@ button:disabled,
   align-items: center;
   gap: 6px;
   min-height: 24px;
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: 999px;
-  background: var(--surface-2);
+  background: #fff;
   color: var(--muted);
   padding: 4px 7px;
   font-size: 11px;
@@ -1909,7 +1975,7 @@ button:disabled,
 .themeSwatch i {
   width: 11px;
   height: 11px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid rgb(var(--brand-text-rgb) / 14%);
   border-radius: 999px;
 }
 
@@ -1927,11 +1993,11 @@ button:disabled,
   display: grid;
   gap: 16px;
   width: min(420px, 100%);
-  border: 1px solid var(--line);
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
   border-radius: var(--radius);
   background: #fff;
   padding: 26px;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-panel);
 }
 
 .statePanel .brand {
@@ -2122,7 +2188,7 @@ button:disabled,
 
   .brainNextAction {
     border-left: 0;
-    border-top: 1px solid var(--line);
+    border-top: 1px solid rgb(var(--brand-text-rgb) / 8%);
     padding-top: 12px;
     padding-left: 0;
   }
