@@ -106,18 +106,31 @@ export function CockpitPanel() {
     })))
   ), [customers]);
 
-  const criticalAlerts = observability?.alerts.filter((alert) => alert.severity === "critical").length ?? 0;
-  const warningAlerts = observability?.alerts.filter((alert) => alert.severity !== "critical").length ?? 0;
-  const failedJobs = observability?.jobs.by_status.failed ?? 0;
-  const pendingJobs = (observability?.jobs.by_status.queued ?? 0) + (observability?.jobs.by_status.retrying ?? 0);
-  const databaseRequired = Boolean(observability?.security.pgvector_required || observability?.runtime.vector_store === "pgvector");
-  const rlsValue = !databaseRequired ? "not required" : observability?.security.rls_enforced ? "enforced" : "not enforced";
-  const rlsTone = !databaseRequired ? "neutral" : observability?.security.rls_enforced ? "success" : "danger";
-  const databaseValue = !databaseRequired ? "not required" : observability?.security.database_url_configured ? "configured" : "missing";
-  const databaseTone = !databaseRequired ? "neutral" : observability?.security.database_url_configured ? "success" : "warning";
+  const alerts = observability?.alerts ?? [];
+  const runtime = observability?.runtime;
+  const retrieval = observability?.retrieval;
+  const storage = observability?.storage;
+  const serviceKeys = observability?.service_keys;
+  const jobStatus = observability?.jobs?.by_status ?? {};
+  const jobTypes = observability?.jobs?.by_type ?? {};
+  const recentFailures = observability?.jobs?.recent_failures ?? [];
+  const security = observability?.security;
+  const worker = observability?.worker;
+  const auth = observability?.auth;
+  const api = observability?.api;
+  const criticalAlerts = alerts.filter((alert) => alert.severity === "critical").length;
+  const warningAlerts = alerts.filter((alert) => alert.severity !== "critical").length;
+  const failedJobs = jobStatus.failed ?? 0;
+  const pendingJobs = (jobStatus.queued ?? 0) + (jobStatus.retrying ?? 0);
+  const missingCoreSignals = Boolean(observability && (!runtime || !storage || !security || !worker || !auth || !api));
+  const databaseRequired = Boolean(security?.pgvector_required || runtime?.vector_store === "pgvector");
+  const rlsValue = !databaseRequired ? "not required" : security?.rls_enforced ? "enforced" : "not enforced";
+  const rlsTone = !databaseRequired ? "neutral" : security?.rls_enforced ? "success" : "danger";
+  const databaseValue = !databaseRequired ? "not required" : security?.database_url_configured ? "configured" : "missing";
+  const databaseTone = !databaseRequired ? "neutral" : security?.database_url_configured ? "success" : "warning";
   const brainTone = criticalAlerts
     ? "danger"
-    : warningAlerts || failedJobs || pendingJobs
+    : warningAlerts || failedJobs || pendingJobs || missingCoreSignals
       ? "warning"
       : connectedApps.length === 0
         ? "running"
@@ -132,14 +145,18 @@ export function CockpitPanel() {
   const brainDetail = observability
     ? criticalAlerts
       ? "OneBrain needs intervention before it should be trusted as the shared data layer."
-      : warningAlerts || failedJobs
+      : missingCoreSignals
+        ? "OneBrain is online, but some runtime, worker, or security signals are not reporting yet."
+        : warningAlerts || failedJobs
         ? "OneBrain is online, but one or more signals should be reviewed."
         : connectedApps.length === 0
           ? "OneBrain is online. Connect the assistant and communication apps so it can start learning from real flows."
           : "OneBrain is online, governed, and ready to serve connected apps."
     : "Loading the current runtime, data, worker, and security posture.";
-  const nextAction = observability?.alerts[0]?.action
-    || (connectedApps.length === 0 ? "Connect the assistant and communication apps." : "Keep monitoring Cockpit before adding new data.");
+  const nextAction = alerts[0]?.action
+    || (missingCoreSignals
+      ? "Review observability signals so Status can verify every core system."
+      : connectedApps.length === 0 ? "Connect the assistant and communication apps." : "Keep monitoring Cockpit before adding new data.");
 
   return (
     <div className="cockpitWorkspace">
@@ -148,14 +165,14 @@ export function CockpitPanel() {
         title="OneBrain"
         meta={observability ? (
           <>
-            <StatusBadge tone={statusTone(observability.security.environment)}>
-              {labelFor(observability.security.environment)}
+            <StatusBadge tone={statusTone(security?.environment || "")}>
+              {labelFor(security?.environment || "unknown")}
             </StatusBadge>
-            <StatusBadge tone={statusTone(observability.worker.status)}>
-              worker {labelFor(observability.worker.status)}
+            <StatusBadge tone={statusTone(worker?.status || "")}>
+              worker {labelFor(worker?.status || "unknown")}
             </StatusBadge>
-            <StatusBadge tone={statusTone(observability.security.pii_phase)}>
-              {labelFor(observability.security.pii_phase)}
+            <StatusBadge tone={statusTone(security?.pii_phase || "")}>
+              {labelFor(security?.pii_phase || "unknown")}
             </StatusBadge>
           </>
         ) : null}
@@ -190,20 +207,20 @@ export function CockpitPanel() {
           {
             label: "alerts",
             tone: criticalAlerts ? "danger" : warningAlerts ? "warning" : "success",
-            value: observability ? observability.alerts.length : "-",
+            value: observability ? alerts.length : "-",
           },
           { label: "customers", value: customers.length },
           { label: "connected apps", value: connectedApps.length },
-          { label: "intake records", value: observability?.storage.intake_records ?? "-" },
-          { label: "active keys", value: observability?.service_keys.active ?? "-" },
+          { label: "intake records", value: storage?.intake_records ?? "-" },
+          { label: "active keys", value: serviceKeys?.active ?? "-" },
           { label: "pending jobs", tone: pendingJobs ? "warning" : "success", value: pendingJobs },
         ]}
       />
 
       <section className="cockpitGrid" aria-label="OneBrain cockpit">
-        <Panel eyebrow="Signals" title="Alerts" count={observability?.alerts.length ?? 0}>
+        <Panel eyebrow="Signals" title="Alerts" count={alerts.length}>
           <div className="cockpitList">
-            {observability && observability.alerts.length === 0 ? (
+            {observability && alerts.length === 0 ? (
               <div className="signalRow success">
                 <div>
                   <strong>No active alerts</strong>
@@ -212,7 +229,7 @@ export function CockpitPanel() {
                 <StatusBadge tone="success">clear</StatusBadge>
               </div>
             ) : null}
-            {observability?.alerts.map((alert) => (
+            {alerts.map((alert) => (
               <article className={`signalRow ${alertTone(alert.severity)}`} key={alert.id}>
                 <div>
                   <strong>{alert.title}</strong>
@@ -243,12 +260,12 @@ export function CockpitPanel() {
 
         <Panel eyebrow="Data flow" title="Jobs and storage">
           <div className="statusMatrix">
-            <Signal label="Worker" value={observability ? labelFor(observability.worker.status) : "-"} tone={statusTone(observability?.worker.status || "")} />
+            <Signal label="Worker" value={observability ? labelFor(worker?.status || "unknown") : "-"} tone={statusTone(worker?.status || "")} />
             <Signal label="Failed jobs" value={String(failedJobs)} tone={failedJobs ? "danger" : "success"} />
-            <Signal label="Running jobs" value={String(observability?.worker.running_jobs ?? 0)} tone={observability?.worker.running_jobs ? "running" : "success"} />
-            <Signal label="Chunks" value={String(observability?.storage.chunks ?? "-")} tone="neutral" />
-            <Signal label="Job types" value={String(Object.keys(observability?.jobs.by_type || {}).length)} tone="neutral" />
-            <Signal label="Retrieval min score" value={String(observability?.retrieval.min_score ?? "-")} tone="neutral" />
+            <Signal label="Running jobs" value={String(worker?.running_jobs ?? 0)} tone={worker?.running_jobs ? "running" : "success"} />
+            <Signal label="Chunks" value={String(storage?.chunks ?? "-")} tone="neutral" />
+            <Signal label="Job types" value={String(Object.keys(jobTypes).length)} tone="neutral" />
+            <Signal label="Retrieval min score" value={String(retrieval?.min_score ?? "-")} tone="neutral" />
           </div>
         </Panel>
 
@@ -256,19 +273,19 @@ export function CockpitPanel() {
           <div className="statusMatrix">
             <Signal label="RLS" value={rlsValue} tone={rlsTone} />
             <Signal label="Database URL" value={databaseValue} tone={databaseTone} />
-            <Signal label="Secure cookies" value={observability?.security.cookie_secure ? "enabled" : "disabled"} tone={observability?.security.cookie_secure ? "success" : "warning"} />
-            <Signal label="Auth failures" value={String(observability?.auth.total_failures ?? 0)} tone={observability?.auth.total_failures ? "warning" : "success"} />
-            <Signal label="Service-key failures" value={String(observability?.auth.service_key_failures ?? 0)} tone={observability?.auth.service_key_failures ? "warning" : "success"} />
-            <Signal label="API errors" value={String(observability?.api.errors_5xx ?? 0)} tone={observability?.api.errors_5xx ? "warning" : "success"} />
+            <Signal label="Secure cookies" value={security?.cookie_secure ? "enabled" : "disabled"} tone={security?.cookie_secure ? "success" : "warning"} />
+            <Signal label="Auth failures" value={String(auth?.total_failures ?? 0)} tone={auth?.total_failures ? "warning" : "success"} />
+            <Signal label="Service-key failures" value={String(auth?.service_key_failures ?? 0)} tone={auth?.service_key_failures ? "warning" : "success"} />
+            <Signal label="API errors" value={String(api?.errors_5xx ?? 0)} tone={api?.errors_5xx ? "warning" : "success"} />
           </div>
         </Panel>
 
-        <Panel eyebrow="Failures" title="Recent job failures" count={observability?.jobs.recent_failures.length ?? 0}>
+        <Panel eyebrow="Failures" title="Recent job failures" count={recentFailures.length}>
           <div className="cockpitList">
-            {observability && observability.jobs.recent_failures.length === 0 ? (
+            {observability && recentFailures.length === 0 ? (
               <p className="mutedLine">No failed jobs in the recent failure ledger.</p>
             ) : null}
-            {observability?.jobs.recent_failures.slice(0, 5).map((job) => (
+            {recentFailures.slice(0, 5).map((job) => (
               <article className="signalRow danger" key={job.id}>
                 <div>
                   <strong>{job.type}</strong>
