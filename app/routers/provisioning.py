@@ -4,13 +4,24 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.auth.principal import Principal, resolve_principal
-from app.deps import get_control_plane_store, get_platform_store, get_service_key_store
+from app.config import get_settings
+from app.deps import get_control_plane_store, get_platform_store, get_provisioning_run_store, get_service_key_store
 from app.platform.base import BrandTheme, DEFAULT_BRAND_THEME
 from app.provisioning.bundles import BUNDLES, ProvisioningBundle
+from app.provisioning.runs import (
+    GitHubWorkflowDispatcher,
+    ProvisioningCallback,
+    ProvisioningRun,
+    apply_callback,
+    create_run,
+    mark_dispatch_failed,
+    read_one_time_secret,
+    verify_callback_secret,
+)
 from app.provisioning.service import CustomerProvisioner, ProvisioningResult, normalize_id
 from app.schemas import BrandThemeOut
 
@@ -56,6 +67,23 @@ class CustomerProvisionCreate(BaseModel):
     mint_integration_keys: bool = True
     brand_theme: BrandThemeInput | None = None
     app_brand_themes: dict[str, BrandThemeInput] = Field(default_factory=dict)
+    external_provisioning: bool = False
+    dry_run: bool = True
+    callback_url: str = Field(default="", max_length=500)
+
+
+class ProvisioningCallbackIn(BaseModel):
+    status: str = Field(max_length=40)
+    external_run_id: str = Field(default="", max_length=200)
+    external_run_url: str = Field(default="", max_length=500)
+    result_payload: dict = Field(default_factory=dict)
+    railway_project_id: str = Field(default="", max_length=200)
+    railway_environment_id: str = Field(default="", max_length=200)
+    service_urls: dict[str, str] = Field(default_factory=dict)
+    migration_revision: str = Field(default="", max_length=120)
+    smoke_status: str = Field(default="", max_length=80)
+    failure_reason: str = Field(default="", max_length=1000)
+    bootstrap_password: str = Field(default="", max_length=500)
 
 
 class ProvisionedAccountOut(BaseModel):
@@ -117,6 +145,36 @@ class ProvisioningResultOut(BaseModel):
     credentials: list[ProvisionedCredentialOut] = Field(default_factory=list)
     brand_theme: BrandThemeOut
     app_brand_themes: list[BrandThemeOut] = Field(default_factory=list)
+    provisioning_run: "ProvisioningRunOut | None" = None
+
+
+class ProvisioningRunOut(BaseModel):
+    id: str
+    account_id: str
+    deployment_id: str
+    bundle_id: str
+    requested_by: str
+    status: str
+    external_provider: str = ""
+    external_run_id: str = ""
+    external_run_url: str = ""
+    railway_project_id: str = ""
+    railway_environment_id: str = ""
+    service_urls: dict[str, str] = Field(default_factory=dict)
+    migration_revision: str = ""
+    smoke_status: str = ""
+    failure_reason: str = ""
+    bootstrap_secret_id: str = ""
+    retry_of_run_id: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    dispatched_at: str = ""
+    completed_at: str = ""
+
+
+class BootstrapSecretOut(BaseModel):
+    secret_id: str
+    plaintext: str
 
 
 def _require_admin(principal: Principal) -> None:
@@ -190,7 +248,42 @@ def _default_account_id(customer_name: str) -> str:
     return f"acct_{stem}_{uuid4().hex[:6]}"
 
 
-def _result_out(result: ProvisioningResult) -> ProvisioningResultOut:
+def _run_out(run: ProvisioningRun) -> ProvisioningRunOut:
+    return ProvisioningRunOut(
+        id=run.id,
+        account_id=run.account_id,
+        deployment_id=run.deployment_id,
+        bundle_id=run.bundle_id,
+        requested_by=run.requested_by,
+        status=run.status,
+        external_provider=run.external_provider,
+        external_run_id=run.external_run_id,
+        external_run_url=run.external_run_url,
+        railway_project_id=run.railway_project_id,
+        railway_environment_id=run.railway_environment_id,
+        service_urls=run.service_urls,
+        migration_revision=run.migration_revision,
+        smoke_status=run.smoke_status,
+        failure_reason=run.failure_reason,
+        bootstrap_secret_id=run.bootstrap_secret_id,
+        retry_of_run_id=run.retry_of_run_id,
+        created_at=run.created_at,
+        updated_at=run.updated_at,
+        dispatched_at=run.dispatched_at,
+        completed_at=run.completed_at,
+    )
+
+
+def _dispatch_run(run: ProvisioningRun) -> ProvisioningRun:
+    store = get_provisioning_run_store()
+    try:
+        dispatched = GitHubWorkflowDispatcher(get_settings()).dispatch(run)
+    except RuntimeError as exc:
+        return mark_dispatch_failed(store, run, str(exc))
+    return store.update_run(dispatched)
+
+
+def _result_out(result: ProvisioningResult, run: ProvisioningRun | None = None) -> ProvisioningResultOut:
     deployment = result.deployment
     return ProvisioningResultOut(
         bundle_id=result.bundle.id,
@@ -240,6 +333,7 @@ def _result_out(result: ProvisioningResult) -> ProvisioningResultOut:
             )
             for c in result.credentials
         ],
+        provisioning_run=_run_out(run) if run else None,
     )
 
 
@@ -283,4 +377,118 @@ def provision_customer(body: CustomerProvisionCreate, principal: Principal = Dep
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return _result_out(result)
+    run = None
+    if body.external_provisioning:
+        payload = {
+            "customer_name": body.customer_name,
+            "deployment_type": body.deployment_type,
+            "region": body.region,
+            "release_ring": body.release_ring,
+            "initial_version": body.initial_version,
+            "current_migration": body.current_migration,
+            "module_versions": body.module_versions,
+            "brand_theme": body.brand_theme.model_dump() if body.brand_theme else {},
+            "callback_url": body.callback_url,
+            "dry_run": body.dry_run,
+        }
+        run = create_run(
+            get_provisioning_run_store(),
+            account_id=result.account.id,
+            deployment_id=result.deployment.id,
+            bundle_id=result.bundle.id,
+            requested_by=principal.user_id,
+            payload=payload,
+        )
+        run = _dispatch_run(run)
+    return _result_out(result, run)
+
+
+@router.get("/runs", response_model=list[ProvisioningRunOut])
+def list_provisioning_runs(
+    account_id: str = "",
+    deployment_id: str = "",
+    principal: Principal = Depends(resolve_principal),
+):
+    _require_admin(principal)
+    return [_run_out(run) for run in get_provisioning_run_store().list_runs(account_id, deployment_id)]
+
+
+@router.get("/runs/{run_id}", response_model=ProvisioningRunOut)
+def get_provisioning_run(run_id: str, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    run = get_provisioning_run_store().get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Provisioning run not found.")
+    return _run_out(run)
+
+
+@router.post("/runs/{run_id}/retry", response_model=ProvisioningRunOut)
+def retry_provisioning_run(run_id: str, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    store = get_provisioning_run_store()
+    run = store.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Provisioning run not found.")
+    retry = create_run(
+        store,
+        account_id=run.account_id,
+        deployment_id=run.deployment_id,
+        bundle_id=run.bundle_id,
+        requested_by=principal.user_id,
+        payload=run.request_payload,
+        retry_of_run_id=run.id,
+    )
+    return _run_out(_dispatch_run(retry))
+
+
+def _require_callback_auth(authorization: str, callback_key_id: str) -> None:
+    settings = get_settings()
+    if not settings.provisioning_callback_key_hash:
+        raise HTTPException(status_code=401, detail="Provisioning callback authentication is not configured.")
+    if settings.provisioning_callback_key_id and callback_key_id != settings.provisioning_callback_key_id:
+        raise HTTPException(status_code=401, detail="Invalid provisioning callback key.")
+    prefix = "Bearer "
+    if not authorization.startswith(prefix):
+        raise HTTPException(status_code=401, detail="Missing provisioning callback bearer token.")
+    token = authorization[len(prefix):].strip()
+    if not verify_callback_secret(token, settings.provisioning_callback_key_hash):
+        raise HTTPException(status_code=401, detail="Invalid provisioning callback token.")
+
+
+@router.post("/runs/{run_id}/callback", response_model=ProvisioningRunOut)
+def provisioning_callback(
+    run_id: str,
+    body: ProvisioningCallbackIn,
+    authorization: str = Header(default=""),
+    x_onebrain_callback_key_id: str = Header(default=""),
+):
+    _require_callback_auth(authorization, x_onebrain_callback_key_id)
+    try:
+        run = apply_callback(
+            get_provisioning_run_store(),
+            get_settings(),
+            run_id,
+            ProvisioningCallback(**body.model_dump()),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Provisioning run not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _run_out(run)
+
+
+@router.post("/runs/{run_id}/bootstrap-secret/read", response_model=BootstrapSecretOut)
+def read_bootstrap_secret(run_id: str, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    run = get_provisioning_run_store().get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Provisioning run not found.")
+    if not run.bootstrap_secret_id:
+        raise HTTPException(status_code=404, detail="Bootstrap secret not available.")
+    try:
+        plaintext = read_one_time_secret(get_provisioning_run_store(), get_settings(), run.bootstrap_secret_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Bootstrap secret not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return BootstrapSecretOut(secret_id=run.bootstrap_secret_id, plaintext=plaintext)

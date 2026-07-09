@@ -59,6 +59,18 @@ class Settings(BaseSettings):
     # pgvector — only used when vector_store = "pgvector"
     database_url: str = ""
 
+    # External customer provisioning through GitHub Actions.
+    github_owner: str = ""
+    github_repo: str = ""
+    github_workflow: str = "provision-customer.yml"
+    github_ref: str = "main"
+    github_dispatch_token: str = ""
+    provisioning_callback_key_id: str = ""
+    provisioning_callback_key_hash: str = ""
+    secret_encryption_key: str = ""
+    secret_encryption_key_version: str = "v1"
+    bootstrap_secret_ttl_seconds: int = 3600
+
     # Background jobs. Postgres mode defaults to async ingestion because OCR,
     # embedding, and provider calls should not hold request workers open.
     async_ingestion: Optional[bool] = None

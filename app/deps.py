@@ -116,3 +116,10 @@ def get_job_store():
     from app.jobs.factory import build_job_store
 
     return build_job_store(get_settings())
+
+
+@lru_cache
+def get_provisioning_run_store():
+    from app.provisioning.factory import build_provisioning_run_store
+
+    return build_provisioning_run_store(get_settings())
