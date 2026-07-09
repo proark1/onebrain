@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import pytest
 
 from app.deploy import runtime
+from app.deploy import start as deploy_start
 
 
 @dataclass
@@ -92,6 +93,47 @@ def test_api_command_uses_railway_port(monkeypatch):
 
 def test_worker_command_uses_worker_module():
     assert runtime.worker_command() == [sys.executable, "-m", "app.workers.run"]
+
+
+def test_deployment_process_defaults_to_api(monkeypatch):
+    monkeypatch.delenv("ONEBRAIN_PROCESS", raising=False)
+
+    assert runtime.deployment_process() == "api"
+
+
+def test_deployment_process_accepts_worker(monkeypatch):
+    monkeypatch.setenv("ONEBRAIN_PROCESS", " worker ")
+
+    assert runtime.deployment_process() == "worker"
+
+
+def test_deployment_process_rejects_unknown_value(monkeypatch):
+    monkeypatch.setenv("ONEBRAIN_PROCESS", "scheduler")
+
+    with pytest.raises(RuntimeError, match="ONEBRAIN_PROCESS"):
+        runtime.deployment_process()
+
+
+def test_start_dispatches_api(monkeypatch):
+    calls = []
+    monkeypatch.setenv("ONEBRAIN_PROCESS", "api")
+    monkeypatch.setattr(deploy_start.start_api, "main", lambda: calls.append("api"))
+    monkeypatch.setattr(deploy_start.start_worker, "main", lambda: calls.append("worker"))
+
+    deploy_start.main()
+
+    assert calls == ["api"]
+
+
+def test_start_dispatches_worker(monkeypatch):
+    calls = []
+    monkeypatch.setenv("ONEBRAIN_PROCESS", "worker")
+    monkeypatch.setattr(deploy_start.start_api, "main", lambda: calls.append("api"))
+    monkeypatch.setattr(deploy_start.start_worker, "main", lambda: calls.append("worker"))
+
+    deploy_start.main()
+
+    assert calls == ["worker"]
 
 
 def test_wait_for_schema_skips_memory_mode(monkeypatch):

@@ -16,10 +16,21 @@ from app.db.schema import REQUIRED_ALEMBIC_REVISION, validate_postgres_schema
 DEFAULT_SCHEMA_WAIT_SECONDS = 60.0
 DEFAULT_SCHEMA_WAIT_POLL_SECONDS = 2.0
 DEFAULT_WORKER_REQUIRED_TABLES = ("chunks", "jobs", "job_files")
+DEFAULT_DEPLOYMENT_PROCESS = "api"
+SUPPORTED_DEPLOYMENT_PROCESSES = {"api", "worker"}
 
 
 def is_postgres_mode(settings: Settings) -> bool:
     return settings.vector_store == "pgvector"
+
+
+def deployment_process(raw: str | None = None) -> str:
+    process = (raw if raw is not None else os.environ.get("ONEBRAIN_PROCESS", "")).strip().lower()
+    process = process or DEFAULT_DEPLOYMENT_PROCESS
+    if process not in SUPPORTED_DEPLOYMENT_PROCESSES:
+        supported = ", ".join(sorted(SUPPORTED_DEPLOYMENT_PROCESSES))
+        raise RuntimeError(f"ONEBRAIN_PROCESS must be one of: {supported}.")
+    return process
 
 
 def validate_runtime_safety(settings: Settings | None = None) -> None:

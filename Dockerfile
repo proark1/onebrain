@@ -17,5 +17,6 @@ COPY alembic.ini .
 ENV ONEBRAIN_DATA_DIR=/data
 EXPOSE 8000
 
-# Railway/Heroku set $PORT; the launcher defaults to 8000 locally.
-CMD ["python", "-m", "app.deploy.start_api"]
+# Railway/Heroku set $PORT; the launcher defaults to API mode.
+# Set ONEBRAIN_PROCESS=worker on the worker service.
+CMD ["python", "-m", "app.deploy.start"]
