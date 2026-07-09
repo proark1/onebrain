@@ -1724,12 +1724,15 @@ button:disabled,
   }
 
   .consoleNav {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
   }
 
   .consoleNav a {
+    flex: 1 1 76px;
     text-align: center;
-    padding-inline: 8px;
+    padding-inline: 10px;
   }
 
   .consoleNav a.active::before {
