@@ -8,11 +8,13 @@ import time
 
 from app.config import get_settings
 from app.deps import get_job_store
+from app.workers.health import start_worker_health_server_if_configured
 from app.workers.service import Worker
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    start_worker_health_server_if_configured()
     settings = get_settings()
     worker = Worker(get_job_store())
     stopping = False
