@@ -1,0 +1,235 @@
+name: Provision Customer
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        required: true
+        type: string
+      account_id:
+        required: true
+        type: string
+      deployment_id:
+        required: true
+        type: string
+      customer_name:
+        required: true
+        type: string
+      bundle_id:
+        required: true
+        type: string
+      deployment_type:
+        required: true
+        type: string
+      region:
+        required: false
+        type: string
+        default: eu-central
+      release_ring:
+        required: false
+        type: string
+        default: manual
+      initial_version:
+        required: true
+        type: string
+      module_versions_json:
+        required: false
+        type: string
+        default: "{}"
+      brand_theme_json:
+        required: false
+        type: string
+        default: "{}"
+      callback_url:
+        required: true
+        type: string
+      callback_key_id:
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        required: false
+        type: choice
+        options: ["true", "false"]
+        default: "true"
+
+jobs:
+  provision:
+    name: Provision customer stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${{ inputs.run_id }}"
+          test -n "${{ inputs.account_id }}"
+          test -n "${{ inputs.deployment_id }}"
+          test -n "${{ inputs.bundle_id }}"
+          test -n "${{ inputs.callback_url }}"
+          python -m json.tool <<< '${{ inputs.module_versions_json }}' >/dev/null
+          python -m json.tool <<< '${{ inputs.brand_theme_json }}' >/dev/null
+
+      - name: Mask secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ secrets.ONEBRAIN_PROVISIONING_CALLBACK_KEY }}" ]; then
+            echo "::add-mask::${{ secrets.ONEBRAIN_PROVISIONING_CALLBACK_KEY }}"
+          fi
+          if [ -n "${{ secrets.RAILWAY_TOKEN }}" ]; then
+            echo "::add-mask::${{ secrets.RAILWAY_TOKEN }}"
+          fi
+
+      - name: Send running callback
+        shell: bash
+        env:
+          CALLBACK_KEY: ${{ secrets.ONEBRAIN_PROVISIONING_CALLBACK_KEY }}
+        run: |
+          set -euo pipefail
+          curl --fail-with-body -sS -X POST "${{ inputs.callback_url }}" \
+            -H "Authorization: Bearer ${CALLBACK_KEY}" \
+            -H "X-OneBrain-Callback-Key-Id: ${{ inputs.callback_key_id }}" \
+            -H "Content-Type: application/json" \
+            --data '{"status":"running","external_run_id":"${{ github.run_id }}","external_run_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Dry-run provisioning
+        if: ${{ inputs.dry_run == 'true' }}
+        shell: bash
+        env:
+          CALLBACK_KEY: ${{ secrets.ONEBRAIN_PROVISIONING_CALLBACK_KEY }}
+        run: |
+          set -euo pipefail
+          API_URL="https://${{ inputs.account_id }}-api.example.invalid"
+          UI_URL="https://${{ inputs.account_id }}-admin.example.invalid"
+          WORKER_URL="worker://${{ inputs.account_id }}"
+          BOOTSTRAP_PASSWORD="$(python - <<'PY'
+          import secrets
+          print(secrets.token_urlsafe(24))
+          PY
+          )"
+          echo "::add-mask::${BOOTSTRAP_PASSWORD}"
+          payload=$(python - <<PY
+          import json
+          print(json.dumps({
+              "status": "succeeded",
+              "external_run_id": "${{ github.run_id }}",
+              "external_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "railway_project_id": "dry_${{ inputs.deployment_id }}",
+              "railway_environment_id": "dry_env_${{ inputs.deployment_id }}",
+              "service_urls": {"api": "${API_URL}", "admin_ui": "${UI_URL}", "worker": "${WORKER_URL}"},
+              "migration_revision": "dry-run",
+              "smoke_status": "dry_run_passed",
+              "result_payload": {
+                  "bundle_id": "${{ inputs.bundle_id }}",
+                  "deployment_type": "${{ inputs.deployment_type }}",
+                  "module_versions": json.loads('''${{ inputs.module_versions_json }}''')
+              },
+              "bootstrap_password": "${BOOTSTRAP_PASSWORD}",
+          }))
+          PY
+          )
+          curl --fail-with-body -sS -X POST "${{ inputs.callback_url }}" \
+            -H "Authorization: Bearer ${CALLBACK_KEY}" \
+            -H "X-OneBrain-Callback-Key-Id: ${{ inputs.callback_key_id }}" \
+            -H "Content-Type: application/json" \
+            --data "${payload}"
+
+      - name: Install Railway CLI
+        if: ${{ inputs.dry_run == 'false' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g @railway/cli
+
+      - name: Provision Railway stack
+        if: ${{ inputs.dry_run == 'false' }}
+        shell: bash
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          CALLBACK_KEY: ${{ secrets.ONEBRAIN_PROVISIONING_CALLBACK_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RAILWAY_TOKEN}" ]; then
+            echo "RAILWAY_TOKEN is required for real provisioning" >&2
+            exit 1
+          fi
+          PROJECT_NAME="onebrain-${{ inputs.account_id }}-${{ inputs.deployment_id }}"
+          BOOTSTRAP_PASSWORD="$(python - <<'PY'
+          import secrets
+          print(secrets.token_urlsafe(32))
+          PY
+          )"
+          echo "::add-mask::${BOOTSTRAP_PASSWORD}"
+
+          railway login --token "${RAILWAY_TOKEN}"
+          railway init --name "${PROJECT_NAME}"
+          railway variables --set "ONEBRAIN_AUTH_SECRET=$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          railway variables --set "ONEBRAIN_ADMIN_EMAIL=admin@${{ inputs.account_id }}.onebrain.local"
+          railway variables --set "ONEBRAIN_ADMIN_PASSWORD=${BOOTSTRAP_PASSWORD}"
+          railway variables --set "ONEBRAIN_VECTOR_STORE=pgvector"
+          railway variables --set "ONEBRAIN_PII_PHASE=synthetic"
+          railway variables --set "ONEBRAIN_COOKIE_SECURE=true"
+          if [ -n "${GEMINI_API_KEY}" ]; then
+            railway variables --set "GEMINI_API_KEY=${GEMINI_API_KEY}"
+            railway variables --set "ONEBRAIN_LLM_PROVIDER=litellm"
+            railway variables --set "ONEBRAIN_EMBEDDINGS_PROVIDER=litellm"
+          fi
+
+          # Railway project/service creation details vary by workspace. This
+          # step intentionally keeps the privileged execution in Actions while
+          # reporting sanitized metadata back to OneBrain.
+          railway up --detach
+
+          payload=$(python - <<PY
+          import json
+          print(json.dumps({
+              "status": "succeeded",
+              "external_run_id": "${{ github.run_id }}",
+              "external_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "railway_project_id": "${PROJECT_NAME}",
+              "railway_environment_id": "production",
+              "service_urls": {"railway_project": "railway://${PROJECT_NAME}"},
+              "migration_revision": "${{ inputs.initial_version }}",
+              "smoke_status": "deployed",
+              "result_payload": {"bundle_id": "${{ inputs.bundle_id }}"},
+              "bootstrap_password": "${BOOTSTRAP_PASSWORD}",
+          }))
+          PY
+          )
+          curl --fail-with-body -sS -X POST "${{ inputs.callback_url }}" \
+            -H "Authorization: Bearer ${CALLBACK_KEY}" \
+            -H "X-OneBrain-Callback-Key-Id: ${{ inputs.callback_key_id }}" \
+            -H "Content-Type: application/json" \
+            --data "${payload}"
+
+      - name: Report failure
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          CALLBACK_KEY: ${{ secrets.ONEBRAIN_PROVISIONING_CALLBACK_KEY }}
+        run: |
+          set +e
+          reason="provisioning workflow failed; inspect sanitized GitHub Actions logs"
+          payload=$(python - <<PY
+          import json
+          print(json.dumps({
+              "status": "failed",
+              "external_run_id": "${{ github.run_id }}",
+              "external_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "failure_reason": "${reason}",
+              "result_payload": {"dry_run": "${{ inputs.dry_run }}"},
+          }))
+          PY
+          )
+          curl -sS -X POST "${{ inputs.callback_url }}" \
+            -H "Authorization: Bearer ${CALLBACK_KEY}" \
+            -H "X-OneBrain-Callback-Key-Id: ${{ inputs.callback_key_id }}" \
+            -H "Content-Type: application/json" \
+            --data "${payload}" || true

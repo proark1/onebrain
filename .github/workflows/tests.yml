@@ -37,3 +37,95 @@ jobs:
           ONEBRAIN_AUTH_SECRET: ci-test-secret-ci-test-secret-ci-test-secret
           ONEBRAIN_COOKIE_SECURE: "false"
         run: python -m pytest -q
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: onebrain-web
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: onebrain-web/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+  workflow-and-secrets:
+    name: Workflow and secret checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Validate provisioning workflow contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path(".github/workflows/provision-customer.yml").read_text()
+          required = [
+              "workflow_dispatch",
+              "run_id",
+              "callback_url",
+              "dry_run",
+              "ONEBRAIN_PROVISIONING_CALLBACK_KEY",
+              "RAILWAY_TOKEN",
+              "Send running callback",
+              "Dry-run provisioning",
+              "Provision Railway stack",
+          ]
+          missing = [item for item in required if item not in text]
+          if missing:
+              raise SystemExit(f"workflow missing expected contract markers: {missing}")
+          PY
+
+      - name: Secret pattern scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          patterns = [
+              re.compile(r"sk-[A-Za-z0-9]{20,}"),
+              re.compile(r"ghp_[A-Za-z0-9]{20,}"),
+              re.compile(r"(?i)(api[_-]?key|secret|token|password)\s*=\s*['\"][^'\"]{12,}['\"]"),
+          ]
+          ignored_dirs = {".git", ".next", "node_modules", ".pytest_cache", "__pycache__", ".onebrain_data"}
+          findings = []
+          for path in Path(".").rglob("*"):
+              if not path.is_file() or any(part in ignored_dirs for part in path.parts):
+                  continue
+              if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".pyc"}:
+                  continue
+              try:
+                  text = path.read_text(encoding="utf-8")
+              except UnicodeDecodeError:
+                  continue
+              for pattern in patterns:
+                  if pattern.search(text):
+                      findings.append(str(path))
+                      break
+          if findings:
+              raise SystemExit("possible committed secret patterns in: " + ", ".join(sorted(findings)))
+          PY
