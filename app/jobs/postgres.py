@@ -43,6 +43,11 @@ class PostgresJobStore:
         "id, type, status, tenant_id, account_id, space_id, requested_by, payload, result, error, "
         "attempts, max_attempts, run_after, locked_by, locked_at, created_at, updated_at, completed_at"
     )
+    _JOB_COLS_J = (
+        "j.id, j.type, j.status, j.tenant_id, j.account_id, j.space_id, j.requested_by, "
+        "j.payload, j.result, j.error, j.attempts, j.max_attempts, j.run_after, "
+        "j.locked_by, j.locked_at, j.created_at, j.updated_at, j.completed_at"
+    )
 
     def __init__(self, dsn: str):
         import psycopg
@@ -136,7 +141,7 @@ class PostgresJobStore:
                     updated_at = now()
                 FROM claimed
                 WHERE j.id = claimed.id
-                RETURNING {self._JOB_COLS}
+                RETURNING {self._JOB_COLS_J}
                 """,
                 (max(1, limit), worker_id),
             )
