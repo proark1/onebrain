@@ -78,6 +78,7 @@ Set these on both `onebrain` and `onebrain-workers`:
 ONEBRAIN_VECTOR_STORE=pgvector
 ONEBRAIN_ENVIRONMENT=production
 ONEBRAIN_DATABASE_URL=${{Postgres.DATABASE_URL}}
+ONEBRAIN_MIGRATION_DATABASE_URL=${{Postgres.OWNER_DATABASE_URL}}
 ONEBRAIN_MIGRATION_EMBEDDING_DIM=256
 ONEBRAIN_AUTH_SECRET=<strong random secret, at least 32 chars>
 ONEBRAIN_COOKIE_SECURE=true
@@ -100,6 +101,11 @@ existing `chunks.embedding` column. The current Railway database uses
 `ONEBRAIN_RETRIEVAL_MIN_SCORE` filters weak vector matches before they reach the
 LLM. Tune it for the active embedding model after checking answer quality on
 representative customer questions.
+
+`ONEBRAIN_DATABASE_URL` should be the low-privilege app-role URL used by the
+API and workers. `ONEBRAIN_MIGRATION_DATABASE_URL` is optional, but recommended:
+set it to an owner/service-role URL so Alembic can migrate schema without making
+the runtime process a table owner or superuser.
 
 Production-like environments (`ONEBRAIN_ENVIRONMENT=staging` or `production`)
 refuse to start unless `ONEBRAIN_VECTOR_STORE=pgvector`,

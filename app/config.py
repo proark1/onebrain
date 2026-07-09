@@ -59,6 +59,7 @@ class Settings(BaseSettings):
 
     # pgvector — only used when vector_store = "pgvector"
     database_url: str = ""
+    migration_database_url: str = ""
 
     # External customer provisioning through GitHub Actions.
     github_owner: str = ""

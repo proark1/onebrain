@@ -12,6 +12,7 @@ from app.deploy import runtime
 class FakeSettings:
     vector_store: str = "memory"
     database_url: str = ""
+    migration_database_url: str = ""
     rls_enforced: bool = False
     environment: str = "local"
 
@@ -32,8 +33,8 @@ def test_run_migrations_skips_memory_mode(monkeypatch):
 def test_run_migrations_runs_alembic_for_postgres(monkeypatch):
     calls = []
 
-    def fake_run(command, check):
-        calls.append((command, check))
+    def fake_run(command, check, env):
+        calls.append((command, check, env["ONEBRAIN_DATABASE_URL"]))
 
     monkeypatch.setattr(runtime.subprocess, "run", fake_run)
     monkeypatch.setattr(runtime, "enforce_rls_if_needed", lambda settings: None)
@@ -42,7 +43,31 @@ def test_run_migrations_runs_alembic_for_postgres(monkeypatch):
         FakeSettings(vector_store="pgvector", database_url="postgresql://user:pass@host/db")
     )
 
-    assert calls == [([sys.executable, "-m", "alembic", "upgrade", "head"], True)]
+    assert calls == [
+        ([sys.executable, "-m", "alembic", "upgrade", "head"], True, "postgresql://user:pass@host/db")
+    ]
+
+
+def test_run_migrations_uses_migration_database_url_when_present(monkeypatch):
+    calls = []
+
+    def fake_run(command, check, env):
+        calls.append((command, check, env["ONEBRAIN_DATABASE_URL"]))
+
+    monkeypatch.setattr(runtime.subprocess, "run", fake_run)
+    monkeypatch.setattr(runtime, "enforce_rls_if_needed", lambda settings: None)
+
+    runtime.run_migrations_if_needed(
+        FakeSettings(
+            vector_store="pgvector",
+            database_url="postgresql://app:pass@host/db",
+            migration_database_url="postgresql://owner:pass@host/db",
+        )
+    )
+
+    assert calls == [
+        ([sys.executable, "-m", "alembic", "upgrade", "head"], True, "postgresql://owner:pass@host/db")
+    ]
 
 
 def test_run_migrations_requires_database_url_for_postgres():

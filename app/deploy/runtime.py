@@ -47,8 +47,15 @@ def run_migrations_if_needed(settings: Settings | None = None) -> None:
         return
 
     _require_database_url(settings)
+    migration_database_url = _migration_database_url(settings)
     print("Running Alembic migrations before API startup.", flush=True)
-    subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], check=True)
+    migration_env = os.environ.copy()
+    migration_env["ONEBRAIN_DATABASE_URL"] = migration_database_url
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        check=True,
+        env=migration_env,
+    )
     enforce_rls_if_needed(settings)
 
 
@@ -141,6 +148,10 @@ def _require_database_url(settings: Settings) -> str:
     if not database_url:
         raise RuntimeError("ONEBRAIN_DATABASE_URL must be set when ONEBRAIN_VECTOR_STORE=pgvector.")
     return database_url
+
+
+def _migration_database_url(settings: Settings) -> str:
+    return settings.migration_database_url.strip() or _require_database_url(settings)
 
 
 def _float_env(name: str, default: float) -> float:
