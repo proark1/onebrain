@@ -7,6 +7,7 @@ import {
   listPlatformAccounts,
   listPlatformSpaces,
 } from "@/lib/onebrain-client";
+import { MetricStrip, Notice, PageHeader, Panel } from "@/components/admin-ui";
 import type {
   PlatformAccount,
   PlatformSpace,
@@ -218,36 +219,31 @@ export function PrivacyPanel() {
 
   return (
     <div className="privacyWorkspace">
-      <header className="documentsTopbar">
-        <div>
-          <p className="eyebrow">Privacy center</p>
-          <h1>Export and erase account data</h1>
-        </div>
-        <button className="secondaryButton" disabled={loadingAccounts || Boolean(busyAction)} type="button" onClick={() => void loadAccounts()}>
+      <PageHeader
+        actions={(
+          <button className="secondaryButton" disabled={loadingAccounts || Boolean(busyAction)} type="button" onClick={() => void loadAccounts()}>
           {loadingAccounts ? "Loading" : "Refresh"}
-        </button>
-      </header>
+          </button>
+        )}
+        eyebrow="Privacy center"
+        meta={selectedAccount ? <span className="scopePill"><span className="statusDot" />{selectedAccount.name}</span> : null}
+        title="Export and erase account data"
+      />
 
-      {error ? <div className="inlineError">{error}</div> : null}
-      {notice ? <div className="inlineNotice">{notice}</div> : null}
+      {error ? <Notice tone="error">{error}</Notice> : null}
+      {notice ? <Notice tone="success">{notice}</Notice> : null}
 
-      <section className="privacySummary" aria-label="Privacy scope summary">
-        <SummaryStat label="accounts" value={accounts.length} />
-        <SummaryStat label="spaces" value={spaces.length} />
-        <SummaryStat label="scope" value={selectedSpaceId ? "Space" : "Account"} />
-        <SummaryStat label="status" value={busyAction ? "Working" : "Ready"} />
-      </section>
+      <MetricStrip
+        metrics={[
+          { label: "accounts", value: accounts.length },
+          { label: "spaces", value: spaces.length },
+          { label: "scope", value: selectedSpaceId ? "Space" : "Account" },
+          { label: "status", tone: busyAction ? "warning" : "success", value: busyAction ? "Working" : "Ready" },
+        ]}
+      />
 
       <div className="privacyGrid">
-        <section className="privacyPanel" aria-labelledby="privacyScopeTitle">
-          <div className="panelHead">
-            <div>
-              <p className="eyebrow">Scope</p>
-              <h2 id="privacyScopeTitle">Data boundary</h2>
-            </div>
-            <span>{selectedAccount?.status || "none"}</span>
-          </div>
-
+        <Panel count={selectedAccount?.status || "none"} eyebrow="Scope" title="Data boundary">
           <label className="field">
             <span className="fieldLabel">Account</span>
             <select
@@ -293,16 +289,15 @@ export function PrivacyPanel() {
           <button className="primaryButton" disabled={!selectedAccountId || Boolean(busyAction)} type="button" onClick={() => void onExport()}>
             {busyAction === "export" ? "Exporting" : "Export JSON"}
           </button>
-        </section>
+        </Panel>
 
-        <section className="privacyPanel privacyDanger" aria-labelledby="privacyEraseTitle">
+        <section className="adminPanel privacyDanger" aria-labelledby="privacyEraseTitle">
           <div className="panelHead">
             <div>
               <p className="eyebrow">Erasure</p>
               <h2 id="privacyEraseTitle">Delete selected data</h2>
             </div>
           </div>
-
           <form className="privacyForm" onSubmit={(event) => void onErase(event)}>
             <label className="field">
               <span className="fieldLabel">Confirm account id</span>

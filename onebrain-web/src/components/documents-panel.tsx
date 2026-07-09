@@ -7,6 +7,7 @@ import {
   listPendingDocuments,
   uploadDocument,
 } from "@/lib/onebrain-client";
+import { MetricStrip, Notice, PageHeader, Panel } from "@/components/admin-ui";
 import { useWorkspace } from "@/components/workspace-provider";
 import type { DocumentSummary, PendingDocument } from "@/lib/onebrain-types";
 
@@ -100,12 +101,36 @@ export function DocumentsPanel({
   const [approvingId, setApprovingId] = useState("");
   const [error, setError] = useState(initialError);
   const [notice, setNotice] = useState("");
+  const [query, setQuery] = useState("");
+  const [filterClassification, setFilterClassification] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
 
   const documentStats = useMemo(() => {
     const chunks = documents.reduce((total, document) => total + document.chunks, 0);
     const piiFindings = documents.reduce((total, document) => total + document.pii_findings, 0);
     return { chunks, piiFindings };
   }, [documents]);
+  const visibleDocuments = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return documents.filter((document) => {
+      if (filterClassification && document.classification !== filterClassification) {
+        return false;
+      }
+      if (filterStatus && document.status !== filterStatus) {
+        return false;
+      }
+      if (!normalizedQuery) {
+        return true;
+      }
+      return [
+        document.title,
+        document.classification,
+        document.category,
+        document.location,
+        document.status,
+      ].some((value) => value.toLowerCase().includes(normalizedQuery));
+    });
+  }, [documents, filterClassification, filterStatus, query]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -209,69 +234,71 @@ export function DocumentsPanel({
 
   return (
     <div className="documentsWorkspace">
-      <header className="documentsTopbar">
-        <div>
-          <p className="eyebrow">Knowledge base</p>
-          <h1>Documents</h1>
-        </div>
-        <button className="secondaryButton" disabled={loading} type="button" onClick={() => void refresh()}>
+      <PageHeader
+        actions={(
+          <button className="secondaryButton" disabled={loading} type="button" onClick={() => void refresh()}>
           {loading ? "Refreshing" : "Refresh"}
-        </button>
-      </header>
+          </button>
+        )}
+        eyebrow="Knowledge base"
+        meta={<span className="scopePill"><span className="statusDot" />Workspace scoped</span>}
+        title="Documents"
+      />
 
-      {error ? <div className="inlineError">{error}</div> : null}
-      {notice ? <div className="inlineNotice">{notice}</div> : null}
+      {error ? <Notice tone="error">{error}</Notice> : null}
+      {notice ? <Notice tone="success">{notice}</Notice> : null}
 
-      <section className="documentStats" aria-label="Document summary">
-        <div>
-          <strong>{documents.length}</strong>
-          <span>visible</span>
-        </div>
-        <div>
-          <strong>{documentStats.chunks}</strong>
-          <span>chunks</span>
-        </div>
-        <div>
-          <strong>{pending.length}</strong>
-          <span>pending</span>
-        </div>
-        <div>
-          <strong>{documentStats.piiFindings}</strong>
-          <span>PII flags</span>
-        </div>
-      </section>
+      <MetricStrip
+        metrics={[
+          { label: "visible", value: documents.length },
+          { label: "chunks", value: documentStats.chunks },
+          { label: "pending", tone: pending.length ? "warning" : undefined, value: pending.length },
+          { label: "PII flags", tone: documentStats.piiFindings ? "danger" : undefined, value: documentStats.piiFindings },
+        ]}
+      />
 
       <div className="documentsGrid">
-        <section className="documentLibrary" aria-labelledby="documentLibraryTitle">
-          <div className="panelHead">
-            <div>
-              <p className="eyebrow">Approved knowledge</p>
-              <h2 id="documentLibraryTitle">Visible documents</h2>
-            </div>
-            <span>{documents.length}</span>
+        <Panel count={visibleDocuments.length} eyebrow="Approved knowledge" title="Visible documents">
+          <div className="filterBar" aria-label="Document filters">
+            <label className="field">
+              <span className="fieldLabel">Search</span>
+              <input className="input" value={query} onChange={(event) => setQuery(event.target.value)} />
+            </label>
+            <label className="field">
+              <span className="fieldLabel">Classification</span>
+              <select className="select" value={filterClassification} onChange={(event) => setFilterClassification(event.target.value)}>
+                <option value="">All classifications</option>
+                {CLASSIFICATION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span className="fieldLabel">Status</span>
+              <select className="select" value={filterStatus} onChange={(event) => setFilterStatus(event.target.value)}>
+                <option value="">All statuses</option>
+                <option value="approved">Approved</option>
+                <option value="pending">Pending</option>
+                <option value="quarantined">Quarantined</option>
+              </select>
+            </label>
           </div>
 
           <div className="documentList">
-            {documents.length === 0 ? (
+            {visibleDocuments.length === 0 ? (
               <div className="emptyPanel">
-                <h3>No documents visible</h3>
-                <p>Upload a document or switch to a workspace with approved knowledge.</p>
+                <h3>No matching documents</h3>
+                <p>Adjust the filters, upload a document, or switch to a workspace with approved knowledge.</p>
               </div>
             ) : null}
-            {documents.map((document) => (
+            {visibleDocuments.map((document) => (
               <DocumentRow document={document} key={document.doc_id} />
             ))}
           </div>
-        </section>
+        </Panel>
 
         <aside className="documentSide">
-          <section className="uploadPanel" aria-labelledby="uploadTitle">
-            <div className="panelHead">
-              <div>
-                <p className="eyebrow">Ingest</p>
-                <h2 id="uploadTitle">Upload document</h2>
-              </div>
-            </div>
+          <Panel eyebrow="Ingest" title="Upload document">
             <form className="uploadForm" onSubmit={(event) => void onSubmit(event)}>
               <label
                 className={selectedFile ? "dropzone hasFile" : "dropzone"}
@@ -317,17 +344,10 @@ export function DocumentsPanel({
                 {uploading ? "Uploading" : "Upload"}
               </button>
             </form>
-          </section>
+          </Panel>
 
           {canReview ? (
-            <section className="reviewPanel" aria-labelledby="reviewTitle">
-              <div className="panelHead">
-                <div>
-                  <p className="eyebrow">Review</p>
-                  <h2 id="reviewTitle">Pending approval</h2>
-                </div>
-                <span>{pending.length}</span>
-              </div>
+            <Panel count={pending.length} eyebrow="Review" title="Pending approval">
               <div className="pendingList">
                 {pending.length === 0 ? <p className="mutedLine">No documents waiting for review.</p> : null}
                 {pending.map((document) => (
@@ -339,7 +359,7 @@ export function DocumentsPanel({
                   />
                 ))}
               </div>
-            </section>
+            </Panel>
           ) : null}
         </aside>
       </div>

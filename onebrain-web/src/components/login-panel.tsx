@@ -48,12 +48,13 @@ export function LoginPanel({ nextPath }: LoginPanelProps) {
     <main className="stateScreen">
       <section className="statePanel loginPanel">
         <div className="brand">
-          <span className="brandMark">one</span>
-          <span>brain</span>
+          <span className="brandMark">AD</span>
+          <span>OneBrain</span>
         </div>
         <div className="loginHeading">
+          <p className="eyebrow">Assad Dar console</p>
           <h1>Sign in</h1>
-          <p>Use your OneBrain admin credentials to open the console.</p>
+          <p>Use your admin credentials to open the operational console.</p>
         </div>
         <form className="loginForm" onSubmit={submitLogin}>
           <label className="field">

@@ -11,6 +11,7 @@ import {
   listPlatformAudit,
   listPlatformSpaces,
 } from "@/lib/onebrain-client";
+import { MetricStrip, Notice, PageHeader, Panel, Tabs } from "@/components/admin-ui";
 import type {
   PlatformAccessCheckResult,
   PlatformAccount,
@@ -57,6 +58,7 @@ const PURPOSES = [
 ];
 
 type BusyAction = "accounts" | "details" | "createAccount" | "createSpace" | "installApp" | "accessCheck" | "";
+type SpaceTab = "overview" | "spaces" | "apps" | "policy" | "audit";
 
 function labelFor(value: string): string {
   return value.replace(/_/g, " ");
@@ -98,6 +100,7 @@ export function SpacesPanel() {
   const [checkSpaceId, setCheckSpaceId] = useState("");
   const [checkPurpose, setCheckPurpose] = useState("assistant_context");
   const [accessResult, setAccessResult] = useState<PlatformAccessCheckResult | null>(null);
+  const [activeTab, setActiveTab] = useState<SpaceTab>("overview");
   const [busyAction, setBusyAction] = useState<BusyAction>("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -342,36 +345,31 @@ export function SpacesPanel() {
 
   return (
     <div className="spacesWorkspace">
-      <header className="documentsTopbar">
-        <div>
-          <p className="eyebrow">Platform admin</p>
-          <h1>Spaces</h1>
-        </div>
-        <button className="secondaryButton" disabled={Boolean(busyAction)} type="button" onClick={() => void loadAccounts()}>
+      <PageHeader
+        actions={(
+          <button className="secondaryButton" disabled={Boolean(busyAction)} type="button" onClick={() => void loadAccounts()}>
           {loadingAccounts || loadingDetails ? "Refreshing" : "Refresh"}
-        </button>
-      </header>
+          </button>
+        )}
+        eyebrow="Platform admin"
+        meta={selectedAccount ? <span className="scopePill"><span className="statusDot" />{selectedAccount.name}</span> : null}
+        title="Spaces"
+      />
 
-      {error ? <div className="inlineError">{error}</div> : null}
-      {notice ? <div className="inlineNotice">{notice}</div> : null}
+      {error ? <Notice tone="error">{error}</Notice> : null}
+      {notice ? <Notice tone="success">{notice}</Notice> : null}
 
-      <section className="privacySummary" aria-label="Platform summary">
-        <SummaryStat label="accounts" value={accounts.length} />
-        <SummaryStat label="spaces" value={spaces.length} />
-        <SummaryStat label="apps" value={apps.length} />
-        <SummaryStat label="audit" value={audit.length} />
-      </section>
+      <MetricStrip
+        metrics={[
+          { label: "accounts", value: accounts.length },
+          { label: "spaces", value: spaces.length },
+          { label: "apps", value: apps.length },
+          { label: "audit", value: audit.length },
+        ]}
+      />
 
       <div className="spacesGrid">
-        <aside className="accountRail" aria-labelledby="accountRailTitle">
-          <div className="panelHead">
-            <div>
-              <p className="eyebrow">Accounts</p>
-              <h2 id="accountRailTitle">Platform tenants</h2>
-            </div>
-            <span>{accounts.length}</span>
-          </div>
-
+        <Panel count={accounts.length} eyebrow="Accounts" title="Platform tenants">
           <div className="accountList">
             {accounts.length === 0 ? (
               <div className="emptyPanel">
@@ -409,56 +407,77 @@ export function SpacesPanel() {
               {busyAction === "createAccount" ? "Creating" : "Create account"}
             </button>
           </form>
-        </aside>
+        </Panel>
 
         <section className="spacesDetail" aria-label="Selected account details">
-          <section className="spacesPanel" aria-labelledby="spacesTitle">
-            <div className="panelHead">
-              <div>
-                <p className="eyebrow">Selected account</p>
-                <h2 id="spacesTitle">{selectedAccount?.name || "No account selected"}</h2>
-              </div>
-              <span>{selectedAccount?.status || "none"}</span>
-            </div>
+          <Tabs
+            active={activeTab}
+            items={[
+              { id: "overview", label: "Overview" },
+              { id: "spaces", label: "Spaces", meta: spaces.length },
+              { id: "apps", label: "Apps", meta: apps.length },
+              { id: "policy", label: "Policy" },
+              { id: "audit", label: "Audit", meta: audit.length },
+            ]}
+            label="Account sections"
+            onChange={setActiveTab}
+          />
 
-            <div className="spaceList">
-              {spaces.length === 0 ? (
-                <div className="emptyPanel">
-                  <h3>No spaces yet</h3>
-                  <p>Create a space before installing apps or checking access.</p>
-                </div>
-              ) : null}
-              {spaces.map((space) => (
-                <article className="spaceRow" key={space.id}>
-                  <div>
-                    <strong>{space.name}</strong>
-                    <span>{labelFor(space.kind)} / {space.status}</span>
-                  </div>
-                  <small>{space.id}</small>
-                </article>
-              ))}
-            </div>
-
-            <form className="spacesForm inlineForm" onSubmit={(event) => void onCreateSpace(event)}>
-              <SelectField label="Space kind" options={SPACE_KINDS} value={spaceKind} onChange={setSpaceKind} />
-              <TextField label="Name" value={spaceName} onChange={setSpaceName} />
-              <TextField label="Optional id" value={spaceId} onChange={setSpaceId} />
-              <button className="primaryButton" disabled={!selectedAccountId || !spaceName.trim() || Boolean(busyAction)} type="submit">
-                {busyAction === "createSpace" ? "Creating" : "Create space"}
-              </button>
-            </form>
-          </section>
-
-          <div className="spacesTwoColumn">
-            <section className="spacesPanel" aria-labelledby="appsTitle">
-              <div className="panelHead">
+          {activeTab === "overview" ? (
+            <Panel count={selectedAccount?.status || "none"} eyebrow="Selected account" title={selectedAccount?.name || "No account selected"}>
+              <div className="overviewGrid">
                 <div>
-                  <p className="eyebrow">Apps</p>
-                  <h2 id="appsTitle">Installations</h2>
+                  <strong>{spaces.length}</strong>
+                  <span>Spaces</span>
                 </div>
-                <span>{apps.length}</span>
+                <div>
+                  <strong>{apps.length}</strong>
+                  <span>Apps</span>
+                </div>
+                <div>
+                  <strong>{audit.length}</strong>
+                  <span>Audit events</span>
+                </div>
+              </div>
+              <p className="operatorMuted">
+                Use the tabs to manage spaces, app access, policy checks, and account audit events.
+              </p>
+            </Panel>
+          ) : null}
+
+          {activeTab === "spaces" ? (
+            <Panel count={spaces.length} eyebrow="Selected account" title={selectedAccount?.name || "No account selected"}>
+              <div className="spaceList">
+                {spaces.length === 0 ? (
+                  <div className="emptyPanel">
+                    <h3>No spaces yet</h3>
+                    <p>Create a space before installing apps or checking access.</p>
+                  </div>
+                ) : null}
+                {spaces.map((space) => (
+                  <article className="spaceRow" key={space.id}>
+                    <div>
+                      <strong>{space.name}</strong>
+                      <span>{labelFor(space.kind)} / {space.status}</span>
+                    </div>
+                    <small>{space.id}</small>
+                  </article>
+                ))}
               </div>
 
+              <form className="spacesForm inlineForm" onSubmit={(event) => void onCreateSpace(event)}>
+                <SelectField label="Space kind" options={SPACE_KINDS} value={spaceKind} onChange={setSpaceKind} />
+                <TextField label="Name" value={spaceName} onChange={setSpaceName} />
+                <TextField label="Optional id" value={spaceId} onChange={setSpaceId} />
+                <button className="primaryButton" disabled={!selectedAccountId || !spaceName.trim() || Boolean(busyAction)} type="submit">
+                  {busyAction === "createSpace" ? "Creating" : "Create space"}
+                </button>
+              </form>
+            </Panel>
+          ) : null}
+
+          {activeTab === "apps" ? (
+            <Panel count={apps.length} eyebrow="Apps" title="Installations">
               <div className="appList">
                 {apps.length === 0 ? <p className="mutedLine">No apps installed for this account.</p> : null}
                 {apps.map((app) => (
@@ -504,15 +523,11 @@ export function SpacesPanel() {
                   {busyAction === "installApp" ? "Installing" : "Install app"}
                 </button>
               </form>
-            </section>
+            </Panel>
+          ) : null}
 
-            <section className="spacesPanel" aria-labelledby="accessTitle">
-              <div className="panelHead">
-                <div>
-                  <p className="eyebrow">Policy</p>
-                  <h2 id="accessTitle">Access check</h2>
-                </div>
-              </div>
+          {activeTab === "policy" ? (
+            <Panel eyebrow="Policy" title="Access check">
               <form className="spacesForm" onSubmit={(event) => void onAccessCheck(event)}>
                 <SelectField
                   label="App"
@@ -542,17 +557,11 @@ export function SpacesPanel() {
                   <span>{labelFor(accessResult.reason)}</span>
                 </div>
               ) : null}
-            </section>
-          </div>
+            </Panel>
+          ) : null}
 
-          <section className="spacesPanel" aria-labelledby="auditTitle">
-            <div className="panelHead">
-              <div>
-                <p className="eyebrow">Audit</p>
-                <h2 id="auditTitle">Account events</h2>
-              </div>
-              <span>{audit.length}</span>
-            </div>
+          {activeTab === "audit" ? (
+            <Panel count={audit.length} eyebrow="Audit" title="Account events">
             <div className="auditList">
               {audit.length === 0 ? <p className="mutedLine">No audit events for this account.</p> : null}
               {audit.map((event) => (
@@ -570,7 +579,8 @@ export function SpacesPanel() {
                 </article>
               ))}
             </div>
-          </section>
+            </Panel>
+          ) : null}
         </section>
       </div>
     </div>

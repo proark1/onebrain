@@ -7,6 +7,7 @@ import {
   getConversation,
   listConversations,
 } from "@/lib/onebrain-client";
+import { Notice, PageHeader } from "@/components/admin-ui";
 import { useWorkspace } from "@/components/workspace-provider";
 import type {
   AnswerMeta,
@@ -290,23 +291,19 @@ export function ChatPanel({ initialConversations, session }: ChatPanelProps) {
       />
 
       <section className="chatMain">
-        <header className="chatTopbar">
-          <div>
-            <p className="eyebrow">OneBrain chat</p>
-            <h1>{selectedConversation?.title || "New conversation"}</h1>
-          </div>
-          <div className="scopePill">
-            <span className="statusDot" />
-            {scopeLabel}
-          </div>
-        </header>
+        <PageHeader
+          eyebrow="OneBrain chat"
+          meta={<span className="scopePill"><span className="statusDot" />{scopeLabel}</span>}
+          title={selectedConversation?.title || "New conversation"}
+        />
 
-        {error ? <div className="inlineError">{error}</div> : null}
+        {error ? <Notice tone="error">{error}</Notice> : null}
 
         <MessageThread
           busy={busy}
           loading={loadingConversation}
           messages={messages}
+          onPrompt={setDraft}
           threadRef={threadRef}
         />
 
@@ -377,11 +374,13 @@ function MessageThread({
   busy,
   loading,
   messages,
+  onPrompt,
   threadRef,
 }: {
   busy: boolean;
   loading: boolean;
   messages: UiMessage[];
+  onPrompt: (prompt: string) => void;
   threadRef: RefObject<HTMLDivElement | null>;
 }) {
   if (loading) {
@@ -390,7 +389,7 @@ function MessageThread({
 
   return (
     <div className="messageThread" ref={threadRef}>
-      {messages.length === 0 ? <EmptyChat /> : null}
+      {messages.length === 0 ? <EmptyChat onPrompt={onPrompt} /> : null}
       {messages.map((message) => (
         <article className={`messageRow ${message.role}`} key={message.id}>
           <div className="messageBubble">
@@ -404,16 +403,23 @@ function MessageThread({
   );
 }
 
-function EmptyChat() {
+function EmptyChat({ onPrompt }: { onPrompt: (prompt: string) => void }) {
+  const prompts = [
+    "What are the opening hours?",
+    "How do I handle a refund?",
+    "What changed in the latest policy?",
+  ];
   return (
     <div className="emptyState">
       <div className="emptyMark">ob</div>
       <h2>Ask from approved knowledge</h2>
       <p>Answers are generated only from documents your current role can access.</p>
       <div className="promptGrid">
-        <span>What are the opening hours?</span>
-        <span>How do I handle a refund?</span>
-        <span>What changed in the latest policy?</span>
+        {prompts.map((prompt) => (
+          <button key={prompt} type="button" onClick={() => onPrompt(prompt)}>
+            {prompt}
+          </button>
+        ))}
       </div>
     </div>
   );
