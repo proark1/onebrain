@@ -112,6 +112,34 @@ def _brand_theme_migration_module():
     return module
 
 
+def _control_plane_migration_module():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "versions"
+        / "0005_control_plane_postgres.py"
+    )
+    spec = importlib.util.spec_from_file_location("control_plane_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+def _provisioning_runs_migration_module():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "versions"
+        / "0006_provisioning_runs.py"
+    )
+    spec = importlib.util.spec_from_file_location("provisioning_runs_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_validate_postgres_schema_requires_alembic_version_table():
     conn = FakeConnection(FakeCursor(missing_version_table=True))
 
@@ -176,9 +204,32 @@ def test_service_key_lifecycle_migration_tracks_expected_head():
 def test_brand_theme_migration_tracks_expected_head():
     migration = _brand_theme_migration_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision == "0004_brand_theme_provisioning"
     assert migration.down_revision == "0003_service_key_lifecycle"
     assert {"platform_brand_themes"} == set(migration.BRAND_THEME_TABLES)
+
+
+def test_control_plane_migration_tracks_expected_head():
+    migration = _control_plane_migration_module()
+
+    assert migration.revision == "0005_control_plane_postgres"
+    assert migration.down_revision == "0004_brand_theme_provisioning"
+    assert {
+        "control_deployments",
+        "control_deployment_modules",
+        "control_release_manifests",
+        "control_backups",
+        "control_health_checks",
+        "control_rollouts",
+    } == set(migration.CONTROL_PLANE_TABLES)
+
+
+def test_provisioning_runs_migration_tracks_expected_head():
+    migration = _provisioning_runs_migration_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.down_revision == "0005_control_plane_postgres"
+    assert {"provisioning_runs", "one_time_secret_envelopes"} == set(migration.PROVISIONING_TABLES)
 
 
 def test_migration_embedding_dim_env(monkeypatch):
