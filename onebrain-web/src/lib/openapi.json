@@ -2362,6 +2362,72 @@
         "title": "OperatorAccountOut",
         "type": "object"
       },
+      "OperatorAlertOut": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "signal": {
+            "title": "Signal",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "severity",
+          "title",
+          "detail",
+          "action",
+          "signal"
+        ],
+        "title": "OperatorAlertOut",
+        "type": "object"
+      },
+      "OperatorApiOut": {
+        "properties": {
+          "errors_5xx": {
+            "title": "Errors 5Xx",
+            "type": "integer"
+          },
+          "last_error_at": {
+            "default": "",
+            "title": "Last Error At",
+            "type": "string"
+          },
+          "last_error_route": {
+            "default": "",
+            "title": "Last Error Route",
+            "type": "string"
+          },
+          "last_error_status": {
+            "default": 0,
+            "title": "Last Error Status",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "errors_5xx"
+        ],
+        "title": "OperatorApiOut",
+        "type": "object"
+      },
       "OperatorAppOut": {
         "properties": {
           "allowed_purposes": {
@@ -2402,6 +2468,39 @@
           "app_id"
         ],
         "title": "OperatorAppOut",
+        "type": "object"
+      },
+      "OperatorAuthOut": {
+        "properties": {
+          "last_failure_at": {
+            "default": "",
+            "title": "Last Failure At",
+            "type": "string"
+          },
+          "lockouts": {
+            "title": "Lockouts",
+            "type": "integer"
+          },
+          "login_failures": {
+            "title": "Login Failures",
+            "type": "integer"
+          },
+          "service_key_failures": {
+            "title": "Service Key Failures",
+            "type": "integer"
+          },
+          "total_failures": {
+            "title": "Total Failures",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total_failures",
+          "login_failures",
+          "service_key_failures",
+          "lockouts"
+        ],
+        "title": "OperatorAuthOut",
         "type": "object"
       },
       "OperatorJobFailureOut": {
@@ -2503,6 +2602,19 @@
       },
       "OperatorObservabilityOut": {
         "properties": {
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/OperatorAlertOut"
+            },
+            "title": "Alerts",
+            "type": "array"
+          },
+          "api": {
+            "$ref": "#/components/schemas/OperatorApiOut"
+          },
+          "auth": {
+            "$ref": "#/components/schemas/OperatorAuthOut"
+          },
           "generated_at": {
             "title": "Generated At",
             "type": "string"
@@ -2516,11 +2628,17 @@
           "runtime": {
             "$ref": "#/components/schemas/OperatorRuntimeOut"
           },
+          "security": {
+            "$ref": "#/components/schemas/OperatorSecurityOut"
+          },
           "service_keys": {
             "$ref": "#/components/schemas/OperatorServiceKeysOut"
           },
           "storage": {
             "$ref": "#/components/schemas/OperatorStorageOut"
+          },
+          "worker": {
+            "$ref": "#/components/schemas/OperatorWorkerOut"
           }
         },
         "required": [
@@ -2529,7 +2647,11 @@
           "retrieval",
           "storage",
           "service_keys",
-          "jobs"
+          "jobs",
+          "security",
+          "worker",
+          "auth",
+          "api"
         ],
         "title": "OperatorObservabilityOut",
         "type": "object"
@@ -2578,6 +2700,49 @@
           "async_ingestion"
         ],
         "title": "OperatorRuntimeOut",
+        "type": "object"
+      },
+      "OperatorSecurityOut": {
+        "properties": {
+          "cookie_secure": {
+            "title": "Cookie Secure",
+            "type": "boolean"
+          },
+          "database_url_configured": {
+            "title": "Database Url Configured",
+            "type": "boolean"
+          },
+          "environment": {
+            "title": "Environment",
+            "type": "string"
+          },
+          "pgvector_required": {
+            "title": "Pgvector Required",
+            "type": "boolean"
+          },
+          "pii_phase": {
+            "title": "Pii Phase",
+            "type": "string"
+          },
+          "production_like": {
+            "title": "Production Like",
+            "type": "boolean"
+          },
+          "rls_enforced": {
+            "title": "Rls Enforced",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "environment",
+          "production_like",
+          "pgvector_required",
+          "database_url_configured",
+          "rls_enforced",
+          "cookie_secure",
+          "pii_phase"
+        ],
+        "title": "OperatorSecurityOut",
         "type": "object"
       },
       "OperatorServiceKeysOut": {
@@ -2647,6 +2812,39 @@
           "intake_records"
         ],
         "title": "OperatorStorageOut",
+        "type": "object"
+      },
+      "OperatorWorkerOut": {
+        "properties": {
+          "expected": {
+            "title": "Expected",
+            "type": "boolean"
+          },
+          "failed_jobs": {
+            "title": "Failed Jobs",
+            "type": "integer"
+          },
+          "pending_jobs": {
+            "title": "Pending Jobs",
+            "type": "integer"
+          },
+          "running_jobs": {
+            "title": "Running Jobs",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected",
+          "pending_jobs",
+          "running_jobs",
+          "failed_jobs",
+          "status"
+        ],
+        "title": "OperatorWorkerOut",
         "type": "object"
       },
       "OrganizationIn": {
@@ -3687,6 +3885,11 @@
           "requested_by": {
             "title": "Requested By",
             "type": "string"
+          },
+          "result_payload": {
+            "additionalProperties": true,
+            "title": "Result Payload",
+            "type": "object"
           },
           "retry_of_run_id": {
             "default": "",

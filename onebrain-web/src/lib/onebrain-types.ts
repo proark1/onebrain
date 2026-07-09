@@ -386,6 +386,84 @@ export type OperatorCustomer = {
   readiness: string;
 };
 
+export type OperatorObservability = {
+  generated_at: string;
+  runtime: {
+    vector_store: string;
+    llm_provider: string;
+    embeddings_provider: string;
+    async_ingestion: boolean;
+  };
+  retrieval: {
+    top_k: number;
+    min_score: number;
+  };
+  storage: {
+    chunks: number;
+    intake_records: number;
+  };
+  service_keys: {
+    total: number;
+    active: number;
+    revoked: number;
+  };
+  jobs: {
+    total: number;
+    by_status: Record<string, number>;
+    by_type: Record<string, number>;
+    recent_failures: Array<{
+      id: string;
+      type: string;
+      tenant_id: string;
+      account_id: string;
+      space_id: string;
+      attempts: number;
+      max_attempts: number;
+      error: string;
+      created_at: string;
+      updated_at: string;
+      completed_at: string;
+    }>;
+  };
+  security: {
+    environment: string;
+    production_like: boolean;
+    pgvector_required: boolean;
+    database_url_configured: boolean;
+    rls_enforced: boolean;
+    cookie_secure: boolean;
+    pii_phase: string;
+  };
+  worker: {
+    expected: boolean;
+    pending_jobs: number;
+    running_jobs: number;
+    failed_jobs: number;
+    status: string;
+  };
+  auth: {
+    total_failures: number;
+    login_failures: number;
+    service_key_failures: number;
+    lockouts: number;
+    last_failure_at: string;
+  };
+  api: {
+    errors_5xx: number;
+    last_error_at: string;
+    last_error_route: string;
+    last_error_status: number;
+  };
+  alerts: Array<{
+    id: string;
+    severity: string;
+    title: string;
+    detail: string;
+    action: string;
+    signal: string;
+  }>;
+};
+
 export type CreateOperatorReleaseInput = {
   version: string;
   git_sha: string;

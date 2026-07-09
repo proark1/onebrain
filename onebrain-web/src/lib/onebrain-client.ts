@@ -17,6 +17,7 @@ import type {
   OperatorDeployment,
   OperatorHealth,
   OperatorModule,
+  OperatorObservability,
   OperatorRelease,
   OperatorRollout,
   OperatorRolloutStatusInput,
@@ -237,6 +238,10 @@ export function readBootstrapSecret(runId: string): Promise<BootstrapSecretResul
 
 export function listOperatorCustomers(): Promise<OperatorCustomer[]> {
   return requestJson<OperatorCustomer[]>("/operator/customers");
+}
+
+export function getOperatorObservability(): Promise<OperatorObservability> {
+  return requestJson<OperatorObservability>("/operator/observability");
 }
 
 export function listOperatorDeployments(): Promise<OperatorDeployment[]> {

@@ -9,6 +9,7 @@ from app.auth.principal import SESSION_COOKIE
 from app.auth.tokens import make_token
 from app.config import get_settings
 from app.deps import get_login_throttle, get_user_store
+from app.monitoring import record_auth_failure
 from app.schemas import LoginRequest
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -23,6 +24,7 @@ def login(body: LoginRequest, response: Response):
     # Lock out repeated failures for this account before touching the password.
     wait = throttle.retry_after(key)
     if wait > 0:
+        record_auth_failure("login_locked")
         raise HTTPException(
             status_code=429, detail="Too many failed attempts. Please wait and try again.",
             headers={"Retry-After": str(wait)},
@@ -35,6 +37,7 @@ def login(body: LoginRequest, response: Response):
     ok = verify_password(body.password, user.password_hash if user else DUMMY_HASH)
     if not user or user.status != "active" or not ok:
         throttle.record_failure(key)
+        record_auth_failure("login_invalid")
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     throttle.record_success(key)
