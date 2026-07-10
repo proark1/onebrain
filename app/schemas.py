@@ -218,6 +218,11 @@ class ServiceCapabilitiesResponse(BaseModel):
     scopes: list[str] = Field(default_factory=list)
     space_ids: list[str] = Field(default_factory=list)
     purposes: list[str] = Field(default_factory=list)
+    # Assistant contract vocabulary this deployment accepts, so callers can verify
+    # write-compatibility up front instead of discovering drift via 422s.
+    contract_version: str = ""
+    record_types: list[str] = Field(default_factory=list)
+    intents: list[str] = Field(default_factory=list)
 
 
 class BrandThemeOut(BaseModel):

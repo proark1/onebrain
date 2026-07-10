@@ -171,6 +171,10 @@ def _rls_admin_role_module():
     return _load_migration_module("0009_rls_admin_role.py", "rls_admin_role_migration")
 
 
+def _append_only_audit_module():
+    return _load_migration_module("0010_append_only_audit.py", "append_only_audit_migration")
+
+
 def test_validate_postgres_schema_requires_alembic_version_table():
     conn = FakeConnection(FakeCursor(missing_version_table=True))
 
@@ -290,15 +294,48 @@ def test_rls_hardening_migration_structure():
     assert "platform_audit_events" in migration.ACCOUNT_TABLES
 
 
-def test_rls_admin_role_migration_is_head():
+def test_rls_admin_role_migration_structure():
     migration = _rls_admin_role_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
-    assert len(migration.revision) <= 32
+    assert migration.revision == "0009_rls_admin_role"
     assert migration.down_revision == "0008_rls_hardening"
     # The bypass no longer reads a session GUC; it is bound to the role identity.
     assert "app.onebrain_admin" not in migration._ROLE_ADMIN_FN
     assert "pg_has_role" in migration._ROLE_ADMIN_FN
+
+
+def test_append_only_audit_migration_structure():
+    migration = _append_only_audit_module()
+
+    assert migration.revision == "0010_append_only_audit"
+    assert migration.down_revision == "0009_rls_admin_role"
+    # The audit table is made immutable to the app: UPDATE/DELETE/TRUNCATE raise.
+    assert "append-only" in migration._FORBID_FN
+    assert "restrict_violation" in migration._FORBID_FN
+
+
+def _assistant_workday_contract_module():
+    return _load_migration_module(
+        "0011_assistant_workday_contract.py", "assistant_workday_contract_migration"
+    )
+
+
+def test_assistant_workday_contract_migration_is_head():
+    migration = _assistant_workday_contract_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert len(migration.revision) <= 32
+    assert migration.down_revision == "0010_append_only_audit"
+    # The backfill targets only rows holding exactly the pre-Phase-4 full contract,
+    # so deliberately narrowed keys/installations keep their narrow grants.
+    assert "assistant_workday" not in migration._OLD_FULL_PURPOSES
+    assert migration._NEW_PURPOSE == "assistant_workday"
+    assert "array_agg(p ORDER BY p)" in migration._add_purpose_sql(
+        "platform_app_installations", "allowed_purposes"
+    )
+    # FORCE RLS on platform_app_installations would silently skip the backfill under
+    # the app role, so the migration must fail closed instead.
+    assert "_onebrain_rls_admin" in migration._REQUIRE_RLS_ADMIN
 
 
 def test_migration_embedding_dim_env(monkeypatch):

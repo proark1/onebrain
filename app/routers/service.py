@@ -343,6 +343,12 @@ def _record_key_audit(action: str, principal: Principal, key: ServiceKey, extra:
 # --- Service data surface (service-key auth) -----------------------------
 @service_router.get("/capabilities", response_model=ServiceCapabilitiesResponse)
 def capabilities(principal: Principal = Depends(resolve_service_principal)):
+    from app.assistant.contracts import (
+        ASSISTANT_CONTRACT_VERSION,
+        ASSISTANT_INTENTS,
+        ASSISTANT_RECORD_TYPES,
+    )
+
     return ServiceCapabilitiesResponse(
         tenant_id=principal.tenant_id,
         account_id=principal.account_id,
@@ -350,6 +356,9 @@ def capabilities(principal: Principal = Depends(resolve_service_principal)):
         scopes=sorted(principal.scopes),
         space_ids=sorted(principal.space_ids or []),
         purposes=sorted(principal.purposes or []),
+        contract_version=ASSISTANT_CONTRACT_VERSION,
+        record_types=sorted(ASSISTANT_RECORD_TYPES),
+        intents=sorted(ASSISTANT_INTENTS),
     )
 
 
