@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -268,7 +269,7 @@ def test_operator_endpoints_expose_latest_backup_and_health(monkeypatch):
 def test_operator_can_list_and_revoke_customer_integration_keys(monkeypatch):
     platform = MemoryPlatformStore()
     keys = MemoryServiceKeyStore()
-    platform.create_account(Account(id="acme", kind="organization", name="Acme"))
+    platform.create_account(Account(id="acme", kind="organization", name="Acme", owner_user_id="admin@onebrain"))
     keys.create(ServiceKey(
         id="key_comm",
         key_hash=hash_secret("secret"),
@@ -303,6 +304,31 @@ def test_operator_can_list_and_revoke_customer_integration_keys(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         operator_router.list_account_service_keys("missing", principal=_admin())
     assert exc.value.status_code == 404
+
+
+def test_operator_service_keys_reject_cross_account_admin(monkeypatch):
+    """An admin who neither owns nor administers the account cannot list or revoke
+    its service keys — same 404 as a missing account, so it can't be enumerated."""
+    platform = MemoryPlatformStore()
+    keys = MemoryServiceKeyStore()
+    platform.create_account(Account(id="acme", kind="organization", name="Acme", owner_user_id="admin@onebrain"))
+    keys.create(ServiceKey(
+        id="key_comm", key_hash=hash_secret("secret"), tenant_id="acme",
+        scopes=(SCOPE_READ,), account_id="acme", app_id="communication",
+    ))
+    monkeypatch.setattr(operator_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(operator_router, "get_service_key_store", lambda: keys)
+    outsider = replace(_admin(), user_id="outsider@onebrain")
+
+    with pytest.raises(HTTPException) as listing:
+        operator_router.list_account_service_keys("acme", principal=outsider)
+    assert listing.value.status_code == 404
+
+    with pytest.raises(HTTPException) as revoked:
+        operator_router.revoke_account_service_key("acme", "key_comm", principal=outsider)
+    assert revoked.value.status_code == 404
+    # The key was NOT revoked despite a well-formed request from another admin.
+    assert keys.get("key_comm").status == "active"
 
 
 def test_operator_customer_overview_aggregates_metadata_only(monkeypatch):

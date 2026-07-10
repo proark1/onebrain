@@ -12,6 +12,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.auth.account_access import authorize_account_admin
 from app.auth.principal import Principal, resolve_principal
 from app.controlplane.base import (
     BackupRun,
@@ -428,11 +429,6 @@ def _record_operator_key_audit(action: str, principal: Principal, key) -> None:
     ))
 
 
-def _require_account(account_id: str) -> None:
-    if not get_platform_store().get_account(account_id):
-        raise HTTPException(status_code=404, detail="Account not found.")
-
-
 def _deployment_for_account(account, deployments, platform_store):
     by_id = {deployment.id: deployment for deployment in deployments}
     default_id = f"dep_{account.id}"
@@ -713,15 +709,17 @@ def create_deployment(body: DeploymentCreate, principal: Principal = Depends(res
 
 @router.get("/accounts/{account_id}/service-keys", response_model=list[ServiceKeyInfo])
 def list_account_service_keys(account_id: str, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
-    _require_account(account_id)
+    # Account-scoped: the caller must own or admin THIS account, not merely hold the
+    # admin role — otherwise one account's admin could enumerate another's keys.
+    authorize_account_admin(principal, account_id, get_platform_store())
     return [_service_key_out(k) for k in get_service_key_store().list_by_tenant(account_id)]
 
 
 @router.delete("/accounts/{account_id}/service-keys/{key_id}")
 def revoke_account_service_key(account_id: str, key_id: str, principal: Principal = Depends(resolve_principal)):
-    _require_admin(principal)
-    _require_account(account_id)
+    # Account-scoped: revoking another account's keys is a cross-account availability
+    # attack, so require ownership/admin membership in this specific account.
+    authorize_account_admin(principal, account_id, get_platform_store())
     key = get_service_key_store().get(key_id)
     if not key or key.tenant_id != account_id:
         raise HTTPException(status_code=404, detail="Service key not found.")
