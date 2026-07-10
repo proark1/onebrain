@@ -17,15 +17,19 @@ from app.assistant.contracts import (
     validate_assistant_audit_action,
     validate_assistant_purpose,
 )
+from app.auth.passwords import DUMMY_HASH, verify_password
 from app.auth.principal import Principal, resolve_service_principal
-from app.deps import get_intake_pipeline, get_intake_store, get_platform_store
+from app.deps import get_intake_pipeline, get_intake_store, get_login_throttle, get_platform_store, get_user_store
 from app.intake.base import INTAKE_STATUSES, IntakeRecord
 from app.intake.pipeline import IntakeInput
+from app.monitoring import record_auth_failure
 from app.platform.base import AuditEvent
 from app.routers.service import _intake_scope, _rate_limit, _require_scope
 from app.schemas import (
     AssistantAuditEventCreate,
     AssistantAuditEventOut,
+    AssistantIdentityLoginRequest,
+    AssistantIdentityResponse,
     AssistantRecordCreate,
     AssistantRecordListResponse,
     AssistantRecordOut,
@@ -213,6 +217,81 @@ def get_assistant_record(
     if not decision.allowed:
         raise HTTPException(status_code=403, detail=f"App access denied: {decision.reason}")
     return AssistantRecordResponse(record=_assistant_record_out(record))
+
+
+@router.post("/identity/login", response_model=AssistantIdentityResponse)
+def assistant_identity_login(
+    body: AssistantIdentityLoginRequest,
+    principal: Principal = Depends(resolve_service_principal),
+):
+    """Resolve a OneBrain user for the assistant's session handoff.
+
+    OneBrain stays the identity authority: the assistant forwards the user's
+    OneBrain credentials once at login, receives the resolved user/account/space,
+    and mints only its own session reference — no OneBrain cookie or session is
+    issued here. Mirrors /api/auth/login's protections (timing-safe verification,
+    per-account lockout) and binds the resolved user to the service key's tenant.
+    """
+    _require_scope(principal, SCOPE_READ)
+    _rate_limit(principal)
+    if principal.app_id and principal.app_id != ASSISTANT_APP_ID:
+        raise HTTPException(status_code=403, detail="This service key cannot use the assistant app.")
+
+    throttle = get_login_throttle()
+    email = body.email.strip().lower()
+    key = f"assistant-identity:{principal.user_id}:{email}"
+    wait = throttle.retry_after(key)
+    if wait > 0:
+        record_auth_failure("assistant_identity_locked")
+        raise HTTPException(
+            status_code=429, detail="Too many failed attempts. Please wait and try again.",
+            headers={"Retry-After": str(wait)},
+        )
+
+    user = get_user_store().get_by_email(email)
+    # Always run a hash comparison (dummy when the user is unknown) so timing
+    # doesn't reveal whether an email exists. Cross-tenant users are rejected
+    # with the same response as bad credentials.
+    ok = verify_password(body.password, user.password_hash if user else DUMMY_HASH)
+    if not user or user.status != "active" or not ok or user.tenant_id != principal.tenant_id:
+        throttle.record_failure(key)
+        record_auth_failure("assistant_identity_invalid")
+        _record_assistant_audit(
+            principal,
+            account_id=principal.account_id or principal.tenant_id,
+            space_id=next(iter(principal.space_ids), "") if principal.space_ids else "",
+            purpose="assistant_context",
+            action="assistant.identity.login",
+            target_type="user",
+            target_id="unknown",
+            decision="denied",
+            meta={"reason": "invalid_credentials"},
+        )
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    throttle.record_success(key)
+    account_id = principal.account_id or user.tenant_id
+    space_ids = sorted(principal.space_ids or [])
+    space_id = space_ids[0] if len(space_ids) == 1 else ""
+    _record_assistant_audit(
+        principal,
+        account_id=account_id,
+        space_id=space_id,
+        purpose="assistant_context",
+        action="assistant.identity.login",
+        target_type="user",
+        target_id=user.id,
+        decision="allowed",
+        meta={"role_id": user.role_id},
+    )
+    return AssistantIdentityResponse(
+        user_id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        tenant_id=user.tenant_id,
+        account_id=account_id,
+        space_id=space_id,
+    )
 
 
 @router.post("/audit", response_model=AssistantAuditEventOut)

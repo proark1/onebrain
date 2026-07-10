@@ -211,6 +211,20 @@ class AssistantAuditEventOut(BaseModel):
     created_at: str = ""
 
 
+class AssistantIdentityLoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class AssistantIdentityResponse(BaseModel):
+    user_id: str
+    email: str
+    display_name: str = ""
+    tenant_id: str
+    account_id: str
+    space_id: str = ""
+
+
 class ServiceCapabilitiesResponse(BaseModel):
     tenant_id: str
     account_id: str = ""
