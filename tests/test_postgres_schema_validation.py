@@ -416,10 +416,9 @@ def _rollout_execution_module():
     return _load_migration_module("0017_rollout_execution.py", "rollout_execution_migration")
 
 
-def test_rollout_execution_migration_is_head():
+def test_rollout_execution_migration_structure():
     migration = _rollout_execution_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
     assert migration.revision == "0017_rollout_execution"
     assert len(migration.revision) <= 32
     assert migration.down_revision == "0016_deployment_account_id"
@@ -429,6 +428,24 @@ def test_rollout_execution_migration_is_head():
     assert "ADD COLUMN IF NOT EXISTS" in src
     assert "exec_status" in src
     assert "control_rollouts" in src
+
+
+def _fleet_rollouts_module():
+    return _load_migration_module("0018_fleet_rollouts.py", "fleet_rollouts_migration")
+
+
+def test_fleet_rollouts_migration_is_head():
+    migration = _fleet_rollouts_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision == "0018_fleet_rollouts"
+    assert len(migration.revision) <= 32
+    assert migration.down_revision == "0017_rollout_execution"
+    src = (
+        Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0018_fleet_rollouts.py"
+    ).read_text()
+    assert "CREATE TABLE IF NOT EXISTS control_fleet_rollouts" in src
+    assert "failure_tolerance" in src
 
 
 def test_assistant_workday_contract_migration_structure():

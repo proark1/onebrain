@@ -19,6 +19,7 @@ from app.controlplane.base import (
     validate_release,
     validate_run_status,
 )
+from app.controlplane.orchestration import FLEET_EXEC_FIELDS, FleetRolloutRun
 from app.db.schema import validate_postgres_schema
 
 
@@ -58,6 +59,7 @@ class PostgresControlPlaneStore:
                     "control_backups",
                     "control_health_checks",
                     "control_rollouts",
+                    "control_fleet_rollouts",
                 ),
             )
 
@@ -462,6 +464,15 @@ class PostgresControlPlaneStore:
             row = cur.fetchone()
         return self._rollout(row) if row else None
 
+    def list_rollouts_for_fleet(self, fleet_rollout_id: str) -> List[RolloutRun]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {self._ROLLOUT_COLS} FROM control_rollouts "
+                "WHERE fleet_rollout_id = %s ORDER BY created_at, id",
+                (fleet_rollout_id,),
+            )
+            return [self._rollout(row) for row in cur.fetchall()]
+
     def claim_rollout_dispatch(self, rollout_id: str) -> bool:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
@@ -505,6 +516,90 @@ class PostgresControlPlaneStore:
                 raise ValueError(f"unknown rollout: {rollout_id}")
             conn.commit()
         return self._rollout(row)
+
+    # --- fleet rollouts (Phase 2 orchestration) ---
+    _FLEET_COLS = ("id, target_version, git_sha, status, ring_order, current_ring, "
+                   "failure_tolerance, started_by, notes, created_at, callback_url, dry_run")
+
+    def _fleet_rollout(self, row) -> FleetRolloutRun:
+        ring_order = row[4]
+        if isinstance(ring_order, str):
+            ring_order = json.loads(ring_order) if ring_order else []
+        return FleetRolloutRun(
+            id=row[0], target_version=row[1], git_sha=row[2] or "", status=row[3],
+            ring_order=tuple(ring_order or ()), current_ring=row[5] or "",
+            failure_tolerance=int(row[6]), started_by=row[7] or "", notes=row[8] or "",
+            created_at=_iso(row[9]), callback_url=row[10] or "", dry_run=bool(row[11]),
+        )
+
+    def create_fleet_rollout(self, fleet_run: FleetRolloutRun) -> FleetRolloutRun:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO control_fleet_rollouts "
+                "(id, target_version, git_sha, status, ring_order, current_ring, "
+                " failure_tolerance, started_by, notes, callback_url, dry_run) "
+                "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s) "
+                f"RETURNING {self._FLEET_COLS}",
+                (fleet_run.id, fleet_run.target_version, fleet_run.git_sha, fleet_run.status,
+                 json.dumps(list(fleet_run.ring_order)), fleet_run.current_ring,
+                 fleet_run.failure_tolerance, fleet_run.started_by, fleet_run.notes,
+                 fleet_run.callback_url, fleet_run.dry_run),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return self._fleet_rollout(row)
+
+    def get_fleet_rollout(self, fleet_rollout_id: str) -> Optional[FleetRolloutRun]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT {self._FLEET_COLS} FROM control_fleet_rollouts WHERE id = %s", (fleet_rollout_id,))
+            row = cur.fetchone()
+        return self._fleet_rollout(row) if row else None
+
+    def list_fleet_rollouts(self) -> List[FleetRolloutRun]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT {self._FLEET_COLS} FROM control_fleet_rollouts ORDER BY created_at, id")
+            return [self._fleet_rollout(r) for r in cur.fetchall()]
+
+    def update_fleet_rollout(self, fleet_rollout_id: str, **fields) -> FleetRolloutRun:
+        bad = set(fields) - FLEET_EXEC_FIELDS
+        if bad:
+            raise ValueError(f"cannot update fleet rollout fields: {sorted(bad)}")
+        if not fields:
+            got = self.get_fleet_rollout(fleet_rollout_id)
+            if not got:
+                raise ValueError(f"unknown fleet rollout: {fleet_rollout_id}")
+            return got
+        sets, params = [], []
+        for key, value in fields.items():
+            if key == "ring_order":
+                sets.append("ring_order = %s::jsonb")
+                params.append(json.dumps(list(value)))
+            else:
+                sets.append(f"{key} = %s")
+                params.append(value)
+        params.append(fleet_rollout_id)
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE control_fleet_rollouts SET {', '.join(sets)}, updated_at = now() "
+                f"WHERE id = %s RETURNING {self._FLEET_COLS}",
+                tuple(params),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"unknown fleet rollout: {fleet_rollout_id}")
+            conn.commit()
+        return self._fleet_rollout(row)
+
+    def advance_fleet_ring(self, fleet_rollout_id: str, from_ring: str, to_ring: str) -> bool:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE control_fleet_rollouts SET current_ring = %s, updated_at = now() "
+                "WHERE id = %s AND current_ring = %s AND status = 'running'",
+                (to_ring, fleet_rollout_id, from_ring),
+            )
+            claimed = cur.rowcount == 1
+            conn.commit()
+        return claimed
 
     def _deployment(self, row) -> CustomerDeployment:
         return CustomerDeployment(

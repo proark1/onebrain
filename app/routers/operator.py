@@ -38,6 +38,7 @@ from app.controlplane.rollout_exec import (
     mark_rollout_dispatch_failed,
     resolve_railway_target,
 )
+from app.controlplane.fleet_runner import plan_and_start_fleet_rollout, reconcile_fleet_rollout
 from app.provisioning.runs import RolloutWorkflowDispatcher
 from app.monitoring import MonitoringSummary, monitoring_snapshot
 from app.platform.base import AuditEvent
@@ -1048,6 +1049,176 @@ def dispatch_rollout(
         request_payload={"dry_run": body.dry_run},
     )
     return _rollout_out(updated)
+
+
+# --- fleet rollouts (Phase 2: ring-by-ring fleet-wide update) ----------------
+
+class FleetRolloutCreate(BaseModel):
+    target_version: str = Field(min_length=1, max_length=120)
+    callback_url: str = Field(min_length=1, max_length=500)
+    failure_tolerance: int = Field(default=0, ge=0, le=10000)
+    dry_run: bool = True
+
+
+class FleetRolloutOut(BaseModel):
+    id: str
+    target_version: str
+    status: str
+    ring_order: list[str] = Field(default_factory=list)
+    current_ring: str = ""
+    failure_tolerance: int = 0
+    started_by: str = ""
+    notes: str = ""
+    created_at: str = ""
+
+
+class FleetRolloutPlanOut(BaseModel):
+    waves: dict[str, list[str]] = Field(default_factory=dict)
+    skipped: list[str] = Field(default_factory=list)
+    blocked: dict[str, str] = Field(default_factory=dict)
+
+
+class FleetRolloutCreateOut(BaseModel):
+    fleet_rollout: FleetRolloutOut | None = None
+    plan: FleetRolloutPlanOut
+
+
+def _fleet_out(fr) -> FleetRolloutOut:
+    return FleetRolloutOut(
+        id=fr.id, target_version=fr.target_version, status=fr.status, ring_order=list(fr.ring_order),
+        current_ring=fr.current_ring, failure_tolerance=fr.failure_tolerance,
+        started_by=fr.started_by, notes=fr.notes, created_at=fr.created_at,
+    )
+
+
+def _fleet_plan_out(plan) -> FleetRolloutPlanOut:
+    return FleetRolloutPlanOut(
+        waves={w.ring: list(w.deployment_ids) for w in plan.waves},
+        skipped=list(plan.skipped), blocked=dict(plan.blocked),
+    )
+
+
+def _require_operator_mode() -> None:
+    # A fleet-wide sweep is a Mission Control capability over the whole fleet.
+    if not get_settings().operator_mode:
+        raise HTTPException(status_code=403, detail="Fleet rollouts require operator mode (Mission Control).")
+
+
+def _dispatch_child_rollout(fleet_id: str, deployment_id: str, *, target_version: str,
+                            callback_url: str, dry_run: bool) -> None:
+    """Create and dispatch ONE child rollout for a fleet ring. A dispatch failure is
+    recorded on the child (dispatch_failed, i.e. bookkeeping 'failed') so the fleet
+    reducer counts it toward failure_tolerance; this never raises."""
+    control = get_control_plane_store()
+    settings = get_settings()
+    child_id = f"roll_{uuid4().hex[:12]}"
+    try:
+        control.start_rollout(RolloutRun(
+            id=child_id, deployment_id=deployment_id, target_version=target_version,
+            status="pending", started_by=f"fleet:{fleet_id}", fleet_rollout_id=fleet_id))
+    except ValueError:
+        return  # plan blocked at start — the ring proceeds without this deployment
+    rollout = control.get_rollout(child_id)
+    release = control.get_release(target_version)
+    deployment = control.get_deployment(deployment_id)
+    plan = control.plan_update(deployment_id, target_version)
+    if not (rollout and release and deployment and plan.allowed):
+        if rollout:
+            mark_rollout_dispatch_failed(control, rollout, "update no longer available")
+        return
+    try:
+        railway = resolve_railway_target(get_provisioning_run_store(), deployment_id)
+    except ValueError as exc:
+        mark_rollout_dispatch_failed(control, rollout, str(exc))
+        return
+    if not control.claim_rollout_dispatch(child_id):
+        return
+    inputs = build_rollout_dispatch_inputs(
+        rollout=rollout, plan=plan, release=release, deployment=deployment, railway=railway,
+        callback_url=callback_url, callback_key_id=settings.provisioning_callback_key_id, dry_run=dry_run)
+    try:
+        workflow_url = RolloutWorkflowDispatcher(settings).dispatch(inputs)
+    except RuntimeError as exc:
+        mark_rollout_dispatch_failed(control, rollout, str(exc))
+        return
+    control.update_rollout_exec(
+        child_id, external_run_url=workflow_url,
+        dispatched_at=datetime.now(timezone.utc).isoformat(), request_payload={"dry_run": dry_run})
+
+
+def fleet_dispatch_child(fleet_run, deployment_id) -> None:
+    """dispatch_child bound to a persisted fleet rollout — reads callback_url/dry_run
+    from it so create, callback-advance, and resume all dispatch the same way."""
+    _dispatch_child_rollout(fleet_run.id, deployment_id, target_version=fleet_run.target_version,
+                            callback_url=fleet_run.callback_url, dry_run=fleet_run.dry_run)
+
+
+@router.post("/fleet-rollouts", response_model=FleetRolloutCreateOut)
+def create_fleet_rollout(body: FleetRolloutCreate, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    _require_operator_mode()
+    from app.routers.provisioning import _validate_callback_url
+    _validate_callback_url(body.callback_url)
+    control = get_control_plane_store()
+    release = control.get_release(body.target_version)
+    if not release:
+        raise HTTPException(status_code=404, detail="No such release.")
+
+    fleet_run, plan = plan_and_start_fleet_rollout(
+        control, control, fleet_id=f"fleet_{uuid4().hex[:12]}", target_version=body.target_version,
+        git_sha=release.git_sha, failure_tolerance=body.failure_tolerance,
+        started_by=principal.user_id, created_at=datetime.now(timezone.utc).isoformat(),
+        callback_url=body.callback_url, dry_run=body.dry_run, dispatch_child=fleet_dispatch_child)
+    return FleetRolloutCreateOut(
+        fleet_rollout=_fleet_out(fleet_run) if fleet_run else None, plan=_fleet_plan_out(plan))
+
+
+@router.get("/fleet-rollouts", response_model=list[FleetRolloutOut])
+def list_fleet_rollouts(principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    _require_operator_mode()
+    return [_fleet_out(fr) for fr in get_control_plane_store().list_fleet_rollouts()]
+
+
+@router.get("/fleet-rollouts/{fleet_id}", response_model=FleetRolloutOut)
+def get_fleet_rollout(fleet_id: str, principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    _require_operator_mode()
+    fr = get_control_plane_store().get_fleet_rollout(fleet_id)
+    if not fr:
+        raise HTTPException(status_code=404, detail="Fleet rollout not found.")
+    return _fleet_out(fr)
+
+
+def _fleet_transition(fleet_id: str, principal: Principal, *, to: str, allowed_from: set) -> FleetRolloutOut:
+    _require_admin(principal)
+    _require_operator_mode()
+    control = get_control_plane_store()
+    fr = control.get_fleet_rollout(fleet_id)
+    if not fr:
+        raise HTTPException(status_code=404, detail="Fleet rollout not found.")
+    if fr.status not in allowed_from:
+        raise HTTPException(status_code=409, detail=f"Cannot {to} a {fr.status} fleet rollout.")
+    updated = control.update_fleet_rollout(fleet_id, status=to)
+    # Resuming re-reconciles in case the current ring completed while paused.
+    if to == "running":
+        updated = reconcile_fleet_rollout(control, control, fleet_id, dispatch_child=fleet_dispatch_child) or updated
+    return _fleet_out(updated)
+
+
+@router.post("/fleet-rollouts/{fleet_id}/pause", response_model=FleetRolloutOut)
+def pause_fleet_rollout(fleet_id: str, principal: Principal = Depends(resolve_principal)):
+    return _fleet_transition(fleet_id, principal, to="paused", allowed_from={"running"})
+
+
+@router.post("/fleet-rollouts/{fleet_id}/resume", response_model=FleetRolloutOut)
+def resume_fleet_rollout(fleet_id: str, principal: Principal = Depends(resolve_principal)):
+    return _fleet_transition(fleet_id, principal, to="running", allowed_from={"paused"})
+
+
+@router.post("/fleet-rollouts/{fleet_id}/abort", response_model=FleetRolloutOut)
+def abort_fleet_rollout(fleet_id: str, principal: Principal = Depends(resolve_principal)):
+    return _fleet_transition(fleet_id, principal, to="aborted", allowed_from={"running", "paused"})
 
 
 @router.patch("/rollouts/{rollout_id}", response_model=RolloutOut)

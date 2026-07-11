@@ -8,14 +8,18 @@ secret). Registered only on an operator surface, like provisioning.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from app.controlplane.rollout_exec import RolloutCallback, apply_rollout_callback
+from app.controlplane.fleet_runner import advance_fleet_on_child
+from app.controlplane.rollout_exec import TERMINAL_EXEC_STATUSES, RolloutCallback, apply_rollout_callback
 from app.deps import get_control_plane_store
 from app.routers.provisioning import _require_callback_auth
 
 router = APIRouter(prefix="/api/rollouts", tags=["rollouts"])
+_log = logging.getLogger("onebrain.rollouts")
 
 
 class RolloutCallbackIn(BaseModel):
@@ -45,6 +49,21 @@ def rollout_callback(
         raise HTTPException(status_code=404, detail="Rollout not found.") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # If this child rollout just reached a terminal state and belongs to a fleet
+    # rollout, advance the parent (pause / open next ring / complete). Never let an
+    # advance error fail the child's callback ack — the child already recorded its
+    # result and the operator can reconcile via resume.
+    if rollout.exec_status in TERMINAL_EXEC_STATUSES and rollout.fleet_rollout_id:
+        from app.routers.operator import fleet_dispatch_child
+
+        try:
+            advance_fleet_on_child(
+                get_control_plane_store(), get_control_plane_store(), rollout,
+                dispatch_child=fleet_dispatch_child)
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.warning("Fleet rollout advance failed for %s: %s", rollout.fleet_rollout_id, exc)
+
     return {
         "rollout_id": rollout.id,
         "exec_status": rollout.exec_status,

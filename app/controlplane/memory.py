@@ -21,6 +21,7 @@ from app.controlplane.base import (
     validate_release,
     validate_run_status,
 )
+from app.controlplane.orchestration import FLEET_EXEC_FIELDS, FleetRolloutRun
 
 
 class MemoryControlPlaneStore:
@@ -31,6 +32,7 @@ class MemoryControlPlaneStore:
         self._backups: Dict[str, BackupRun] = {}
         self._health: Dict[str, HealthCheckRun] = {}
         self._rollouts: Dict[str, RolloutRun] = {}
+        self._fleet_rollouts: Dict[str, FleetRolloutRun] = {}
         self._lock = threading.RLock()
         self._persist_path = persist_path
         self._load()
@@ -50,9 +52,14 @@ class MemoryControlPlaneStore:
             self._backups = {d["id"]: BackupRun(**d) for d in data.get("backups", [])}
             self._health = {d["id"]: HealthCheckRun(**d) for d in data.get("health", [])}
             self._rollouts = {d["id"]: RolloutRun(**d) for d in data.get("rollouts", [])}
+            self._fleet_rollouts = {
+                d["id"]: FleetRolloutRun(**{**d, "ring_order": tuple(d.get("ring_order", []))})
+                for d in data.get("fleet_rollouts", [])
+            }
         except Exception:
             self._deployments, self._modules, self._releases = {}, {}, {}
             self._backups, self._health, self._rollouts = {}, {}, {}
+            self._fleet_rollouts = {}
 
     def _save(self) -> None:
         if not self._persist_path:
@@ -66,6 +73,8 @@ class MemoryControlPlaneStore:
                 "backups": [b.__dict__ for b in self._backups.values()],
                 "health": [h.__dict__ for h in self._health.values()],
                 "rollouts": [r.__dict__ for r in self._rollouts.values()],
+                "fleet_rollouts": [{**f.__dict__, "ring_order": list(f.ring_order)}
+                                   for f in self._fleet_rollouts.values()],
             }, fh)
 
     def create_deployment(self, deployment: CustomerDeployment) -> CustomerDeployment:
@@ -246,6 +255,9 @@ class MemoryControlPlaneStore:
                 return rollout
         return None
 
+    def list_rollouts_for_fleet(self, fleet_rollout_id: str) -> List[RolloutRun]:
+        return [r for r in self._rollouts.values() if r.fleet_rollout_id == fleet_rollout_id]
+
     def claim_rollout_dispatch(self, rollout_id: str) -> bool:
         """Atomically claim a pending rollout for dispatch (compare-and-set
         exec_status pending->dispatched). Returns False if it is not pending — the
@@ -255,6 +267,46 @@ class MemoryControlPlaneStore:
             if not rollout or rollout.exec_status != "pending":
                 return False
             self._rollouts[rollout_id] = replace(rollout, exec_status="dispatched")
+            self._save()
+            return True
+
+    # --- fleet rollouts (Phase 2 orchestration) ---
+    def create_fleet_rollout(self, fleet_run: FleetRolloutRun) -> FleetRolloutRun:
+        with self._lock:
+            if fleet_run.id in self._fleet_rollouts:
+                raise ValueError(f"fleet rollout already exists: {fleet_run.id}")
+            self._fleet_rollouts[fleet_run.id] = fleet_run
+            self._save()
+            return fleet_run
+
+    def get_fleet_rollout(self, fleet_rollout_id: str) -> Optional[FleetRolloutRun]:
+        return self._fleet_rollouts.get(fleet_rollout_id)
+
+    def list_fleet_rollouts(self) -> List[FleetRolloutRun]:
+        return sorted(self._fleet_rollouts.values(), key=lambda f: (f.created_at, f.id))
+
+    def update_fleet_rollout(self, fleet_rollout_id: str, **fields) -> FleetRolloutRun:
+        bad = set(fields) - FLEET_EXEC_FIELDS
+        if bad:
+            raise ValueError(f"cannot update fleet rollout fields: {sorted(bad)}")
+        with self._lock:
+            fleet_run = self._fleet_rollouts.get(fleet_rollout_id)
+            if not fleet_run:
+                raise ValueError(f"unknown fleet rollout: {fleet_rollout_id}")
+            updated = replace(fleet_run, **fields)
+            self._fleet_rollouts[fleet_rollout_id] = updated
+            self._save()
+            return updated
+
+    def advance_fleet_ring(self, fleet_rollout_id: str, from_ring: str, to_ring: str) -> bool:
+        """Atomically move a running fleet rollout from one ring to the next
+        (compare-and-set on current_ring). Only the winner opens the next ring, so
+        concurrent child callbacks can't double-dispatch it."""
+        with self._lock:
+            fleet_run = self._fleet_rollouts.get(fleet_rollout_id)
+            if not fleet_run or fleet_run.status != "running" or fleet_run.current_ring != from_ring:
+                return False
+            self._fleet_rollouts[fleet_rollout_id] = replace(fleet_run, current_ring=to_ring)
             self._save()
             return True
 
