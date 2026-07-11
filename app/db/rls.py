@@ -17,6 +17,7 @@ RLS_REQUIRED_TABLES = (
     "platform_memberships",
     "platform_consent_records",
     "platform_retention_policies",
+    "platform_legal_holds",
     "platform_data_access_events",
     "platform_processor_register",
     "platform_provider_register",

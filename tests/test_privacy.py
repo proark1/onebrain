@@ -16,7 +16,16 @@ from app.embeddings.local import LocalEmbedder
 from app.ingest.pipeline import IngestPipeline
 from app.intake.memory import MemoryIntakeStore
 from app.intake.pipeline import IntakeInput, IntakePipeline
-from app.platform.base import Account, ConsentRecord, CredentialMetadata, Membership, Organization, RetentionPolicy, Space
+from app.platform.base import (
+    Account,
+    ConsentRecord,
+    CredentialMetadata,
+    LegalHold,
+    Membership,
+    Organization,
+    RetentionPolicy,
+    Space,
+)
 from app.platform.memory import MemoryPlatformStore
 from app.store.memory import MemoryStore
 
@@ -262,3 +271,112 @@ def test_privacy_cross_account_admin_is_denied(monkeypatch):
     # valid confirm_account_id.
     assert store.get_document_meta(service_doc.doc_id) is not None
     assert intake.get(service_record.id) is not None
+
+
+def test_legal_hold_blocks_then_release_unblocks_erase(monkeypatch):
+    platform, store, conversations, intake, service_doc, *_rest = _fixtures()
+    _patch(monkeypatch, platform, store, conversations, intake)
+
+    hold = privacy_router.create_account_legal_hold(
+        "acme", privacy_router.LegalHoldCreate(reason="litigation matter 42"), principal=_principal("admin"),
+    )
+    assert hold.active is True
+
+    # Erasing a held scope is refused (409) and nothing is deleted; the refusal is audited.
+    with pytest.raises(HTTPException) as exc:
+        privacy_router.erase_account_data(
+            "acme",
+            privacy_router.PrivacyEraseRequest(confirm_account_id="acme", space_id="sp_acme_service"),
+            principal=_principal("admin"),
+        )
+    assert exc.value.status_code == 409
+    assert store.get_document_meta(service_doc.doc_id) is not None
+    denial = platform.list_audit("acme")[-1]
+    assert denial.action == "privacy.erase_denied" and denial.decision == "denied_legal_hold"
+
+    # Release the hold, and the same erase now succeeds.
+    released = privacy_router.release_account_legal_hold("acme", hold.id, principal=_principal("admin"))
+    assert released.active is False
+    erased = privacy_router.erase_account_data(
+        "acme",
+        privacy_router.PrivacyEraseRequest(confirm_account_id="acme", space_id="sp_acme_service"),
+        principal=_principal("admin"),
+    )
+    assert erased.documents_deleted == 1
+    assert store.get_document_meta(service_doc.doc_id) is None
+
+
+def test_space_hold_blocks_only_its_scope(monkeypatch):
+    platform, store, conversations, intake, service_doc, *_rest = _fixtures()
+    _patch(monkeypatch, platform, store, conversations, intake)
+
+    # Hold only the personal space.
+    privacy_router.create_account_legal_hold(
+        "acme",
+        privacy_router.LegalHoldCreate(space_id="sp_acme_personal", reason="preserve owner data"),
+        principal=_principal("admin"),
+    )
+
+    # Erasing a different space still works...
+    erased = privacy_router.erase_account_data(
+        "acme",
+        privacy_router.PrivacyEraseRequest(confirm_account_id="acme", space_id="sp_acme_service"),
+        principal=_principal("admin"),
+    )
+    assert erased.documents_deleted == 1
+
+    # ...but an account-wide erase is blocked because a space within it is held.
+    with pytest.raises(HTTPException) as exc:
+        privacy_router.erase_account_data(
+            "acme",
+            privacy_router.PrivacyEraseRequest(confirm_account_id="acme"),
+            principal=_principal("admin"),
+        )
+    assert exc.value.status_code == 409
+
+
+def test_legal_hold_list_and_release_lifecycle(monkeypatch):
+    platform, store, conversations, intake, *_ = _fixtures()
+    _patch(monkeypatch, platform, store, conversations, intake)
+
+    hold = privacy_router.create_account_legal_hold(
+        "acme", privacy_router.LegalHoldCreate(reason="r"), principal=_principal("admin"),
+    )
+    active = privacy_router.list_account_legal_holds("acme", principal=_principal("admin"))
+    assert [h.id for h in active] == [hold.id]
+
+    privacy_router.release_account_legal_hold("acme", hold.id, principal=_principal("admin"))
+    assert privacy_router.list_account_legal_holds("acme", principal=_principal("admin")) == []
+    with_released = privacy_router.list_account_legal_holds("acme", include_released=True, principal=_principal("admin"))
+    assert [h.id for h in with_released] == [hold.id]
+
+    with pytest.raises(HTTPException) as exc:
+        privacy_router.release_account_legal_hold("acme", "nonexistent", principal=_principal("admin"))
+    assert exc.value.status_code == 404
+
+
+def test_retention_skips_held_scope_and_records_run(monkeypatch):
+    import app.deps as deps
+    from app.retention.service import run_retention
+
+    platform, store, conversations, intake, _sd, _pd, _sc, _pc, service_record, _pr = _fixtures()
+    monkeypatch.setattr(deps, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(deps, "get_store", lambda: store)
+    monkeypatch.setattr(deps, "get_conversation_store", lambda: conversations)
+    monkeypatch.setattr(deps, "get_intake_store", lambda: intake)
+
+    # _fixtures() seeds an active intake retention policy on sp_acme_service.
+    platform.create_legal_hold(LegalHold(
+        id="h_ret", account_id="acme", space_id="sp_acme_service", reason="hold service data",
+    ))
+    held_run = run_retention(account_id="acme", space_id="sp_acme_service", dry_run=False)
+    assert held_run["legal_hold"] is True
+    assert intake.get(service_record.id) is not None            # not deleted under hold
+    assert platform.list_retention_runs("acme")[-1].status == "skipped_legal_hold"
+
+    # After release, the sweep deletes and records a completed run.
+    platform.release_legal_hold("acme", "h_ret")
+    done_run = run_retention(account_id="acme", space_id="sp_acme_service", dry_run=False)
+    assert done_run["legal_hold"] is False
+    assert intake.get(service_record.id) is None
+    assert platform.list_retention_runs("acme")[-1].status == "completed"

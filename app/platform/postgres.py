@@ -18,11 +18,13 @@ from app.platform.base import (
     ConsentRecord,
     CredentialMetadata,
     DataAccessEvent,
+    LegalHold,
     Membership,
     Organization,
     ProcessorRegistration,
     ProviderRegistration,
     RetentionPolicy,
+    RetentionRun,
     Space,
     default_brand_theme,
     normalize_unique,
@@ -87,6 +89,8 @@ class PostgresPlatformStore:
                     "platform_memberships",
                     "platform_consent_records",
                     "platform_retention_policies",
+                    "platform_legal_holds",
+                    "retention_runs",
                     "platform_data_access_events",
                     "platform_processor_register",
                     "platform_provider_register",
@@ -529,6 +533,88 @@ class PostgresPlatformStore:
                             created_at=_iso(r[9]))
             for r in rows
         ]
+
+    def _legal_hold_row(self, r) -> LegalHold:
+        return LegalHold(id=r[0], account_id=r[1], space_id=r[2] or "", subject_ref=r[3] or "",
+                         reason=r[4] or "", legal_basis=r[5] or "", created_by=r[6] or "",
+                         created_at=_iso(r[7]), released_at=_iso(r[8]))
+
+    def create_legal_hold(self, hold: LegalHold) -> LegalHold:
+        self._validate_governance_scope(hold.account_id, hold.space_id)
+        with self._conn(account_id=hold.account_id, space_id=hold.space_id) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_legal_holds
+                (id, account_id, space_id, subject_ref, reason, legal_basis, created_by, released_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::timestamptz)
+                RETURNING id, account_id, space_id, subject_ref, reason, legal_basis, created_by, created_at, released_at
+                """,
+                (hold.id, hold.account_id, hold.space_id, hold.subject_ref, hold.reason,
+                 hold.legal_basis, hold.created_by, hold.released_at or None),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return self._legal_hold_row(row)
+
+    def list_legal_holds(self, account_id: str, space_id: str = "", include_released: bool = False) -> List[LegalHold]:
+        rows = self._list_scope(
+            "platform_legal_holds",
+            "id, account_id, space_id, subject_ref, reason, legal_basis, created_by, created_at, released_at",
+            account_id,
+            space_id,
+            "created_at, id",
+        )
+        holds = [self._legal_hold_row(r) for r in rows]
+        if not include_released:
+            holds = [h for h in holds if not h.released_at]
+        return holds
+
+    def release_legal_hold(self, account_id: str, hold_id: str, released_at: str = "") -> Optional[LegalHold]:
+        with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE platform_legal_holds
+                SET released_at = COALESCE(%s::timestamptz, now())
+                WHERE id = %s AND account_id = %s AND released_at IS NULL
+                RETURNING id, account_id, space_id, subject_ref, reason, legal_basis, created_by, created_at, released_at
+                """,
+                (released_at or None, hold_id, account_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return self._legal_hold_row(row) if row else None
+
+    def record_retention_run(self, run: RetentionRun) -> RetentionRun:
+        self._validate_governance_scope(run.account_id, run.space_id)
+        with self._conn(account_id=run.account_id, space_id=run.space_id) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO retention_runs
+                (id, account_id, space_id, domain, dry_run, status, result, error, completed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::timestamptz)
+                RETURNING id, account_id, space_id, domain, dry_run, status, result, error, created_at, completed_at
+                """,
+                (run.id, run.account_id, run.space_id, run.domain, run.dry_run, run.status,
+                 json.dumps(run.result), run.error, run.completed_at or None),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return self._retention_run_row(row)
+
+    def _retention_run_row(self, r) -> RetentionRun:
+        return RetentionRun(id=r[0], account_id=r[1], space_id=r[2] or "", domain=r[3] or "",
+                            dry_run=bool(r[4]), status=r[5], result=_json(r[6]), error=r[7] or "",
+                            created_at=_iso(r[8]), completed_at=_iso(r[9]))
+
+    def list_retention_runs(self, account_id: str, space_id: str = "") -> List[RetentionRun]:
+        rows = self._list_scope(
+            "retention_runs",
+            "id, account_id, space_id, domain, dry_run, status, result, error, created_at, completed_at",
+            account_id,
+            space_id,
+            "created_at, id",
+        )
+        return [self._retention_run_row(r) for r in rows]
 
     def record_data_access(self, event: DataAccessEvent) -> DataAccessEvent:
         self._validate_governance_scope(event.account_id, event.space_id)

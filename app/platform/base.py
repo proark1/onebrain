@@ -188,6 +188,54 @@ class RetentionPolicy:
 
 
 @dataclass(frozen=True)
+class LegalHold:
+    id: str
+    account_id: str
+    space_id: str = ""        # "" = the whole account
+    subject_ref: str = ""     # "" = the whole scope; else a specific record/subject ref
+    reason: str = ""
+    legal_basis: str = ""
+    created_by: str = ""
+    created_at: str = ""
+    released_at: str = ""      # "" = still active
+
+    @property
+    def active(self) -> bool:
+        return not self.released_at
+
+
+@dataclass(frozen=True)
+class RetentionRun:
+    id: str
+    account_id: str
+    space_id: str = ""
+    domain: str = ""
+    dry_run: bool = True
+    status: str = "completed"   # completed | skipped_legal_hold | failed
+    result: Dict = field(default_factory=dict)
+    error: str = ""
+    created_at: str = ""
+    completed_at: str = ""
+
+
+def scope_is_held(active_holds, space_id: str = "") -> bool:
+    """Whether an erase/retention over (account, space_id) would touch held data.
+
+    An account-wide hold (space_id="") blocks everything in the account. A hold on
+    a specific space blocks that space, and also blocks an account-wide operation
+    (space_id="") that would otherwise sweep it. Released holds never block.
+    """
+    for hold in active_holds:
+        if hold.released_at:
+            continue
+        if not space_id:
+            return True                          # account-wide op: any active hold blocks
+        if not hold.space_id or hold.space_id == space_id:
+            return True
+    return False
+
+
+@dataclass(frozen=True)
 class DataAccessEvent:
     id: str
     account_id: str
@@ -294,6 +342,16 @@ class PlatformStore(Protocol):
     def upsert_retention_policy(self, policy: RetentionPolicy) -> RetentionPolicy: ...
 
     def list_retention_policies(self, account_id: str, space_id: str = "") -> List[RetentionPolicy]: ...
+
+    def create_legal_hold(self, hold: LegalHold) -> LegalHold: ...
+
+    def list_legal_holds(self, account_id: str, space_id: str = "", include_released: bool = False) -> List[LegalHold]: ...
+
+    def release_legal_hold(self, account_id: str, hold_id: str, released_at: str = "") -> Optional[LegalHold]: ...
+
+    def record_retention_run(self, run: RetentionRun) -> RetentionRun: ...
+
+    def list_retention_runs(self, account_id: str, space_id: str = "") -> List[RetentionRun]: ...
 
     def record_data_access(self, event: DataAccessEvent) -> DataAccessEvent: ...
 

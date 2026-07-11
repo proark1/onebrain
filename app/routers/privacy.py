@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from app.auth.account_access import authorize_account_admin
 from app.auth.principal import Principal, resolve_principal
 from app.deps import get_conversation_store, get_intake_store, get_platform_store, get_store
-from app.platform.base import AuditEvent
+from app.platform.base import AuditEvent, LegalHold, scope_is_held
 
 router = APIRouter(prefix="/api/privacy", tags=["privacy"])
 
@@ -101,6 +101,7 @@ def _record_privacy_audit(
     action: str,
     purpose: str,
     meta: dict,
+    decision: str = "completed",
 ) -> AuditEvent:
     event = AuditEvent(
         id=f"aud_privacy_{uuid4().hex}",
@@ -113,7 +114,7 @@ def _record_privacy_audit(
         space_id=space_id,
         app_id="onebrain_core",
         purpose=purpose,
-        decision="completed",
+        decision=decision,
         meta=meta,
     )
     return get_platform_store().record_audit(event)
@@ -182,6 +183,23 @@ def erase_account_data(
     if body.confirm_account_id.strip() != account_id:
         raise HTTPException(status_code=400, detail="confirm_account_id must match the account being erased.")
 
+    # Legal hold beats erasure. A held scope is refused with an audited denial —
+    # never silently partially deleted.
+    if scope_is_held(get_platform_store().list_legal_holds(account_id), space_id):
+        _record_privacy_audit(
+            principal,
+            account_id=account_id,
+            space_id=space_id,
+            action="privacy.erase_denied",
+            purpose="gdpr_delete",
+            decision="denied_legal_hold",
+            meta={"reason": body.reason.strip()},
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="This scope is under an active legal hold and cannot be erased. Release the hold first.",
+        )
+
     deleted_docs = get_store().delete_documents_by_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_conversations = get_conversation_store().delete_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_records = get_intake_store().delete_records_by_scope(account_id, account_id=account_id, space_id=space_id)
@@ -211,3 +229,95 @@ def erase_account_data(
         governance_deleted=deleted_governance,
         audit_event_id=audit.id,
     )
+
+
+class LegalHoldCreate(BaseModel):
+    space_id: str = Field(default="", max_length=120)
+    subject_ref: str = Field(default="", max_length=200)
+    reason: str = Field(min_length=1, max_length=500)
+    legal_basis: str = Field(default="", max_length=200)
+
+
+class LegalHoldOut(BaseModel):
+    id: str
+    account_id: str
+    space_id: str = ""
+    subject_ref: str = ""
+    reason: str = ""
+    legal_basis: str = ""
+    created_by: str = ""
+    created_at: str = ""
+    released_at: str = ""
+    active: bool = True
+
+
+def _hold_out(hold: LegalHold) -> LegalHoldOut:
+    return LegalHoldOut(
+        id=hold.id, account_id=hold.account_id, space_id=hold.space_id,
+        subject_ref=hold.subject_ref, reason=hold.reason, legal_basis=hold.legal_basis,
+        created_by=hold.created_by, created_at=hold.created_at, released_at=hold.released_at,
+        active=hold.active,
+    )
+
+
+@router.post("/accounts/{account_id}/legal-holds", response_model=LegalHoldOut)
+def create_account_legal_hold(
+    account_id: str,
+    body: LegalHoldCreate,
+    principal: Principal = Depends(resolve_principal),
+):
+    authorize_account_admin(principal, account_id, get_platform_store())
+    account_id, space_id = _resolve_scope(account_id, body.space_id)
+    hold = get_platform_store().create_legal_hold(LegalHold(
+        id=f"hold_{uuid4().hex}",
+        account_id=account_id,
+        space_id=space_id,
+        subject_ref=body.subject_ref.strip(),
+        reason=body.reason.strip(),
+        legal_basis=body.legal_basis.strip(),
+        created_by=principal.user_id,
+        created_at=_now(),
+    ))
+    _record_privacy_audit(
+        principal,
+        account_id=account_id,
+        space_id=space_id,
+        action="legal_hold.created",
+        purpose="gdpr_delete",
+        meta={"hold_id": hold.id, "subject_ref": hold.subject_ref, "reason": hold.reason},
+    )
+    return _hold_out(hold)
+
+
+@router.get("/accounts/{account_id}/legal-holds", response_model=list[LegalHoldOut])
+def list_account_legal_holds(
+    account_id: str,
+    include_released: bool = False,
+    principal: Principal = Depends(resolve_principal),
+):
+    authorize_account_admin(principal, account_id, get_platform_store())
+    account_id, _ = _resolve_scope(account_id)
+    holds = get_platform_store().list_legal_holds(account_id, include_released=include_released)
+    return [_hold_out(hold) for hold in holds]
+
+
+@router.post("/accounts/{account_id}/legal-holds/{hold_id}/release", response_model=LegalHoldOut)
+def release_account_legal_hold(
+    account_id: str,
+    hold_id: str,
+    principal: Principal = Depends(resolve_principal),
+):
+    authorize_account_admin(principal, account_id, get_platform_store())
+    account_id, _ = _resolve_scope(account_id)
+    released = get_platform_store().release_legal_hold(account_id, hold_id, released_at=_now())
+    if not released:
+        raise HTTPException(status_code=404, detail="No such legal hold for this account.")
+    _record_privacy_audit(
+        principal,
+        account_id=account_id,
+        space_id=released.space_id,
+        action="legal_hold.released",
+        purpose="gdpr_delete",
+        meta={"hold_id": hold_id},
+    )
+    return _hold_out(released)

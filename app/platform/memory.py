@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import os
 import threading
-from dataclasses import asdict
+from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from app.platform.base import (
@@ -19,11 +20,13 @@ from app.platform.base import (
     ConsentRecord,
     CredentialMetadata,
     DataAccessEvent,
+    LegalHold,
     Membership,
     Organization,
     ProcessorRegistration,
     ProviderRegistration,
     RetentionPolicy,
+    RetentionRun,
     Space,
     default_brand_theme,
     normalize_unique,
@@ -146,6 +149,8 @@ class MemoryPlatformStore:
         self._memberships: Dict[str, Membership] = {}
         self._consent_records: Dict[str, ConsentRecord] = {}
         self._retention_policies: Dict[str, RetentionPolicy] = {}
+        self._legal_holds: Dict[str, LegalHold] = {}
+        self._retention_runs: Dict[str, RetentionRun] = {}
         self._data_access_events: Dict[str, DataAccessEvent] = {}
         self._processors: Dict[str, ProcessorRegistration] = {}
         self._providers: Dict[str, ProviderRegistration] = {}
@@ -169,6 +174,8 @@ class MemoryPlatformStore:
             self._memberships = {d["id"]: Membership(**d) for d in data.get("memberships", [])}
             self._consent_records = {d["id"]: ConsentRecord(**d) for d in data.get("consent_records", [])}
             self._retention_policies = {d["id"]: RetentionPolicy(**d) for d in data.get("retention_policies", [])}
+            self._legal_holds = {d["id"]: LegalHold(**d) for d in data.get("legal_holds", [])}
+            self._retention_runs = {d["id"]: RetentionRun(**d) for d in data.get("retention_runs", [])}
             self._data_access_events = {d["id"]: DataAccessEvent(**d) for d in data.get("data_access_events", [])}
             self._processors = {d["id"]: ProcessorRegistration(**d) for d in data.get("processors", [])}
             self._providers = {d["id"]: ProviderRegistration(**d) for d in data.get("providers", [])}
@@ -176,6 +183,7 @@ class MemoryPlatformStore:
         except Exception:
             self._accounts, self._spaces, self._installations, self._brand_themes, self._audit = {}, {}, {}, {}, {}
             self._organizations, self._memberships, self._consent_records, self._retention_policies = {}, {}, {}, {}
+            self._legal_holds, self._retention_runs = {}, {}
             self._data_access_events, self._processors, self._providers, self._credential_metadata = {}, {}, {}, {}
 
     def _save(self) -> None:
@@ -193,6 +201,8 @@ class MemoryPlatformStore:
                 "memberships": [asdict(v) for v in self._memberships.values()],
                 "consent_records": [asdict(v) for v in self._consent_records.values()],
                 "retention_policies": [asdict(v) for v in self._retention_policies.values()],
+                "legal_holds": [asdict(v) for v in self._legal_holds.values()],
+                "retention_runs": [asdict(v) for v in self._retention_runs.values()],
                 "data_access_events": [asdict(v) for v in self._data_access_events.values()],
                 "processors": [asdict(v) for v in self._processors.values()],
                 "providers": [asdict(v) for v in self._providers.values()],
@@ -395,6 +405,47 @@ class MemoryPlatformStore:
         if space_id:
             rows = [v for v in rows if v.space_id == space_id]
         return sorted(rows, key=lambda v: (v.domain, v.record_type, v.id))
+
+    def create_legal_hold(self, hold: LegalHold) -> LegalHold:
+        self._require_account(hold.account_id)
+        self._require_space(hold.account_id, hold.space_id)
+        with self._lock:
+            self._legal_holds[hold.id] = hold
+            self._save()
+            return hold
+
+    def list_legal_holds(self, account_id: str, space_id: str = "", include_released: bool = False) -> List[LegalHold]:
+        rows = [v for v in self._legal_holds.values() if v.account_id == account_id]
+        if space_id:
+            rows = [v for v in rows if v.space_id == space_id]
+        if not include_released:
+            rows = [v for v in rows if not v.released_at]
+        return sorted(rows, key=lambda v: (v.created_at, v.id))
+
+    def release_legal_hold(self, account_id: str, hold_id: str, released_at: str = "") -> Optional[LegalHold]:
+        with self._lock:
+            hold = self._legal_holds.get(hold_id)
+            if not hold or hold.account_id != account_id:
+                return None
+            if hold.released_at:
+                return hold
+            released = replace(hold, released_at=released_at or datetime.now(timezone.utc).isoformat())
+            self._legal_holds[hold_id] = released
+            self._save()
+            return released
+
+    def record_retention_run(self, run: RetentionRun) -> RetentionRun:
+        self._require_account(run.account_id)
+        with self._lock:
+            self._retention_runs[run.id] = run
+            self._save()
+            return run
+
+    def list_retention_runs(self, account_id: str, space_id: str = "") -> List[RetentionRun]:
+        rows = [v for v in self._retention_runs.values() if v.account_id == account_id]
+        if space_id:
+            rows = [v for v in rows if v.space_id == space_id]
+        return sorted(rows, key=lambda v: (v.created_at, v.id))
 
     def record_data_access(self, event: DataAccessEvent) -> DataAccessEvent:
         self._require_account(event.account_id)
