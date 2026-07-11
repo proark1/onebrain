@@ -91,6 +91,20 @@ class MemoryIntakeStore:
                 self._save()
         return len(remove_ids)
 
+    def delete_by_source_ref(
+        self, tenant_id: str, source_ref: str, account_id: str = "", space_id: str = "",
+    ) -> int:
+        with self._lock:
+            remove_ids = [
+                record.id for record in self._records.values()
+                if record.source_ref == source_ref and _matches_scope(record, tenant_id, account_id, space_id)
+            ]
+            for record_id in remove_ids:
+                self._records.pop(record_id, None)
+            if remove_ids:
+                self._save()
+        return len(remove_ids)
+
     def count(self) -> int:
         with self._lock:
             return len(self._records)

@@ -22,13 +22,13 @@ from pydantic import BaseModel, Field
 from app.auth.principal import Principal, resolve_principal, resolve_service_principal
 from app.config import get_settings
 from app.deps import (
-    get_intake_pipeline, get_job_store, get_pipeline, get_platform_store, get_retrieval_service,
-    get_service_key_store, get_service_rate_limiter,
+    get_intake_pipeline, get_intake_store, get_job_store, get_pipeline, get_platform_store,
+    get_retrieval_service, get_service_key_store, get_service_rate_limiter,
 )
 from app.intake.base import IntakeRecord
 from app.intake.pipeline import IntakeInput
 from app.jobs.base import JOB_SERVICE_CAPTURE, JOB_SERVICE_INTAKE
-from app.platform.base import AuditEvent, BrandTheme, normalize_unique
+from app.platform.base import AuditEvent, BrandTheme, normalize_unique, scope_is_held
 from app.routers.jobs import job_status_out
 from app.schemas import (
     JobStatusOut,
@@ -466,6 +466,84 @@ def intake(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return ServiceIntakeResponse(record=_intake_record_out(record))
+
+
+class ServiceRecordDeleteRequest(BaseModel):
+    source_ref: str = Field(min_length=1, max_length=500)
+    account_id: str = Field(default="", max_length=120)
+    space_id: str = Field(default="", max_length=120)
+
+
+class ServiceRecordDeleteResponse(BaseModel):
+    source_ref: str
+    deleted: int
+    audit_event_id: str = ""
+
+
+@service_router.post("/records/delete", response_model=ServiceRecordDeleteResponse)
+def delete_records(
+    body: ServiceRecordDeleteRequest,
+    principal: Principal = Depends(resolve_service_principal),
+):
+    """Module-initiated erasure of a record the module previously synced in.
+
+    The module names the record by the same source_ref it used at intake, so a
+    contact/tenant deletion inside a module can erase the canonical copy here.
+    Idempotent (an unknown ref deletes nothing) and refused under a legal hold."""
+    _require_scope(principal, SCOPE_WRITE)
+    _rate_limit(principal)
+
+    account_id = (body.account_id or principal.account_id or principal.tenant_id).strip()
+    space_id = (body.space_id or "").strip()
+    if account_id != principal.tenant_id:
+        raise HTTPException(status_code=403, detail="This service key is not pinned to that account.")
+    if principal.account_id and account_id != principal.account_id:
+        raise HTTPException(status_code=403, detail="This service key cannot use that account.")
+    if space_id and principal.space_ids is not None and space_id not in principal.space_ids:
+        raise HTTPException(status_code=403, detail="This service key cannot use that space.")
+
+    source_ref = body.source_ref.strip()
+    store = get_platform_store()
+
+    # Legal hold beats module-initiated erasure, exactly as it beats a human erase.
+    if scope_is_held(store.list_legal_holds(account_id), space_id):
+        store.record_audit(AuditEvent(
+            id=f"aud_{uuid4().hex}",
+            account_id=account_id,
+            actor_id=principal.user_id,
+            actor_type=principal.principal_type,
+            action="service.records.delete_denied",
+            target_type="space" if space_id else "account",
+            target_id=space_id or account_id,
+            space_id=space_id,
+            app_id=principal.app_id,
+            purpose="gdpr_delete",
+            decision="denied_legal_hold",
+            meta={"source_ref": source_ref},
+        ))
+        raise HTTPException(
+            status_code=409,
+            detail="This scope is under an active legal hold; the record cannot be erased.",
+        )
+
+    deleted = get_intake_store().delete_by_source_ref(
+        principal.tenant_id, source_ref, account_id=account_id, space_id=space_id,
+    )
+    audit = store.record_audit(AuditEvent(
+        id=f"aud_{uuid4().hex}",
+        account_id=account_id,
+        actor_id=principal.user_id,
+        actor_type=principal.principal_type,
+        action="service.records.deleted",
+        target_type="space" if space_id else "account",
+        target_id=space_id or account_id,
+        space_id=space_id,
+        app_id=principal.app_id,
+        purpose="gdpr_delete",
+        decision="completed",
+        meta={"source_ref": source_ref, "deleted": deleted},
+    ))
+    return ServiceRecordDeleteResponse(source_ref=source_ref, deleted=deleted, audit_event_id=audit.id)
 
 
 @service_router.post("/capture")

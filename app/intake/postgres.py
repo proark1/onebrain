@@ -122,6 +122,24 @@ class PostgresIntakeStore:
             conn.commit()
             return deleted
 
+    def delete_by_source_ref(
+        self, tenant_id: str, source_ref: str, account_id: str = "", space_id: str = "",
+    ) -> int:
+        clauses = ["tenant_id = %s", "source_ref = %s"]
+        params: list = [tenant_id, source_ref]
+        if account_id:
+            clauses.append("account_id = %s")
+            params.append(account_id)
+        if space_id:
+            clauses.append("space_id = %s")
+            params.append(space_id)
+        with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, tenant_id=tenant_id, account_id=account_id, space_id=space_id)
+            cur.execute(f"DELETE FROM intake_records WHERE {' AND '.join(clauses)}", params)
+            deleted = cur.rowcount
+            conn.commit()
+            return deleted
+
     def count(self) -> int:
         with self._conn(admin=True) as conn, conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM intake_records")

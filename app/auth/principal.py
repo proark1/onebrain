@@ -133,6 +133,7 @@ SERVICE_USAGE_ENDPOINTS = {
     "capabilities": "service.capabilities",
     "intake": "service.intake",
     "capture": "service.capture",
+    "delete_records": "service.records.delete",
     "service_brand_theme": "service.brand_theme",
     "update_service_brand_theme": "service.brand_theme.update",
     "service_ask": "service.ask",

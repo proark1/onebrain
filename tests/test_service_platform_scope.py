@@ -19,7 +19,7 @@ from app.ingest.pipeline import IngestPipeline
 from app.intake.memory import MemoryIntakeStore
 from app.intake.pipeline import IntakePipeline
 from app.llm.local import LocalLLM
-from app.platform.base import Account, AppInstallation, Space
+from app.platform.base import Account, AppInstallation, LegalHold, Space
 from app.platform.memory import MemoryPlatformStore
 from app.retrieval.service import RetrievalService
 from app.schemas import ServiceAskRequest, ServiceCaptureRequest
@@ -286,3 +286,91 @@ def test_service_intake_routes_multi_space_communication_key_to_customer_service
     assert response.record.status == "approved"
     assert intake_store.get(response.record.id).source_ref == "wamid.42"
     assert platform.list_audit("nft_gym")[-1].action == "service.intake_access_checked"
+
+
+def _comm_write_principal():
+    return replace(
+        _svc_principal(scopes=(SCOPE_WRITE,), tenant="nft_gym"),
+        account_id="nft_gym",
+        app_id="communication",
+        space_ids=frozenset({"sp_customer", "sp_personal"}),
+        purposes=frozenset({"customer_service_inbox"}),
+    )
+
+
+def _intake_fixtures(monkeypatch):
+    platform = _platform_store()
+    intake_store = MemoryIntakeStore()
+    settings = type("Settings", (), {"pii_phase": "dpia_signed", "require_approval": False})()
+    pipeline = IntakePipeline(intake_store, settings)
+    monkeypatch.setattr(service_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(service_router, "get_intake_pipeline", lambda: pipeline)
+    monkeypatch.setattr(service_router, "get_intake_store", lambda: intake_store)
+    return platform, intake_store
+
+
+def test_service_records_delete_by_source_ref_is_idempotent(monkeypatch):
+    platform, intake_store = _intake_fixtures(monkeypatch)
+    principal = _comm_write_principal()
+
+    service_router.intake(
+        ServiceIntakeRequest(content="Reschedule please.", source="communication", source_ref="wamid.99"),
+        principal=principal,
+    )
+    assert intake_store.count() == 1
+
+    result = service_router.delete_records(
+        service_router.ServiceRecordDeleteRequest(
+            source_ref="wamid.99", account_id="nft_gym", space_id="sp_customer",
+        ),
+        principal=principal,
+    )
+    assert result.deleted == 1
+    assert intake_store.count() == 0
+    assert platform.list_audit("nft_gym")[-1].action == "service.records.deleted"
+
+    # Idempotent: an already-gone (or unknown) ref deletes nothing without error.
+    again = service_router.delete_records(
+        service_router.ServiceRecordDeleteRequest(source_ref="wamid.99", account_id="nft_gym"),
+        principal=principal,
+    )
+    assert again.deleted == 0
+
+
+def test_service_records_delete_blocked_by_legal_hold(monkeypatch):
+    platform, intake_store = _intake_fixtures(monkeypatch)
+    principal = _comm_write_principal()
+    service_router.intake(
+        ServiceIntakeRequest(content="Hold me.", source="communication", source_ref="wamid.hold"),
+        principal=principal,
+    )
+    platform.create_legal_hold(LegalHold(id="h1", account_id="nft_gym", reason="litigation"))
+
+    with pytest.raises(HTTPException) as exc:
+        service_router.delete_records(
+            service_router.ServiceRecordDeleteRequest(source_ref="wamid.hold", account_id="nft_gym"),
+            principal=principal,
+        )
+    assert exc.value.status_code == 409
+    assert intake_store.count() == 1  # preserved under the hold
+    assert platform.list_audit("nft_gym")[-1].action == "service.records.delete_denied"
+
+
+def test_service_records_delete_requires_write_scope_and_own_account(monkeypatch):
+    _intake_fixtures(monkeypatch)
+
+    # A read-only key cannot delete.
+    with pytest.raises(HTTPException) as read_exc:
+        service_router.delete_records(
+            service_router.ServiceRecordDeleteRequest(source_ref="x", account_id="nft_gym"),
+            principal=_svc_principal(scopes=(SCOPE_READ,), tenant="nft_gym"),
+        )
+    assert read_exc.value.status_code == 403
+
+    # A write key cannot reach another account.
+    with pytest.raises(HTTPException) as acct_exc:
+        service_router.delete_records(
+            service_router.ServiceRecordDeleteRequest(source_ref="x", account_id="other_account"),
+            principal=_comm_write_principal(),
+        )
+    assert acct_exc.value.status_code == 403
