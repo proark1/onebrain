@@ -139,3 +139,12 @@ jobs:
           if findings:
               raise SystemExit("possible committed secret patterns in: " + ", ".join(sorted(findings)))
           PY
+
+  publish-images:
+    name: Publish images
+    needs: [python, frontend, workflow-and-secrets]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/publish-images.yml

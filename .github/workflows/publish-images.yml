@@ -1,10 +1,27 @@
+# Digest retrieval contract: authoritative image digests are resolved from the
+# immutable tag via `docker buildx imagetools inspect ghcr.io/proark1/<image>:sha-<full-git-sha>`.
+# The job/workflow outputs below are only available within the same run (or to a
+# same-run caller via workflow_call) — they are NOT retrievable cross-run.
+
 name: Publish images
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+  workflow_call:
+    outputs:
+      api-digest:
+        description: Digest of the pushed ghcr.io/proark1/onebrain-api image
+        value: ${{ jobs.api.outputs.digest }}
+      workers-digest:
+        description: Digest of the pushed ghcr.io/proark1/onebrain-workers image
+        value: ${{ jobs.workers.outputs.digest }}
+      admin-ui-digest:
+        description: Digest of the pushed ghcr.io/proark1/onebrain-admin-ui image
+        value: ${{ jobs.admin-ui.outputs.digest }}
+
+concurrency:
+  group: publish-images-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
