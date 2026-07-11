@@ -19,7 +19,7 @@ from app.ingest.pipeline import IngestPipeline
 from app.intake.memory import MemoryIntakeStore
 from app.intake.pipeline import IntakePipeline
 from app.llm.local import LocalLLM
-from app.platform.base import Account, AppInstallation, LegalHold, Space
+from app.platform.base import Account, AppInstallation, LegalHold, Space, Tombstone
 from app.platform.memory import MemoryPlatformStore
 from app.retrieval.service import RetrievalService
 from app.schemas import ServiceAskRequest, ServiceCaptureRequest
@@ -374,3 +374,34 @@ def test_service_records_delete_requires_write_scope_and_own_account(monkeypatch
             principal=_comm_write_principal(),
         )
     assert acct_exc.value.status_code == 403
+
+
+def test_tombstone_feed_is_account_scoped_and_ack_is_idempotent(monkeypatch):
+    platform = _platform_store()
+    # A second account whose tombstone must NOT appear in nft_gym's feed.
+    platform.create_account(Account(id="other", kind="organization", name="Other"))
+    monkeypatch.setattr(service_router, "get_platform_store", lambda: platform)
+
+    mine = platform.create_tombstone(
+        Tombstone(id="t1", account_id="nft_gym", target_type="account", reason="offboarding"),
+    )
+    platform.create_tombstone(Tombstone(id="t_other", account_id="other", target_type="account"))
+    principal = _comm_write_principal()
+
+    feed = service_router.list_tombstones(since=0, principal=principal)
+    assert [t.id for t in feed.tombstones] == ["t1"]  # the other account's is not visible
+    assert feed.cursor == mine.seq
+
+    ack = service_router.ack_tombstone("t1", principal=principal)
+    assert ack.tombstone_id == "t1" and ack.app_id == "communication"
+    # Idempotent — a second ack is fine and does not duplicate.
+    service_router.ack_tombstone("t1", principal=principal)
+    assert [a.app_id for a in platform.list_tombstone_acks("t1")] == ["communication"]
+
+    # Polling forward from the cursor returns nothing new.
+    assert service_router.list_tombstones(since=feed.cursor, principal=principal).tombstones == []
+
+    # Acking another account's tombstone (or an unknown one) is a 404.
+    with pytest.raises(HTTPException) as exc:
+        service_router.ack_tombstone("t_other", principal=principal)
+    assert exc.value.status_code == 404

@@ -134,6 +134,8 @@ SERVICE_USAGE_ENDPOINTS = {
     "intake": "service.intake",
     "capture": "service.capture",
     "delete_records": "service.records.delete",
+    "list_tombstones": "service.tombstones.list",
+    "ack_tombstone": "service.tombstones.ack",
     "service_brand_theme": "service.brand_theme",
     "update_service_brand_theme": "service.brand_theme.update",
     "service_ask": "service.ask",

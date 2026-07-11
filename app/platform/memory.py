@@ -28,6 +28,8 @@ from app.platform.base import (
     RetentionPolicy,
     RetentionRun,
     Space,
+    Tombstone,
+    TombstoneAck,
     default_brand_theme,
     normalize_unique,
     normalized_brand_theme,
@@ -151,6 +153,8 @@ class MemoryPlatformStore:
         self._retention_policies: Dict[str, RetentionPolicy] = {}
         self._legal_holds: Dict[str, LegalHold] = {}
         self._retention_runs: Dict[str, RetentionRun] = {}
+        self._tombstones: Dict[str, Tombstone] = {}
+        self._tombstone_acks: Dict[str, TombstoneAck] = {}
         self._data_access_events: Dict[str, DataAccessEvent] = {}
         self._processors: Dict[str, ProcessorRegistration] = {}
         self._providers: Dict[str, ProviderRegistration] = {}
@@ -176,6 +180,11 @@ class MemoryPlatformStore:
             self._retention_policies = {d["id"]: RetentionPolicy(**d) for d in data.get("retention_policies", [])}
             self._legal_holds = {d["id"]: LegalHold(**d) for d in data.get("legal_holds", [])}
             self._retention_runs = {d["id"]: RetentionRun(**d) for d in data.get("retention_runs", [])}
+            self._tombstones = {d["id"]: Tombstone(**d) for d in data.get("tombstones", [])}
+            self._tombstone_acks = {
+                f"{d['tombstone_id']}:{d['app_id']}": TombstoneAck(**d)
+                for d in data.get("tombstone_acks", [])
+            }
             self._data_access_events = {d["id"]: DataAccessEvent(**d) for d in data.get("data_access_events", [])}
             self._processors = {d["id"]: ProcessorRegistration(**d) for d in data.get("processors", [])}
             self._providers = {d["id"]: ProviderRegistration(**d) for d in data.get("providers", [])}
@@ -184,6 +193,7 @@ class MemoryPlatformStore:
             self._accounts, self._spaces, self._installations, self._brand_themes, self._audit = {}, {}, {}, {}, {}
             self._organizations, self._memberships, self._consent_records, self._retention_policies = {}, {}, {}, {}
             self._legal_holds, self._retention_runs = {}, {}
+            self._tombstones, self._tombstone_acks = {}, {}
             self._data_access_events, self._processors, self._providers, self._credential_metadata = {}, {}, {}, {}
 
     def _save(self) -> None:
@@ -203,6 +213,8 @@ class MemoryPlatformStore:
                 "retention_policies": [asdict(v) for v in self._retention_policies.values()],
                 "legal_holds": [asdict(v) for v in self._legal_holds.values()],
                 "retention_runs": [asdict(v) for v in self._retention_runs.values()],
+                "tombstones": [asdict(v) for v in self._tombstones.values()],
+                "tombstone_acks": [asdict(v) for v in self._tombstone_acks.values()],
                 "data_access_events": [asdict(v) for v in self._data_access_events.values()],
                 "processors": [asdict(v) for v in self._processors.values()],
                 "providers": [asdict(v) for v in self._providers.values()],
@@ -446,6 +458,49 @@ class MemoryPlatformStore:
         if space_id:
             rows = [v for v in rows if v.space_id == space_id]
         return sorted(rows, key=lambda v: (v.created_at, v.id))
+
+    def create_tombstone(self, tombstone: Tombstone) -> Tombstone:
+        self._require_account(tombstone.account_id)
+        self._require_space(tombstone.account_id, tombstone.space_id)
+        with self._lock:
+            next_seq = max((t.seq for t in self._tombstones.values()), default=0) + 1
+            stored = replace(tombstone, seq=next_seq)
+            self._tombstones[stored.id] = stored
+            self._save()
+            return stored
+
+    def list_tombstones(self, account_id: str, since_seq: int = 0, limit: int = 100) -> List[Tombstone]:
+        rows = [
+            t for t in self._tombstones.values()
+            if t.account_id == account_id and t.seq > since_seq
+        ]
+        rows.sort(key=lambda t: t.seq)
+        return rows[: max(1, limit)]
+
+    def ack_tombstone(self, tombstone_id: str, app_id: str, account_id: str = "", acked_at: str = "") -> Optional[TombstoneAck]:
+        with self._lock:
+            tombstone = self._tombstones.get(tombstone_id)
+            if not tombstone or (account_id and tombstone.account_id != account_id):
+                return None
+            key = f"{tombstone_id}:{app_id}"
+            existing = self._tombstone_acks.get(key)
+            if existing:
+                return existing
+            ack = TombstoneAck(
+                tombstone_id=tombstone_id,
+                app_id=app_id,
+                account_id=tombstone.account_id,
+                acked_at=acked_at or datetime.now(timezone.utc).isoformat(),
+            )
+            self._tombstone_acks[key] = ack
+            self._save()
+            return ack
+
+    def list_tombstone_acks(self, tombstone_id: str) -> List[TombstoneAck]:
+        return sorted(
+            (a for a in self._tombstone_acks.values() if a.tombstone_id == tombstone_id),
+            key=lambda a: a.app_id,
+        )
 
     def record_data_access(self, event: DataAccessEvent) -> DataAccessEvent:
         self._require_account(event.account_id)

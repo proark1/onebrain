@@ -26,6 +26,8 @@ from app.platform.base import (
     RetentionPolicy,
     RetentionRun,
     Space,
+    Tombstone,
+    TombstoneAck,
     default_brand_theme,
     normalize_unique,
     normalized_brand_theme,
@@ -90,6 +92,8 @@ class PostgresPlatformStore:
                     "platform_consent_records",
                     "platform_retention_policies",
                     "platform_legal_holds",
+                    "platform_tombstones",
+                    "platform_tombstone_acks",
                     "retention_runs",
                     "platform_data_access_events",
                     "platform_processor_register",
@@ -615,6 +619,83 @@ class PostgresPlatformStore:
             "created_at, id",
         )
         return [self._retention_run_row(r) for r in rows]
+
+    def _tombstone_row(self, r) -> Tombstone:
+        return Tombstone(id=r[0], account_id=r[1], seq=int(r[2]), space_id=r[3] or "",
+                         target_type=r[4], target_ref=r[5] or "", reason=r[6] or "",
+                         created_by=r[7] or "", created_at=_iso(r[8]))
+
+    def create_tombstone(self, tombstone: Tombstone) -> Tombstone:
+        self._validate_governance_scope(tombstone.account_id, tombstone.space_id)
+        with self._conn(account_id=tombstone.account_id, space_id=tombstone.space_id) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_tombstones
+                (id, account_id, space_id, target_type, target_ref, reason, created_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, account_id, seq, space_id, target_type, target_ref, reason, created_by, created_at
+                """,
+                (tombstone.id, tombstone.account_id, tombstone.space_id, tombstone.target_type,
+                 tombstone.target_ref, tombstone.reason, tombstone.created_by),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return self._tombstone_row(row)
+
+    def list_tombstones(self, account_id: str, since_seq: int = 0, limit: int = 100) -> List[Tombstone]:
+        with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, account_id, seq, space_id, target_type, target_ref, reason, created_by, created_at
+                FROM platform_tombstones
+                WHERE account_id = %s AND seq > %s
+                ORDER BY seq
+                LIMIT %s
+                """,
+                (account_id, int(since_seq), max(1, int(limit))),
+            )
+            return [self._tombstone_row(r) for r in cur.fetchall()]
+
+    def ack_tombstone(self, tombstone_id: str, app_id: str, account_id: str = "", acked_at: str = "") -> Optional[TombstoneAck]:
+        with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT account_id FROM platform_tombstones WHERE id = %s",
+                (tombstone_id,),
+            )
+            found = cur.fetchone()
+            if not found or (account_id and found[0] != account_id):
+                return None
+            cur.execute(
+                """
+                INSERT INTO platform_tombstone_acks (tombstone_id, app_id, account_id, acked_at)
+                VALUES (%s, %s, %s, COALESCE(%s::timestamptz, now()))
+                ON CONFLICT (tombstone_id, app_id) DO NOTHING
+                RETURNING tombstone_id, app_id, account_id, acked_at
+                """,
+                (tombstone_id, app_id, found[0], acked_at or None),
+            )
+            row = cur.fetchone()
+            if not row:
+                cur.execute(
+                    "SELECT tombstone_id, app_id, account_id, acked_at FROM platform_tombstone_acks "
+                    "WHERE tombstone_id = %s AND app_id = %s",
+                    (tombstone_id, app_id),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return TombstoneAck(tombstone_id=row[0], app_id=row[1], account_id=row[2] or "", acked_at=_iso(row[3]))
+
+    def list_tombstone_acks(self, tombstone_id: str) -> List[TombstoneAck]:
+        with self._conn(admin=True) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT tombstone_id, app_id, account_id, acked_at FROM platform_tombstone_acks "
+                "WHERE tombstone_id = %s ORDER BY app_id",
+                (tombstone_id,),
+            )
+            return [
+                TombstoneAck(tombstone_id=r[0], app_id=r[1], account_id=r[2] or "", acked_at=_iso(r[3]))
+                for r in cur.fetchall()
+            ]
 
     def record_data_access(self, event: DataAccessEvent) -> DataAccessEvent:
         self._validate_governance_scope(event.account_id, event.space_id)

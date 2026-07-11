@@ -218,6 +218,29 @@ class RetentionRun:
     completed_at: str = ""
 
 
+@dataclass(frozen=True)
+class Tombstone:
+    """A durable, content-free record that OneBrain erased a scope, for modules to
+    consume and mirror. `seq` is a monotonic cursor a module polls forward from."""
+    id: str
+    account_id: str
+    seq: int = 0                    # assigned by the store; the feed cursor
+    space_id: str = ""             # "" = the whole account
+    target_type: str = "account"   # account | space | subject
+    target_ref: str = ""           # a subject/record ref when target_type=subject
+    reason: str = ""
+    created_by: str = ""
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
+class TombstoneAck:
+    tombstone_id: str
+    app_id: str
+    account_id: str = ""
+    acked_at: str = ""
+
+
 def scope_is_held(active_holds, space_id: str = "") -> bool:
     """Whether an erase/retention over (account, space_id) would touch held data.
 
@@ -352,6 +375,14 @@ class PlatformStore(Protocol):
     def record_retention_run(self, run: RetentionRun) -> RetentionRun: ...
 
     def list_retention_runs(self, account_id: str, space_id: str = "") -> List[RetentionRun]: ...
+
+    def create_tombstone(self, tombstone: Tombstone) -> Tombstone: ...
+
+    def list_tombstones(self, account_id: str, since_seq: int = 0, limit: int = 100) -> List[Tombstone]: ...
+
+    def ack_tombstone(self, tombstone_id: str, app_id: str, account_id: str = "", acked_at: str = "") -> Optional[TombstoneAck]: ...
+
+    def list_tombstone_acks(self, tombstone_id: str) -> List[TombstoneAck]: ...
 
     def record_data_access(self, event: DataAccessEvent) -> DataAccessEvent: ...
 

@@ -546,6 +546,73 @@ def delete_records(
     return ServiceRecordDeleteResponse(source_ref=source_ref, deleted=deleted, audit_event_id=audit.id)
 
 
+class ServiceTombstoneOut(BaseModel):
+    id: str
+    seq: int
+    account_id: str
+    space_id: str = ""
+    target_type: str
+    target_ref: str = ""
+    reason: str = ""
+    created_at: str = ""
+
+
+class ServiceTombstoneFeedOut(BaseModel):
+    tombstones: list[ServiceTombstoneOut]
+    cursor: int
+
+
+class ServiceTombstoneAckOut(BaseModel):
+    tombstone_id: str
+    app_id: str
+    acked_at: str = ""
+
+
+@service_router.get("/tombstones", response_model=ServiceTombstoneFeedOut)
+def list_tombstones(
+    since: int = 0,
+    limit: int = 100,
+    principal: Principal = Depends(resolve_service_principal),
+):
+    """The erasure feed. A module polls forward from `cursor` and mirrors each
+    tombstone, then acks it. Operational deletion instructions, not public content,
+    so it takes the write scope like the module's other mutating calls."""
+    _require_scope(principal, SCOPE_WRITE)
+    _rate_limit(principal)
+    account_id = principal.account_id or principal.tenant_id
+    rows = get_platform_store().list_tombstones(
+        account_id, since_seq=max(0, since), limit=min(max(1, limit), 500),
+    )
+    out = [
+        ServiceTombstoneOut(
+            id=row.id, seq=row.seq, account_id=row.account_id, space_id=row.space_id,
+            target_type=row.target_type, target_ref=row.target_ref, reason=row.reason,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
+    cursor = max((row.seq for row in rows), default=max(0, since))
+    return ServiceTombstoneFeedOut(tombstones=out, cursor=cursor)
+
+
+@service_router.post("/tombstones/{tombstone_id}/ack", response_model=ServiceTombstoneAckOut)
+def ack_tombstone(
+    tombstone_id: str,
+    principal: Principal = Depends(resolve_service_principal),
+):
+    """Record that this module has applied a tombstone. Idempotent."""
+    _require_scope(principal, SCOPE_WRITE)
+    _rate_limit(principal)
+    account_id = principal.account_id or principal.tenant_id
+    app_id = principal.app_id or "unknown"
+    ack = get_platform_store().ack_tombstone(tombstone_id, app_id, account_id=account_id)
+    if not ack:
+        raise HTTPException(status_code=404, detail="No such tombstone for this account.")
+    return ServiceTombstoneAckOut(
+        tombstone_id=ack.tombstone_id, app_id=ack.app_id, acked_at=ack.acked_at,
+    )
+
+
 @service_router.post("/capture")
 def capture(
     body: ServiceCaptureRequest,

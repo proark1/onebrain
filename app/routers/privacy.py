@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from app.auth.account_access import authorize_account_admin
 from app.auth.principal import Principal, resolve_principal
 from app.deps import get_conversation_store, get_intake_store, get_platform_store, get_store
-from app.platform.base import AuditEvent, LegalHold, scope_is_held
+from app.platform.base import AuditEvent, LegalHold, Tombstone, scope_is_held
 
 router = APIRouter(prefix="/api/privacy", tags=["privacy"])
 
@@ -219,6 +219,16 @@ def erase_account_data(
             "reason": body.reason.strip(),
         },
     )
+    # Emit a tombstone so modules holding their own copies mirror the erasure.
+    get_platform_store().create_tombstone(Tombstone(
+        id=f"tomb_{uuid4().hex}",
+        account_id=account_id,
+        space_id=space_id,
+        target_type="space" if space_id else "account",
+        reason=body.reason.strip(),
+        created_by=principal.user_id,
+        created_at=_now(),
+    ))
     return PrivacyEraseOut(
         account_id=account_id,
         space_id=space_id,

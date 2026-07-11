@@ -343,10 +343,13 @@ def test_auth_sessions_migration_structure():
     assert "idx_auth_sessions_user" in src
 
 
-def test_legal_holds_migration_is_head():
+def _tombstones_module():
+    return _load_migration_module("0014_tombstones.py", "tombstones_migration")
+
+
+def test_legal_holds_migration_structure():
     migration = _legal_holds_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
     assert migration.revision == "0013_legal_holds"
     assert len(migration.revision) <= 32
     assert migration.down_revision == "0012_auth_sessions"
@@ -357,6 +360,22 @@ def test_legal_holds_migration_is_head():
     assert "CREATE TABLE IF NOT EXISTS platform_legal_holds" in src
     assert "FORCE ROW LEVEL SECURITY" in src
     assert "onebrain_platform_legal_holds_scope" in src
+
+
+def test_tombstones_migration_is_head():
+    migration = _tombstones_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision == "0014_tombstones"
+    assert len(migration.revision) <= 32
+    assert migration.down_revision == "0013_legal_holds"
+    src = (
+        Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0014_tombstones.py"
+    ).read_text()
+    assert "CREATE TABLE IF NOT EXISTS platform_tombstones" in src
+    assert "CREATE TABLE IF NOT EXISTS platform_tombstone_acks" in src
+    assert "BIGSERIAL" in src
+    assert "FORCE ROW LEVEL SECURITY" in src
 
 
 def test_assistant_workday_contract_migration_structure():

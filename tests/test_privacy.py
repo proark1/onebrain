@@ -273,6 +273,26 @@ def test_privacy_cross_account_admin_is_denied(monkeypatch):
     assert intake.get(service_record.id) is not None
 
 
+def test_erase_emits_a_tombstone_for_modules(monkeypatch):
+    platform, store, conversations, intake, *_rest = _fixtures()
+    _patch(monkeypatch, platform, store, conversations, intake)
+
+    privacy_router.erase_account_data(
+        "acme",
+        privacy_router.PrivacyEraseRequest(
+            confirm_account_id="acme", space_id="sp_acme_service", reason="gdpr erasure",
+        ),
+        principal=_principal("admin"),
+    )
+
+    tombstones = platform.list_tombstones("acme")
+    assert len(tombstones) == 1
+    assert tombstones[0].target_type == "space"
+    assert tombstones[0].space_id == "sp_acme_service"
+    assert tombstones[0].reason == "gdpr erasure"
+    assert tombstones[0].seq >= 1
+
+
 def test_legal_hold_blocks_then_release_unblocks_erase(monkeypatch):
     platform, store, conversations, intake, service_doc, *_rest = _fixtures()
     _patch(monkeypatch, platform, store, conversations, intake)
