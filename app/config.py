@@ -198,6 +198,8 @@ class Settings(BaseSettings):
     deployment_id: str = ""              # this deployment's control-plane id (for its heartbeat)
     fleet_url: str = ""                  # Mission Control base URL the reporter POSTs to
     fleet_key: str = ""                  # this deployment's fleet heartbeat key (fk_...)
+    fleet_public_url: str = ""           # (Mission Control) its own public URL handed to enrolling deployments
+    fleet_heartbeat_retention_days: int = 30   # prune fleet_heartbeats older than this
     fleet_report_seconds: int = 60       # how often the reporter posts a heartbeat
     fleet_missed_heartbeat_seconds: int = 600   # watchdog: alert when older than this
     fleet_target_version: str = ""       # expected fleet bundle version (drift alerting)

@@ -583,3 +583,82 @@ export function scopeQuery(scope: ChatScope = {}): string {
   }
   return `?${new URLSearchParams(clean as Record<string, string>).toString()}`;
 }
+
+// --- fleet (Mission Control) ---
+
+export interface FleetDeploymentOverview {
+  deployment_id: string;
+  customer_name: string;
+  environment: string;
+  deployment_type: string;
+  release_ring: string;
+  status: string;
+  current_version: string;
+  healthy: boolean | null;
+  reported_version: string;
+  migration_revision: string;
+  last_reported_at: string;
+  last_received_at: string;
+  counts: Record<string, number>;
+  open_alerts: string[];
+}
+
+export interface FleetOverview {
+  generated_at: string;
+  deployments: FleetDeploymentOverview[];
+  total: number;
+  healthy: number;
+  with_open_alerts: number;
+}
+
+export interface FleetRollout {
+  id: string;
+  target_version: string;
+  status: string;
+  ring_order: string[];
+  current_ring: string;
+  failure_tolerance: number;
+  started_by: string;
+  notes: string;
+  created_at: string;
+}
+
+export interface FleetRolloutPlan {
+  waves: Record<string, string[]>;
+  skipped: string[];
+  blocked: Record<string, string>;
+}
+
+export interface FleetRolloutCreateResult {
+  fleet_rollout: FleetRollout | null;
+  plan: FleetRolloutPlan;
+}
+
+export interface CreateFleetRolloutInput {
+  target_version: string;
+  callback_url: string;
+  failure_tolerance: number;
+  dry_run: boolean;
+}
+
+export interface FleetKeyInfo {
+  id: string;
+  deployment_id: string;
+  label: string;
+  status: string;
+  created_at: string;
+  last_used_at: string;
+}
+
+export interface MintedFleetKey {
+  id: string;
+  deployment_id: string;
+  label: string;
+  token: string;
+}
+
+export interface DeploymentEnrollment {
+  deployment_id: string;
+  key_id: string;
+  env: Record<string, string>;
+}

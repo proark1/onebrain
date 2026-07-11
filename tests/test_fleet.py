@@ -507,3 +507,110 @@ def test_heartbeat_contract_bounds_modules():
     with pytest.raises(ValidationError):
         build_heartbeat(deployment_id="dep_a", reported_at="t",
                         modules=[ModuleReport(module_id=f"m{i}") for i in range(51)])
+
+
+# --- enrollment + analytics (Phase 3) ----------------------------------------
+
+def test_fleet_enrollment_vars_pure():
+    from app.fleet.enrollment import fleet_enrollment_vars
+    env = fleet_enrollment_vars("https://mc.example/", "dep_a", "fk_id_secret")
+    assert env == {"ONEBRAIN_FLEET_URL": "https://mc.example",
+                   "ONEBRAIN_DEPLOYMENT_ID": "dep_a", "ONEBRAIN_FLEET_KEY": "fk_id_secret"}
+
+
+def test_mint_deployment_fleet_key_stores_hash_only():
+    from app.fleet.enrollment import mint_deployment_fleet_key
+    store = MemoryFleetStore()
+    key_id, token = mint_deployment_fleet_key(store, "dep_a", label="enroll", now_iso="t")
+    assert token.startswith("fk_")
+    stored = store.get_key(key_id)
+    assert stored is not None and stored.deployment_id == "dep_a"
+    assert stored.key_hash != token  # only the hash is persisted
+
+
+def test_enroll_endpoint_mints_and_returns_env(monkeypatch):
+    from types import SimpleNamespace
+    store = MemoryFleetStore()
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: _control_with("dep_a"))
+    monkeypatch.setattr(fleet_router, "get_settings",
+                        lambda: SimpleNamespace(fleet_public_url="https://mc.example"))
+
+    out = fleet_router.enroll_deployment("dep_a", principal=_principal("admin"))
+    assert out.deployment_id == "dep_a"
+    assert out.env["ONEBRAIN_DEPLOYMENT_ID"] == "dep_a"
+    assert out.env["ONEBRAIN_FLEET_KEY"].startswith("fk_")
+    assert out.env["ONEBRAIN_FLEET_URL"] == "https://mc.example"
+    assert store.get_key(out.key_id) is not None  # key persisted (hash only)
+
+
+def test_enroll_endpoint_guards(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: MemoryFleetStore())
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: _control_with("dep_a"))
+    # unknown deployment -> 404
+    monkeypatch.setattr(fleet_router, "get_settings", lambda: SimpleNamespace(fleet_public_url="https://mc"))
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.enroll_deployment("ghost", principal=_principal("admin"))
+    assert ei.value.status_code == 404
+    # no public url configured -> 409
+    monkeypatch.setattr(fleet_router, "get_settings", lambda: SimpleNamespace(fleet_public_url=""))
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.enroll_deployment("dep_a", principal=_principal("admin"))
+    assert ei.value.status_code == 409
+    # non-admin -> 403
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.enroll_deployment("dep_a", principal=_principal("front_desk"))
+    assert ei.value.status_code == 403
+
+
+def test_memory_store_heartbeat_history_and_prune():
+    store = MemoryFleetStore()
+    for i, ts in enumerate(["2026-07-11T00:00:00+00:00", "2026-07-11T01:00:00+00:00", "2026-07-11T02:00:00+00:00"]):
+        store.record_heartbeat(Heartbeat(f"hb{i}", "dep_a", CONTRACT_VERSION, ts, ts, True))
+    history = store.list_heartbeats("dep_a")
+    assert [h.id for h in history] == ["hb2", "hb1", "hb0"]  # newest first
+    assert len(store.list_heartbeats("dep_a", since_iso="2026-07-11T01:00:00+00:00")) == 2
+    assert len(store.list_heartbeats("dep_a", limit=1)) == 1
+
+    removed = store.prune_heartbeats("2026-07-11T01:00:00+00:00")
+    assert removed == 1  # hb0 dropped
+    assert [h.id for h in store.list_heartbeats("dep_a")] == ["hb2", "hb1"]
+
+
+def test_history_endpoint_returns_counts(monkeypatch):
+    store = MemoryFleetStore()
+    store.record_heartbeat(Heartbeat("hb", "dep_a", CONTRACT_VERSION, "t", "2026-07-11T00:00:00+00:00", True,
+                                     payload=_heartbeat_body("dep_a").model_dump()))
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    out = fleet_router.heartbeat_history("dep_a", principal=_principal("admin"))
+    assert out.total == 1
+    assert out.points[0].counts["chunks"] == 12 and out.points[0].counts["users"] == 3
+
+
+def test_enroll_rotates_prior_keys(monkeypatch):
+    from types import SimpleNamespace
+    store = MemoryFleetStore()
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: _control_with("dep_a"))
+    monkeypatch.setattr(fleet_router, "get_settings", lambda: SimpleNamespace(fleet_public_url="https://mc"))
+
+    first = fleet_router.enroll_deployment("dep_a", principal=_principal("admin"))
+    second = fleet_router.enroll_deployment("dep_a", principal=_principal("admin"))
+
+    active = [k for k in store.list_keys("dep_a") if k.status == "active"]
+    assert len(active) == 1 and active[0].id == second.key_id  # only the newest key is active
+    assert store.get_key(first.key_id).status == "revoked"      # prior key rotated out
+
+
+def test_prune_once_uses_retention_window():
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from app.fleet.retention import prune_once
+    store = MemoryFleetStore()
+    store.record_heartbeat(Heartbeat("old", "dep_a", CONTRACT_VERSION, "t", "2000-01-01T00:00:00+00:00", True))
+    store.record_heartbeat(Heartbeat("new", "dep_a", CONTRACT_VERSION, "t", datetime.now(timezone.utc).isoformat(), True))
+
+    removed = prune_once(SimpleNamespace(fleet_heartbeat_retention_days=30), store)
+    assert removed == 1  # only the year-2000 heartbeat is outside the window
+    assert [h.id for h in store.list_heartbeats("dep_a")] == ["new"]

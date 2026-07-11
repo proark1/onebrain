@@ -20,6 +20,7 @@ from app.auth.principal import Principal, resolve_principal
 from app.config import get_settings
 from app.deps import get_control_plane_store, get_fleet_heartbeat_rate_limiter, get_fleet_store
 from app.fleet.base import FleetKey, Heartbeat
+from app.fleet.enrollment import fleet_enrollment_vars, mint_deployment_fleet_key
 from app.fleet.heartbeat import FleetHeartbeat
 from app.fleet.keys import generate_fleet_key, hash_secret, parse_fleet_key, verify_secret
 
@@ -235,3 +236,75 @@ def fleet_overview(principal: Principal = Depends(resolve_principal)):
         healthy=healthy,
         with_open_alerts=with_alerts,
     )
+
+
+# --- enrollment (operator-admin) ---------------------------------------------
+
+class EnrollmentOut(BaseModel):
+    deployment_id: str
+    key_id: str
+    env: dict  # ONEBRAIN_FLEET_URL / ONEBRAIN_DEPLOYMENT_ID / ONEBRAIN_FLEET_KEY (token shown once)
+
+
+@router.post("/deployments/{deployment_id}/enroll", response_model=EnrollmentOut)
+def enroll_deployment(deployment_id: str, principal: Principal = Depends(resolve_principal)):
+    """Mint a fleet key for a deployment and return the three env vars its reporter
+    needs. The operator applies these to the deployment's Railway env (provisioning
+    does this automatically for new deployments)."""
+    _require_operator_admin(principal)
+    if not get_control_plane_store().get_deployment(deployment_id):
+        raise HTTPException(status_code=404, detail="No such deployment in the registry.")
+    settings = get_settings()
+    if not settings.fleet_public_url:
+        raise HTTPException(status_code=409, detail="ONEBRAIN_FLEET_PUBLIC_URL is not configured on Mission Control.")
+    fleet_store = get_fleet_store()
+    # Rotate: re-enrolling supersedes the deployment's prior keys so active keys
+    # don't accumulate unbounded (each stays valid for heartbeat ingest otherwise).
+    for key in fleet_store.list_keys(deployment_id):
+        if key.status == "active":
+            fleet_store.revoke_key(key.id)
+    key_id, token = mint_deployment_fleet_key(fleet_store, deployment_id,
+                                              label=f"enrollment:{deployment_id}", now_iso=_now())
+    return EnrollmentOut(
+        deployment_id=deployment_id, key_id=key_id,
+        env=fleet_enrollment_vars(settings.fleet_public_url, deployment_id, token),
+    )
+
+
+# --- heartbeat history / analytics (operator-admin) --------------------------
+
+class HeartbeatPoint(BaseModel):
+    received_at: str
+    reported_at: str = ""
+    healthy: bool
+    version: str = ""
+    counts: dict = Field(default_factory=dict)
+
+
+class HeartbeatHistoryOut(BaseModel):
+    deployment_id: str
+    points: list[HeartbeatPoint]
+    total: int
+
+
+@router.get("/deployments/{deployment_id}/history", response_model=HeartbeatHistoryOut)
+def heartbeat_history(deployment_id: str, since: str = "", limit: int = 500,
+                      principal: Principal = Depends(resolve_principal)):
+    _require_operator_admin(principal)
+    since = since.strip()
+    if since:
+        try:
+            datetime.fromisoformat(since)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Malformed 'since' timestamp (use ISO-8601).")
+    rows = get_fleet_store().list_heartbeats(deployment_id, since_iso=since, limit=max(1, min(limit, 5000)))
+    points = []
+    for hb in rows:
+        ob = (hb.payload.get("onebrain") if hb.payload else None) or {}
+        points.append(HeartbeatPoint(
+            received_at=hb.received_at, reported_at=hb.reported_at, healthy=hb.healthy, version=hb.version,
+            counts={k: ob.get(k, 0) for k in
+                    ("users", "accounts", "chunks", "intake_records", "active_service_keys",
+                     "jobs_pending", "jobs_failed", "auth_failures_recent", "api_5xx_recent")},
+        ))
+    return HeartbeatHistoryOut(deployment_id=deployment_id, points=points, total=len(points))

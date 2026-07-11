@@ -15,6 +15,8 @@ class MemoryFleetStore:
     def __init__(self, persist_path: Optional[str] = None):
         self._keys: Dict[str, FleetKey] = {}
         self._latest: Dict[str, Heartbeat] = {}
+        self._history: Dict[str, List[Heartbeat]] = {}
+        self._history_cap = 2000  # per deployment, in-memory bound
         self._alerts: Dict[str, FleetAlert] = {}
         self._lock = threading.RLock()
         self._persist_path = persist_path
@@ -77,6 +79,10 @@ class MemoryFleetStore:
     def record_heartbeat(self, heartbeat: Heartbeat) -> Heartbeat:
         with self._lock:
             self._latest[heartbeat.deployment_id] = heartbeat
+            hist = self._history.setdefault(heartbeat.deployment_id, [])
+            hist.append(heartbeat)
+            if len(hist) > self._history_cap:
+                del hist[: len(hist) - self._history_cap]
             self._save()
             return heartbeat
 
@@ -85,6 +91,23 @@ class MemoryFleetStore:
 
     def latest_heartbeats(self) -> Dict[str, Heartbeat]:
         return dict(self._latest)
+
+    def list_heartbeats(self, deployment_id: str, since_iso: str = "", limit: int = 500) -> List[Heartbeat]:
+        # Note: _history is in-memory only (not JSON-persisted) — the memory store
+        # is dev/test; production history lives in Postgres fleet_heartbeats.
+        rows = [hb for hb in self._history.get(deployment_id, []) if not since_iso or hb.received_at >= since_iso]
+        return sorted(rows, key=lambda hb: hb.received_at, reverse=True)[:max(1, min(limit, 5000))]
+
+    def prune_heartbeats(self, before_iso: str) -> int:
+        with self._lock:
+            removed = 0
+            for deployment_id, rows in list(self._history.items()):
+                kept = [hb for hb in rows if hb.received_at >= before_iso]
+                removed += len(rows) - len(kept)
+                self._history[deployment_id] = kept
+            if removed:
+                self._save()
+            return removed
 
     # --- alerts ---
     def open_alert(self, alert: FleetAlert) -> FleetAlert:

@@ -40,6 +40,13 @@ import type {
   BootstrapSecretResult,
   ServiceKeyInfo,
   UploadDocumentInput,
+  FleetOverview,
+  FleetRollout,
+  FleetRolloutCreateResult,
+  CreateFleetRolloutInput,
+  FleetKeyInfo,
+  MintedFleetKey,
+  DeploymentEnrollment,
 } from "@/lib/onebrain-types";
 import { cleanScope, scopeQuery } from "@/lib/onebrain-types";
 
@@ -393,4 +400,52 @@ export async function askStream(
       }
     }
   }
+}
+
+// --- fleet (Mission Control) ---
+
+export function getFleetOverview(): Promise<FleetOverview> {
+  return requestJson<FleetOverview>("/fleet/overview");
+}
+
+export function listFleetRollouts(): Promise<FleetRollout[]> {
+  return requestJson<FleetRollout[]>("/operator/fleet-rollouts");
+}
+
+export function createFleetRollout(input: CreateFleetRolloutInput): Promise<FleetRolloutCreateResult> {
+  return requestJson<FleetRolloutCreateResult>("/operator/fleet-rollouts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+function fleetRolloutAction(id: string, action: "pause" | "resume" | "abort"): Promise<FleetRollout> {
+  return requestJson<FleetRollout>(`/operator/fleet-rollouts/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+}
+
+export const pauseFleetRollout = (id: string) => fleetRolloutAction(id, "pause");
+export const resumeFleetRollout = (id: string) => fleetRolloutAction(id, "resume");
+export const abortFleetRollout = (id: string) => fleetRolloutAction(id, "abort");
+
+export function listFleetKeys(): Promise<FleetKeyInfo[]> {
+  return requestJson<FleetKeyInfo[]>("/fleet/keys");
+}
+
+export function mintFleetKey(deploymentId: string, label = ""): Promise<MintedFleetKey> {
+  return requestJson<MintedFleetKey>("/fleet/keys", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deployment_id: deploymentId, label }),
+  });
+}
+
+export function revokeFleetKey(id: string): Promise<{ revoked: string }> {
+  return requestJson<{ revoked: string }>(`/fleet/keys/${encodeURIComponent(id)}/revoke`, { method: "POST" });
+}
+
+export function enrollDeployment(deploymentId: string): Promise<DeploymentEnrollment> {
+  return requestJson<DeploymentEnrollment>(`/fleet/deployments/${encodeURIComponent(deploymentId)}/enroll`, {
+    method: "POST",
+  });
 }

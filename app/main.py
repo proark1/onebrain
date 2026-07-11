@@ -82,6 +82,12 @@ def create_app() -> FastAPI:
     # Mission Control only: ingest fleet heartbeats and serve the fleet surface.
     if settings.operator_mode:
         app.include_router(fleet.router)
+        try:
+            from app.fleet.retention import start_fleet_retention
+
+            start_fleet_retention(settings)
+        except Exception as exc:  # never fatal
+            logging.getLogger("onebrain").warning("Fleet retention not started: %s", exc)
 
     @app.get("/health")
     def health():

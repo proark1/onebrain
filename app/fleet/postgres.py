@@ -103,6 +103,24 @@ class PostgresFleetStore:
                         "ORDER BY deployment_id, received_at DESC")
             return {r[1]: self._hb_row(r) for r in cur.fetchall()}
 
+    def list_heartbeats(self, deployment_id: str, since_iso: str = "", limit: int = 500) -> List[Heartbeat]:
+        clause = "AND received_at >= %s::timestamptz" if since_iso else ""
+        params = [deployment_id] + ([since_iso] if since_iso else []) + [max(1, min(limit, 5000))]
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {self._HB_COLS} FROM fleet_heartbeats WHERE deployment_id = %s {clause} "
+                "ORDER BY received_at DESC LIMIT %s",
+                tuple(params),
+            )
+            return [self._hb_row(r) for r in cur.fetchall()]
+
+    def prune_heartbeats(self, before_iso: str) -> int:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM fleet_heartbeats WHERE received_at < %s::timestamptz", (before_iso,))
+            removed = cur.rowcount
+            conn.commit()
+        return int(removed)
+
     # --- alerts ---
     def _alert_row(self, r) -> FleetAlert:
         return FleetAlert(id=r[0], deployment_id=r[1], kind=r[2], detail=r[3] or "",
