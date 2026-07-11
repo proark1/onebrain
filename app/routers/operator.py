@@ -41,6 +41,7 @@ router = APIRouter(prefix="/api/operator", tags=["operator"])
 
 class DeploymentCreate(BaseModel):
     customer_name: str = Field(min_length=1, max_length=200)
+    account_id: str = Field(default="", max_length=120)
     environment: str = Field(default="production", max_length=80)
     deployment_type: str = Field(default="dedicated_railway", max_length=80)
     region: str = Field(default="", max_length=80)
@@ -307,11 +308,16 @@ def _require_admin(principal: Principal) -> None:
 def _account_id_for_deployment(deployment_id: str) -> str | None:
     """Authoritatively map a deployment to its owning account for AUTHORIZATION.
 
-    Uses only non-collidable signals — the server-written `customer.provisioned`
-    audit (authoritative), then the `dep_{account_id}` provisioning convention —
-    and deliberately NOT the customer_name display heuristic in
-    _deployment_for_account, which an attacker could collide by naming an account
-    after a victim deployment. Returns None (caller fails closed) when unmapped."""
+    Prefers the deployment's authoritative account_id (set at provisioning /
+    create time). Falls back — for legacy rows created before that column — to
+    non-collidable signals only: the server-written `customer.provisioned` audit,
+    then the `dep_{account_id}` convention. Deliberately NOT the customer_name
+    display heuristic in _deployment_for_account, which an attacker could collide
+    by naming an account after a victim deployment. Returns None (caller fails
+    closed) when unmapped."""
+    deployment = get_control_plane_store().get_deployment(deployment_id)
+    if deployment and deployment.account_id:
+        return deployment.account_id
     platform = get_platform_store()
     accounts = platform.list_accounts()
     for account in accounts:
@@ -746,10 +752,18 @@ def list_deployments(principal: Principal = Depends(resolve_principal)):
 @router.post("/deployments", response_model=DeploymentOut)
 def create_deployment(body: DeploymentCreate, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
+    account_id = body.account_id.strip()
+    # Off Mission Control, a deployment must be tied to an account the caller
+    # administers — otherwise create_deployment would be a way to register an
+    # unscoped, fleet-visible record. The operator (operator_mode) creates for any
+    # customer account.
+    if not get_settings().operator_mode:
+        authorize_account_admin(principal, account_id, get_platform_store())
     try:
         deployment = get_control_plane_store().create_deployment(CustomerDeployment(
             id=body.id or f"dep_{uuid4().hex[:12]}",
             customer_name=body.customer_name.strip(),
+            account_id=account_id,
             environment=body.environment.strip(),
             deployment_type=body.deployment_type.strip(),
             region=body.region.strip(),

@@ -68,10 +68,10 @@ class PostgresControlPlaneStore:
                 """
                 INSERT INTO control_deployments
                 (id, customer_name, environment, deployment_type, region, release_ring,
-                 status, current_version, current_migration)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 status, current_version, current_migration, account_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id, customer_name, environment, deployment_type, region,
-                    release_ring, status, current_version, current_migration, created_at
+                    release_ring, status, current_version, current_migration, created_at, account_id
                 """,
                 (
                     deployment.id,
@@ -83,6 +83,7 @@ class PostgresControlPlaneStore:
                     deployment.status,
                     deployment.current_version,
                     deployment.current_migration,
+                    deployment.account_id,
                 ),
             )
             row = cur.fetchone()
@@ -94,7 +95,7 @@ class PostgresControlPlaneStore:
             cur.execute(
                 """
                 SELECT id, customer_name, environment, deployment_type, region,
-                    release_ring, status, current_version, current_migration, created_at
+                    release_ring, status, current_version, current_migration, created_at, account_id
                 FROM control_deployments
                 WHERE id = %s
                 """,
@@ -108,7 +109,7 @@ class PostgresControlPlaneStore:
             cur.execute(
                 """
                 SELECT id, customer_name, environment, deployment_type, region,
-                    release_ring, status, current_version, current_migration, created_at
+                    release_ring, status, current_version, current_migration, created_at, account_id
                 FROM control_deployments
                 ORDER BY lower(customer_name), id
                 """
@@ -438,6 +439,7 @@ class PostgresControlPlaneStore:
             current_version=row[7],
             current_migration=row[8],
             created_at=_iso(row[9]),
+            account_id=row[10] or "",
         )
 
     def _module(self, row) -> DeploymentModule:

@@ -381,10 +381,9 @@ def _fleet_telemetry_module():
     return _load_migration_module("0015_fleet_telemetry.py", "fleet_telemetry_migration")
 
 
-def test_fleet_telemetry_migration_is_head():
+def test_fleet_telemetry_migration_structure():
     migration = _fleet_telemetry_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
     assert migration.revision == "0015_fleet_telemetry"
     assert len(migration.revision) <= 32
     assert migration.down_revision == "0014_tombstones"
@@ -394,6 +393,24 @@ def test_fleet_telemetry_migration_is_head():
     assert "CREATE TABLE IF NOT EXISTS fleet_keys" in src
     assert "CREATE TABLE IF NOT EXISTS fleet_heartbeats" in src
     assert "CREATE TABLE IF NOT EXISTS fleet_alerts" in src
+
+
+def _deployment_account_id_module():
+    return _load_migration_module("0016_deployment_account_id.py", "deployment_account_id_migration")
+
+
+def test_deployment_account_id_migration_is_head():
+    migration = _deployment_account_id_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision == "0016_deployment_account_id"
+    assert len(migration.revision) <= 32
+    assert migration.down_revision == "0015_fleet_telemetry"
+    src = (
+        Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0016_deployment_account_id.py"
+    ).read_text()
+    assert "ADD COLUMN IF NOT EXISTS account_id" in src
+    assert "control_deployments" in src
 
 
 def test_assistant_workday_contract_migration_structure():

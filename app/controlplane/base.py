@@ -29,6 +29,7 @@ RUN_STATUSES = frozenset({"pending", "running", "success", "failed", "paused"})
 class CustomerDeployment:
     id: str
     customer_name: str
+    account_id: str = ""          # owning platform account; authoritative for operator authz
     environment: str = "production"
     deployment_type: str = "dedicated_railway"
     region: str = ""

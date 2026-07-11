@@ -170,6 +170,7 @@ class CustomerProvisioner:
         deployment = CustomerDeployment(
             id=deployment_id,
             customer_name=customer_name,
+            account_id=account_id,
             deployment_type=deployment_type.strip(),
             region=region.strip(),
             release_ring=release_ring.strip(),

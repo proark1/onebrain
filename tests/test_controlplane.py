@@ -642,3 +642,48 @@ def test_deployment_authz_ignores_account_name_collision(monkeypatch):
     with pytest.raises(HTTPException) as ei:
         operator_router.list_modules("dep_realowner", principal=attacker)
     assert ei.value.status_code == 404
+
+
+# --- authoritative account_id linkage ----------------------------------------
+
+def test_create_deployment_requires_account_admin(monkeypatch):
+    platform = MemoryPlatformStore()
+    control = MemoryControlPlaneStore()
+    platform.create_account(Account(id="acme", kind="organization", name="Acme", owner_user_id="owner@acme"))
+    monkeypatch.setattr(operator_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: control)
+
+    with pytest.raises(HTTPException) as ei:  # non-owning admin cannot create for acme
+        operator_router.create_deployment(
+            operator_router.DeploymentCreate(customer_name="Acme", account_id="acme", id="dep_x"),
+            principal=_principal("admin"))
+    assert ei.value.status_code == 404
+
+    owner = _principal("admin")
+    object.__setattr__(owner, "user_id", "owner@acme")
+    operator_router.create_deployment(
+        operator_router.DeploymentCreate(customer_name="Acme", account_id="acme", id="dep_x"), principal=owner)
+    assert control.get_deployment("dep_x").account_id == "acme"
+
+
+def test_authorize_deployment_prefers_account_id_over_convention(monkeypatch):
+    platform = MemoryPlatformStore()
+    control = MemoryControlPlaneStore()
+    platform.create_account(Account(id="acme", kind="organization", name="Acme", owner_user_id="acme_admin@x"))
+    platform.create_account(Account(id="realowner", kind="organization", name="Real", owner_user_id="real@x"))
+    # id follows the dep_acme convention, but account_id authoritatively binds realowner.
+    control.create_deployment(CustomerDeployment(id="dep_acme", customer_name="X",
+                                                 account_id="realowner", release_ring="manual"))
+    control.upsert_module(DeploymentModule("dep_acme", "onebrain-api", "1.0.0"))
+    monkeypatch.setattr(operator_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: control)
+
+    acme_admin = _principal("admin")
+    object.__setattr__(acme_admin, "user_id", "acme_admin@x")  # matches the convention, but field wins
+    with pytest.raises(HTTPException) as ei:
+        operator_router.list_modules("dep_acme", principal=acme_admin)
+    assert ei.value.status_code == 404
+
+    real = _principal("admin")
+    object.__setattr__(real, "user_id", "real@x")
+    assert [m.module_id for m in operator_router.list_modules("dep_acme", principal=real)] == ["onebrain-api"]
