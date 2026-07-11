@@ -180,6 +180,22 @@ class Settings(BaseSettings):
     login_max_attempts: int = 5
     login_lockout_seconds: int = 900
 
+    # --- Mission Control (fleet control plane) ---
+    # operator_mode: this deployment IS Mission Control — it ingests fleet
+    # heartbeats and serves the operator/fleet surface. operator_console:
+    # whether the operator/fleet read surface is exposed at all (a
+    # customer-serving deployment sets this false so its admins can't see fleet
+    # state). A deployment reports to Mission Control when fleet_url + fleet_key
+    # are set.
+    operator_mode: bool = False
+    operator_console: bool = True
+    deployment_id: str = ""              # this deployment's control-plane id (for its heartbeat)
+    fleet_url: str = ""                  # Mission Control base URL the reporter POSTs to
+    fleet_key: str = ""                  # this deployment's fleet heartbeat key (fk_...)
+    fleet_report_seconds: int = 60       # how often the reporter posts a heartbeat
+    fleet_missed_heartbeat_seconds: int = 600   # watchdog: alert when older than this
+    fleet_target_version: str = ""       # expected fleet bundle version (drift alerting)
+
     # Service surface — per-key rate limit (metered LLM/embedding endpoints) and a
     # cap on how many active keys one tenant may hold.
     service_rate_limit: int = 60

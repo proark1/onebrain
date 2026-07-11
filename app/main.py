@@ -13,7 +13,7 @@ from app.config import get_settings
 from app.deps import get_pipeline, get_store, get_user_store
 from app.deploy.runtime import validate_runtime_safety
 from app.monitoring import record_api_error
-from app.routers import assistant, auth, chat, conversations, documents, jobs, operator, platform, privacy, provisioning, service, session
+from app.routers import assistant, auth, chat, conversations, documents, fleet, jobs, operator, platform, privacy, provisioning, service, session
 from app.seed import seed_if_empty
 from app.users.seed import seed_admin_from_env, seed_users_if_empty
 
@@ -66,12 +66,20 @@ def create_app() -> FastAPI:
     app.include_router(conversations.router)
     app.include_router(chat.router)
     app.include_router(platform.router)
-    app.include_router(operator.router)
+    # The operator/fleet read surface exposes cross-account state. A customer-
+    # serving deployment sets operator_console=false so its own admins can never
+    # reach it; Mission Control keeps it on.
+    if settings.operator_console:
+        app.include_router(operator.router)
     app.include_router(privacy.router)
     app.include_router(provisioning.router)
     app.include_router(assistant.router)
     app.include_router(service.service_router)
     app.include_router(service.keys_router)
+
+    # Mission Control only: ingest fleet heartbeats and serve the fleet surface.
+    if settings.operator_mode:
+        app.include_router(fleet.router)
 
     @app.get("/health")
     def health():
@@ -97,6 +105,17 @@ def create_app() -> FastAPI:
             logging.getLogger("onebrain").info("Admin account bootstrapped from ONEBRAIN_ADMIN_*.")
     except Exception as exc:
         logging.getLogger("onebrain").warning("Admin bootstrap skipped: %s", exc)
+
+    # A deployment configured with a Mission Control URL + fleet key reports its
+    # own metadata-only heartbeat on a timer. Never fatal — a reporting failure
+    # must not disturb serving.
+    try:
+        from app.fleet.reporter import start_reporter
+
+        if start_reporter(settings):
+            logging.getLogger("onebrain").info("Fleet reporter enabled.")
+    except Exception as exc:
+        logging.getLogger("onebrain").warning("Fleet reporter not started: %s", exc)
 
     if settings.legacy_static_ui_enabled:
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

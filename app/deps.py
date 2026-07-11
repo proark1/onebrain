@@ -130,6 +130,13 @@ def get_control_plane_store():
 
 
 @lru_cache
+def get_fleet_store():
+    from app.fleet.factory import build_fleet_store
+
+    return build_fleet_store(get_settings())
+
+
+@lru_cache
 def get_intake_store():
     from app.intake.factory import build_intake_store
 

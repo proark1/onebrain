@@ -362,10 +362,9 @@ def test_legal_holds_migration_structure():
     assert "onebrain_platform_legal_holds_scope" in src
 
 
-def test_tombstones_migration_is_head():
+def test_tombstones_migration_structure():
     migration = _tombstones_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
     assert migration.revision == "0014_tombstones"
     assert len(migration.revision) <= 32
     assert migration.down_revision == "0013_legal_holds"
@@ -376,6 +375,25 @@ def test_tombstones_migration_is_head():
     assert "CREATE TABLE IF NOT EXISTS platform_tombstone_acks" in src
     assert "BIGSERIAL" in src
     assert "FORCE ROW LEVEL SECURITY" in src
+
+
+def _fleet_telemetry_module():
+    return _load_migration_module("0015_fleet_telemetry.py", "fleet_telemetry_migration")
+
+
+def test_fleet_telemetry_migration_is_head():
+    migration = _fleet_telemetry_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision == "0015_fleet_telemetry"
+    assert len(migration.revision) <= 32
+    assert migration.down_revision == "0014_tombstones"
+    src = (
+        Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0015_fleet_telemetry.py"
+    ).read_text()
+    assert "CREATE TABLE IF NOT EXISTS fleet_keys" in src
+    assert "CREATE TABLE IF NOT EXISTS fleet_heartbeats" in src
+    assert "CREATE TABLE IF NOT EXISTS fleet_alerts" in src
 
 
 def test_assistant_workday_contract_migration_structure():
