@@ -103,7 +103,8 @@ class IntakeStore(Protocol):
 
     def export_records(self, tenant_id: str, account_id: str = "", space_id: str = "") -> List[dict]: ...
 
-    def delete_records_by_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> int: ...
+    def delete_records_by_scope(self, tenant_id: str, account_id: str = "", space_id: str = "",
+                                older_than: str = "") -> int: ...
 
     def delete_by_source_ref(
         self, tenant_id: str, source_ref: str, account_id: str = "", space_id: str = "",

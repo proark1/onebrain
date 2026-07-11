@@ -385,7 +385,11 @@ def test_retention_skips_held_scope_and_records_run(monkeypatch):
     monkeypatch.setattr(deps, "get_conversation_store", lambda: conversations)
     monkeypatch.setattr(deps, "get_intake_store", lambda: intake)
 
-    # _fixtures() seeds an active intake retention policy on sp_acme_service.
+    # _fixtures() seeds an active intake retention policy (30 days) on
+    # sp_acme_service. Backdate the record so it is past that window.
+    intake._records[service_record.id] = replace(
+        intake.get(service_record.id), created_at="2020-01-01T00:00:00+00:00",
+    )
     platform.create_legal_hold(LegalHold(
         id="h_ret", account_id="acme", space_id="sp_acme_service", reason="hold service data",
     ))
@@ -400,3 +404,39 @@ def test_retention_skips_held_scope_and_records_run(monkeypatch):
     assert done_run["legal_hold"] is False
     assert intake.get(service_record.id) is None
     assert platform.list_retention_runs("acme")[-1].status == "completed"
+
+
+def test_retention_deletes_only_records_older_than_duration(monkeypatch):
+    import app.deps as deps
+    from app.retention.service import run_retention
+
+    platform, store, conversations, intake, _sd, _pd, _sc, _pc, service_record, _pr = _fixtures()
+    monkeypatch.setattr(deps, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(deps, "get_store", lambda: store)
+    monkeypatch.setattr(deps, "get_conversation_store", lambda: conversations)
+    monkeypatch.setattr(deps, "get_intake_store", lambda: intake)
+
+    # A second intake record in the same scope, this one recent. The seeded one is
+    # backdated past the 30-day policy.
+    from app.intake.pipeline import IntakeInput, IntakePipeline
+    intake_pipe = IntakePipeline(
+        intake, type("Settings", (), {"pii_phase": "dpia_signed", "require_approval": False})(),
+    )
+    recent = intake_pipe.ingest(IntakeInput(
+        tenant_id="acme", account_id="acme", space_id="sp_acme_service",
+        app_id="communication", purpose="customer_service_inbox", source="communication",
+        content="A very recent customer message.",
+    ))
+    intake._records[service_record.id] = replace(
+        intake.get(service_record.id), created_at="2020-01-01T00:00:00+00:00",
+    )
+
+    # Dry run counts only the aged record; nothing is deleted.
+    preview = run_retention(account_id="acme", space_id="sp_acme_service", dry_run=True)
+    assert preview["counts"]["intake_records"] == 1
+    assert intake.get(service_record.id) is not None and intake.get(recent.id) is not None
+
+    # Real run deletes the aged record and keeps the recent one.
+    run_retention(account_id="acme", space_id="sp_acme_service", dry_run=False)
+    assert intake.get(service_record.id) is None
+    assert intake.get(recent.id) is not None

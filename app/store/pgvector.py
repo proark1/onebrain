@@ -232,8 +232,14 @@ class PgVectorStore:
             doc["chunks"].append({"id": chunk_id, "text": text, "meta": meta})
         return sorted(docs.values(), key=lambda d: d["title"].lower())
 
-    def delete_documents_by_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> dict:
+    def delete_documents_by_scope(self, tenant_id: str, account_id: str = "", space_id: str = "",
+                                  older_than: str = "") -> dict:
         where, params = _privacy_where(tenant_id, account_id, space_id)
+        if older_than:
+            # Text comparison of same-format UTC ISO timestamps orders them
+            # chronologically; a chunk with no created_at yields NULL and is kept.
+            where += " AND (meta->>'created_at') < %s"
+            params = [*params, older_than]
         with self._conn() as conn, conn.cursor() as cur:
             set_rls_scope(conn, tenant_id=tenant_id, account_id=account_id, space_id=space_id)
             cur.execute(f"SELECT count(DISTINCT doc_id), count(*) FROM chunks WHERE {where}", params)

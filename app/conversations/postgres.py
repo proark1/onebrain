@@ -193,8 +193,12 @@ class PostgresConversationStore:
             for row in conversations
         ]
 
-    def delete_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> int:
+    def delete_scope(self, tenant_id: str, account_id: str = "", space_id: str = "",
+                     older_than: str = "") -> int:
         where, params = _privacy_where(tenant_id, account_id, space_id)
+        if older_than:
+            where += " AND created_at < %s::timestamptz"
+            params = [*params, older_than]
         with self._conn() as conn, conn.cursor() as cur:
             set_rls_scope(conn, tenant_id=tenant_id, account_id=account_id, space_id=space_id)
             cur.execute(f"DELETE FROM conversations WHERE {where}", params)

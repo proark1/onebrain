@@ -106,7 +106,8 @@ class PostgresIntakeStore:
     def export_records(self, tenant_id: str, account_id: str = "", space_id: str = "") -> List[dict]:
         return [asdict(record) for record in self.list_by_scope(tenant_id, account_id, space_id)]
 
-    def delete_records_by_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> int:
+    def delete_records_by_scope(self, tenant_id: str, account_id: str = "", space_id: str = "",
+                                older_than: str = "") -> int:
         clauses = ["tenant_id = %s"]
         params = [tenant_id]
         if account_id:
@@ -115,6 +116,9 @@ class PostgresIntakeStore:
         if space_id:
             clauses.append("space_id = %s")
             params.append(space_id)
+        if older_than:
+            clauses.append("created_at < %s::timestamptz")
+            params.append(older_than)
         with self._conn() as conn, conn.cursor() as cur:
             set_rls_scope(conn, tenant_id=tenant_id, account_id=account_id, space_id=space_id)
             cur.execute(f"DELETE FROM intake_records WHERE {' AND '.join(clauses)}", params)

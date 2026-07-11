@@ -178,15 +178,26 @@ class MemoryStore:
             })
         return sorted(docs.values(), key=lambda d: d["title"].lower())
 
-    def delete_documents_by_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> dict:
+    def delete_documents_by_scope(self, tenant_id: str, account_id: str = "", space_id: str = "",
+                                  older_than: str = "") -> dict:
+        # older_than="" (the erase path) removes the whole scope. When set (the
+        # retention path) only chunks stamped with a created_at strictly before the
+        # cutoff go — a chunk with no created_at is never aged out.
+        def _match(chunk) -> bool:
+            if not _matches_privacy_scope(chunk.meta, tenant_id, account_id, space_id):
+                return False
+            if older_than:
+                ts = chunk.meta.get("created_at", "")
+                return bool(ts) and ts < older_than
+            return True
+
         with self._lock:
-            removed_chunks = [c for c in self._chunks if _matches_privacy_scope(c.meta, tenant_id, account_id, space_id)]
+            keep, removed_chunks = [], []
+            for chunk in self._chunks:
+                (removed_chunks if _match(chunk) else keep).append(chunk)
             removed_doc_ids = {c.doc_id for c in removed_chunks}
             if removed_chunks:
-                self._chunks = [
-                    c for c in self._chunks
-                    if not _matches_privacy_scope(c.meta, tenant_id, account_id, space_id)
-                ]
+                self._chunks = keep
                 self._save()
         return {"documents": len(removed_doc_ids), "chunks": len(removed_chunks)}
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from app.ingest.chunk import chunk_text
 from app.ingest.extract import extract_text
@@ -94,6 +95,10 @@ class IngestPipeline:
 
         vectors = self._embedder.embed([f"{title}. {piece}" for piece in pieces])
         doc_id = uuid.uuid4().hex
+        # A single ingest timestamp for the whole document. Retention filters on
+        # this: a chunk with no created_at (pre-Phase-1b) is never aged out, so
+        # retention can only ever delete records it can prove are old enough.
+        created_at = datetime.now(timezone.utc).isoformat()
         chunks = []
         for i, (piece, vector) in enumerate(zip(pieces, vectors)):
             meta = {
@@ -107,6 +112,7 @@ class IngestPipeline:
                 "uploaded_by": uploaded_by,
                 "status": status,
                 "pii_findings": pii_findings,
+                "created_at": created_at,
             }
             if account_id:
                 meta["account_id"] = account_id

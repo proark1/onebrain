@@ -155,11 +155,13 @@ class MemoryConversationStore:
         rows.sort(key=lambda row: row["updated_at"], reverse=True)
         return rows
 
-    def delete_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> int:
+    def delete_scope(self, tenant_id: str, account_id: str = "", space_id: str = "",
+                     older_than: str = "") -> int:
         with self._lock:
             ids = [
                 conv.id for conv in self._conversations.values()
                 if _matches_privacy_scope(conv, tenant_id, account_id, space_id)
+                and (not older_than or (conv.created_at and conv.created_at < older_than))
             ]
             for conversation_id in ids:
                 self._conversations.pop(conversation_id, None)

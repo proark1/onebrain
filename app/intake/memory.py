@@ -79,11 +79,13 @@ class MemoryIntakeStore:
     def export_records(self, tenant_id: str, account_id: str = "", space_id: str = "") -> List[dict]:
         return [asdict(record) for record in self.list_by_scope(tenant_id, account_id, space_id)]
 
-    def delete_records_by_scope(self, tenant_id: str, account_id: str = "", space_id: str = "") -> int:
+    def delete_records_by_scope(self, tenant_id: str, account_id: str = "", space_id: str = "",
+                                older_than: str = "") -> int:
         with self._lock:
             remove_ids = [
                 record.id for record in self._records.values()
                 if _matches_scope(record, tenant_id, account_id, space_id)
+                and (not older_than or (record.created_at and record.created_at < older_than))
             ]
             for record_id in remove_ids:
                 self._records.pop(record_id, None)
