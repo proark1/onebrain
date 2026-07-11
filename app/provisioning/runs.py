@@ -585,56 +585,86 @@ class GitHubWorkflowDispatcher:
         callback_url = str(run.request_payload.get("callback_url", "")).strip()
         if not callback_url:
             raise RuntimeError("Provisioning callback URL is required.")
-        callback_url = callback_url.replace("{run_id}", run.id)
-        url = (
-            f"https://api.github.com/repos/{self.settings.github_owner}/"
-            f"{self.settings.github_repo}/actions/workflows/"
-            f"{self.settings.github_workflow}/dispatches"
-        )
-        payload = {
-            "ref": self.settings.github_ref,
-            "inputs": {
-                "run_id": run.id,
-                "account_id": run.account_id,
-                "deployment_id": run.deployment_id,
-                "bundle_id": run.bundle_id,
-                "customer_name": str(run.request_payload.get("customer_name", "")),
-                "deployment_type": str(run.request_payload.get("deployment_type", "")),
-                "region": str(run.request_payload.get("region", "")),
-                "release_ring": str(run.request_payload.get("release_ring", "")),
-                "initial_version": str(run.request_payload.get("initial_version", "")),
-                "module_versions_json": json.dumps(run.request_payload.get("module_versions", {})),
-                "brand_theme_json": json.dumps(run.request_payload.get("brand_theme", {})),
-                "callback_url": callback_url,
-                "callback_key_id": self.settings.provisioning_callback_key_id,
-                "dry_run": "true" if run.request_payload.get("dry_run", True) else "false",
-            },
+        inputs = {
+            "run_id": run.id,
+            "account_id": run.account_id,
+            "deployment_id": run.deployment_id,
+            "bundle_id": run.bundle_id,
+            "customer_name": str(run.request_payload.get("customer_name", "")),
+            "deployment_type": str(run.request_payload.get("deployment_type", "")),
+            "region": str(run.request_payload.get("region", "")),
+            "release_ring": str(run.request_payload.get("release_ring", "")),
+            "initial_version": str(run.request_payload.get("initial_version", "")),
+            "module_versions_json": json.dumps(run.request_payload.get("module_versions", {})),
+            "brand_theme_json": json.dumps(run.request_payload.get("brand_theme", {})),
+            "callback_url": callback_url.replace("{run_id}", run.id),
+            "callback_key_id": self.settings.provisioning_callback_key_id,
+            "dry_run": "true" if run.request_payload.get("dry_run", True) else "false",
         }
-        request = Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            method="POST",
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {self.settings.github_dispatch_token}",
-                "Content-Type": "application/json",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-        )
-        try:
-            with urlopen(request, timeout=20):
-                pass
-        except HTTPError as exc:
-            body = exc.read().decode("utf-8")[:500]
-            raise RuntimeError(f"GitHub workflow dispatch failed ({exc.code}): {body}") from exc
-        except URLError as exc:
-            raise RuntimeError(f"GitHub workflow dispatch failed: {exc.reason}") from exc
-
-        workflow_url = (
-            f"https://github.com/{self.settings.github_owner}/{self.settings.github_repo}/"
-            f"actions/workflows/{self.settings.github_workflow}"
+        workflow_url = dispatch_workflow(
+            self.settings, self.settings.github_workflow, self.settings.github_ref, inputs
         )
         return replace(run, status=STATUS_DISPATCHED, external_run_url=workflow_url, dispatched_at=now_iso())
+
+
+def dispatch_workflow(settings, workflow: str, ref: str, inputs: dict, *, opener=None) -> str:
+    """POST a GitHub workflow_dispatch and return the workflow's Actions URL.
+
+    Pure of any one job's specifics — provisioning and rollouts both use it.
+    `opener(request, timeout)` is injectable so tests need no network (same
+    pattern as app/fleet/reporter.send_heartbeat)."""
+    url = (
+        f"https://api.github.com/repos/{settings.github_owner}/{settings.github_repo}/"
+        f"actions/workflows/{workflow}/dispatches"
+    )
+    request = Request(
+        url,
+        data=json.dumps({"ref": ref, "inputs": inputs}).encode("utf-8"),
+        method="POST",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {settings.github_dispatch_token}",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    do_open = opener or (lambda req, timeout: urlopen(req, timeout=timeout))
+    try:
+        with do_open(request, 20):
+            pass
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8")[:500]
+        raise RuntimeError(f"GitHub workflow dispatch failed ({exc.code}): {body}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"GitHub workflow dispatch failed: {exc.reason}") from exc
+    return f"https://github.com/{settings.github_owner}/{settings.github_repo}/actions/workflows/{workflow}"
+
+
+class RolloutWorkflowDispatcher:
+    """Dispatches the update-customer workflow for a rollout (mirrors
+    GitHubWorkflowDispatcher). Returns the workflow URL; the caller records it on
+    the rollout. Requires the same github_* config plus github_update_workflow."""
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+
+    @property
+    def enabled(self) -> bool:
+        return all([
+            self.settings.github_owner,
+            self.settings.github_repo,
+            self.settings.github_update_workflow,
+            self.settings.github_ref,
+            self.settings.github_dispatch_token,
+        ])
+
+    def dispatch(self, inputs: dict, *, opener=None) -> str:
+        if not self.enabled:
+            raise RuntimeError("GitHub rollout dispatch is not configured.")
+        return dispatch_workflow(
+            self.settings, self.settings.github_update_workflow, self.settings.github_ref,
+            inputs, opener=opener,
+        )
 
 
 def create_run(

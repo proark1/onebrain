@@ -13,7 +13,7 @@ from app.config import get_settings
 from app.deps import get_pipeline, get_store, get_user_store
 from app.deploy.runtime import validate_runtime_safety
 from app.monitoring import record_api_error
-from app.routers import assistant, auth, chat, conversations, documents, fleet, jobs, operator, platform, privacy, provisioning, service, session
+from app.routers import assistant, auth, chat, conversations, documents, fleet, jobs, operator, platform, privacy, provisioning, rollouts, service, session
 from app.seed import seed_if_empty
 from app.users.seed import seed_admin_from_env, seed_users_if_empty
 
@@ -73,6 +73,7 @@ def create_app() -> FastAPI:
     if settings.is_operator_surface:
         app.include_router(operator.router)
         app.include_router(provisioning.router)
+        app.include_router(rollouts.router)
     app.include_router(privacy.router)
     app.include_router(assistant.router)
     app.include_router(service.service_router)

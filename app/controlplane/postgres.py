@@ -332,7 +332,9 @@ class PostgresControlPlaneStore:
                 INSERT INTO control_rollouts
                 (id, deployment_id, target_version, status, started_by, notes)
                 VALUES (%s, %s, %s, %s, %s, %s)
-                RETURNING id, deployment_id, target_version, status, started_by, notes, created_at
+                RETURNING id, deployment_id, target_version, status, started_by, notes, created_at,
+                    exec_status, external_provider, external_run_id, external_run_url,
+                    failure_reason, request_payload, dispatched_at, completed_at, fleet_rollout_id
                 """,
                 (
                     rollout.id,
@@ -347,12 +349,14 @@ class PostgresControlPlaneStore:
             conn.commit()
         return self._rollout(row)
 
-    def update_rollout_status(self, rollout_id: str, status: str, notes: str = "") -> RolloutRun:
+    def update_rollout_status(self, rollout_id: str, status: str, notes: str = "", apply: bool = True) -> RolloutRun:
         validate_run_status(status)
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, deployment_id, target_version, status, started_by, notes, created_at
+                SELECT id, deployment_id, target_version, status, started_by, notes, created_at,
+                    exec_status, external_provider, external_run_id, external_run_url,
+                    failure_reason, request_payload, dispatched_at, completed_at, fleet_rollout_id
                 FROM control_rollouts
                 WHERE id = %s
                 """,
@@ -366,7 +370,7 @@ class PostgresControlPlaneStore:
                 raise ValueError("terminal rollout status cannot be changed")
 
             updated = replace(rollout, status=status, notes=notes.strip() or rollout.notes)
-            if status == "success":
+            if status == "success" and apply:
                 plan = self.plan_update(rollout.deployment_id, rollout.target_version)
                 if not plan.allowed:
                     raise ValueError(f"rollout completion blocked: {plan.reason}")
@@ -405,7 +409,9 @@ class PostgresControlPlaneStore:
                 UPDATE control_rollouts
                 SET status = %s, notes = %s, updated_at = now()
                 WHERE id = %s
-                RETURNING id, deployment_id, target_version, status, started_by, notes, created_at
+                RETURNING id, deployment_id, target_version, status, started_by, notes, created_at,
+                    exec_status, external_provider, external_run_id, external_run_url,
+                    failure_reason, request_payload, dispatched_at, completed_at, fleet_rollout_id
                 """,
                 (updated.status, updated.notes, rollout_id),
             )
@@ -417,7 +423,9 @@ class PostgresControlPlaneStore:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, deployment_id, target_version, status, started_by, notes, created_at
+                SELECT id, deployment_id, target_version, status, started_by, notes, created_at,
+                    exec_status, external_provider, external_run_id, external_run_url,
+                    failure_reason, request_payload, dispatched_at, completed_at, fleet_rollout_id
                 FROM control_rollouts
                 WHERE deployment_id = %s
                 ORDER BY created_at, id
@@ -426,6 +434,77 @@ class PostgresControlPlaneStore:
             )
             rows = cur.fetchall()
         return [self._rollout(row) for row in rows]
+
+    _ROLLOUT_COLS = (
+        "id, deployment_id, target_version, status, started_by, notes, created_at, "
+        "exec_status, external_provider, external_run_id, external_run_url, "
+        "failure_reason, request_payload, dispatched_at, completed_at, fleet_rollout_id"
+    )
+    _EXEC_FIELDS = {
+        "exec_status", "external_run_id", "external_run_url", "failure_reason",
+        "dispatched_at", "completed_at", "request_payload", "fleet_rollout_id",
+    }
+
+    def get_rollout(self, rollout_id: str) -> Optional[RolloutRun]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT {self._ROLLOUT_COLS} FROM control_rollouts WHERE id = %s", (rollout_id,))
+            row = cur.fetchone()
+        return self._rollout(row) if row else None
+
+    def list_active_rollout(self, deployment_id: str) -> Optional[RolloutRun]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {self._ROLLOUT_COLS} FROM control_rollouts "
+                "WHERE deployment_id = %s AND status NOT IN ('success', 'failed') "
+                "ORDER BY created_at, id LIMIT 1",
+                (deployment_id,),
+            )
+            row = cur.fetchone()
+        return self._rollout(row) if row else None
+
+    def claim_rollout_dispatch(self, rollout_id: str) -> bool:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE control_rollouts SET exec_status = 'dispatched', updated_at = now() "
+                "WHERE id = %s AND exec_status = 'pending'",
+                (rollout_id,),
+            )
+            claimed = cur.rowcount == 1
+            conn.commit()
+        return claimed
+
+    def update_rollout_exec(self, rollout_id: str, **fields) -> RolloutRun:
+        bad = set(fields) - self._EXEC_FIELDS
+        if bad:
+            raise ValueError(f"cannot update rollout exec fields: {sorted(bad)}")
+        if not fields:
+            got = self.get_rollout(rollout_id)
+            if not got:
+                raise ValueError(f"unknown rollout: {rollout_id}")
+            return got
+        sets, params = [], []
+        for key, value in fields.items():
+            if key == "request_payload":
+                sets.append("request_payload = %s::jsonb")
+                params.append(json.dumps(value))
+            elif key in ("dispatched_at", "completed_at"):
+                sets.append(f"{key} = %s::timestamptz")
+                params.append(value or None)
+            else:
+                sets.append(f"{key} = %s")
+                params.append(value)
+        params.append(rollout_id)
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE control_rollouts SET {', '.join(sets)}, updated_at = now() "
+                f"WHERE id = %s RETURNING {self._ROLLOUT_COLS}",
+                tuple(params),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"unknown rollout: {rollout_id}")
+            conn.commit()
+        return self._rollout(row)
 
     def _deployment(self, row) -> CustomerDeployment:
         return CustomerDeployment(
@@ -465,6 +544,9 @@ class PostgresControlPlaneStore:
         return HealthCheckRun(id=row[0], deployment_id=row[1], status=row[2], detail=row[3], created_at=_iso(row[4]))
 
     def _rollout(self, row) -> RolloutRun:
+        payload = row[12]
+        if isinstance(payload, str):
+            payload = json.loads(payload) if payload else {}
         return RolloutRun(
             id=row[0],
             deployment_id=row[1],
@@ -473,4 +555,13 @@ class PostgresControlPlaneStore:
             started_by=row[4],
             notes=row[5],
             created_at=_iso(row[6]),
+            exec_status=row[7],
+            external_provider=row[8],
+            external_run_id=row[9] or "",
+            external_run_url=row[10] or "",
+            failure_reason=row[11] or "",
+            request_payload=payload or {},
+            dispatched_at=_iso(row[13]),
+            completed_at=_iso(row[14]),
+            fleet_rollout_id=row[15] or "",
         )

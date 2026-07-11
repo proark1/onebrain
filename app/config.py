@@ -126,6 +126,7 @@ class Settings(BaseSettings):
     github_owner: str = ""
     github_repo: str = ""
     github_workflow: str = "provision-customer.yml"
+    github_update_workflow: str = "update-customer.yml"   # fleet rollout executor
     github_ref: str = "main"
     github_dispatch_token: str = ""
     provisioning_callback_key_id: str = ""

@@ -197,7 +197,7 @@ class MemoryControlPlaneStore:
             self._save()
             return rollout
 
-    def update_rollout_status(self, rollout_id: str, status: str, notes: str = "") -> RolloutRun:
+    def update_rollout_status(self, rollout_id: str, status: str, notes: str = "", apply: bool = True) -> RolloutRun:
         validate_run_status(status)
         with self._lock:
             rollout = self._rollouts.get(rollout_id)
@@ -207,7 +207,7 @@ class MemoryControlPlaneStore:
                 raise ValueError("terminal rollout status cannot be changed")
             updated = replace(rollout, status=status, notes=notes.strip() or rollout.notes)
 
-            if status == "success":
+            if status == "success" and apply:
                 plan = self.plan_update(rollout.deployment_id, rollout.target_version)
                 if not plan.allowed:
                     raise ValueError(f"rollout completion blocked: {plan.reason}")
@@ -233,5 +233,49 @@ class MemoryControlPlaneStore:
             self._save()
             return updated
 
+    def get_rollout(self, rollout_id: str) -> Optional[RolloutRun]:
+        return self._rollouts.get(rollout_id)
+
     def list_rollouts(self, deployment_id: str) -> List[RolloutRun]:
         return [r for r in self._rollouts.values() if r.deployment_id == deployment_id]
+
+    def list_active_rollout(self, deployment_id: str) -> Optional[RolloutRun]:
+        """A non-terminal rollout for this deployment (concurrency guard) or None."""
+        for rollout in self._rollouts.values():
+            if rollout.deployment_id == deployment_id and rollout.status not in {"success", "failed"}:
+                return rollout
+        return None
+
+    def claim_rollout_dispatch(self, rollout_id: str) -> bool:
+        """Atomically claim a pending rollout for dispatch (compare-and-set
+        exec_status pending->dispatched). Returns False if it is not pending — the
+        guard that prevents two concurrent dispatches firing two real update jobs."""
+        with self._lock:
+            rollout = self._rollouts.get(rollout_id)
+            if not rollout or rollout.exec_status != "pending":
+                return False
+            self._rollouts[rollout_id] = replace(rollout, exec_status="dispatched")
+            self._save()
+            return True
+
+    _EXEC_FIELDS = {
+        "exec_status", "external_run_id", "external_run_url", "failure_reason",
+        "dispatched_at", "completed_at", "request_payload", "fleet_rollout_id",
+    }
+
+    def update_rollout_exec(self, rollout_id: str, **fields) -> RolloutRun:
+        """Persist execution-lifecycle fields only. Bookkeeping status transitions
+        (and the version-apply) go through update_rollout_status; this keeps them
+        cleanly separated. Guarding (monotonic rank / terminal) is done by the pure
+        apply_rollout_callback before it calls here."""
+        bad = set(fields) - self._EXEC_FIELDS
+        if bad:
+            raise ValueError(f"cannot update rollout exec fields: {sorted(bad)}")
+        with self._lock:
+            rollout = self._rollouts.get(rollout_id)
+            if not rollout:
+                raise ValueError(f"unknown rollout: {rollout_id}")
+            updated = replace(rollout, **fields)
+            self._rollouts[rollout_id] = updated
+            self._save()
+            return updated

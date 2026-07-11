@@ -399,10 +399,9 @@ def _deployment_account_id_module():
     return _load_migration_module("0016_deployment_account_id.py", "deployment_account_id_migration")
 
 
-def test_deployment_account_id_migration_is_head():
+def test_deployment_account_id_migration_structure():
     migration = _deployment_account_id_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
     assert migration.revision == "0016_deployment_account_id"
     assert len(migration.revision) <= 32
     assert migration.down_revision == "0015_fleet_telemetry"
@@ -411,6 +410,25 @@ def test_deployment_account_id_migration_is_head():
     ).read_text()
     assert "ADD COLUMN IF NOT EXISTS account_id" in src
     assert "control_deployments" in src
+
+
+def _rollout_execution_module():
+    return _load_migration_module("0017_rollout_execution.py", "rollout_execution_migration")
+
+
+def test_rollout_execution_migration_is_head():
+    migration = _rollout_execution_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision == "0017_rollout_execution"
+    assert len(migration.revision) <= 32
+    assert migration.down_revision == "0016_deployment_account_id"
+    src = (
+        Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0017_rollout_execution.py"
+    ).read_text()
+    assert "ADD COLUMN IF NOT EXISTS" in src
+    assert "exec_status" in src
+    assert "control_rollouts" in src
 
 
 def test_assistant_workday_contract_migration_structure():

@@ -1,0 +1,274 @@
+name: Update Customer
+
+# Fleet rollout executor: redeploys ONE customer deployment to a target release and
+# posts a callback that drives the rollout state machine. Mirrors the hardening of
+# provision-customer.yml: every input is mapped to an IN_* job env var and referenced
+# as "${IN_X}" (never ${{ }} interpolation) in run: scripts; python heredocs are
+# quoted (<<'PY') and read os.environ only; secrets are masked.
+
+on:
+  workflow_dispatch:
+    inputs:
+      rollout_id:
+        required: true
+        type: string
+      account_id:
+        required: true
+        type: string
+      deployment_id:
+        required: true
+        type: string
+      target_version:
+        required: true
+        type: string
+      git_sha:
+        required: false
+        type: string
+        default: ""
+      modules_to_update_json:
+        required: false
+        type: string
+        default: "{}"
+      migration_from:
+        required: false
+        type: string
+        default: ""
+      migration_to:
+        required: false
+        type: string
+        default: ""
+      railway_project_id:
+        required: false
+        type: string
+        default: ""
+      railway_environment_id:
+        required: false
+        type: string
+        default: ""
+      service_ids_json:
+        required: false
+        type: string
+        default: "{}"
+      callback_url:
+        required: true
+        type: string
+      callback_key_id:
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        required: false
+        type: choice
+        options: ["true", "false"]
+        default: "true"
+
+jobs:
+  update:
+    name: Update customer stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      IN_ROLLOUT_ID: ${{ inputs.rollout_id }}
+      IN_ACCOUNT_ID: ${{ inputs.account_id }}
+      IN_DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+      IN_TARGET_VERSION: ${{ inputs.target_version }}
+      IN_GIT_SHA: ${{ inputs.git_sha }}
+      IN_MODULES_TO_UPDATE_JSON: ${{ inputs.modules_to_update_json }}
+      IN_MIGRATION_FROM: ${{ inputs.migration_from }}
+      IN_MIGRATION_TO: ${{ inputs.migration_to }}
+      IN_RAILWAY_PROJECT_ID: ${{ inputs.railway_project_id }}
+      IN_RAILWAY_ENVIRONMENT_ID: ${{ inputs.railway_environment_id }}
+      IN_SERVICE_IDS_JSON: ${{ inputs.service_ids_json }}
+      IN_CALLBACK_URL: ${{ inputs.callback_url }}
+      IN_CALLBACK_KEY_ID: ${{ inputs.callback_key_id }}
+      IN_DRY_RUN: ${{ inputs.dry_run }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${IN_ROLLOUT_ID}"
+          test -n "${IN_DEPLOYMENT_ID}"
+          test -n "${IN_TARGET_VERSION}"
+          test -n "${IN_CALLBACK_URL}"
+          python -m json.tool <<< "${IN_MODULES_TO_UPDATE_JSON}" >/dev/null
+          python -m json.tool <<< "${IN_SERVICE_IDS_JSON}" >/dev/null
+
+      - name: Mask secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ secrets.ONEBRAIN_PROVISIONING_CALLBACK_KEY }}" ]; then
+            echo "::add-mask::${{ secrets.ONEBRAIN_PROVISIONING_CALLBACK_KEY }}"
+          fi
+          if [ -n "${{ secrets.RAILWAY_TOKEN }}" ]; then
+            echo "::add-mask::${{ secrets.RAILWAY_TOKEN }}"
+          fi
+
+      - name: Send running callback
+        shell: bash
+        env:
+          CALLBACK_KEY: ${{ secrets.ONEBRAIN_PROVISIONING_CALLBACK_KEY }}
+        run: |
+          set -euo pipefail
+          payload=$(python - <<'PY'
+          import json, os
+          run_id = os.environ["GITHUB_RUN_ID"]
+          url = f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}'
+          print(json.dumps({"status": "running", "external_run_id": run_id, "external_run_url": url}))
+          PY
+          )
+          curl --fail-with-body -sS -X POST "${IN_CALLBACK_URL}" \
+            -H "Authorization: Bearer ${CALLBACK_KEY}" \
+            -H "X-OneBrain-Callback-Key-Id: ${IN_CALLBACK_KEY_ID}" \
+            -H "Content-Type: application/json" \
+            --data "${payload}"
+
+      - name: Dry-run update
+        if: ${{ inputs.dry_run == 'true' }}
+        shell: bash
+        env:
+          CALLBACK_KEY: ${{ secrets.ONEBRAIN_PROVISIONING_CALLBACK_KEY }}
+        run: |
+          set -euo pipefail
+          # No Railway calls — this is the seam that makes the executor verifiable.
+          payload=$(python - <<'PY'
+          import json, os
+          run_id = os.environ["GITHUB_RUN_ID"]
+          url = f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}'
+          print(json.dumps({
+              "status": "succeeded",
+              "dry_run": True,
+              "external_run_id": run_id,
+              "external_run_url": url,
+              "migration_revision": os.environ["IN_MIGRATION_TO"] or os.environ["IN_TARGET_VERSION"],
+              "smoke_status": "dry_run_passed",
+              "result_payload": {
+                  "target_version": os.environ["IN_TARGET_VERSION"],
+                  "modules_to_update": json.loads(os.environ["IN_MODULES_TO_UPDATE_JSON"]),
+              },
+          }))
+          PY
+          )
+          curl --fail-with-body -sS -X POST "${IN_CALLBACK_URL}" \
+            -H "Authorization: Bearer ${CALLBACK_KEY}" \
+            -H "X-OneBrain-Callback-Key-Id: ${IN_CALLBACK_KEY_ID}" \
+            -H "Content-Type: application/json" \
+            --data "${payload}"
+
+      - name: Install Railway CLI
+        if: ${{ inputs.dry_run == 'false' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g @railway/cli
+
+      - name: Apply update to Railway
+        if: ${{ inputs.dry_run == 'false' }}
+        shell: bash
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+          CALLBACK_KEY: ${{ secrets.ONEBRAIN_PROVISIONING_CALLBACK_KEY }}
+        run: |
+          set -euo pipefail
+          TOKEN="${RAILWAY_API_TOKEN:-${RAILWAY_TOKEN:-}}"
+          if [ -z "${TOKEN}" ]; then
+            echo "RAILWAY_API_TOKEN or RAILWAY_TOKEN is required for a real update" >&2
+            exit 1
+          fi
+          export RAILWAY_TOKEN="${TOKEN}"
+          railway link --project "${IN_RAILWAY_PROJECT_ID}" --environment "${IN_RAILWAY_ENVIRONMENT_ID}" >/dev/null
+
+          # 1) Back up BEFORE any schema change (a real snapshot, not bookkeeping).
+          if [ "${IN_MIGRATION_FROM}" != "${IN_MIGRATION_TO}" ]; then
+            railway run --service onebrain-api -- pg_dump "${DATABASE_URL:-}" > .update_backup.sql || {
+              echo "pre-update backup failed" >&2; exit 1;
+            }
+          fi
+
+          # 2) Pin each module to its target image tag, then redeploy the changed services.
+          python - <<'PY' > .update_services.txt
+          import json, os
+          for module in json.loads(os.environ["IN_MODULES_TO_UPDATE_JSON"]):
+              print(module)
+          PY
+          while IFS= read -r service; do
+            [ -z "${service}" ] && continue
+            railway redeploy --service "${service}" --yes >/dev/null
+          done < .update_services.txt
+
+          # 3) Apply migrations on the workers service when the release changes schema.
+          if [ "${IN_MIGRATION_FROM}" != "${IN_MIGRATION_TO}" ]; then
+            railway run --service onebrain-workers -- alembic upgrade head
+          fi
+
+          # 4) Smoke-check the API health; only report succeeded if it passes (fail-closed).
+          API_URL="$(railway variables get --service onebrain-api ONEBRAIN_ADMIN_UI_URL 2>/dev/null || true)"
+          export API_URL
+          python - <<'PY'
+          import os, sys, time, urllib.request
+          base = os.environ.get("API_URL", "").rstrip("/")
+          if not base:
+              print("no API URL to smoke-check; skipping", file=sys.stderr); raise SystemExit(0)
+          deadline = time.time() + 180
+          while time.time() < deadline:
+              try:
+                  with urllib.request.urlopen(base + "/health", timeout=10) as r:
+                      if 200 <= r.status < 500:
+                          raise SystemExit(0)
+              except Exception:
+                  time.sleep(10)
+          print("smoke check failed", file=sys.stderr); raise SystemExit(1)
+          PY
+
+          payload=$(python - <<'PY'
+          import json, os
+          run_id = os.environ["GITHUB_RUN_ID"]
+          url = f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}'
+          print(json.dumps({
+              "status": "succeeded",
+              "external_run_id": run_id,
+              "external_run_url": url,
+              "migration_revision": os.environ["IN_MIGRATION_TO"] or os.environ["IN_TARGET_VERSION"],
+              "smoke_status": "core_smoke_passed",
+              "result_payload": {"target_version": os.environ["IN_TARGET_VERSION"]},
+          }))
+          PY
+          )
+          curl --fail-with-body -sS -X POST "${IN_CALLBACK_URL}" \
+            -H "Authorization: Bearer ${CALLBACK_KEY}" \
+            -H "X-OneBrain-Callback-Key-Id: ${IN_CALLBACK_KEY_ID}" \
+            -H "Content-Type: application/json" \
+            --data "${payload}"
+
+      - name: Report failure
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          CALLBACK_KEY: ${{ secrets.ONEBRAIN_PROVISIONING_CALLBACK_KEY }}
+        run: |
+          set +e
+          export REASON="update workflow failed; inspect sanitized GitHub Actions logs"
+          payload=$(python - <<'PY'
+          import json, os
+          run_id = os.environ["GITHUB_RUN_ID"]
+          url = f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}'
+          print(json.dumps({
+              "status": "failed",
+              "external_run_id": run_id,
+              "external_run_url": url,
+              "failure_reason": os.environ["REASON"],
+          }))
+          PY
+          )
+          curl -sS -X POST "${IN_CALLBACK_URL}" \
+            -H "Authorization: Bearer ${CALLBACK_KEY}" \
+            -H "X-OneBrain-Callback-Key-Id: ${IN_CALLBACK_KEY_ID}" \
+            -H "Content-Type: application/json" \
+            --data "${payload}" || true

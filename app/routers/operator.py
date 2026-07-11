@@ -29,9 +29,16 @@ from app.deps import (
     get_intake_store,
     get_job_store,
     get_platform_store,
+    get_provisioning_run_store,
     get_service_key_store,
     get_store,
 )
+from app.controlplane.rollout_exec import (
+    build_rollout_dispatch_inputs,
+    mark_rollout_dispatch_failed,
+    resolve_railway_target,
+)
+from app.provisioning.runs import RolloutWorkflowDispatcher
 from app.monitoring import MonitoringSummary, monitoring_snapshot
 from app.platform.base import AuditEvent
 from app.schemas import BrandThemeOut, ServiceKeyInfo
@@ -140,6 +147,11 @@ class RolloutCreate(BaseModel):
     status: str = "pending"
     notes: str = ""
     id: str | None = None
+
+
+class RolloutDispatch(BaseModel):
+    callback_url: str = Field(min_length=1, max_length=500)
+    dry_run: bool = True
 
 
 class RolloutStatusUpdate(BaseModel):
@@ -971,6 +983,71 @@ def start_rollout(deployment_id: str, body: RolloutCreate, principal: Principal 
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _rollout_out(rollout)
+
+
+@router.post("/deployments/{deployment_id}/rollouts/{rollout_id}/dispatch", response_model=RolloutOut)
+def dispatch_rollout(
+    deployment_id: str,
+    rollout_id: str,
+    body: RolloutDispatch,
+    principal: Principal = Depends(resolve_principal),
+):
+    """Dispatch a real update-customer workflow run for an existing (pending)
+    rollout. Re-checks the plan_update safety gate, guards single-in-flight per
+    deployment, and requires known Railway coordinates (fail-closed)."""
+    _require_admin(principal)
+    _authorize_deployment(principal, deployment_id)
+    from app.routers.provisioning import _validate_callback_url
+
+    control = get_control_plane_store()
+    rollout = control.get_rollout(rollout_id)
+    if not rollout or rollout.deployment_id != deployment_id:
+        raise HTTPException(status_code=404, detail="Rollout not found.")
+    if rollout.exec_status != "pending":
+        raise HTTPException(status_code=409, detail="Rollout has already been dispatched.")
+    active = control.list_active_rollout(deployment_id)
+    if active and active.id != rollout_id:
+        raise HTTPException(status_code=409, detail="Another rollout is already in progress for this deployment.")
+
+    plan = control.plan_update(deployment_id, rollout.target_version)
+    if not plan.allowed:
+        raise HTTPException(status_code=409, detail=f"Update blocked: {plan.reason}")
+    release = control.get_release(rollout.target_version)
+    deployment = control.get_deployment(deployment_id)
+    if not release or not deployment:
+        raise HTTPException(status_code=409, detail="Rollout target is no longer available.")
+
+    _validate_callback_url(body.callback_url)
+    try:
+        railway = resolve_railway_target(get_provisioning_run_store(), deployment_id)
+    except ValueError as exc:
+        mark_rollout_dispatch_failed(control, rollout, str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # Atomically claim the pending rollout (compare-and-set exec_status
+    # pending->dispatched) BEFORE the network dispatch, so two concurrent requests
+    # can never both fire a real update job for the same rollout.
+    if not control.claim_rollout_dispatch(rollout_id):
+        raise HTTPException(status_code=409, detail="Rollout has already been dispatched.")
+
+    settings = get_settings()
+    inputs = build_rollout_dispatch_inputs(
+        rollout=rollout, plan=plan, release=release, deployment=deployment, railway=railway,
+        callback_url=body.callback_url, callback_key_id=settings.provisioning_callback_key_id,
+        dry_run=body.dry_run,
+    )
+    try:
+        workflow_url = RolloutWorkflowDispatcher(settings).dispatch(inputs)
+    except RuntimeError as exc:
+        mark_rollout_dispatch_failed(control, rollout, str(exc))
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    updated = control.update_rollout_exec(
+        rollout_id, external_run_url=workflow_url,
+        dispatched_at=datetime.now(timezone.utc).isoformat(),
+        request_payload={"dry_run": body.dry_run},
+    )
+    return _rollout_out(updated)
 
 
 @router.patch("/rollouts/{rollout_id}", response_model=RolloutOut)

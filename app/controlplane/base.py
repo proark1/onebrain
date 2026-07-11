@@ -88,6 +88,16 @@ class RolloutRun:
     started_by: str
     notes: str = ""
     created_at: str = ""
+    # Execution lifecycle (a rollout is a dispatched GitHub-Actions update job).
+    exec_status: str = "pending"          # see rollout_exec.ROLLOUT_EXEC_STATUSES
+    external_provider: str = "github_actions"
+    external_run_id: str = ""
+    external_run_url: str = ""
+    failure_reason: str = ""
+    request_payload: Dict = field(default_factory=dict)
+    dispatched_at: str = ""
+    completed_at: str = ""
+    fleet_rollout_id: str = ""            # set when part of a fleet-wide rollout (Phase 2)
 
 
 @dataclass(frozen=True)
@@ -130,9 +140,17 @@ class ControlPlaneStore(Protocol):
 
     def start_rollout(self, rollout: RolloutRun) -> RolloutRun: ...
 
-    def update_rollout_status(self, rollout_id: str, status: str, notes: str = "") -> RolloutRun: ...
+    def update_rollout_status(self, rollout_id: str, status: str, notes: str = "", apply: bool = True) -> RolloutRun: ...
+
+    def get_rollout(self, rollout_id: str) -> Optional[RolloutRun]: ...
 
     def list_rollouts(self, deployment_id: str) -> List[RolloutRun]: ...
+
+    def list_active_rollout(self, deployment_id: str) -> Optional[RolloutRun]: ...
+
+    def claim_rollout_dispatch(self, rollout_id: str) -> bool: ...
+
+    def update_rollout_exec(self, rollout_id: str, **fields) -> RolloutRun: ...
 
 
 def validate_deployment(deployment: CustomerDeployment) -> None:
