@@ -56,6 +56,42 @@ Corrections the gate forced:
 - **A Hetzner box already exists in production** (voice edge). It is the fourth
   surface and must not go silently stale during the migration.
 
+### 1.1 Product model and master-admin requirements (fixed 2026-07-12)
+
+Assad fixed the product vision; the plan below is adapted to it.
+
+- **Three products, per-customer composition.** OneBrain is always deployed; Personal
+  Assistant and AI Communication are optional add-ons, individually selectable per
+  customer (either, both, or neither).
+- **Provisioning UX (master dashboard):** the master admin enters the new customer,
+  designates the customer's owner/admin, picks the products, clicks **Deploy** → a new
+  dedicated Hetzner server is created with exactly the selected services.
+  **Dedicated box per customer is the confirmed default** (`deployment_type =
+  dedicated_server`; the shared tier stays in the model as a possible later option).
+- **First login:** the customer owner receives a username and a **one-time password**,
+  is admin of their deployment ONLY, and must change the password on first login.
+- **Shared code:** all three products share code as closely as possible → resolves the
+  monorepo decisions below (Phase 8 is confirmed; PA merges in).
+- **Dev deployment = ring `internal`:** the first Hetzner box (Assad's own stacks —
+  today's Railway deployment, migrated in Phase 6) is the permanent development
+  deployment. Every release lands there first. Precisely: changes land in code → CI
+  builds signed images → the dev box (ring `internal`) receives them first → the
+  master dashboard pushes/promotes to chosen customers — one, several, or all, when
+  the master decides. The dev server is the first *receiver* of a release, not a
+  hand-edited source.
+- **Master overview + analytics** across all deployments (fleet overview, heartbeat
+  history, rollout state — largely built; extended per-module later).
+
+Verified against the code: the control plane already models this.
+`app/controlplane/base.py` defines `MODULE_IDS` spanning all three products
+(onebrain-api/admin-ui/workers, assistant-service,
+communication-api/widget/voice/workers), `DeploymentModule` records which modules each
+deployment runs, `ReleaseManifest.modules` pins per-module versions, and `plan_update`
+computes `modules_to_update` per deployment — a customer without Communication never
+receives Communication updates. `ROLL_OUT_RINGS` already contains `internal`. What is
+genuinely new is listed in Phases 4–5: compose profiles driven by module selection, the
+one-time-credential flow, and the product-picker provisioning form.
+
 ## 2. Phases
 
 ### Phase 1 — Preflight branch and dependency triage (existing repos, Railway live)
@@ -66,7 +102,7 @@ Corrections the gate forced:
 - Triage `feature/intake-retrieval-projection` (onebrain); triage
   `feat/operator-human-takeover` and close dependabot branches (comm).
 - Inventory `personalasisstant` as a live third production system and make the scope
-  decision (§5, decision 1). Note it has uncommitted local work.
+  decision (§4.1 — resolved: merge in at Phase 8). Note it has uncommitted local work.
 - Dev-box hygiene while free: enable Windows long paths + `git config core.longpaths`
   (needed by the Phase 8 merge).
 
@@ -131,6 +167,18 @@ control plane immediately:
     proxy hop count.
 - Optionally fold the voice-edge Go binary deploy into this pipeline, retiring the
   git-pull-on-box mechanism.
+- **Per-customer product composition (new, per §1.1):** the provisioner maps the
+  deployment's enabled modules (`DeploymentModule` rows chosen at customer creation)
+  to **docker-compose profiles** — one compose file for all products; a box only
+  starts the profiles for the products the customer bought. The ReleaseManifest still
+  pins ALL module images (one safe version fleet-wide); boxes only pull images for
+  enabled profiles. The per-module env-var and health-probe manifests from Phase 3
+  are keyed off the same module list.
+- **First-login credential flow (new, per §1.1):** provisioning generates the customer
+  owner's admin account with a **one-time password** (returned once to the master
+  dashboard, never stored in plaintext) and a `must_change_password` flag enforced at
+  first login in onebrain auth. Small feature; needed before the first external
+  customer, built here so the dogfood run in Phase 6 exercises it.
 
 ### Phase 5 — E0: Mission Control bootstrap on Hetzner + observability flip
 
@@ -139,12 +187,16 @@ control plane immediately:
   an ad-hoc hand-build), then enroll it in its own `update.sh` pull path so it is
   fleet-managed thereafter. Only the very first invocation is manual.
 - Generate signing/enrollment keys. MC DB: start fresh vs migrate control-plane tables
-  from the Railway onebrain Postgres (§5, decision 3).
+  from the Railway onebrain Postgres (§4.3 — resolved: start empty).
 - Flip as **one change window**: `ONEBRAIN_FLEET_URL` / `ONEBRAIN_FLEET_PUBLIC_URL`
   and `ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS` on every deployment, off
   `*.up.railway.app`. Verify a heartbeat **arrives** at the new MC from each stack;
   treat no-heartbeat-within-N-minutes as a rollback trigger, never silence-as-success
   (the reporter fails quietly by design).
+- **Master-dashboard provisioning form (per §1.1):** customer name + owner
+  email + product checkboxes (PA / Communication; OneBrain implied) + **Deploy**
+  button on the operator console, wired to the provisioning API with the module
+  selection; displays the one-time owner credential exactly once on success.
 
 ### Phase 6 — Dogfood migration of nft_gym + assaddar_ai_communication
 
@@ -177,9 +229,9 @@ step. Per stack:
 - Widget embeds: tenant sites embedding
   `assaddar-widget-production.up.railway.app/widget.js` break silently at
   decommission — regenerate embed snippets or keep a redirect through a deprecation
-  window (§5, decision 4).
+  window (§4.4 — resolved: regenerate snippets).
 - Then decommission the Railway projects (PA's services included/excluded per the
-  Phase 1 decision). Warm-standby duration: §5, decision 5.
+  Phase 1 decision). Warm-standby duration: §4.5 — resolved: ~2 weeks.
 - **Do NOT archive the old repos** — they still drive Hetzner via GHCR CI.
 
 ### Phase 8 — Monorepo merge (post-cutover, off the critical path)
@@ -215,7 +267,7 @@ Mechanics per the git-surgery findings:
   `app/assistant/contracts.py` vs comm's hand-mirrored TS enums) and fix
   `/api/service/capabilities`, which advertises the assistant vocabulary while intake
   validates against a different set. Extracting first would freeze that inconsistency
-  into a versioned package. (§5, decision 6.)
+  into a versioned package. (§4.6 — resolved: converge.)
 - Then: single schema source with generated types **committed into each service tree**
   (`services/onebrain/app/contracts_gen/`, `packages/contracts/`) plus a
   regenerate-and-fail-on-diff CI job — per-service Docker build contexts survive
@@ -237,31 +289,41 @@ Mechanics per the git-surgery findings:
   both horns rejected; don't fork at all (merge last) dominates both.
 - **"New repo, reject in-place" as a hard constraint** — downgraded; post-cutover,
   deploys are pull-gated by signed manifests, so a bad layout commit just fails CI.
-  New-repo vs in-place becomes a preference (§5, decision 2).
+  New-repo vs in-place becomes a preference (§4.2 — resolved: in-place, confirm at Phase 8).
 - **"Accept that MC itself is not dogfooded"** — rejected in favor of the stronger
   bootstrap: MC is built from the same deploy artifacts and then self-managed.
 - **"Repoint Railway Root Directory at the monorepo right after the merge"** —
   rejected; trades the fork for an early prod-touching atomic flip solely to preserve
   a merge ordering the evidence no longer supports.
 
-## 4. Open decisions
+## 4. Decisions (resolved 2026-07-12 against the §1.1 product model)
 
-1. **personalasisstant scope:** merge into the eventual monorepo as
-   `services/assistant` (it has uncommitted local work and 3 Railway services of its
-   own) vs keep it a separate repo with its own GHCR digest pipeline + repoint tasks.
-2. **Phase 8 shape:** still worth doing at all — and if yes, NEW repo
-   (`onebrain-platform`, clean but full secrets re-creation) vs restructure onebrain
-   in place (viable once deploys are pull-gated; keeps repo identity/issues/tokens).
-3. **MC database at bootstrap:** start empty (defensible with zero external customers;
-   loses provisioning-run/audit history, requires re-enrolling both stacks) vs migrate
-   control-plane tables out of the Railway onebrain Postgres.
-4. **Widget embed cutover:** update embed snippets on every tenant site at cutover vs
-   keep the Railway widget domain as a redirect through a deprecation window.
-5. **Railway decommission timing:** hard-off at Phase 7 vs warm standby for N weeks as
-   a rollback path.
-6. **Vocabulary reconciliation direction (Phase 9):** converge on ONE canonical
-   record_type/intent vocabulary vs explicitly namespacing `intake.v1` and
-   `assistant.v1` — a product taxonomy decision, not an engineering default.
+1. **personalasisstant scope → MERGE IN.** All three products share code as closely as
+   possible (Assad's explicit goal), so PA merges into the monorepo as
+   `services/assistant` at Phase 8. Until then it keeps its own repo + GHCR digest
+   pipeline (Phase 2). Its uncommitted local work gets committed during Phase 1
+   triage.
+2. **Phase 8 shape → YES, do it; restructure onebrain IN PLACE (recommendation,
+   confirm at Phase 8).** The onebrain repo is the natural base: the control plane
+   and `deploy/` layer already live there, and in-place keeps repo identity, issues,
+   tokens, and Actions history. Rename the repo to reflect the platform afterwards
+   (GitHub redirects old remotes). Comm and PA merge in via the prep-branch `git mv`
+   mechanics of Phase 8.
+3. **MC database at bootstrap → START EMPTY.** Zero external customers; the existing
+   control-plane rows describe Railway deployments that are being decommissioned.
+   Take a final archived `pg_dump` of the Railway control-plane tables for the
+   record, then re-register the dogfood stacks through the real provisioning +
+   enrollment path — which doubles as the end-to-end test of that path.
+4. **Widget embed cutover → regenerate snippets directly, no redirect window.** Every
+   site carrying the embed belongs to Assad (sole operator, own accounts). Stays on
+   the Phase 7 rehearsal checklist.
+5. **Railway decommission timing → warm standby ~2 weeks, then hard off.** Cheap
+   insurance during the first weeks of self-hosted operation; delete after two clean
+   weeks on Hetzner.
+6. **Vocabulary (Phase 9) → CONVERGE on one canonical record_type/intent vocabulary.**
+   One platform, shared contracts; namespacing would freeze the divergence the merge
+   exists to eliminate. The concrete taxonomy is designed in Phase 9 (it is not on
+   the Hetzner critical path).
 
 ## 5. Gate traceability
 
