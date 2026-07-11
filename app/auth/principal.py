@@ -15,7 +15,7 @@ from typing import Optional
 from fastapi import Cookie, Header, HTTPException, Request
 
 from app.auth.roles import ROLES
-from app.auth.tokens import read_token
+from app.auth.tokens import read_session_token
 from app.security.policy import AccessFilter, Classification
 
 HUMAN_TENANT = "nft_gym"  # default tenant for accounts that don't specify one
@@ -62,6 +62,7 @@ class Principal:
         return AccessFilter(
             self.tenant_id, int(self.clearance), self.locations, self.categories,
             account_id=self.account_id, space_ids=self.space_ids,
+            user_id=self.user_id,
         )
 
 
@@ -97,10 +98,24 @@ def principal_from_user(user) -> Principal:
 
 def resolve_principal(ob_session: str = Cookie(default="")) -> Principal:
     from app.config import get_settings
-    from app.deps import get_user_store
+    from app.deps import get_session_store, get_user_store
 
-    user_id = read_token(ob_session, get_settings().auth_secret) if ob_session else None
-    if not user_id:
+    parsed = read_session_token(ob_session, get_settings().auth_secret) if ob_session else None
+    if not parsed:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id, session_id = parsed
+
+    # The signed token proves the cookie is authentic and unexpired; the session
+    # row is what makes it revocable. A logged-out, offboarded, or force-revoked
+    # session is rejected on the very next request, even if the token has days of
+    # TTL left. A missing row (purged, or a legacy pre-session cookie) also fails.
+    session = get_session_store().get(session_id)
+    if not session or not session.active or session.user_id != user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    # Defense in depth: reject an expired-but-un-revoked row even if some future
+    # issuance path hands out a token whose `exp` outlives the session row.
+    from datetime import datetime, timezone
+    if session.is_expired(datetime.now(timezone.utc).isoformat()):
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     user = get_user_store().get(user_id)

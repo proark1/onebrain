@@ -320,10 +320,30 @@ def _assistant_workday_contract_module():
     )
 
 
-def test_assistant_workday_contract_migration_is_head():
-    migration = _assistant_workday_contract_module()
+def _auth_sessions_module():
+    return _load_migration_module("0012_auth_sessions.py", "auth_sessions_migration")
+
+
+def test_auth_sessions_migration_is_head():
+    migration = _auth_sessions_module()
 
     assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision == "0012_auth_sessions"
+    assert len(migration.revision) <= 32
+    assert migration.down_revision == "0011_assistant_workday_contract"
+    # The revocation table and the fast active/user lookup indexes must be created.
+    src = (
+        Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0012_auth_sessions.py"
+    ).read_text()
+    assert "CREATE TABLE IF NOT EXISTS auth_sessions" in src
+    assert "revoked_at" in src
+    assert "idx_auth_sessions_user" in src
+
+
+def test_assistant_workday_contract_migration_structure():
+    migration = _assistant_workday_contract_module()
+
+    assert migration.revision == "0011_assistant_workday_contract"
     assert len(migration.revision) <= 32
     assert migration.down_revision == "0010_append_only_audit"
     # The backfill targets only rows holding exactly the pre-Phase-4 full contract,

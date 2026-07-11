@@ -68,3 +68,65 @@ def test_to_sql_enforces_approved_status():
 
     where, _ = AccessFilter("nft_gym", 3, None, None).to_sql()
     assert "status" in where and "approved" in where
+
+
+def _personal_chunk(owner: str) -> dict:
+    return {
+        "tenant_id": "nft_gym",
+        "classification": 0,                 # PUBLIC — clearance is not what gates this
+        "space_id": "sp_personal",
+        "space_kind": "personal",
+        "owner_user_id": owner,
+    }
+
+
+def test_private_space_is_visible_only_to_its_owner():
+    from app.security.policy import AccessFilter, Classification
+
+    # Even a maximally-cleared admin cannot read a colleague's personal space.
+    admin = AccessFilter("nft_gym", int(Classification.RESTRICTED), None, None, user_id="admin@nft_gym")
+    assert admin.allows(_personal_chunk("alice@nft_gym")) is False
+
+    alice = AccessFilter("nft_gym", int(Classification.INTERNAL), None, None, user_id="alice@nft_gym")
+    assert alice.allows(_personal_chunk("alice@nft_gym")) is True   # her own space
+    assert alice.allows(_personal_chunk("bob@nft_gym")) is False     # not hers
+
+
+def test_private_space_denied_to_identityless_and_service_callers():
+    from app.security.policy import AccessFilter, Classification
+
+    # A caller with no user_id (service key path, unauthenticated) can never own a
+    # private space, so a personal-space chunk with an empty owner is NOT world-readable.
+    anon = AccessFilter("nft_gym", int(Classification.RESTRICTED), None, None)
+    assert anon.allows(_personal_chunk("alice@nft_gym")) is False
+    assert anon.allows(_personal_chunk("")) is False
+
+    svc = AccessFilter("nft_gym", int(Classification.PUBLIC), frozenset(), frozenset({"general"}),
+                       user_id="svc:comms-key")
+    assert svc.allows(_personal_chunk("alice@nft_gym")) is False
+
+
+def test_non_private_chunks_are_unaffected_by_owner_rule():
+    from app.security.policy import AccessFilter, Classification
+
+    # A chunk with no space_kind (the general corpus) is never treated as private,
+    # regardless of who is asking — preserves pre-existing behaviour exactly.
+    other = AccessFilter("nft_gym", int(Classification.INTERNAL), None, None, user_id="bob@nft_gym")
+    shared = {"tenant_id": "nft_gym", "classification": int(Classification.INTERNAL)}
+    assert other.allows(shared) is True
+    assert other.allows({**shared, "space_kind": "business", "owner_user_id": "alice@nft_gym"}) is True
+
+
+def test_to_sql_enforces_private_space_owner():
+    from app.security.policy import AccessFilter, Classification
+
+    where, params = AccessFilter(
+        "nft_gym", int(Classification.RESTRICTED), None, None, user_id="alice@nft_gym"
+    ).to_sql()
+    assert "space_kind" in where and "owner_user_id" in where
+    assert "alice@nft_gym" in params
+
+    # With no identity, there is no owner escape hatch — private spaces are excluded outright.
+    anon_where, anon_params = AccessFilter("nft_gym", 3, None, None).to_sql()
+    assert "space_kind" in anon_where and "owner_user_id" not in anon_where
+    assert all(p != "alice@nft_gym" for p in anon_params)

@@ -31,13 +31,20 @@ class IngestResult:
 
 
 class IngestPipeline:
-    def __init__(self, embedder, store):
+    def __init__(self, embedder, store, space_resolver=None):
         self._embedder = embedder
         self._store = store
+        # Optional callable: space_id -> (space_kind, owner_user_id). Wired in
+        # deps.get_pipeline so every production ingest path (upload, capture,
+        # async worker, seed) stamps a space's kind and — for private spaces —
+        # its owner, without each caller having to look it up. Left None in unit
+        # tests, which pass space_kind/owner_user_id explicitly when they need them.
+        self._space_resolver = space_resolver
 
     def ingest_text(self, *, title, text, classification, location, category, uploaded_by, tenant,
                     require_approval=False, block_public_on_pii=True, pii_phase="dpia_signed",
-                    account_id: str = "", space_id: str = "") -> IngestResult:
+                    account_id: str = "", space_id: str = "",
+                    space_kind: str = "", owner_user_id: str = "") -> IngestResult:
         cls = Classification.parse(classification)
         location = (location or GLOBAL_LOCATION).strip().lower() or GLOBAL_LOCATION
         category = (category or GENERAL_CATEGORY).strip().lower() or GENERAL_CATEGORY
@@ -50,6 +57,15 @@ class IngestPipeline:
 
         account_id = (account_id or "").strip()
         space_id = (space_id or "").strip()
+        space_kind = (space_kind or "").strip()
+        owner_user_id = (owner_user_id or "").strip()
+        # Resolve the space's kind and owner once, unless the caller supplied them.
+        # A private space with no resolvable owner stays owner="" — which the access
+        # filter treats as owned-by-nobody (fail closed), never as world-readable.
+        if space_id and self._space_resolver is not None and not (space_kind and owner_user_id):
+            resolved_kind, resolved_owner = self._space_resolver(space_id)
+            space_kind = space_kind or (resolved_kind or "").strip()
+            owner_user_id = owner_user_id or (resolved_owner or "").strip()
 
         pieces = chunk_text(text)
         if not pieces:
@@ -96,6 +112,13 @@ class IngestPipeline:
                 meta["account_id"] = account_id
             if space_id:
                 meta["space_id"] = space_id
+            # space_kind + owner_user_id drive the private-space owner rule in
+            # AccessFilter. Only stamped when known; a chunk in a private space
+            # therefore always carries both (owner may be "" = owned-by-nobody).
+            if space_kind:
+                meta["space_kind"] = space_kind
+            if owner_user_id:
+                meta["owner_user_id"] = owner_user_id
             chunks.append(Chunk(
                 id=f"{doc_id}:{i}",
                 doc_id=doc_id,
@@ -109,11 +132,13 @@ class IngestPipeline:
 
     def ingest_file(self, *, filename, data, classification, location, category, uploaded_by, tenant,
                     require_approval=False, block_public_on_pii=True, pii_phase="dpia_signed",
-                    account_id: str = "", space_id: str = "") -> IngestResult:
+                    account_id: str = "", space_id: str = "",
+                    space_kind: str = "", owner_user_id: str = "") -> IngestResult:
         text = extract_text(filename, data)
         return self.ingest_text(
             title=filename, text=text, classification=classification,
             location=location, category=category, uploaded_by=uploaded_by, tenant=tenant,
             require_approval=require_approval, block_public_on_pii=block_public_on_pii, pii_phase=pii_phase,
             account_id=account_id, space_id=space_id,
+            space_kind=space_kind, owner_user_id=owner_user_id,
         )

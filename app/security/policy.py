@@ -19,6 +19,12 @@ GENERAL_CATEGORY = "general"    # visible to every category (subject to clearanc
 CAPTURED_CATEGORY = "captured_input"  # raw captured comms — a walled compartment no
                                       # read key and no ordinary staff role holds
 
+# Private spaces are owner-only: a chunk that lives in one is invisible to every
+# caller except the employee who owns that space — not colleagues, not admins or
+# owners. Kept in sync with app.platform.base.PRIVATE_SPACE_KINDS (duplicated here
+# to keep the security core free of a platform-model import).
+PRIVATE_SPACE_KINDS = frozenset({"personal", "family"})
+
 # Publication lifecycle. Nothing is retrievable until it is APPROVED. A missing
 # status means a legacy chunk (created before the lifecycle) and is treated as
 # approved so nothing breaks on rollout; new uploads are stamped PENDING at ingest.
@@ -53,6 +59,8 @@ class AccessFilter:
     categories: Optional[frozenset]  # None = all categories
     account_id: str = ""
     space_ids: Optional[frozenset] = None
+    user_id: str = ""                # the caller's identity — matched against a private
+                                     # space's owner; "" can never own a private space
 
     def allows(self, meta: dict) -> bool:
         # Tenant is checked FIRST, unconditionally, with no wildcard and no
@@ -68,6 +76,14 @@ class AccessFilter:
             return False
         if self.space_ids is not None and meta.get("space_id") not in self.space_ids:
             return False
+        # Private-space owner rule. A chunk tagged as living in a personal/family
+        # space is reachable ONLY by the employee who owns that space. A caller
+        # with no identity ("") can never match, so services and unauthenticated
+        # paths are denied outright. Chunks with no space_kind are not private and
+        # are unaffected — so the general corpus behaves exactly as before.
+        if meta.get("space_kind", "") in PRIVATE_SPACE_KINDS:
+            if not self.user_id or meta.get("owner_user_id", "") != self.user_id:
+                return False
         if int(meta.get("classification", Classification.RESTRICTED)) > self.clearance:
             return False
         location = meta.get("location", GLOBAL_LOCATION)
@@ -98,6 +114,20 @@ class AccessFilter:
         if self.space_ids is not None:
             clauses.append("meta->>'space_id' = ANY(%s)")
             params.append(list(self.space_ids))
+        # Private-space owner rule — mirror of .allows(). A chunk in a private
+        # space survives only if this caller owns it; a caller with no identity
+        # sees no private-space chunk at all. Rows without a space_kind are never
+        # private (COALESCE to '') and pass untouched.
+        private_kinds = list(PRIVATE_SPACE_KINDS)
+        if self.user_id:
+            clauses.append(
+                "(COALESCE(meta->>'space_kind', '') <> ALL(%s) OR meta->>'owner_user_id' = %s)"
+            )
+            params.append(private_kinds)
+            params.append(self.user_id)
+        else:
+            clauses.append("COALESCE(meta->>'space_kind', '') <> ALL(%s)")
+            params.append(private_kinds)
         if self.locations is not None:
             clauses.append("(meta->>'location' = 'global' OR meta->>'location' = ANY(%s))")
             params.append(list(self.locations))

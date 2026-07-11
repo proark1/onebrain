@@ -35,9 +35,32 @@ def get_llm():
     return build_llm(get_settings())
 
 
+def _resolve_space_kind_and_owner(space_id: str) -> tuple[str, str]:
+    """space_id -> (space_kind, owner_user_id) for ingest labelling.
+
+    Owner of a private space is the employee bound to it by membership, falling
+    back to the account owner. A non-private space returns no owner. Resolution
+    failures return ("", "") — the chunk is then stamped with no space_kind and
+    is treated as non-private, so this can never accidentally widen access.
+    """
+    from app.platform.base import PRIVATE_SPACE_KINDS
+
+    store = get_platform_store()
+    space = store.get_space(space_id)
+    if not space:
+        return "", ""
+    if space.kind not in PRIVATE_SPACE_KINDS:
+        return space.kind, ""
+    for m in store.list_memberships(space.account_id):
+        if m.space_id == space.id and m.status == "active" and m.user_id:
+            return space.kind, m.user_id
+    account = store.get_account(space.account_id)
+    return space.kind, (account.owner_user_id if account else "")
+
+
 @lru_cache
 def get_pipeline() -> IngestPipeline:
-    return IngestPipeline(get_embedder(), get_store())
+    return IngestPipeline(get_embedder(), get_store(), space_resolver=_resolve_space_kind_and_owner)
 
 
 @lru_cache
@@ -60,6 +83,13 @@ def get_conversation_store():
 @lru_cache
 def get_user_store():
     return build_user_store(get_settings())
+
+
+@lru_cache
+def get_session_store():
+    from app.sessions.factory import build_session_store
+
+    return build_session_store(get_settings())
 
 
 @lru_cache

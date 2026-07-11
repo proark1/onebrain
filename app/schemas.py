@@ -95,6 +95,12 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
 
+class RevokeSessionsRequest(BaseModel):
+    """Offboarding: force-log-out a user by id or email (one is required)."""
+    user_id: str = Field(default="", max_length=200)
+    email: str = Field(default="", max_length=200)
+
+
 # --- Service surface (non-human callers) ---------------------------------
 class ServiceCaptureRequest(BaseModel):
     text: str = Field(min_length=1, max_length=20000)
