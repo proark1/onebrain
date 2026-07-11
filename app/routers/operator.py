@@ -309,15 +309,20 @@ def _account_id_for_deployment(deployment_id: str) -> str | None:
     """Authoritatively map a deployment to its owning account for AUTHORIZATION.
 
     Prefers the deployment's authoritative account_id (set at provisioning /
-    create time). Falls back — for legacy rows created before that column — to
-    non-collidable signals only: the server-written `customer.provisioned` audit,
-    then the `dep_{account_id}` convention. Deliberately NOT the customer_name
-    display heuristic in _deployment_for_account, which an attacker could collide
-    by naming an account after a victim deployment. Returns None (caller fails
-    closed) when unmapped."""
+    create time), else non-collidable signals. Returns None (caller fails closed)
+    when unmapped."""
     deployment = get_control_plane_store().get_deployment(deployment_id)
     if deployment and deployment.account_id:
         return deployment.account_id
+    return _account_id_from_signals(deployment_id)
+
+
+def _account_id_from_signals(deployment_id: str) -> str | None:
+    """Legacy fallback for deployments whose account_id is still '' — non-collidable
+    signals only: the server-written `customer.provisioned` audit, then the
+    `dep_{account_id}` convention. Deliberately NOT the customer_name display
+    heuristic in _deployment_for_account, which an attacker could collide by naming
+    an account after a victim deployment."""
     platform = get_platform_store()
     accounts = platform.list_accounts()
     for account in accounts:
@@ -745,7 +750,8 @@ def list_deployments(principal: Principal = Depends(resolve_principal)):
     deployments = get_control_plane_store().list_deployments()
     if not get_settings().operator_mode:
         allowed = authorized_account_ids(principal, get_platform_store())
-        deployments = [d for d in deployments if _account_id_for_deployment(d.id) in allowed]
+        # Use each row's account_id in hand; only legacy '' rows need the fallback.
+        deployments = [d for d in deployments if (d.account_id or _account_id_from_signals(d.id)) in allowed]
     return [_deployment_out(d) for d in deployments]
 
 
