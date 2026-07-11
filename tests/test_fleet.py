@@ -56,9 +56,14 @@ def _control_with(deployment_id: str = "dep_a") -> MemoryControlPlaneStore:
     return store
 
 
-def _heartbeat_body(deployment_id: str = "dep_a", *, healthy: bool = True, version: str = "2026.07.0") -> FleetHeartbeat:
+def _heartbeat_body(deployment_id: str = "dep_a", *, healthy: bool = True, version: str = "2026.07.0",
+                    reported_at: str = "") -> FleetHeartbeat:
+    # Default to a near-now reported_at so the ingest skew guard accepts it (the
+    # real reporter stamps its own current time); callers can pin it explicitly.
+    from datetime import datetime, timezone
+
     return build_heartbeat(
-        deployment_id=deployment_id, reported_at="2026-07-11T00:00:00+00:00",
+        deployment_id=deployment_id, reported_at=reported_at or datetime.now(timezone.utc).isoformat(),
         version=version, migration_revision="0015_fleet_telemetry",
         onebrain_healthy=healthy, chunks=12, users=3, accounts=1,
     )
@@ -464,3 +469,41 @@ def test_collect_heartbeat_builds_metadata_only_payload():
     # Everything in the payload is a count/flag/version — no free-text customer content.
     payload = hb.model_dump()
     assert set(payload) == {"contract_version", "deployment_id", "reported_at", "onebrain", "modules"}
+
+
+# --- heartbeat ingest hardening ---------------------------------------------
+
+def test_ingest_heartbeat_rejects_skewed_reported_at(monkeypatch):
+    store = MemoryFleetStore()
+    token = _minted_key(store, "dep_a")
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+
+    stale = _heartbeat_body("dep_a", reported_at="2000-01-01T00:00:00+00:00")
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.ingest_heartbeat(stale, authorization=f"Bearer {token}")
+    assert ei.value.status_code == 400
+
+
+def test_ingest_heartbeat_rate_limited_per_deployment(monkeypatch):
+    from app.auth.throttle import RateLimiter
+
+    store = MemoryFleetStore()
+    token = _minted_key(store, "dep_a")
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    # One shared limiter of 2/window so the third post in the window is rejected.
+    limiter = RateLimiter(2, 60)
+    monkeypatch.setattr(fleet_router, "get_fleet_heartbeat_rate_limiter", lambda: limiter)
+
+    assert fleet_router.ingest_heartbeat(_heartbeat_body("dep_a"), authorization=f"Bearer {token}").received
+    assert fleet_router.ingest_heartbeat(_heartbeat_body("dep_a"), authorization=f"Bearer {token}").received
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.ingest_heartbeat(_heartbeat_body("dep_a"), authorization=f"Bearer {token}")
+    assert ei.value.status_code == 429
+
+
+def test_heartbeat_contract_bounds_modules():
+    from app.fleet.heartbeat import ModuleReport
+
+    with pytest.raises(ValidationError):
+        build_heartbeat(deployment_id="dep_a", reported_at="t",
+                        modules=[ModuleReport(module_id=f"m{i}") for i in range(51)])

@@ -130,6 +130,11 @@ class Settings(BaseSettings):
     github_dispatch_token: str = ""
     provisioning_callback_key_id: str = ""
     provisioning_callback_key_hash: str = ""
+    # If set (comma-separated hostnames), a provisioning callback_url must be
+    # https and its host must be in this allowlist. The workflow sends the
+    # callback key as a bearer to this URL, so an unvalidated host is a secret-
+    # exfiltration sink. Empty = no host restriction (dev/single-operator).
+    provisioning_callback_allowed_hosts: str = ""
     secret_encryption_key: str = ""
     secret_encryption_key_version: str = "v1"
     bootstrap_secret_ttl_seconds: int = 3600
@@ -195,6 +200,13 @@ class Settings(BaseSettings):
     fleet_report_seconds: int = 60       # how often the reporter posts a heartbeat
     fleet_missed_heartbeat_seconds: int = 600   # watchdog: alert when older than this
     fleet_target_version: str = ""       # expected fleet bundle version (drift alerting)
+    # Heartbeat ingest guards (Mission Control side). Cap per-deployment posting
+    # rate so a leaked/misused fleet key can't flood the append-only table, and
+    # reject a reported_at that is implausibly skewed from server time (received_at
+    # stays authoritative for the watchdog regardless).
+    fleet_heartbeat_rate_limit: int = 120        # max heartbeats per window per deployment
+    fleet_heartbeat_rate_window_seconds: int = 60
+    fleet_heartbeat_max_skew_seconds: int = 3600 # reject reported_at farther than this from now
 
     # Service surface — per-key rate limit (metered LLM/embedding endpoints) and a
     # cap on how many active keys one tenant may hold.
@@ -215,6 +227,14 @@ class Settings(BaseSettings):
     # "synthetic data only until the DPIA is signed". Flip to "dpia_signed" once
     # the DPIA (and EU-sovereign routing) are in place to allow real PII.
     pii_phase: str = "synthetic"   # synthetic | dpia_signed
+
+    @property
+    def is_operator_surface(self) -> bool:
+        """True when this deployment is allowed to expose the operator control
+        plane — Mission Control (operator_mode) or a stack explicitly opting into
+        the local operator console. A pure customer-serving stack sets both false
+        so the operator + provisioning surface is not mounted or served at all."""
+        return bool(self.operator_mode or self.operator_console)
 
     @property
     def is_local_stack(self) -> bool:

@@ -17,7 +17,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.auth.principal import Principal, resolve_principal
-from app.deps import get_control_plane_store, get_fleet_store
+from app.config import get_settings
+from app.deps import get_control_plane_store, get_fleet_heartbeat_rate_limiter, get_fleet_store
 from app.fleet.base import FleetKey, Heartbeat
 from app.fleet.heartbeat import FleetHeartbeat
 from app.fleet.keys import generate_fleet_key, hash_secret, parse_fleet_key, verify_secret
@@ -61,9 +62,32 @@ def _authenticate_fleet_key(authorization: str, expected_deployment_id: str):
     return key
 
 
+def _reject_skewed_reported_at(reported_at: str) -> None:
+    """received_at (server clock) stays authoritative for the watchdog, but a
+    reported_at implausibly far from now signals a replayed or forged heartbeat."""
+    max_skew = get_settings().fleet_heartbeat_max_skew_seconds
+    if max_skew <= 0:
+        return
+    try:
+        reported = datetime.fromisoformat(reported_at)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Malformed reported_at.")
+    if reported.tzinfo is None:
+        reported = reported.replace(tzinfo=timezone.utc)
+    if abs((datetime.now(timezone.utc) - reported).total_seconds()) > max_skew:
+        raise HTTPException(status_code=400, detail="reported_at is too far from server time.")
+
+
 @router.post("/heartbeat", response_model=HeartbeatAck)
 def ingest_heartbeat(body: FleetHeartbeat, authorization: str = Header(default="")):
     key = _authenticate_fleet_key(authorization, body.deployment_id)
+    # Cap per-deployment posting rate so a leaked/misused key can't flood the
+    # append-only heartbeat table; reject implausibly-skewed reported_at.
+    wait = get_fleet_heartbeat_rate_limiter().check(f"hb:{body.deployment_id}")
+    if wait:
+        raise HTTPException(status_code=429, detail="Heartbeat rate limit exceeded.",
+                            headers={"Retry-After": str(wait)})
+    _reject_skewed_reported_at(body.reported_at)
     store = get_fleet_store()
     store.touch_key(key.id, _now())
     store.record_heartbeat(Heartbeat(

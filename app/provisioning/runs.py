@@ -677,8 +677,12 @@ def apply_callback(
     run = store.get_run(run_id)
     if not run:
         raise KeyError(f"unknown provisioning run: {run_id}")
-    if run.status in TERMINAL_STATUSES and callback.status != run.status:
-        raise ValueError("terminal provisioning status cannot be changed")
+    # A terminal run is immutable: reject ANY further callback, not just a status
+    # change. The old "status != run.status" guard let a replayed succeeded->
+    # succeeded callback re-encrypt and overwrite the bootstrap secret with an
+    # attacker-chosen password. Duplicate callbacks are the caller's concern.
+    if run.status in TERMINAL_STATUSES:
+        raise ValueError("terminal provisioning run cannot be modified")
     if STATUS_RANK[callback.status] < STATUS_RANK[run.status]:
         raise ValueError("stale provisioning callback cannot move status backward")
 

@@ -52,6 +52,11 @@ def _principal(role_id: str) -> Principal:
     )
 
 
+def _operator_settings():
+    # Mission Control context: operator sees/manages the whole fleet (scoping bypassed).
+    return SimpleNamespace(is_operator_surface=True, operator_mode=True)
+
+
 def _store() -> MemoryControlPlaneStore:
     store = MemoryControlPlaneStore()
     store.create_deployment(CustomerDeployment(
@@ -220,6 +225,7 @@ def test_operator_endpoint_lists_rollout_status(monkeypatch):
     ))
     store.start_rollout(RolloutRun("roll_status", "dep_a", "2026.07.3", "running", "admin"))
     monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
 
     rollouts = operator_router.list_rollouts("dep_a", principal=_admin())
 
@@ -237,6 +243,7 @@ def test_operator_endpoint_marks_rollout_success_and_updates_deployment(monkeypa
     ))
     store.start_rollout(RolloutRun("roll_done", "dep_a", "2026.07.5", "running", "admin"))
     monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
 
     rollout = operator_router.update_rollout(
         "roll_done",
@@ -255,6 +262,7 @@ def test_operator_endpoints_expose_latest_backup_and_health(monkeypatch):
     store.record_backup(BackupRun("bak_ready", "dep_a", "success", "pre-update snapshot"))
     store.record_health(HealthCheckRun("hlth_ready", "dep_a", "success", "all checks green"))
     monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
 
     backup = operator_router.latest_backup("dep_a", principal=_admin())
     health = operator_router.latest_health("dep_a", principal=_admin())
@@ -335,7 +343,9 @@ def test_operator_customer_overview_aggregates_metadata_only(monkeypatch):
     platform = MemoryPlatformStore()
     control = MemoryControlPlaneStore()
     keys = MemoryServiceKeyStore()
-    platform.create_account(Account(id="acme", kind="organization", name="Acme"))
+    # list_customers now scopes to accounts the admin administers, so make the
+    # calling admin the owner (operator-mode-sees-all is covered separately).
+    platform.create_account(Account(id="acme", kind="organization", name="Acme", owner_user_id="admin@onebrain"))
     platform.create_space(Space(id="sp_acme_service", account_id="acme", kind="customer_service", name="Service"))
     platform.create_space(Space(id="sp_acme_shared", account_id="acme", kind="shared", name="Shared"))
     platform.install_app(AppInstallation(
@@ -448,6 +458,8 @@ def test_operator_observability_aggregates_current_onebrain_state(monkeypatch):
             llm_provider="local",
             embeddings_provider="local",
             environment="local",
+            is_operator_surface=True,
+            operator_mode=True,
             is_production_like=False,
             database_url="",
             rls_enforced=False,
@@ -505,3 +517,128 @@ def test_operator_observability_requires_admin():
     with pytest.raises(HTTPException) as exc:
         operator_router.operator_observability(principal=_principal("front_desk"))
     assert exc.value.status_code == 403
+
+
+# --- operator surface hardening ---------------------------------------------
+
+def test_list_customers_scopes_to_administered_accounts(monkeypatch):
+    """A non-owning admin must not enumerate another account's metadata; the
+    owning admin still sees theirs. (Operator-mode-sees-all covered separately.)"""
+    platform = MemoryPlatformStore()
+    control = MemoryControlPlaneStore()
+    keys = MemoryServiceKeyStore()
+    platform.create_account(Account(id="acme", kind="organization", name="Acme", owner_user_id="owner@acme"))
+    platform.create_account(Account(id="beta", kind="organization", name="Beta", owner_user_id="admin@onebrain"))
+    monkeypatch.setattr(operator_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(operator_router, "get_service_key_store", lambda: keys)
+
+    rows = operator_router.list_customers(principal=_principal("admin"))  # user_id admin@onebrain
+
+    assert {r.account.id for r in rows} == {"beta"}  # not acme
+
+
+def test_list_customers_operator_mode_sees_all(monkeypatch):
+    from types import SimpleNamespace
+
+    platform = MemoryPlatformStore()
+    control = MemoryControlPlaneStore()
+    keys = MemoryServiceKeyStore()
+    platform.create_account(Account(id="acme", kind="organization", name="Acme", owner_user_id="owner@acme"))
+    platform.create_account(Account(id="beta", kind="organization", name="Beta", owner_user_id="owner@beta"))
+    monkeypatch.setattr(operator_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(operator_router, "get_service_key_store", lambda: keys)
+    monkeypatch.setattr(operator_router, "get_settings",
+                        lambda: SimpleNamespace(is_operator_surface=True, operator_mode=True))
+
+    rows = operator_router.list_customers(principal=_principal("admin"))
+    assert {r.account.id for r in rows} == {"acme", "beta"}  # operator sees the whole fleet
+
+
+def test_operator_admin_refused_when_not_operator_surface(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(operator_router, "get_settings",
+                        lambda: SimpleNamespace(is_operator_surface=False))
+    with pytest.raises(HTTPException) as ei:
+        operator_router.list_releases(principal=_principal("admin"))
+    assert ei.value.status_code == 404  # surface must not serve on a customer stack
+
+
+# --- per-deployment cross-account scoping ------------------------------------
+
+def _scoping_stores(owner="owner@acme"):
+    platform = MemoryPlatformStore()
+    control = MemoryControlPlaneStore()
+    platform.create_account(Account(id="acme", kind="organization", name="Acme", owner_user_id=owner))
+    control.create_deployment(CustomerDeployment(id="dep_acme", customer_name="Acme", release_ring="manual"))
+    control.upsert_module(DeploymentModule("dep_acme", "onebrain-api", "1.0.0"))
+    control.record_backup(BackupRun("bak", "dep_acme", "success"))
+    control.record_health(HealthCheckRun("hlth", "dep_acme", "success"))
+    return platform, control
+
+
+def test_per_deployment_reads_reject_non_owning_admin(monkeypatch):
+    platform, control = _scoping_stores(owner="someone_else@acme")
+    monkeypatch.setattr(operator_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: control)
+    # Real settings: operator_mode=False, so account scoping is enforced.
+    outsider = _principal("admin")  # admin@onebrain, does NOT own acme
+
+    for call in (
+        lambda: operator_router.list_modules("dep_acme", principal=outsider),
+        lambda: operator_router.latest_backup("dep_acme", principal=outsider),
+        lambda: operator_router.latest_health("dep_acme", principal=outsider),
+        lambda: operator_router.update_plan("dep_acme", "9.9.9", principal=outsider),
+        lambda: operator_router.list_rollouts("dep_acme", principal=outsider),
+    ):
+        with pytest.raises(HTTPException) as ei:
+            call()
+        assert ei.value.status_code == 404
+
+
+def test_per_deployment_reads_allow_owning_admin(monkeypatch):
+    platform, control = _scoping_stores(owner="admin@onebrain")  # caller owns acme
+    monkeypatch.setattr(operator_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: control)
+    owner = _principal("admin")
+
+    assert [m.module_id for m in operator_router.list_modules("dep_acme", principal=owner)] == ["onebrain-api"]
+    assert operator_router.latest_backup("dep_acme", principal=owner).status == "success"
+
+
+def test_list_deployments_filters_to_administered(monkeypatch):
+    platform, control = _scoping_stores(owner="someone_else@acme")
+    control.create_deployment(CustomerDeployment(id="dep_beta", customer_name="Beta", release_ring="manual"))
+    platform.create_account(Account(id="beta", kind="organization", name="Beta", owner_user_id="admin@onebrain"))
+    monkeypatch.setattr(operator_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: control)
+
+    rows = operator_router.list_deployments(principal=_principal("admin"))  # owns beta only
+    assert {d.id for d in rows} == {"dep_beta"}
+
+
+def test_deployment_authz_ignores_account_name_collision(monkeypatch):
+    """An attacker who mints an account named after a victim deployment's
+    customer_name must NOT gain access — authorization uses the deterministic
+    dep_{account_id}/audit mapping, never the display name heuristic."""
+    platform = MemoryPlatformStore()
+    control = MemoryControlPlaneStore()
+    platform.create_account(Account(id="realowner", kind="organization", name="Real",
+                                    owner_user_id="real@x"))
+    # Deployment owned by realowner via the dep_{account_id} convention, but whose
+    # display customer_name matches the attacker's account name.
+    control.create_deployment(CustomerDeployment(id="dep_realowner", customer_name="Attacker Inc",
+                                                 release_ring="manual"))
+    control.upsert_module(DeploymentModule("dep_realowner", "onebrain-api", "1.0.0"))
+    platform.create_account(Account(id="attacker", kind="organization", name="Attacker Inc",
+                                    owner_user_id="attacker@x"))
+    monkeypatch.setattr(operator_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: control)
+
+    attacker = _principal("admin")
+    object.__setattr__(attacker, "user_id", "attacker@x")  # admin who owns only 'attacker'
+    with pytest.raises(HTTPException) as ei:
+        operator_router.list_modules("dep_realowner", principal=attacker)
+    assert ei.value.status_code == 404

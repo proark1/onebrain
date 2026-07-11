@@ -137,6 +137,14 @@ def get_fleet_store():
 
 
 @lru_cache
+def get_fleet_heartbeat_rate_limiter():
+    from app.auth.throttle import RateLimiter
+
+    settings = get_settings()
+    return RateLimiter(settings.fleet_heartbeat_rate_limit, settings.fleet_heartbeat_rate_window_seconds)
+
+
+@lru_cache
 def get_intake_store():
     from app.intake.factory import build_intake_store
 

@@ -51,7 +51,7 @@ class FleetHeartbeat(BaseModel):
     deployment_id: str = Field(min_length=1, max_length=120)
     reported_at: str = Field(min_length=1, max_length=40)
     onebrain: OneBrainReport
-    modules: List[ModuleReport] = Field(default_factory=list)
+    modules: List[ModuleReport] = Field(default_factory=list, max_length=50)
 
     @property
     def healthy(self) -> bool:

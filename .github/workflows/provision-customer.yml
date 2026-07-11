@@ -59,6 +59,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
+    env:
+      IN_RUN_ID: ${{ inputs.run_id }}
+      IN_ACCOUNT_ID: ${{ inputs.account_id }}
+      IN_DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+      IN_CUSTOMER_NAME: ${{ inputs.customer_name }}
+      IN_BUNDLE_ID: ${{ inputs.bundle_id }}
+      IN_DEPLOYMENT_TYPE: ${{ inputs.deployment_type }}
+      IN_REGION: ${{ inputs.region }}
+      IN_RELEASE_RING: ${{ inputs.release_ring }}
+      IN_INITIAL_VERSION: ${{ inputs.initial_version }}
+      IN_MODULE_VERSIONS_JSON: ${{ inputs.module_versions_json }}
+      IN_BRAND_THEME_JSON: ${{ inputs.brand_theme_json }}
+      IN_CALLBACK_URL: ${{ inputs.callback_url }}
+      IN_CALLBACK_KEY_ID: ${{ inputs.callback_key_id }}
+      IN_DRY_RUN: ${{ inputs.dry_run }}
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -67,13 +83,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${{ inputs.run_id }}"
-          test -n "${{ inputs.account_id }}"
-          test -n "${{ inputs.deployment_id }}"
-          test -n "${{ inputs.bundle_id }}"
-          test -n "${{ inputs.callback_url }}"
-          python -m json.tool <<< '${{ inputs.module_versions_json }}' >/dev/null
-          python -m json.tool <<< '${{ inputs.brand_theme_json }}' >/dev/null
+          test -n "${IN_RUN_ID}"
+          test -n "${IN_ACCOUNT_ID}"
+          test -n "${IN_DEPLOYMENT_ID}"
+          test -n "${IN_BUNDLE_ID}"
+          test -n "${IN_CALLBACK_URL}"
+          python -m json.tool <<< "${IN_MODULE_VERSIONS_JSON}" >/dev/null
+          python -m json.tool <<< "${IN_BRAND_THEME_JSON}" >/dev/null
 
       - name: Mask secrets
         shell: bash
@@ -92,9 +108,9 @@ jobs:
           CALLBACK_KEY: ${{ secrets.ONEBRAIN_PROVISIONING_CALLBACK_KEY }}
         run: |
           set -euo pipefail
-          curl --fail-with-body -sS -X POST "${{ inputs.callback_url }}" \
+          curl --fail-with-body -sS -X POST "${IN_CALLBACK_URL}" \
             -H "Authorization: Bearer ${CALLBACK_KEY}" \
-            -H "X-OneBrain-Callback-Key-Id: ${{ inputs.callback_key_id }}" \
+            -H "X-OneBrain-Callback-Key-Id: ${IN_CALLBACK_KEY_ID}" \
             -H "Content-Type: application/json" \
             --data '{"status":"running","external_run_id":"${{ github.run_id }}","external_run_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
@@ -105,38 +121,43 @@ jobs:
           CALLBACK_KEY: ${{ secrets.ONEBRAIN_PROVISIONING_CALLBACK_KEY }}
         run: |
           set -euo pipefail
-          API_URL="https://${{ inputs.account_id }}-api.example.invalid"
-          UI_URL="https://${{ inputs.account_id }}-admin.example.invalid"
-          WORKER_URL="worker://${{ inputs.account_id }}"
-          BOOTSTRAP_PASSWORD="$(python - <<'PY'
+          export API_URL="https://${IN_ACCOUNT_ID}-api.example.invalid"
+          export UI_URL="https://${IN_ACCOUNT_ID}-admin.example.invalid"
+          export WORKER_URL="worker://${IN_ACCOUNT_ID}"
+          export BOOTSTRAP_PASSWORD="$(python - <<'PY'
           import secrets
           print(secrets.token_urlsafe(24))
           PY
           )"
           echo "::add-mask::${BOOTSTRAP_PASSWORD}"
-          payload=$(python - <<PY
-          import json
+          # Quoted heredoc: nothing is shell-interpolated into Python source. Every
+          # untrusted value is read from os.environ, so no input can break the literal.
+          payload=$(python - <<'PY'
+          import json, os
+          run_id = os.environ["GITHUB_RUN_ID"]
+          url = f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}'
+          dep = os.environ["IN_DEPLOYMENT_ID"]
           print(json.dumps({
               "status": "succeeded",
-              "external_run_id": "${{ github.run_id }}",
-              "external_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
-              "railway_project_id": "dry_${{ inputs.deployment_id }}",
-              "railway_environment_id": "dry_env_${{ inputs.deployment_id }}",
-              "service_urls": {"api": "${API_URL}", "admin_ui": "${UI_URL}", "worker": "${WORKER_URL}"},
+              "external_run_id": run_id,
+              "external_run_url": url,
+              "railway_project_id": f"dry_{dep}",
+              "railway_environment_id": f"dry_env_{dep}",
+              "service_urls": {"api": os.environ["API_URL"], "admin_ui": os.environ["UI_URL"], "worker": os.environ["WORKER_URL"]},
               "migration_revision": "dry-run",
               "smoke_status": "dry_run_passed",
               "result_payload": {
-                  "bundle_id": "${{ inputs.bundle_id }}",
-                  "deployment_type": "${{ inputs.deployment_type }}",
-                  "module_versions": json.loads('''${{ inputs.module_versions_json }}''')
+                  "bundle_id": os.environ["IN_BUNDLE_ID"],
+                  "deployment_type": os.environ["IN_DEPLOYMENT_TYPE"],
+                  "module_versions": json.loads(os.environ["IN_MODULE_VERSIONS_JSON"]),
               },
-              "bootstrap_password": "${BOOTSTRAP_PASSWORD}",
+              "bootstrap_password": os.environ["BOOTSTRAP_PASSWORD"],
           }))
           PY
           )
-          curl --fail-with-body -sS -X POST "${{ inputs.callback_url }}" \
+          curl --fail-with-body -sS -X POST "${IN_CALLBACK_URL}" \
             -H "Authorization: Bearer ${CALLBACK_KEY}" \
-            -H "X-OneBrain-Callback-Key-Id: ${{ inputs.callback_key_id }}" \
+            -H "X-OneBrain-Callback-Key-Id: ${IN_CALLBACK_KEY_ID}" \
             -H "Content-Type: application/json" \
             --data "${payload}"
 
@@ -170,7 +191,7 @@ jobs:
             exit 1
           fi
           export RAILWAY_TOKEN="${TOKEN}"
-          PROJECT_NAME="onebrain-${{ inputs.account_id }}-${{ inputs.deployment_id }}"
+          PROJECT_NAME="onebrain-${IN_ACCOUNT_ID}-${IN_DEPLOYMENT_ID}"
           TEMPLATE_DOLLAR='$'
           BOOTSTRAP_PASSWORD="$(python - <<'PY'
           import secrets
@@ -288,7 +309,7 @@ jobs:
           }
 
           module_services=()
-          case "${{ inputs.bundle_id }}" in
+          case "${IN_BUNDLE_ID}" in
             onebrain_only)
               ;;
             onebrain_assistant)
@@ -301,7 +322,7 @@ jobs:
               module_services=(assistant-service communication-api communication-widget communication-voice communication-workers)
               ;;
             *)
-              echo "Unknown bundle: ${{ inputs.bundle_id }}" >&2
+              echo "Unknown bundle: ${IN_BUNDLE_ID}" >&2
               exit 1
               ;;
           esac
@@ -339,6 +360,9 @@ jobs:
           run_railway domain --service onebrain-admin-ui --port 3000 --json | tee .provisioning/admin_ui_domain.json >/dev/null
           API_URL="$(parse_domain .provisioning/api_domain.json)"
           ADMIN_UI_URL="$(parse_domain .provisioning/admin_ui_domain.json)"
+          # Export so the smoke-check python subprocess (below) sees them via
+          # os.environ; the $GITHUB_ENV writes only reach subsequent steps.
+          export API_URL ADMIN_UI_URL
           echo "API_URL=${API_URL}" >> "$GITHUB_ENV"
           echo "ADMIN_UI_URL=${ADMIN_UI_URL}" >> "$GITHUB_ENV"
 
@@ -351,7 +375,7 @@ jobs:
 
           common_vars=(
             "ONEBRAIN_AUTH_SECRET=${AUTH_SECRET}"
-            "ONEBRAIN_ADMIN_EMAIL=admin@${{ inputs.account_id }}.onebrain.local"
+            "ONEBRAIN_ADMIN_EMAIL=admin@${IN_ACCOUNT_ID}.onebrain.local"
             "ONEBRAIN_ADMIN_PASSWORD=${BOOTSTRAP_PASSWORD}"
             "ONEBRAIN_VECTOR_STORE=pgvector"
             "ONEBRAIN_DATABASE_URL=${DATABASE_REF}"
@@ -383,8 +407,8 @@ jobs:
           for module in "${module_services[@]}"; do
             set_vars "${module}" \
               "ONEBRAIN_API_BASE_URL=${API_PRIVATE_BASE}" \
-              "ONEBRAIN_ACCOUNT_ID=${{ inputs.account_id }}" \
-              "ONEBRAIN_DEPLOYMENT_ID=${{ inputs.deployment_id }}" \
+              "ONEBRAIN_ACCOUNT_ID=${IN_ACCOUNT_ID}" \
+              "ONEBRAIN_DEPLOYMENT_ID=${IN_DEPLOYMENT_ID}" \
               "ONEBRAIN_MODULE_ID=${module}"
           done
 
@@ -445,35 +469,40 @@ jobs:
           PY
           MODULE_DEPLOYED_JSON="$(cat .provisioning/module_deployed.json)"
 
-          payload=$(python - <<PY
-          import json
+          export PROJECT_NAME API_URL ADMIN_UI_URL BOOTSTRAP_PASSWORD SERVICE_IDS_JSON MODULE_DEPLOYED_JSON MODULE_PENDING_JSON
+          # Quoted heredoc: no shell interpolation into Python source; all values via os.environ.
+          payload=$(python - <<'PY'
+          import json, os
+          run_id = os.environ["GITHUB_RUN_ID"]
+          url = f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}'
+          project = os.environ["PROJECT_NAME"]
           print(json.dumps({
               "status": "succeeded",
-              "external_run_id": "${{ github.run_id }}",
-              "external_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
-              "railway_project_id": "${PROJECT_NAME}",
+              "external_run_id": run_id,
+              "external_run_url": url,
+              "railway_project_id": project,
               "railway_environment_id": "production",
               "service_urls": {
-                  "api": "${API_URL}",
-                  "admin_ui": "${ADMIN_UI_URL}",
-                  "railway_project": "railway://${PROJECT_NAME}",
+                  "api": os.environ["API_URL"],
+                  "admin_ui": os.environ["ADMIN_UI_URL"],
+                  "railway_project": f"railway://{project}",
               },
-              "migration_revision": "${{ inputs.initial_version }}",
+              "migration_revision": os.environ["IN_INITIAL_VERSION"],
               "smoke_status": "core_smoke_passed",
               "result_payload": {
-                  "bundle_id": "${{ inputs.bundle_id }}",
-                  "deployment_type": "${{ inputs.deployment_type }}",
-                  "service_ids": json.loads('''${SERVICE_IDS_JSON}'''),
-                  "module_services_deployed": json.loads('''${MODULE_DEPLOYED_JSON}'''),
-                  "module_services_pending_code": json.loads('''${MODULE_PENDING_JSON}'''),
+                  "bundle_id": os.environ["IN_BUNDLE_ID"],
+                  "deployment_type": os.environ["IN_DEPLOYMENT_TYPE"],
+                  "service_ids": json.loads(os.environ["SERVICE_IDS_JSON"]),
+                  "module_services_deployed": json.loads(os.environ["MODULE_DEPLOYED_JSON"]),
+                  "module_services_pending_code": json.loads(os.environ["MODULE_PENDING_JSON"]),
               },
-              "bootstrap_password": "${BOOTSTRAP_PASSWORD}",
+              "bootstrap_password": os.environ["BOOTSTRAP_PASSWORD"],
           }))
           PY
           )
-          curl --fail-with-body -sS -X POST "${{ inputs.callback_url }}" \
+          curl --fail-with-body -sS -X POST "${IN_CALLBACK_URL}" \
             -H "Authorization: Bearer ${CALLBACK_KEY}" \
-            -H "X-OneBrain-Callback-Key-Id: ${{ inputs.callback_key_id }}" \
+            -H "X-OneBrain-Callback-Key-Id: ${IN_CALLBACK_KEY_ID}" \
             -H "Content-Type: application/json" \
             --data "${payload}"
 
@@ -484,20 +513,22 @@ jobs:
           CALLBACK_KEY: ${{ secrets.ONEBRAIN_PROVISIONING_CALLBACK_KEY }}
         run: |
           set +e
-          reason="provisioning workflow failed; inspect sanitized GitHub Actions logs"
-          payload=$(python - <<PY
-          import json
+          export REASON="provisioning workflow failed; inspect sanitized GitHub Actions logs"
+          payload=$(python - <<'PY'
+          import json, os
+          run_id = os.environ["GITHUB_RUN_ID"]
+          url = f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}'
           print(json.dumps({
               "status": "failed",
-              "external_run_id": "${{ github.run_id }}",
-              "external_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
-              "failure_reason": "${reason}",
-              "result_payload": {"dry_run": "${{ inputs.dry_run }}"},
+              "external_run_id": run_id,
+              "external_run_url": url,
+              "failure_reason": os.environ["REASON"],
+              "result_payload": {"dry_run": os.environ["IN_DRY_RUN"]},
           }))
           PY
           )
-          curl -sS -X POST "${{ inputs.callback_url }}" \
+          curl -sS -X POST "${IN_CALLBACK_URL}" \
             -H "Authorization: Bearer ${CALLBACK_KEY}" \
-            -H "X-OneBrain-Callback-Key-Id: ${{ inputs.callback_key_id }}" \
+            -H "X-OneBrain-Callback-Key-Id: ${IN_CALLBACK_KEY_ID}" \
             -H "Content-Type: application/json" \
             --data "${payload}" || true

@@ -66,13 +66,14 @@ def create_app() -> FastAPI:
     app.include_router(conversations.router)
     app.include_router(chat.router)
     app.include_router(platform.router)
-    # The operator/fleet read surface exposes cross-account state. A customer-
-    # serving deployment sets operator_console=false so its own admins can never
-    # reach it; Mission Control keeps it on.
-    if settings.operator_console:
+    # The operator + provisioning control plane exposes cross-account state and can
+    # spend money / create infrastructure. A pure customer-serving deployment sets
+    # operator_console=false (and operator_mode=false) so neither surface is even
+    # mounted; Mission Control (or a stack explicitly opting in) keeps them on.
+    if settings.is_operator_surface:
         app.include_router(operator.router)
+        app.include_router(provisioning.router)
     app.include_router(privacy.router)
-    app.include_router(provisioning.router)
     app.include_router(assistant.router)
     app.include_router(service.service_router)
     app.include_router(service.keys_router)

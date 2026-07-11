@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
+from app.auth.account_access import authorized_account_ids, is_account_admin
 from app.auth.principal import Principal, resolve_principal
 from app.config import get_settings
 from app.deps import get_control_plane_store, get_platform_store, get_provisioning_run_store, get_service_key_store
@@ -226,9 +227,46 @@ class BootstrapSecretOut(BaseModel):
     plaintext: str
 
 
+def _authorize_run_account(principal: Principal, account_id: str) -> None:
+    """Unless on Mission Control, require the caller administer the run's account
+    (same-404 as elsewhere so run existence / ids can't be probed)."""
+    if get_settings().operator_mode:
+        return
+    platform = get_platform_store()
+    if not is_account_admin(principal, platform.get_account(account_id), platform):
+        raise HTTPException(status_code=404, detail="Provisioning run not found.")
+
+
 def _require_admin(principal: Principal) -> None:
+    # Defense in depth: provisioning is assembly-gated on is_operator_surface
+    # (app/main.py). Refuse at request time too so a mis-wired customer stack can
+    # never dispatch deployments, run callbacks, or read bootstrap secrets.
+    if not get_settings().is_operator_surface:
+        raise HTTPException(status_code=404, detail="Not found.")
     if principal.role_id != "admin":
         raise HTTPException(status_code=403, detail="Only admin can provision customers.")
+
+
+def _validate_callback_url(url: str) -> None:
+    """The workflow sends the provisioning callback KEY as a bearer token to this
+    URL, so an attacker-chosen host would exfiltrate the fleet callback secret.
+    Require https, and — when an allowlist is configured — require a known host."""
+    from urllib.parse import urlsplit
+
+    cleaned = url.strip()
+    # Defense in depth alongside the workflow's env-var indirection: reject the
+    # shell metacharacters that enable command substitution or quote breakout
+    # (path/query included). '&', '?', '=' are intentionally allowed so a
+    # legitimate multi-parameter query string still passes, as does the {run_id}
+    # placeholder braces (harmless with '$' already rejected).
+    if any(c in cleaned for c in "$`()|;<>\\'\" \t\n\r"):
+        raise HTTPException(status_code=400, detail="callback_url contains invalid characters.")
+    parts = urlsplit(cleaned)
+    if parts.scheme != "https" or not parts.hostname:
+        raise HTTPException(status_code=400, detail="callback_url must be an absolute https URL.")
+    allowed = [h.strip().lower() for h in get_settings().provisioning_callback_allowed_hosts.split(",") if h.strip()]
+    if allowed and parts.hostname.lower() not in allowed:
+        raise HTTPException(status_code=400, detail="callback_url host is not allowed.")
 
 
 def _bundle_out(bundle: ProvisioningBundle) -> BundleOut:
@@ -396,8 +434,10 @@ def list_bundles(principal: Principal = Depends(resolve_principal)):
 @router.post("/customers", response_model=ProvisioningResultOut)
 def provision_customer(body: CustomerProvisionCreate, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
-    if body.external_provisioning and not body.callback_url.strip():
-        raise HTTPException(status_code=400, detail="External provisioning requires a callback URL.")
+    if body.external_provisioning:
+        if not body.callback_url.strip():
+            raise HTTPException(status_code=400, detail="External provisioning requires a callback URL.")
+        _validate_callback_url(body.callback_url)
     account_id = body.account_id or _default_account_id(body.customer_name)
     deployment_id = body.deployment_id or f"dep_{account_id}"
     try:
@@ -462,7 +502,11 @@ def list_provisioning_runs(
     principal: Principal = Depends(resolve_principal),
 ):
     _require_admin(principal)
-    return [_run_out(run) for run in get_provisioning_run_store().list_runs(account_id, deployment_id)]
+    runs = get_provisioning_run_store().list_runs(account_id, deployment_id)
+    if not get_settings().operator_mode:
+        allowed = authorized_account_ids(principal, get_platform_store())
+        runs = [run for run in runs if run.account_id in allowed]
+    return [_run_out(run) for run in runs]
 
 
 @router.get("/runs/{run_id}", response_model=ProvisioningRunOut)
@@ -471,6 +515,7 @@ def get_provisioning_run(run_id: str, principal: Principal = Depends(resolve_pri
     run = get_provisioning_run_store().get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Provisioning run not found.")
+    _authorize_run_account(principal, run.account_id)
     return _run_out(run)
 
 
@@ -481,6 +526,7 @@ def retry_provisioning_run(run_id: str, principal: Principal = Depends(resolve_p
     run = store.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Provisioning run not found.")
+    _authorize_run_account(principal, run.account_id)
     if run.status not in {STATUS_FAILED, STATUS_CANCELLED, STATUS_DISPATCH_FAILED}:
         raise HTTPException(status_code=409, detail="Only failed, cancelled, or dispatch-failed runs can be retried.")
     retry = create_run(
@@ -537,6 +583,13 @@ def read_bootstrap_secret(run_id: str, principal: Principal = Depends(resolve_pr
     run = get_provisioning_run_store().get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Provisioning run not found.")
+    # Off Mission Control, an admin may only read a secret for an account they
+    # administer (same-404 so run existence can't be probed). The operator on
+    # Mission Control legitimately reads any provisioned customer's bootstrap.
+    if not get_settings().operator_mode:
+        platform = get_platform_store()
+        if not is_account_admin(principal, platform.get_account(run.account_id), platform):
+            raise HTTPException(status_code=404, detail="Provisioning run not found.")
     if not run.bootstrap_secret_id:
         raise HTTPException(status_code=404, detail="Bootstrap secret not available.")
     try:
