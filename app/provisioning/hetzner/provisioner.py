@@ -51,6 +51,7 @@ from app.provisioning.runs import (
     BoxSecretBundle,
     OneTimeSecretCipher,
     ProvisioningRun,
+    hash_callback_secret,
     now_iso,
 )
 
@@ -255,6 +256,18 @@ class HetznerProvisioner:
             "user_data": "rendered",
             "secret_ids": [],
         }
+        result_payload = {
+            **run.result_payload,
+            "service_ids": {module_id: module_id for module_id in modules},
+            "erasure_manifest": erasure_manifest,
+        }
+        # G1-7: MC verifies /runs/<id>/callback against a PER-RUN token hash. The box bakes a
+        # per-run ONEBRAIN_PROVISIONING_CALLBACK_TOKEN (secrets.token_urlsafe) that cannot match
+        # MC's single global provisioning_callback_key_hash, so store this run's hash — MC accepts
+        # it for THIS run and the box's done_cb/fail_cb (incl. the metadata-egress failure reason)
+        # authenticate. Only present when the box was minted a callback token (stores injected).
+        if callback_token:
+            result_payload["callback_token_hash"] = hash_callback_secret(callback_token)
         return replace(
             run,
             status=STATUS_DISPATCHED,
@@ -264,11 +277,7 @@ class HetznerProvisioner:
             # The public hostname is the full fqdn we constructed (the DNS record carries only
             # the zone-relative label); fall back to the raw IP when DNS is disabled.
             external_run_url=fqdn or result.public_ipv4,
-            result_payload={
-                **run.result_payload,
-                "service_ids": {module_id: module_id for module_id in modules},
-                "erasure_manifest": erasure_manifest,
-            },
+            result_payload=result_payload,
             dispatched_at=self.now_iso(),
         )
 

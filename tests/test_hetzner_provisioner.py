@@ -483,3 +483,55 @@ def test_provision_dns_upserted_for_hetzner_provider():
     # fqdn, which would resolve as "dep_a.fleet.example.fleet.example".
     assert len(fake.dns) == 1 and fake.dns[0].name == "dep_a"
     assert out.external_run_url == "dep_a.fleet.example"   # the box hostname stays the full fqdn
+
+
+# --- G1-7: customer-box provisioning callback authenticates via the per-run token -----
+
+def test_customer_box_callback_authenticates_with_per_run_token(monkeypatch):
+    # A customer Hetzner box bakes a PER-RUN ONEBRAIN_PROVISIONING_CALLBACK_TOKEN that cannot
+    # match MC's single global callback hash. MC stores the per-run hash on the run and accepts
+    # the box's done_cb/fail_cb against it, so the metadata-egress failure_reason is not lost
+    # to a 401 (which would degrade it to a generic timeout).
+    import re
+
+    from fastapi import HTTPException
+
+    from app.provisioning.runs import hash_callback_secret
+
+    control = _control()
+    prov = MemoryProvisioningRunStore()
+    fake = FakeHetznerClient()
+    # A DIFFERENT global callback hash is configured (the Railway path); the box's per-run
+    # token deliberately does not match it.
+    settings = _p5_settings(provisioning_callback_key_hash=hash_callback_secret("global-secret"),
+                            provisioning_callback_key_id="cb_global")
+    _wire_router(monkeypatch, settings, prov, control, fake)
+
+    dispatched = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp")
+    assert dispatched.status == STATUS_DISPATCHED
+    token = re.search(r"ONEBRAIN_PROVISIONING_CALLBACK_TOKEN=([A-Za-z0-9_-]+)",
+                      fake.servers[0].user_data).group(1)
+    assert token and token != "global-secret"
+
+    # fail_cb: the box posts the baked per-run token and NO key-id header -> authenticated,
+    # and the failure_reason survives.
+    out = provisioning_router.provisioning_callback(
+        dispatched.id,
+        provisioning_router.ProvisioningCallbackIn(
+            status="failed", smoke_status="failed", failure_reason="metadata_egress_block_failed"),
+        authorization=f"Bearer {token}",
+        x_onebrain_callback_key_id="",
+    )
+    assert out.status == "failed"
+    assert out.failure_reason == "metadata_egress_block_failed"
+
+    # A wrong bearer still 401s (it falls back to the global mechanism the box's token never
+    # satisfies) — per-run acceptance is scoped to the exact minted token.
+    with pytest.raises(HTTPException) as exc:
+        provisioning_router.provisioning_callback(
+            dispatched.id,
+            provisioning_router.ProvisioningCallbackIn(status="failed"),
+            authorization="Bearer wrong-token",
+            x_onebrain_callback_key_id="",
+        )
+    assert exc.value.status_code == 401

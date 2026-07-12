@@ -616,6 +616,24 @@ def _require_callback_auth(authorization: str, callback_key_id: str) -> None:
         raise HTTPException(status_code=401, detail="Invalid provisioning callback token.")
 
 
+def _require_run_callback_auth(run, authorization: str, callback_key_id: str) -> None:
+    """Callback auth for a SPECIFIC provisioning run (G1-7). A Hetzner box bakes a PER-RUN
+    ONEBRAIN_PROVISIONING_CALLBACK_TOKEN — minted and hash-stored on the run by
+    HetznerProvisioner — which cannot match MC's single global provisioning_callback_key_hash,
+    so accept a bearer that verifies against the run's own stored hash (no key-id: the box bakes
+    only the bearer, so its done_cb/fail_cb never sends X-OneBrain-Callback-Key-Id). Every other
+    case (the Railway/GitHub-Actions path, or a run with no per-run hash) falls back to the global
+    mechanism — preserving today's behavior AND the no-run-enumeration property: a missing run
+    has no per-run hash, so global auth still gates the request identically to an existing run."""
+    prefix = "Bearer "
+    per_run_hash = (run.result_payload or {}).get("callback_token_hash", "") if run is not None else ""
+    if per_run_hash and authorization.startswith(prefix):
+        token = authorization[len(prefix):].strip()
+        if verify_callback_secret(token, per_run_hash):
+            return
+    _require_callback_auth(authorization, callback_key_id)
+
+
 @router.post("/runs/{run_id}/callback", response_model=ProvisioningRunOut)
 def provisioning_callback(
     run_id: str,
@@ -623,10 +641,13 @@ def provisioning_callback(
     authorization: str = Header(default=""),
     x_onebrain_callback_key_id: str = Header(default=""),
 ):
-    _require_callback_auth(authorization, x_onebrain_callback_key_id)
+    store = get_provisioning_run_store()
+    # Load the run FIRST so a Hetzner box's per-run callback token can be verified against the
+    # hash stored on the run (the box's token cannot match MC's single global callback hash).
+    _require_run_callback_auth(store.get_run(run_id), authorization, x_onebrain_callback_key_id)
     try:
         run = apply_callback(
-            get_provisioning_run_store(),
+            store,
             get_settings(),
             run_id,
             ProvisioningCallback(**body.model_dump()),
