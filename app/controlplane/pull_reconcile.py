@@ -14,6 +14,7 @@ the tick is a no-op (no running fleet rollouts).
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -24,6 +25,19 @@ from app.controlplane.fleet_runner import reconcile_fleet_rollout
 from app.fleet.heartbeat import UpdateReport
 
 _TERMINAL_ROLLOUT = frozenset({"success", "failed"})
+
+# 7d/A17: the well-formed backup-manifest grammar — "sha256:<64 lowercase hex>:<bytes>".
+# The box records this (digest + size of the ENCRYPTED backup object) after a successful
+# encrypt; MC treats a "success" WITHOUT a well-formed manifest as no backup at all.
+_BACKUP_MANIFEST_RE = re.compile(r"^sha256:[0-9a-f]{64}:\d+$")
+
+
+def parse_backup_manifest(manifest: str) -> Optional[str]:
+    """Return `manifest` iff it is a well-formed 'sha256:<64hex>:<bytes>' string, else
+    None. A bare backup_status=='success' with no/garbled manifest resolves to None
+    (treated as NO backup) — a phantom-backup box cannot disable its own migration-
+    crossing restore net by asserting a naked success (7d/A17)."""
+    return manifest if _BACKUP_MANIFEST_RE.match(manifest or "") else None
 
 
 def _parse_dispatched_at(dispatched_at: str) -> Optional[datetime]:
@@ -78,18 +92,23 @@ def materialize_backup_from_report(control_store, deployment_id: str, update_rep
     backup_ts records a new row (a deterministic id + the latest-backup guard both
     absorb re-ticks of the same heartbeat).
 
-    A17 — RESIDUAL TRUST (documented, not closed in P4). The heartbeat is
-    authenticated to the box's fleet key, but the backup assertion itself is the box's
-    own UNVERIFIED word: a broken/compromised box reporting a phantom backup disables
-    its own restore_required safety net while MC proceeds to drive a destructive
-    migration on it. Stronger evidence (a backup manifest hash/size, the recorded
-    pre-migration alembic revision, or an off-box backup-object confirmation echoed in
-    the report) is DEFERRED to Phase 5 because it requires a NEW field on the
-    Phase-3-frozen, metadata-only UpdateReport contract (ground rule 3 forbids adding
-    to the fleet edge in P4). Stated here so the gap is explicit rather than silent."""
+    A17 — RESIDUAL TRUST (7d, Phase 5 mitigation). MC now GATES this on a WELL-FORMED
+    backup_manifest ("sha256:<64hex>:<bytes>", the digest+size of the encrypted backup
+    object the box records after a successful encrypt): a "success" carrying no/garbled
+    manifest is treated as NO backup, so a phantom-backup box can no longer disable its
+    own restore_required net by asserting a bare success. This raises the bar from "any
+    empty assertion" to "a well-formed manifest" and pairs with the pre-migration alembic
+    revision the box already records. RESIDUAL (stated, not silently carried): the box
+    still AUTHORS the hash, so a fully-compromised box can fabricate a well-formed one;
+    full closure — an off-box confirmation of the backup object via MC's OWN storage read
+    — remains a §6 ops item, not this field. The manifest is recorded in BackupRun.detail
+    so the operator can cross-check it."""
     if update_report.backup_status != "success" or not update_report.backup_ts:
         return
-    detail = f"pull-report:{update_report.backup_ts}"
+    manifest = parse_backup_manifest(getattr(update_report, "backup_manifest", "") or "")
+    if manifest is None:
+        return  # 7d/A17 gate: a bare/garbled "success" is not a backup — do not net it
+    detail = f"pull-report:{update_report.backup_ts}:{manifest}"
     latest = control_store.latest_backup(deployment_id)
     if latest is not None and latest.detail == detail and latest.status == "success":
         return  # already materialized this backup_ts (fast path for the common re-tick)

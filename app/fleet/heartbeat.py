@@ -136,6 +136,17 @@ class UpdateReport(BaseModel):
     # "forbid" tolerates a MISSING field, only rejects UNKNOWN ones). MC-first
     # dual-version ordering (G3-6): MC ingests this before any box emits it.
     applied_secrets_epoch: int = Field(default=0, ge=0)
+    # 7d/A17 (P5-07): a metadata-only backup manifest — "sha256:<64hex>:<bytes>" of the
+    # ENCRYPTED backup object (a digest + size; NEVER a path, name, or content). Lets MC's
+    # pull reconcile gate a migration-crossing rollout on a WELL-FORMED manifest instead of
+    # a bare self-reported backup_status="success", so a phantom-backup box can no longer
+    # disable its own restore net by asserting a naked success. Additive: old boxes omit it
+    # -> default "" (extra="forbid" tolerates a MISSING field). Ships alongside
+    # applied_secrets_epoch under the SAME MC-first dual-version ordering (G3-6). RESIDUAL:
+    # the box still AUTHORS the hash, so a fully-compromised box can fabricate a well-formed
+    # one — this raises the bar from "any empty assertion" to "a well-formed manifest";
+    # full closure (an off-box backup-object read echoed by MC) is a §6 ops item.
+    backup_manifest: str = Field(default="", max_length=128)
 
 
 class OneBrainReportV2(OneBrainReport):

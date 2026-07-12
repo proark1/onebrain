@@ -1164,6 +1164,33 @@ def test_update_report_applied_secrets_epoch_round_trips_and_defaults():
     assert UpdateReport.model_validate({"outcome": "succeeded"}).applied_secrets_epoch == 0
 
 
+def test_update_report_backup_manifest_round_trips_and_defaults():
+    # 7d/A17: the additive backup_manifest survives the v2 heartbeat round-trip...
+    manifest = "sha256:" + "b" * 64 + ":2048"
+    hb = _heartbeat_body_v2("dep_a", update=UpdateReport(backup_manifest=manifest))
+    assert FleetHeartbeatV2.model_validate(hb.model_dump()).update.backup_manifest == manifest
+    # ...and an UpdateReport omitting it defaults to "" (old-box compat; extra="forbid"
+    # tolerates a MISSING field). Ships alongside applied_secrets_epoch (both additive).
+    assert UpdateReport().backup_manifest == ""
+    assert UpdateReport.model_validate({"outcome": "succeeded"}).backup_manifest == ""
+
+
+def test_update_state_round_trips_backup_manifest(tmp_path):
+    # 7d: update_state.py round-trips the whole model (no code change needed), so a
+    # box-written manifest survives read-back into the reporter.
+    import json
+
+    from app.fleet.update_state import read_update_report, update_state_path
+
+    manifest = "sha256:" + "c" * 64 + ":512"
+    path = update_state_path(str(tmp_path))
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"outcome": "succeeded", "backup_status": "success",
+                   "backup_ts": "2026-07-12T00:00:00+00:00", "backup_manifest": manifest}, fh)
+    report = read_update_report(path)
+    assert report.backup_manifest == manifest and report.backup_status == "success"
+
+
 # --- bootstrap-token secret exchange (P5-03) ---------------------------------
 
 _BOOT_KEY = "unit-test-secret-key"

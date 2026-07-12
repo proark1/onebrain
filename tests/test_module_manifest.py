@@ -45,6 +45,37 @@ def test_probe_ports_match_pinned_expectations():
     assert all(probe.port != 8080 for probe in MODULE_HEALTH_PROBES.values())
 
 
+def test_health_probe_ports_pinned():
+    """7b: the EXACT probe map (kind + port + path + fail-open flag), every MODULE_IDS
+    member has a probe, and the public Caddy routes' ports are a SUBSET of the probe ports
+    — a cross-pin so a future port edit in render.py OR this manifest breaks the test."""
+    from app.provisioning.hetzner.render import _CADDY_ROUTES
+
+    expected = {
+        "onebrain-api":          ("http", 8000, "/health"),
+        "onebrain-admin-ui":     ("http", 3000, "/"),
+        "onebrain-workers":      ("none", 0, ""),
+        "assistant-service":     ("http", 8000, "/health/ready"),
+        "communication-api":     ("http", 4000, "/health"),
+        "communication-widget":  ("http", 5174, "/health"),
+        "communication-voice":   ("http", 4100, "/health"),
+        "communication-workers": ("http", 4200, "/health"),
+    }
+    # Every MODULE_IDS member has a probe entry (drift tripwire against the pinned table).
+    assert set(MODULE_HEALTH_PROBES) == MODULE_IDS == set(expected)
+    for module_id, (kind, port, path) in expected.items():
+        probe = MODULE_HEALTH_PROBES[module_id]
+        assert (probe.kind, probe.port, probe.path) == (kind, port, path), module_id
+    # comm workers' liveness listener is deliberately fail-open; nothing else is.
+    assert MODULE_HEALTH_PROBES["communication-workers"].fail_open_on_connection_refused is True
+    assert all(p.fail_open_on_connection_refused is False
+               for mid, p in MODULE_HEALTH_PROBES.items() if mid != "communication-workers")
+    # Cross-pin: every public Caddy route's port equals that module's probe port, so a
+    # port edit in either _CADDY_ROUTES (render.py) or the probe table fails here.
+    for module_id, port, _path in _CADDY_ROUTES:
+        assert MODULE_HEALTH_PROBES[module_id].port == port, module_id
+
+
 def test_comm_requires_service_key_and_space_id():
     # The gap that let comm silently run in local-brain fallback: the pair
     # provision-customer.yml never set must be named as missing.

@@ -21,6 +21,8 @@ from app.fleet.heartbeat import UpdateReport, build_heartbeat_v2
 
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
 DEADLINE = 1800
+# A well-formed backup manifest (7d/A17): sha256:<64hex>:<bytes> of the encrypted backup.
+_MANIFEST = "sha256:" + "a" * 64 + ":4096"
 
 
 # --- pure synthesis ----------------------------------------------------------
@@ -59,12 +61,13 @@ def test_synthesize_matrix():
 # --- the tick ----------------------------------------------------------------
 
 def _hb(deployment_id: str, *, attempt_id: str = "", outcome: str = "none",
-        backup_status: str = "", backup_ts: str = ""):
+        backup_status: str = "", backup_ts: str = "", backup_manifest: str = ""):
     """A stored-heartbeat stand-in whose .payload matches latest_heartbeats()'s shape."""
     body = build_heartbeat_v2(
         deployment_id=deployment_id, reported_at=NOW.isoformat(), version="2026.07.1",
         update=UpdateReport(attempt_id=attempt_id, outcome=outcome, last_target_version="2026.07.1",
-                            backup_status=backup_status, backup_ts=backup_ts))
+                            backup_status=backup_status, backup_ts=backup_ts,
+                            backup_manifest=backup_manifest))
     return SimpleNamespace(payload=body.model_dump())
 
 
@@ -141,7 +144,8 @@ def test_reconcile_materializes_backup():
     assert store.plan_update("dep_p", "2026.08.0").reason == "backup_required_for_schema_update"
 
     heartbeats = {"dep_p": _hb("dep_p", attempt_id="c_dep", outcome="succeeded",
-                               backup_status="success", backup_ts="2026-07-12T11:59:00+00:00")}
+                               backup_status="success", backup_ts="2026-07-12T11:59:00+00:00",
+                               backup_manifest=_MANIFEST)}
     reconcile_pull_targets(store, store, heartbeats, now=NOW, deadline_seconds=DEADLINE,
                            dispatch_child=_noop_dispatch)
 
@@ -152,14 +156,46 @@ def test_reconcile_materializes_backup():
 
 def test_materialize_backup_is_idempotent_on_same_ts():
     store = _store_with_offered_child()
-    report = UpdateReport(backup_status="success", backup_ts="2026-07-12T11:59:00+00:00")
+    report = UpdateReport(backup_status="success", backup_ts="2026-07-12T11:59:00+00:00",
+                          backup_manifest=_MANIFEST)
     materialize_backup_from_report(store, "dep_p", report)
     materialize_backup_from_report(store, "dep_p", report)   # re-tick of the same heartbeat
-    # No duplicate row / no raise; the single backup stands.
-    assert store.latest_backup("dep_p").detail == "pull-report:2026-07-12T11:59:00+00:00"
+    # No duplicate row / no raise; the single backup stands. The manifest lands in detail
+    # so the operator can cross-check it (7d).
+    assert store.latest_backup("dep_p").detail == f"pull-report:2026-07-12T11:59:00+00:00:{_MANIFEST}"
     # An absent/failed backup claim records nothing.
     materialize_backup_from_report(store, "dep_p", UpdateReport(backup_status="failed", backup_ts="x"))
     assert store.latest_backup("dep_p").status == "success"
+
+
+def test_materialize_backup_requires_well_formed_manifest():
+    """7d/A17: a bare/garbled 'success' is NOT a backup (a phantom-backup box cannot
+    disable its own restore net); only a well-formed sha256:<64hex>:<bytes> materializes."""
+    from app.controlplane.pull_reconcile import parse_backup_manifest
+
+    # Naked success (no manifest) -> nothing materialized.
+    store = _store_with_offered_child()
+    materialize_backup_from_report(
+        store, "dep_p", UpdateReport(backup_status="success", backup_ts="2026-07-12T11:59:00+00:00"))
+    assert store.latest_backup("dep_p") is None
+
+    # Garbled manifests (wrong algo, short hex, non-numeric size) -> still nothing.
+    for bad in ("success", "sha256:" + "a" * 63 + ":1", "sha256:" + "a" * 64 + ":x",
+                "md5:" + "a" * 64 + ":1", "sha256:" + "A" * 64 + ":1"):
+        assert parse_backup_manifest(bad) is None
+        materialize_backup_from_report(
+            store, "dep_p",
+            UpdateReport(backup_status="success", backup_ts="2026-07-12T11:59:00+00:00",
+                         backup_manifest=bad))
+        assert store.latest_backup("dep_p") is None
+
+    # A well-formed manifest materializes, carrying the manifest in detail.
+    assert parse_backup_manifest(_MANIFEST) == _MANIFEST
+    materialize_backup_from_report(
+        store, "dep_p", UpdateReport(backup_status="success", backup_ts="2026-07-12T11:59:00+00:00",
+                                     backup_manifest=_MANIFEST))
+    bk = store.latest_backup("dep_p")
+    assert bk is not None and bk.status == "success" and _MANIFEST in bk.detail
 
 
 def test_reconcile_ignores_railway_children():

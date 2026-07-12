@@ -342,7 +342,7 @@ def test_update_sh_recover_restore_decrypts_before_restore():
     decrypt = body.index('"$OPENSSL" enc -d')                 # decrypts the encrypted backup
     restore = body.index('"$PG_RESTORE"')                     # restores from it
     assert decrypt < restore                                  # decrypt BEFORE restore
-    assert '"$PG_RESTORE" "$WORK/backup.sql"' not in body     # never the deleted plaintext dump
+    assert '"$WORK/backup.dump"' not in body                  # never the deleted plaintext dump
 
 
 # --- MC unreachable ----------------------------------------------------------
@@ -445,6 +445,50 @@ def test_update_sh_sources_env_before_box_env():
 
 def test_bootstrap_sh_has_no_crlf():
     assert b"\r" not in _BOOTSTRAP_SH.read_bytes()
+
+
+# --- P5-07 7c: pg_dump -Fc + pg_restore share the SAME connection target -----
+def test_backup_uses_custom_format_dump(box):
+    # A migration-crossing update dumps with -Fc (custom archive) so stock pg_restore
+    # can consume it; the pg_dump stub records its args.
+    box.set_serve(signed_serve(migration_from="0019", migration_to="0020", rollback_kind="restore_required"))
+    box.set_alembic_current("0020")
+    assert box.run().returncode == 0, "migration-crossing update should succeed"
+    assert "pg_dump -Fc" in box.stub_log()
+
+
+def test_update_sh_dump_and_restore_share_connection_target():
+    """Static contract (7c/G2-2): the dump (-Fc) and restore (--clean --if-exists)
+    resolve to the SAME connection target via the ONE shared $PG_CONN indirection — the
+    dump is never left implicit while the restore is explicit — and neither targets a
+    plain .sql created without -Fc."""
+    src = _UPDATE_SH.read_text(encoding="utf-8")
+    assert '"$PG_DUMP" -Fc -d "$PG_CONN"' in src                     # dump: custom-format + explicit target
+    assert '"$PG_RESTORE" --clean --if-exists -d "$PG_CONN"' in src  # restore: SAME shared target
+    # The dump/restore artifacts are custom-format archives (.dump), never a plain .sql
+    # that stock pg_restore cannot read.
+    assert 'DUMP="$WORK/backup.dump"' in src and 'RESTORE="$WORK/restore.dump"' in src
+
+
+# --- P5-07 7d: box records a well-formed backup_manifest (A17 gate) -----------
+def test_backup_manifest_recorded_on_migration_crossing_success(box):
+    import re
+
+    box.set_serve(signed_serve(migration_from="0019", migration_to="0020", rollback_kind="restore_required"))
+    box.set_alembic_current("0020")
+    assert box.run().returncode == 0
+    state = box.state()
+    assert state["backup_status"] == "success"
+    # A well-formed sha256:<64hex>:<bytes> manifest of the ENCRYPTED backup object.
+    assert re.match(r"^sha256:[0-9a-f]{64}:\d+$", state["backup_manifest"]), state["backup_manifest"]
+
+
+def test_no_backup_manifest_without_schema_change(box):
+    # No schema change -> no backup taken -> empty manifest (nothing for MC to net).
+    box.set_serve(signed_serve(migration_from="0020", migration_to="0020"))
+    assert box.run().returncode == 0
+    state = box.state()
+    assert state["outcome"] == "succeeded" and state["backup_manifest"] == ""
 
 
 # --- shellcheck (CI-only; A4) ------------------------------------------------

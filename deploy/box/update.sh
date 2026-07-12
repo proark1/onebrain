@@ -43,6 +43,12 @@ fi
 : "${ALEMBIC:=alembic}"
 : "${PG_DUMP:=pg_dump}"
 : "${PG_RESTORE:=pg_restore}"
+# 7c / G2-2: the custom-format dump (-Fc) and pg_restore MUST resolve to the SAME
+# database, or a restore on a failed migration-crossing update could load the dump into
+# a different/empty DB than was dumped. Both connect through this ONE shared target
+# (overridable in box.env alongside the PG_DUMP/PG_RESTORE exec wrappers a live box may
+# point these at) — the dump is never left implicit while the restore is explicit.
+: "${PG_CONN:=postgresql://onebrain@postgres:5432/onebrain}"
 : "${OPENSSL:=openssl}"
 : "${PYTHON:=python3}"
 
@@ -90,13 +96,14 @@ dc_over() {
 ATTEMPT_ID=""
 TARGET_VERSION=""
 
-# write_state <outcome> <migration_reached> <backup_status> <backup_ts>
+# write_state <outcome> <migration_reached> <backup_status> <backup_ts> <backup_manifest>
 # Writes the metadata-only UpdateReport (NO free-text reason — that stays in $LOG,
-# off the fleet edge; ground rule 3).
+# off the fleet edge; ground rule 3). backup_manifest (7d/A17) is "sha256:<hex>:<bytes>"
+# of the encrypted backup, or "" when no backup was taken.
 write_state() {
-  "$PYTHON" - "$STATE_FILE" "$1" "$2" "$TARGET_VERSION" "$ATTEMPT_ID" "$3" "$4" <<'PYEOF'
+  "$PYTHON" - "$STATE_FILE" "$1" "$2" "$TARGET_VERSION" "$ATTEMPT_ID" "$3" "$4" "$5" <<'PYEOF'
 import sys, json, datetime
-path, outcome, migration_reached, version, attempt_id, backup_status, backup_ts = sys.argv[1:8]
+path, outcome, migration_reached, version, attempt_id, backup_status, backup_ts, backup_manifest = sys.argv[1:9]
 json.dump({
     "last_target_version": version,
     "outcome": outcome,
@@ -105,6 +112,7 @@ json.dump({
     "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     "backup_status": backup_status,
     "backup_ts": backup_ts,
+    "backup_manifest": backup_manifest,
 }, open(path, "w"))
 PYEOF
 }
@@ -183,7 +191,7 @@ if ! "$PYTHON" "$UPDATE_VERIFY_BIN" verify <"$ENVELOPE" >"$TARGET" 2>"$WORK/veri
   log "verify REJECTED: $REASON"
   # A rejection IS a converged-negative for this offer: stamp outcome=failed so
   # the reconcile tick sees it (attempt_id gates it). The reason stays local.
-  write_state "failed" "" "" ""
+  write_state "failed" "" "" "" ""
   exit 0
 fi
 
@@ -229,6 +237,7 @@ PYEOF
 
 BACKUP_STATUS=""
 BACKUP_TS=""
+BACKUP_MANIFEST=""   # 7d/A17: sha256:<hex>:<bytes> of $ENC; "" until a backup is taken
 PRE_MIGRATION_REV=""
 ENC=""   # encrypted backup path (set in step 4); recover decrypts THIS, never the shredded plaintext
 
@@ -239,19 +248,25 @@ if crosses_migration; then
   dc_over stop >>"$LOG" 2>&1 || true
   PRE_MIGRATION_REV="$("$ALEMBIC" current 2>/dev/null | tr -d '[:space:]' || true)"
   printf '%s\n' "$PRE_MIGRATION_REV" >"$WORK/pre_migration_revision"
-  DUMP="$WORK/backup.sql"
-  ENC="${UPDATE_DATA_DIR}/backups/backup-$(date -u +%Y%m%dT%H%M%SZ).sql.enc"
+  DUMP="$WORK/backup.dump"
+  ENC="${UPDATE_DATA_DIR}/backups/backup-$(date -u +%Y%m%dT%H%M%SZ).dump.enc"
   mkdir -p "${UPDATE_DATA_DIR}/backups"
-  if "$PG_DUMP" >"$DUMP" 2>>"$LOG" \
+  # 7c: -Fc (custom-format archive) so stock pg_restore consumes the decrypted backup;
+  # -d "$PG_CONN" makes the dump's connection target EXPLICIT and identical to restore's.
+  if "$PG_DUMP" -Fc -d "$PG_CONN" >"$DUMP" 2>>"$LOG" \
      && "$OPENSSL" enc -aes-256-cbc -pbkdf2 -salt -pass "pass:${UPDATE_BACKUP_KEY:-}" -in "$DUMP" -out "$ENC" 2>>"$LOG"; then
     BACKUP_STATUS="success"
     BACKUP_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # 7d/A17: a metadata-only manifest (digest+size of the ENCRYPTED backup object, never
+    # a path or content) so MC can gate the migration-crossing rollout above a bare
+    # self-reported "success". Recorded in update_state.json + emitted in the heartbeat.
+    BACKUP_MANIFEST="sha256:$(sha256sum "$ENC" 2>>"$LOG" | cut -d' ' -f1):$(wc -c <"$ENC" 2>>"$LOG" | tr -d '[:space:]')"
     rm -f "$DUMP"
     log "backup ok -> $ENC"
   else
     BACKUP_STATUS="failed"
     log "backup FAILED; holding (no destructive apply)"
-    write_state "failed" "$PRE_MIGRATION_REV" "$BACKUP_STATUS" "$BACKUP_TS"
+    write_state "failed" "$PRE_MIGRATION_REV" "$BACKUP_STATUS" "$BACKUP_TS" "$BACKUP_MANIFEST"
     exit 0
   fi
 fi
@@ -273,7 +288,7 @@ if [ "$MIG_FROM" != "$MIG_TO" ]; then
   MIGRATION_REACHED="$CURRENT"
   if [ "$CURRENT" != "$MIG_TO" ]; then
     log "fence FAILED: alembic current=$CURRENT != target=$MIG_TO; holding DEGRADED"
-    write_state "failed" "$CURRENT" "$BACKUP_STATUS" "$BACKUP_TS"
+    write_state "failed" "$CURRENT" "$BACKUP_STATUS" "$BACKUP_TS" "$BACKUP_MANIFEST"
     exit 0
   fi
 fi
@@ -290,11 +305,13 @@ recover_restore_required() {
   # surviving copy is the encrypted $ENC. Decrypt it with the SAME cipher+key used to
   # encrypt (openssl enc -d) into a temp plaintext, restore from THAT, then shred the
   # temp so customer data never lingers on disk. NEVER pg_restore the deleted
-  # $WORK/backup.sql (that path no longer exists).
-  RESTORE="$WORK/restore.sql"
+  # $WORK/backup.dump (that path no longer exists).
+  RESTORE="$WORK/restore.dump"
   if "$OPENSSL" enc -d -aes-256-cbc -pbkdf2 -pass "pass:${UPDATE_BACKUP_KEY:-}" \
        -in "$ENC" -out "$RESTORE" 2>>"$LOG"; then
-    "$PG_RESTORE" "$RESTORE" >>"$LOG" 2>&1 || log "pg_restore warned"
+    # 7c/G2-2: consume the custom-format archive into the SAME target the dump used
+    # ($PG_CONN); --clean --if-exists so restoring over the half-migrated schema is idempotent.
+    "$PG_RESTORE" --clean --if-exists -d "$PG_CONN" "$RESTORE" >>"$LOG" 2>&1 || log "pg_restore warned"
     shred -u "$RESTORE" 2>/dev/null || rm -f "$RESTORE"
   else
     log "backup decrypt FAILED; cannot restore DB"
@@ -308,13 +325,13 @@ if ! "$CURL" -sf "$UPDATE_HEALTH_URL" >/dev/null 2>>"$LOG"; then
   else
     recover_code_only
   fi
-  write_state "rolled_back" "$MIGRATION_REACHED" "$BACKUP_STATUS" "$BACKUP_TS"
+  write_state "rolled_back" "$MIGRATION_REACHED" "$BACKUP_STATUS" "$BACKUP_TS" "$BACKUP_MANIFEST"
   exit 0
 fi
 
 # --- 8/9. SUCCESS: record floor+nonce, persist last-applied + UpdateReport ---
 "$PYTHON" "$UPDATE_VERIFY_BIN" record-apply <"$ENVELOPE" >>"$LOG" 2>&1 || log "record-apply warned"
 cp -f "$TARGET" "$LAST_APPLIED"
-write_state "succeeded" "$MIGRATION_REACHED" "$BACKUP_STATUS" "$BACKUP_TS"
+write_state "succeeded" "$MIGRATION_REACHED" "$BACKUP_STATUS" "$BACKUP_TS" "$BACKUP_MANIFEST"
 log "update SUCCEEDED -> $TARGET_VERSION"
 exit 0
