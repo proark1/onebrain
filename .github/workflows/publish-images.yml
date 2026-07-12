@@ -165,3 +165,68 @@ jobs:
             echo "- image: \`ghcr.io/proark1/onebrain-admin-ui\`"
             echo "- digest: \`${{ steps.push.outputs.digest }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # P4-09: classify the NEW migration files in this publish delta as code_only vs
+  # restore_required (architecture §3a) and surface the result. Advisory + never
+  # blocks the image publish (continue-on-error): the AUTHORITATIVE gate is
+  # POST /api/operator/releases, which rejects a declared rollback_kind looser than
+  # this classification (see app/routers/operator.create_release, unit-tested).
+  # shellcheck is CI-only (A4) — not a local merge gate.
+  classify-migrations:
+    name: Classify new migrations
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install classifier dependency
+        run: pip install cryptography
+
+      - name: Classify the migration delta
+        run: |
+          set -euo pipefail
+          base="${{ github.event.before }}"
+          if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            base="$(git rev-parse HEAD~1 2>/dev/null || true)"
+          fi
+          if [ -z "$base" ]; then
+            echo "No base commit to diff against; skipping." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          new_files="$(git diff --name-only --diff-filter=A "$base" HEAD -- 'migrations/versions/*.py' || true)"
+          if [ -z "$new_files" ]; then
+            echo "No new alembic migrations in this delta." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          args=""
+          while IFS= read -r f; do
+            [ -n "$f" ] && args="$args --alembic-file $f"
+          done <<< "$new_files"
+          set +e
+          # shellcheck disable=SC2086
+          python scripts/sign_release.py classify $args
+          code=$?
+          set -e
+          case "$code" in
+            0) kind="code_only" ;;
+            3) kind="restore_required" ;;
+            *) echo "classifier error (exit $code)" >> "$GITHUB_STEP_SUMMARY"; exit "$code" ;;
+          esac
+          {
+            echo "### Migration classification"
+            echo ""
+            echo "- new files:"
+            echo "$new_files" | sed 's/^/  - /'
+            echo "- rollback_kind: \`$kind\`"
+            echo ""
+            echo "Enforcement: POST /api/operator/releases rejects a declared rollback_kind looser than this."
+          } >> "$GITHUB_STEP_SUMMARY"

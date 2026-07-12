@@ -1297,3 +1297,80 @@ def test_update_plan_endpoint_passes_ack_param(monkeypatch):
     acked = operator_router.update_plan(
         "dep_a", "2026.07.19", ack_restore_required=True, principal=_admin())
     assert acked.allowed is True
+
+
+# --- P4-09: promotion-time migration-linter wiring ----------------------------
+
+_DROP_DELTA = {"alembic": [["0021_drop.py", "def upgrade():\n    op.drop_column('t', 'c')\n"]]}
+_ADD_DELTA = {"alembic": [["0022_add.py", "def upgrade():\n    op.add_column('t', sa.Column('c', sa.String()))\n"]]}
+
+
+def test_create_release_stamps_classified_rollback_kind(monkeypatch):
+    store = _store()
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
+
+    # A DROP COLUMN with NO declared rollback_kind -> stamped restore_required.
+    out = operator_router.create_release(operator_router.ReleaseCreate(
+        version="2026.09.1", git_sha="abc", modules=dict(_MODULES), migration_delta=_DROP_DELTA,
+    ), principal=_admin())
+
+    assert out.rollback_kind == "restore_required"
+    assert store.get_release("2026.09.1").rollback_kind == "restore_required"
+
+
+def test_create_release_rejects_understated_rollback_kind(monkeypatch):
+    store = _store()
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
+
+    # linter says restore_required, operator declares code_only (no override) -> 400 + findings.
+    with pytest.raises(HTTPException) as ei:
+        operator_router.create_release(operator_router.ReleaseCreate(
+            version="v_bad", git_sha="a", modules=dict(_MODULES),
+            rollback_kind="code_only", migration_delta=_DROP_DELTA,
+        ), principal=_admin())
+    assert ei.value.status_code == 400
+    assert "disagrees with migration classification" in ei.value.detail
+    assert store.get_release("v_bad") is None       # never persisted
+
+    # override=True -> STILL 400: you cannot override to a LOOSER kind (linter is the floor).
+    with pytest.raises(HTTPException) as ei2:
+        operator_router.create_release(operator_router.ReleaseCreate(
+            version="v_bad2", git_sha="a", modules=dict(_MODULES),
+            rollback_kind="code_only", rollback_kind_override=True, migration_delta=_DROP_DELTA,
+        ), principal=_admin())
+    assert ei2.value.status_code == 400
+    assert store.get_release("v_bad2") is None
+
+    # an operator-STRICTER value (restore_required on a code_only add-column delta) -> accepted.
+    out = operator_router.create_release(operator_router.ReleaseCreate(
+        version="v_strict", git_sha="a", modules=dict(_MODULES),
+        rollback_kind="restore_required", migration_delta=_ADD_DELTA,
+    ), principal=_admin())
+    assert out.rollback_kind == "restore_required"
+
+
+def test_create_release_no_delta_is_inert(monkeypatch):
+    store = _store()
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
+
+    # No migration_delta -> no classification; rollback_kind taken verbatim (Phase-3 behavior).
+    out = operator_router.create_release(operator_router.ReleaseCreate(
+        version="v_inert", git_sha="a", modules=dict(_MODULES), rollback_kind="code_only",
+    ), principal=_admin())
+    assert out.rollback_kind == "code_only"
+    assert store.get_release("v_inert").rollback_kind == "code_only"
+
+
+def test_create_release_add_column_delta_classifies_code_only(monkeypatch):
+    store = _store()
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
+
+    # A purely-additive delta with no declared kind -> stamped code_only.
+    out = operator_router.create_release(operator_router.ReleaseCreate(
+        version="v_add", git_sha="a", modules=dict(_MODULES), migration_delta=_ADD_DELTA,
+    ), principal=_admin())
+    assert out.rollback_kind == "code_only"

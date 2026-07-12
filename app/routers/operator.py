@@ -40,6 +40,7 @@ from app.controlplane.rollout_exec import (
     target_provider,
 )
 from app.controlplane.fleet_runner import plan_and_start_fleet_rollout, reconcile_fleet_rollout
+from app.controlplane.migration_lint import classify_release
 from app.provisioning.runs import RolloutWorkflowDispatcher
 from app.trust.release import (
     parse_registry_allowlist,
@@ -107,6 +108,15 @@ class ReleaseCreate(BaseModel):
     rollback_kind: str = ""
     signature: str = ""
     signing_key_id: str = ""
+    # P4-09: OPTIONAL NEW-migration delta shaped {"alembic": [[file, source], ...],
+    # "sql": [[file, sql], ...]} classified at creation (grandfathering — pass only
+    # the files new in THIS release). Inert when empty (today's behavior).
+    migration_delta: dict = Field(default_factory=dict)
+    # Reserved override knob. In P4 the linter classification is an ABSOLUTE floor:
+    # a declared rollback_kind looser than the classification is refused whether or
+    # not this is set (the binding test plan pins override -> still 400). A stricter
+    # operator value is always allowed. Kept as declared API surface for Phase 5.
+    rollback_kind_override: bool = False
 
 
 class ReleaseOut(BaseModel):
@@ -926,19 +936,76 @@ def list_releases(principal: Principal = Depends(resolve_principal)):
     return [_release_out(r) for r in get_control_plane_store().list_releases()]
 
 
+_ROLLBACK_RANK = {"code_only": 0, "restore_required": 1}
+_MAX_DELTA_FILES = 100
+_MAX_DELTA_CHARS = 200_000
+
+
+def _rollback_rank(kind: str) -> int:
+    # Unknown -> strictest, fail-closed (a garbled kind is later rejected by
+    # validate_release; here it can never rank BELOW a real classification).
+    return _ROLLBACK_RANK.get(kind, max(_ROLLBACK_RANK.values()))
+
+
+def _delta_pairs(entries) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for entry in list(entries or [])[:_MAX_DELTA_FILES]:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            raise HTTPException(status_code=400, detail="migration_delta entries must be [filename, source] pairs")
+        out.append((str(entry[0])[:400], str(entry[1])[:_MAX_DELTA_CHARS]))
+    return out
+
+
+def _classify_migration_delta(delta: dict):
+    if not isinstance(delta, dict):
+        raise HTTPException(status_code=400, detail="migration_delta must be an object with 'alembic'/'sql' lists")
+    return classify_release(
+        alembic_sources=_delta_pairs(delta.get("alembic")),
+        sql_files=_delta_pairs(delta.get("sql")),
+    )
+
+
+def _format_findings(findings) -> str:
+    # Rule ids + SQL-only excerpts (the classifier already guarantees no data).
+    return "; ".join(f"{f.rule}[{f.source}]: {f.excerpt}" for f in findings) or "no findings"
+
+
 @router.post("/releases", response_model=ReleaseOut)
 def create_release(body: ReleaseCreate, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
     settings = get_settings()
     errors: list[str] = []
     images = {k.strip(): v.strip() for k, v in body.images.items()}
+
+    # P4-09: classify the NEW migration delta (when supplied) and reconcile it with
+    # the declared rollback_kind. The classification is an ABSOLUTE floor: a declared
+    # kind LOOSER than the classification is refused; an equal/stricter one stands;
+    # an empty one is STAMPED with the classification. rollback_kind is inside the
+    # signature payload, so a signed release must declare it explicitly (stamping
+    # would break A6 re-verification). Inert when migration_delta is empty.
+    resolved_rollback_kind = body.rollback_kind.strip()
+    if body.migration_delta:
+        classification = _classify_migration_delta(body.migration_delta)
+        declared = body.rollback_kind.strip()
+        if not declared:
+            if body.signature.strip():
+                raise HTTPException(status_code=400, detail=(
+                    "a signed release must declare rollback_kind explicitly (it is inside the "
+                    "signature payload); migration_delta cannot stamp it after signing"))
+            resolved_rollback_kind = classification.rollback_kind
+        elif _rollback_rank(declared) < _rollback_rank(classification.rollback_kind):
+            raise HTTPException(status_code=400, detail=(
+                f"rollback_kind disagrees with migration classification (declared {declared!r} is "
+                f"looser than the classified {classification.rollback_kind!r}): "
+                f"{_format_findings(classification.findings)}"))
+
     if settings.release_require_signed_images and not images:
         errors.append("release requires a digest-pinned images map")
     if images:
         # C7 / ground rule 1: the registry allowlist deliberately has NO off
         # flag — supplying an images map is itself the opt-in.
         errors += verify_images(images, parse_registry_allowlist(settings.release_registry_allowlist))
-    if settings.release_require_rollback_kind and body.rollback_kind.strip() not in ("code_only", "restore_required"):
+    if settings.release_require_rollback_kind and resolved_rollback_kind not in ("code_only", "restore_required"):
         errors.append("release requires rollback_kind (code_only|restore_required)")
     if body.signature or settings.release_require_signature:
         # A present signature is ALWAYS verified even when not required — a bad
@@ -965,7 +1032,7 @@ def create_release(body: ReleaseCreate, principal: Principal = Depends(resolve_p
             rollback_plan=body.rollback_plan.strip(),
             status=body.status.strip(),
             images=images,
-            rollback_kind=body.rollback_kind.strip(),
+            rollback_kind=resolved_rollback_kind,
             signature=body.signature.strip(),
             signing_key_id=body.signing_key_id.strip(),
         ))
