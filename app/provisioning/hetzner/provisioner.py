@@ -39,6 +39,8 @@ from app.fleet.keys import generate_bootstrap_token, hash_secret
 from app.provisioning.hetzner.broker import HetznerBroker
 from app.provisioning.hetzner.client import (
     DnsRecordRequest,
+    FirewallCreateRequest,
+    FirewallRule,
     ServerCreateRequest,
     VolumeCreateRequest,
 )
@@ -83,6 +85,19 @@ def _ssh_key_ids(csv: str) -> tuple[int, ...]:
     Non-numeric entries are dropped defensively — there is no inbound-22 path a
     malformed id could open (H-3 firewall never opens 22)."""
     return tuple(int(part.strip()) for part in (csv or "").split(",") if part.strip().isdigit())
+
+
+def _default_deny_rules(allow_ssh: bool) -> tuple[FirewallRule, ...]:
+    """The default-deny inbound rule set for a box's Cloud Firewall (§5, P5-05). Only
+    HTTP(S) is exposed; Postgres/Redis have NO inbound rule (so 5432/6379 are internet-
+    unreachable). Inbound 22 is emitted ONLY as a deliberate break-glass."""
+    rules = [
+        FirewallRule(direction="in", protocol="tcp", port="80"),
+        FirewallRule(direction="in", protocol="tcp", port="443"),
+    ]
+    if allow_ssh:
+        rules.append(FirewallRule(direction="in", protocol="tcp", port="22"))
+    return tuple(rules)
 
 
 class HetznerProvisioner:
@@ -140,9 +155,13 @@ class HetznerProvisioner:
                 "a tag-only or unknown release cannot be provisioned onto the fleet."
             )
 
-        # 3. D-6 coordinates + optional public hostname.
+        # 3. D-6 coordinates + optional public hostname. DNS is gated STRICTLY on the
+        #    Hetzner provider (P5-05) — a "cloudflare"/unknown provider skips DNS (serve
+        #    on the raw IP) rather than mis-calling the Hetzner DNS client; a zone id is
+        #    required (the A record needs one).
         compose_project = f"onebrain-{run.deployment_id}"
-        dns_enabled = bool(settings.fleet_dns_provider and settings.fleet_base_domain)
+        dns_enabled = (settings.fleet_dns_provider == "hetzner"
+                       and bool(settings.fleet_base_domain and settings.fleet_dns_zone_id))
         fqdn = f"{run.deployment_id}.{settings.fleet_base_domain}" if dns_enabled else ""
 
         # 4a. Mint + persist the box secret bundle and a single-use bootstrap token
@@ -178,9 +197,19 @@ class HetznerProvisioner:
         except ValueError as exc:
             raise RuntimeError(f"cloud-init render failed: {exc}") from exc
 
-        # 5. Broker create. The firewall is attached IN this create call (H-3);
-        #    the data volume (if configured) is created first and attached
-        #    in-create by the broker; DNS is upserted last (if a provider is set).
+        # 5. Broker create. When no pre-created firewall is configured, a default-deny
+        #    Cloud Firewall (P5-05) is created IN the flow and attached in the server
+        #    create (H-3): inbound tcp 80 + 443 (+ 22 ONLY under the break-glass flag);
+        #    NO Postgres/Redis inbound rule, so 5432/6379 stay unreachable from the
+        #    internet (paired with the compose `expose:` — never `ports:`). Egress is
+        #    unrestricted at the Hetzner layer (the metadata-egress block is box iptables).
+        firewall = None
+        if not settings.hetzner_firewall_id:
+            firewall = FirewallCreateRequest(
+                name=f"{compose_project}-fw",
+                rules=_default_deny_rules(settings.hetzner_firewall_allow_ssh),
+                labels={"deployment_id": run.deployment_id},
+            )
         server = ServerCreateRequest(
             name=compose_project,
             server_type=settings.hetzner_server_type,
@@ -188,6 +217,8 @@ class HetznerProvisioner:
             location=settings.hetzner_location,
             user_data=cloud_init,
             ssh_key_ids=_ssh_key_ids(settings.hetzner_ssh_key_ids),
+            # A pre-created firewall is attached as-is; otherwise the broker creates the
+            # default-deny one above and attaches ITS id in the same create call.
             firewall_ids=(settings.hetzner_firewall_id,) if settings.hetzner_firewall_id else (),
             labels={"deployment_id": run.deployment_id},
         )
@@ -205,14 +236,16 @@ class HetznerProvisioner:
 
         # A HetznerApiError IS a RuntimeError; it propagates to _dispatch_run,
         # which maps it to dispatch_failed (mirroring dispatch_workflow's shape).
-        result = self.broker.provision_box(server=server, volume=volume, dns=dns)
+        result = self.broker.provision_box(server=server, volume=volume, dns=dns, firewall=firewall)
 
         # 7. Write the D-6 slot convention + an erasure manifest (ids only; teardown
-        #    execution is Phase-4-OUT). secret_ids is populated by P4-04.
+        #    execution is Phase-4-OUT). secret_ids is populated by P4-04. firewall_id is
+        #    the CREATED default-deny firewall ("" when a pre-existing one was attached).
         erasure_manifest = {
             "server_id": result.server_id,
             "volume_ids": list(result.volume_ids),
             "dns_record_id": result.dns_record_id,
+            "firewall_id": result.firewall_id,
             "user_data": "rendered",
             "secret_ids": [],
         }

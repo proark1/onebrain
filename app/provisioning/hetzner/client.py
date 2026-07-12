@@ -76,12 +76,37 @@ class DnsRecordResult:
     fqdn: str
 
 
+@dataclass(frozen=True)
+class FirewallRule:
+    """One inbound Hetzner Cloud Firewall rule. Hetzner firewalls are default-deny
+    inbound: ONLY listed inbound rules are allowed. `port` is set for tcp/udp and
+    omitted for icmp."""
+    direction: str                                          # "in"
+    protocol: str                                           # "tcp" | "icmp"
+    port: str = ""                                          # "80" | "443" | "22" (tcp only)
+    source_ips: tuple[str, ...] = ("0.0.0.0/0", "::/0")
+
+
+@dataclass(frozen=True)
+class FirewallCreateRequest:
+    name: str
+    rules: tuple[FirewallRule, ...]
+    labels: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class FirewallCreateResult:
+    firewall_id: str
+
+
 class HetznerClient(Protocol):
     def create_volume(self, req: VolumeCreateRequest) -> VolumeCreateResult: ...
 
     def create_server(self, req: ServerCreateRequest) -> ServerCreateResult: ...
 
     def upsert_dns_record(self, req: DnsRecordRequest) -> DnsRecordResult: ...
+
+    def create_firewall(self, req: FirewallCreateRequest) -> FirewallCreateResult: ...
     # Destroy primitives are DELIBERATELY not a single un-protect+delete (P1-D);
     # teardown execution is OUT of Phase 4. A guarded delete stub lives on the
     # broker, not here.

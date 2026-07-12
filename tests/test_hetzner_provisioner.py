@@ -428,3 +428,56 @@ def test_retry_reuses_stored_bundle_without_reminting():
     p.dispatch(_run(prov), owner_otp="")   # retry: no fresh OTP
     assert prov.get_secret_bundle("dep_a").ciphertext == ct1        # bundle preserved (OTP intact)
     assert len(fleet.list_keys("dep_a")) == keys_after_first        # no duplicate fleet key
+
+
+# --- P5-05: default-deny Cloud Firewall + DNS provider gating -----------------
+
+def _p5_dispatch(settings, fake, *, prov=None, fleet=None):
+    prov = prov if prov is not None else MemoryProvisioningRunStore()
+    fleet = fleet if fleet is not None else MemoryFleetStore()
+    p = HetznerProvisioner(settings, InProcessHetznerBroker(fake), _control(),
+                           prov_store=prov, fleet_store=fleet)
+    return p.dispatch(_run(prov), owner_otp="owner-otp")
+
+
+def test_provision_creates_default_deny_firewall_no_ssh_by_default():
+    fake = FakeHetznerClient()
+    out = _p5_dispatch(_p5_settings(hetzner_firewall_id=""), fake)   # no pre-created firewall
+    assert len(fake.firewalls) == 1
+    ports = sorted(r.port for r in fake.firewalls[0].rules)
+    assert ports == ["443", "80"]                       # exactly inbound tcp 80 + 443...
+    assert "22" not in ports                             # ...NO inbound ssh by default
+    assert "5432" not in ports and "6379" not in ports  # Postgres/Redis internet-unreachable
+    assert all(r.direction == "in" for r in fake.firewalls[0].rules)
+    # the created firewall id is recorded in the erasure manifest for teardown.
+    assert out.result_payload["erasure_manifest"]["firewall_id"] == "fw_1"
+
+
+def test_provision_firewall_allows_ssh_only_under_break_glass_flag():
+    fake = FakeHetznerClient()
+    _p5_dispatch(_p5_settings(hetzner_firewall_id="", hetzner_firewall_allow_ssh=True), fake)
+    assert "22" in sorted(r.port for r in fake.firewalls[0].rules)
+
+
+def test_provision_attaches_precreated_firewall_without_creating():
+    fake = FakeHetznerClient()
+    _p5_dispatch(_p5_settings(hetzner_firewall_id="fw_existing"), fake)
+    assert fake.firewalls == []                          # nothing created
+    assert fake.servers[0].firewall_ids == ("fw_existing",)   # attached in-create
+
+
+def test_provision_dns_skipped_for_non_hetzner_provider():
+    # A cloudflare/unknown provider -> DNS skipped (serve on IP), never mis-called.
+    fake = FakeHetznerClient()
+    out = _p5_dispatch(_p5_settings(fleet_dns_provider="cloudflare", fleet_base_domain="fleet.example",
+                                    fleet_dns_zone_id="z1"), fake)
+    assert fake.dns == []
+    assert out.external_run_url == "203.0.113.1"         # the raw server IP
+
+
+def test_provision_dns_upserted_for_hetzner_provider():
+    fake = FakeHetznerClient()
+    out = _p5_dispatch(_p5_settings(fleet_dns_provider="hetzner", fleet_base_domain="fleet.example",
+                                    fleet_dns_zone_id="z1"), fake)
+    assert len(fake.dns) == 1 and fake.dns[0].name == "dep_a.fleet.example"
+    assert out.external_run_url == "dep_a.fleet.example"

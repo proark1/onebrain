@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import json
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from app.provisioning.hetzner.client import (
     DnsRecordRequest,
     DnsRecordResult,
+    FirewallCreateRequest,
+    FirewallCreateResult,
     HetznerApiError,
     ServerCreateRequest,
     ServerCreateResult,
@@ -125,7 +128,44 @@ class UrllibHetznerClient:
             status=server.get("status", "initializing"),
         )
 
+    def create_firewall(self, req: FirewallCreateRequest) -> FirewallCreateResult:
+        # Hetzner Cloud firewalls are default-deny INBOUND: only the listed inbound
+        # rules are allowed. Egress is unrestricted (the metadata-egress block is done
+        # at the box iptables layer). A tcp/udp rule carries a port; icmp does not.
+        rules = []
+        for rule in req.rules:
+            entry = {"direction": rule.direction, "protocol": rule.protocol,
+                     "source_ips": list(rule.source_ips)}
+            if rule.port:
+                entry["port"] = rule.port
+            rules.append(entry)
+        body: dict = {"name": req.name, "rules": rules}
+        if req.labels:
+            body["labels"] = {str(k): str(v) for k, v in req.labels.items()}
+        data = self._post("/firewalls", body, token=self._api_token)
+        firewall = data.get("firewall", {}) or {}
+        return FirewallCreateResult(firewall_id=str(firewall.get("id", "")))
+
     # --- DNS (separate host + token; Bearer is not used here) -------------------
+    def _dns_headers(self, *, with_content: bool = True) -> dict:
+        headers = {"Auth-API-Token": self._dns_token, "Accept": "application/json"}
+        if with_content:
+            headers["Content-Type"] = "application/json"
+        return headers
+
+    def _find_dns_record(self, zone_id: str, name: str) -> str:
+        """The id of an existing A record with this name in the zone, or "". Makes the
+        upsert a TRUE upsert (a re-provision / IP change updates the record instead of
+        creating a duplicate A record)."""
+        query = urlencode({"zone_id": zone_id})
+        request = Request(self._dns_base + f"/records?{query}", method="GET",
+                          headers=self._dns_headers(with_content=False))
+        data = self._open(request)
+        for record in data.get("records", []) or []:
+            if record.get("type") == "A" and record.get("name") == name:
+                return str(record.get("id", ""))
+        return ""
+
     def upsert_dns_record(self, req: DnsRecordRequest) -> DnsRecordResult:
         body = {
             "zone_id": req.zone_id,
@@ -134,19 +174,19 @@ class UrllibHetznerClient:
             "value": req.ipv4,
             "ttl": int(req.ttl),
         }
-        request = Request(
-            self._dns_base + "/records",
-            data=json.dumps(body).encode("utf-8"),
-            method="POST",
-            headers={
-                "Auth-API-Token": self._dns_token,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-        )
+        # True upsert: PUT an existing A record (same zone + name), else POST a new one.
+        existing_id = self._find_dns_record(req.zone_id, req.name)
+        if existing_id:
+            request = Request(self._dns_base + f"/records/{existing_id}",
+                              data=json.dumps(body).encode("utf-8"), method="PUT",
+                              headers=self._dns_headers())
+        else:
+            request = Request(self._dns_base + "/records",
+                              data=json.dumps(body).encode("utf-8"), method="POST",
+                              headers=self._dns_headers())
         data = self._open(request)
         record = data.get("record", {}) or {}
-        record_id = str(record.get("id", ""))
+        record_id = str(record.get("id", "") or existing_id)
         zone = record.get("zone_name") or ""
         name = record.get("name") or req.name
         fqdn = record.get("fqdn") or (f"{name}.{zone}".rstrip(".") if zone else name)

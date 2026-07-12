@@ -24,6 +24,7 @@ from typing import Optional, Protocol
 
 from app.provisioning.hetzner.client import (
     DnsRecordRequest,
+    FirewallCreateRequest,
     HetznerClient,
     ServerCreateRequest,
     VolumeCreateRequest,
@@ -37,6 +38,7 @@ class BrokerProvisionResult:
     volume_ids: tuple[str, ...]
     dns_record_id: str
     fqdn: str
+    firewall_id: str = ""     # id of a firewall CREATED in this flow ("" when a pre-existing one was attached)
 
 
 class HetznerBroker(Protocol):
@@ -46,6 +48,7 @@ class HetznerBroker(Protocol):
         server: ServerCreateRequest,
         volume: Optional[VolumeCreateRequest],
         dns: Optional[DnsRecordRequest],
+        firewall: Optional[FirewallCreateRequest] = None,
     ) -> BrokerProvisionResult: ...
 
     def destroy_box(
@@ -75,16 +78,24 @@ class InProcessHetznerBroker:
         server: ServerCreateRequest,
         volume: Optional[VolumeCreateRequest] = None,
         dns: Optional[DnsRecordRequest] = None,
+        firewall: Optional[FirewallCreateRequest] = None,
     ) -> BrokerProvisionResult:
-        # 1. Volume first (if requested) so its id can be attached IN the server
-        #    create call (H-3) — never create-then-attach.
+        # 0. Firewall first (if the caller wants a fresh default-deny one) so its id is
+        #    attached IN the server create call (H-3) — never create-then-attach. When
+        #    the caller instead pinned a pre-created firewall (server.firewall_ids), no
+        #    firewall is created and that id is used as-is.
+        firewall_id = ""
+        if firewall is not None:
+            fw = self._client.create_firewall(firewall)
+            firewall_id = fw.firewall_id
+            server = replace(server, firewall_ids=tuple(server.firewall_ids) + (firewall_id,))
+        # 1. Volume next (if requested) so its id can also be attached IN the create.
         volume_ids: tuple[str, ...] = ()
         if volume is not None:
             vol = self._client.create_volume(volume)
             volume_ids = (vol.volume_id,)
             server = replace(server, volume_ids=tuple(server.volume_ids) + (vol.volume_id,))
-        # 2. Server WITH firewall (caller-supplied) + volume (just created) attached
-        #    in the one create call.
+        # 2. Server WITH firewall + volume attached in the one create call.
         server_result = self._client.create_server(server)
         # 3. DNS last (if a provider was configured) — fill the A record's target
         #    from the freshly-minted server IP unless the caller pinned one.
@@ -99,6 +110,7 @@ class InProcessHetznerBroker:
             volume_ids=volume_ids,
             dns_record_id=dns_record_id,
             fqdn=fqdn,
+            firewall_id=firewall_id,
         )
 
     def destroy_box(
