@@ -1,15 +1,15 @@
-"""The fleet.v1 heartbeat contract.
+"""The fleet.v1 + fleet.v2 heartbeat contracts.
 
-A deployment posts one of these to Mission Control on a timer. The schema is
-CLOSED (`extra="forbid"`) and every field is a count, a version string, a flag,
-or a timestamp — never customer content. If a future field would carry text,
-names, ids, or errors, it does not belong here; that is the metadata-only
-boundary made mechanical.
+A deployment posts one of these to Mission Control on a timer. Every schema is
+CLOSED (`extra="forbid"`) and every field is a count, a version string, an
+enum, a flag, or a timestamp — never customer content. If a future field would
+carry text, names, ids, or errors, it does not belong here; that is the
+metadata-only boundary made mechanical.
 """
 
 from __future__ import annotations
 
-from typing import List, Literal
+from typing import Annotated, List, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -97,4 +97,111 @@ def build_heartbeat(
             api_5xx_recent=api_5xx_recent,
         ),
         modules=modules or [],
+    )
+
+
+# --- fleet.v2 ------------------------------------------------------------------
+
+CONTRACT_VERSION_V2 = "fleet.v2"
+UPDATE_OUTCOMES = ("none", "in_progress", "succeeded", "failed", "rolled_back")
+
+
+class UpdateReport(BaseModel):
+    """Bounded update-outcome (architecture §3f): lets MC distinguish converged /
+    failed-and-rolled-back / not-yet-started, which version+healthy cannot.
+    attempt_id is the RolloutRun id MC offered (opaque token, never free text);
+    ts is when the box recorded the outcome. Field semantics are LOAD-BEARING for
+    the P2 reconcile tick — do not repurpose."""
+    model_config = ConfigDict(extra="forbid")
+
+    last_target_version: str = Field(default="", max_length=64)
+    outcome: Literal["none", "in_progress", "succeeded", "failed", "rolled_back"] = "none"
+    migration_reached: str = Field(default="", max_length=64)
+    attempt_id: str = Field(default="", max_length=64)
+    ts: str = Field(default="", max_length=40)
+    # Reserved NOW so P3's on-box backups need no fleet.v3 (C3): boxes hold a
+    # heartbeat-only fleet key and cannot call the operator record_backup
+    # endpoint, and every model here is extra="forbid" — without these slots,
+    # the plan gate's BackupRun requirement would permanently block
+    # migration-crossing rollouts to pull-managed boxes. Metadata-only,
+    # defaults inert ('' = no claim). P2's reconcile tick materializes
+    # BackupRun rows from these fields.
+    backup_status: Literal["", "success", "failed"] = ""
+    backup_ts: str = Field(default="", max_length=40)
+
+
+class OneBrainReportV2(OneBrainReport):
+    """v1 counts plus uptime: uptime_seconds lets MC tell 'restarted' (cumulative
+    counters reset) from 'recovered' without changing any v1 key's meaning."""
+    uptime_seconds: int = Field(default=0, ge=0)
+
+
+class FleetHeartbeatV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_version: Literal["fleet.v2"] = CONTRACT_VERSION_V2
+    deployment_id: str = Field(min_length=1, max_length=120)
+    reported_at: str = Field(min_length=1, max_length=40)
+    onebrain: OneBrainReportV2
+    modules: List[ModuleReport] = Field(default_factory=list, max_length=50)
+    update: UpdateReport = Field(default_factory=UpdateReport)
+
+    @property
+    def healthy(self) -> bool:
+        return self.onebrain.healthy and all(module.healthy for module in self.modules)
+
+
+AnyFleetHeartbeat = Annotated[
+    Union[FleetHeartbeat, FleetHeartbeatV2], Field(discriminator="contract_version")
+]
+# ACCEPTED CONTRACT TIGHTENING (A2): the discriminated union requires the
+# contract_version key to be PRESENT — a body omitting it now 422s, where the
+# bare-FleetHeartbeat body type let it default to fleet.v1. Every real reporter
+# emits the key (model_dump includes defaults), so live fleet traffic is
+# unaffected; only a hand-rolled client relying on the default breaks. Ground
+# rule 1's "v1 must still ingest" means a v1 body CARRYING
+# contract_version="fleet.v1". Pinned by test_missing_discriminator_is_rejected.
+
+
+def build_heartbeat_v2(
+    *,
+    deployment_id: str,
+    reported_at: str,
+    version: str = "",
+    migration_revision: str = "",
+    onebrain_healthy: bool = True,
+    chunks: int = 0,
+    intake_records: int = 0,
+    users: int = 0,
+    accounts: int = 0,
+    active_service_keys: int = 0,
+    jobs_pending: int = 0,
+    jobs_failed: int = 0,
+    auth_failures_recent: int = 0,
+    api_5xx_recent: int = 0,
+    uptime_seconds: int = 0,
+    modules: List[ModuleReport] | None = None,
+    update: UpdateReport | None = None,
+) -> FleetHeartbeatV2:
+    """Pure v2 assembler mirroring build_heartbeat (which stays for v1 tests)."""
+    return FleetHeartbeatV2(
+        deployment_id=deployment_id,
+        reported_at=reported_at,
+        onebrain=OneBrainReportV2(
+            version=version,
+            migration_revision=migration_revision,
+            healthy=onebrain_healthy,
+            chunks=chunks,
+            intake_records=intake_records,
+            users=users,
+            accounts=accounts,
+            active_service_keys=active_service_keys,
+            jobs_pending=jobs_pending,
+            jobs_failed=jobs_failed,
+            auth_failures_recent=auth_failures_recent,
+            api_5xx_recent=api_5xx_recent,
+            uptime_seconds=uptime_seconds,
+        ),
+        modules=modules or [],
+        update=update or UpdateReport(),
     )

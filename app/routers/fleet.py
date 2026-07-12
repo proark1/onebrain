@@ -21,7 +21,7 @@ from app.config import get_settings
 from app.deps import get_control_plane_store, get_fleet_heartbeat_rate_limiter, get_fleet_store
 from app.fleet.base import FleetKey, Heartbeat
 from app.fleet.enrollment import fleet_enrollment_vars, mint_deployment_fleet_key
-from app.fleet.heartbeat import FleetHeartbeat
+from app.fleet.heartbeat import AnyFleetHeartbeat, FleetHeartbeat  # noqa: F401 — FleetHeartbeat kept for typing
 from app.fleet.keys import generate_fleet_key, hash_secret, parse_fleet_key, verify_secret
 
 router = APIRouter(prefix="/api/fleet", tags=["fleet"])
@@ -43,8 +43,20 @@ def _require_operator_admin(principal: Principal) -> None:
 class HeartbeatAck(BaseModel):
     received: bool = True
     deployment_id: str
-    # Desired-state config channel (Phase 3). Empty for now; the contract is here
-    # so a reporter can pull-and-ack config without a client change later.
+    # Desired-state channel. Empty today. Phase-4 pull orchestration fills:
+    #   config["desired_state"]  = app.trust.envelope.DesiredStateEnvelope.model_dump()
+    #                              ADVISORY FAST-PATH ONLY (B8): the AUTHORITATIVE
+    #                              channel is the host update.sh's direct GET from
+    #                              MC with its own read-scoped token (P1-F) — an
+    #                              ack-delivered envelope shares the app's failure
+    #                              domain (a bricked app container stops
+    #                              heartbeating and would sever its own recovery
+    #                              path). The box-side verifier
+    #                              (app.trust.envelope.verify_desired_state) is
+    #                              identical for both channels; the box never
+    #                              trusts MC's word either way.
+    #   config["secrets_epoch"]  = int (bumps when the box should re-fetch secrets
+    #                              via the bootstrap-token exchange channel, P1-E)
     config: dict = Field(default_factory=dict)
 
 
@@ -80,7 +92,7 @@ def _reject_skewed_reported_at(reported_at: str) -> None:
 
 
 @router.post("/heartbeat", response_model=HeartbeatAck)
-def ingest_heartbeat(body: FleetHeartbeat, authorization: str = Header(default="")):
+def ingest_heartbeat(body: AnyFleetHeartbeat, authorization: str = Header(default="")):
     key = _authenticate_fleet_key(authorization, body.deployment_id)
     # Cap per-deployment posting rate so a leaked/misused key can't flood the
     # append-only heartbeat table; reject implausibly-skewed reported_at.

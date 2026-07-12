@@ -18,7 +18,10 @@ from app.auth.roles import ROLES
 from app.controlplane.base import CustomerDeployment
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.fleet.base import FleetAlert, FleetKey, Heartbeat
-from app.fleet.heartbeat import CONTRACT_VERSION, FleetHeartbeat, build_heartbeat
+from app.fleet.heartbeat import (
+    CONTRACT_VERSION, CONTRACT_VERSION_V2, AnyFleetHeartbeat, FleetHeartbeat,
+    FleetHeartbeatV2, UpdateReport, build_heartbeat, build_heartbeat_v2,
+)
 from app.fleet.keys import generate_fleet_key, hash_secret, parse_fleet_key, verify_secret
 from app.fleet.memory import MemoryFleetStore
 from app.fleet.reporter import report_once, send_heartbeat
@@ -507,6 +510,108 @@ def test_heartbeat_contract_bounds_modules():
     with pytest.raises(ValidationError):
         build_heartbeat(deployment_id="dep_a", reported_at="t",
                         modules=[ModuleReport(module_id=f"m{i}") for i in range(51)])
+
+
+# --- fleet.v2 contract + dual-version ingest ----------------------------------
+
+def _heartbeat_body_v2(deployment_id: str = "dep_a", *, reported_at: str = "",
+                       update: UpdateReport | None = None) -> FleetHeartbeatV2:
+    from datetime import datetime, timezone
+
+    return build_heartbeat_v2(
+        deployment_id=deployment_id,
+        reported_at=reported_at or datetime.now(timezone.utc).isoformat(),
+        version="2026.07.1", migration_revision="0019_trust_primitives",
+        onebrain_healthy=True, chunks=12, users=3, accounts=1, uptime_seconds=90,
+        update=update,
+    )
+
+
+def test_v2_heartbeat_schema_closed_and_healthy_rollup():
+    from app.fleet.heartbeat import ModuleReport
+
+    body = _heartbeat_body_v2()
+    assert body.contract_version == CONTRACT_VERSION_V2
+    assert body.healthy is True
+    # extra="forbid" — an out-of-contract field (a smuggled name/email/text) is rejected.
+    with pytest.raises(ValidationError):
+        FleetHeartbeatV2(
+            deployment_id="dep_a", reported_at="t", onebrain=body.onebrain,
+            customer_email="leak@example.com",
+        )
+    unhealthy = build_heartbeat_v2(
+        deployment_id="dep_a", reported_at="t", onebrain_healthy=True,
+        modules=[ModuleReport(module_id="communication-api", healthy=False)])
+    assert unhealthy.healthy is False  # one unhealthy module flips the rollup
+
+
+def test_update_report_outcome_vocabulary():
+    from app.fleet.heartbeat import UPDATE_OUTCOMES
+
+    for outcome in UPDATE_OUTCOMES:
+        assert UpdateReport(outcome=outcome).outcome == outcome
+    with pytest.raises(ValidationError):
+        UpdateReport(outcome="exploded")
+    with pytest.raises(ValidationError):
+        build_heartbeat_v2(deployment_id="dep_a", reported_at="t", uptime_seconds=-1)
+    # Reserved backup evidence slots (C3): bounded vocabulary, inert default.
+    for status in ("", "success", "failed"):
+        assert UpdateReport(backup_status=status).backup_status == status
+    with pytest.raises(ValidationError):
+        UpdateReport(backup_status="corrupt")
+    assert UpdateReport().backup_status == ""
+
+
+def test_missing_discriminator_is_rejected():
+    # A2 — accepted contract tightening: the discriminated union requires the
+    # contract_version key to be PRESENT. A v1 body must CARRY it, not rely on
+    # the model default; every real reporter emits it (model_dump includes
+    # defaults). Pinned here so nobody discovers the 422 in production.
+    from pydantic import TypeAdapter
+
+    adapter = TypeAdapter(AnyFleetHeartbeat)
+    v1_shaped = _heartbeat_body("dep_a").model_dump()
+    del v1_shaped["contract_version"]
+    with pytest.raises(ValidationError):
+        adapter.validate_python(v1_shaped)
+
+    validated = adapter.validate_python({**v1_shaped, "contract_version": "fleet.v1"})
+    assert isinstance(validated, FleetHeartbeat)
+
+
+def test_ingest_accepts_v1_and_v2(monkeypatch):
+    store = MemoryFleetStore()
+    token = _minted_key(store, "dep_a")
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+
+    ack_v1 = fleet_router.ingest_heartbeat(_heartbeat_body("dep_a"), authorization=f"Bearer {token}")
+    assert ack_v1.received is True
+
+    ack_v2 = fleet_router.ingest_heartbeat(_heartbeat_body_v2("dep_a"), authorization=f"Bearer {token}")
+    assert ack_v2.received is True and ack_v2.deployment_id == "dep_a"
+
+    latest = store.latest_heartbeat("dep_a")
+    assert latest.contract_version == CONTRACT_VERSION_V2
+    assert latest.payload["update"]["outcome"] == "none"
+
+
+def test_ingest_v2_skew_guard_still_applies(monkeypatch):
+    store = MemoryFleetStore()
+    token = _minted_key(store, "dep_a")
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+
+    stale = _heartbeat_body_v2("dep_a", reported_at="2000-01-01T00:00:00+00:00")
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.ingest_heartbeat(stale, authorization=f"Bearer {token}")
+    assert ei.value.status_code == 400
+
+
+def test_v2_payload_round_trips_update_report():
+    hb = _heartbeat_body_v2(
+        "dep_a", update=UpdateReport(last_target_version="2026.07.2", outcome="succeeded",
+                                     migration_reached="0019_trust_primitives", attempt_id="ro_1",
+                                     ts="2026-07-12T00:00:00+00:00"))
+    assert FleetHeartbeatV2.model_validate(hb.model_dump()) == hb
 
 
 # --- enrollment + analytics (Phase 3) ----------------------------------------
