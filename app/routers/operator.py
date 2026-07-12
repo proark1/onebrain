@@ -37,6 +37,7 @@ from app.controlplane.rollout_exec import (
     build_rollout_dispatch_inputs,
     mark_rollout_dispatch_failed,
     resolve_railway_target,
+    target_provider,
 )
 from app.controlplane.fleet_runner import plan_and_start_fleet_rollout, reconcile_fleet_rollout
 from app.provisioning.runs import RolloutWorkflowDispatcher
@@ -1095,6 +1096,14 @@ def dispatch_rollout(
     except ValueError as exc:
         mark_rollout_dispatch_failed(control, rollout, str(exc))
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if target_provider(railway) != "railway":
+        # Fail closed (D-6): the GitHub/Railway workflow cannot act on a Hetzner
+        # box — dedicated_server updates are pull-based (P2/P3). Fires BEFORE
+        # claim_rollout_dispatch, so the rollout terminal-fails unclaimed,
+        # consistent with the resolve-failure path above.
+        reason = "unsupported_dispatch_provider:hetzner (dedicated_server updates are pull-based; lands in P2/P3)"
+        mark_rollout_dispatch_failed(control, rollout, reason)
+        raise HTTPException(status_code=409, detail=reason)
 
     # Atomically claim the pending rollout (compare-and-set exec_status
     # pending->dispatched) BEFORE the network dispatch, so two concurrent requests
@@ -1204,6 +1213,12 @@ def _dispatch_child_rollout(fleet_id: str, deployment_id: str, *, target_version
         railway = resolve_railway_target(get_provisioning_run_store(), deployment_id)
     except ValueError as exc:
         mark_rollout_dispatch_failed(control, rollout, str(exc))
+        return
+    if target_provider(railway) != "railway":
+        # Fail closed (D-6) without raising: the fleet reducer counts the child
+        # toward failure_tolerance, exactly like a missing target today.
+        reason = "unsupported_dispatch_provider:hetzner (dedicated_server updates are pull-based; lands in P2/P3)"
+        mark_rollout_dispatch_failed(control, rollout, reason)
         return
     if not control.claim_rollout_dispatch(child_id):
         return

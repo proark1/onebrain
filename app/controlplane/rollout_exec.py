@@ -92,7 +92,17 @@ def build_rollout_dispatch_inputs(
 def resolve_railway_target(prov_store, deployment_id: str) -> Dict:
     """The Railway coordinates to act against, read from the deployment's latest
     SUCCEEDED provisioning run. Fail-closed: a deployment we have never
-    successfully provisioned has no known target and cannot be updated."""
+    successfully provisioned has no known target and cannot be updated.
+
+    D-6 slot convention (deliberate overload, decided Phase 3,
+    docs/hetzner-migration-sequence.md): the Hetzner provisioner (P1) writes
+    into these SAME columns — railway_project_id = "hetzner:<hetzner_server_id>"
+    (string numeric id from the Hetzner Cloud API), railway_environment_id =
+    "<compose_project_name>" (default onebrain-<deployment_id>), and
+    result_payload["service_ids"] = {module_id: compose_service_name} where
+    compose service names equal module ids. This resolver stays byte-identical;
+    readers MUST classify the resolved coordinates via target_provider() and
+    must never "fix" the column names."""
     runs = [
         r for r in prov_store.list_runs(deployment_id=deployment_id)
         if r.status == "succeeded" and r.railway_project_id
@@ -105,6 +115,22 @@ def resolve_railway_target(prov_store, deployment_id: str) -> Dict:
         "railway_environment_id": latest.railway_environment_id,
         "service_ids": (latest.result_payload or {}).get("service_ids", {}),
     }
+
+
+# Deliberate slot overload (decided Phase 3, docs/hetzner-migration-sequence.md):
+# the Hetzner provisioner (P1) writes railway_project_id = "hetzner:<server_id>",
+# railway_environment_id = "<compose_project_name>", and
+# result_payload.service_ids = {module_id: compose_service_name}. Readers MUST
+# classify via target_provider() and must never "fix" the column names.
+HETZNER_TARGET_PREFIX = "hetzner:"
+
+
+def target_provider(railway: Dict) -> str:
+    """'hetzner' when the resolved coordinates carry the hetzner: prefix, else
+    'railway'. Pure; used by every dispatch site to fail closed on targets the
+    GitHub/Railway executor cannot act on (the Hetzner path is pull-based, P2/P3)."""
+    project_id = str(railway.get("railway_project_id", ""))
+    return "hetzner" if project_id.startswith(HETZNER_TARGET_PREFIX) else "railway"
 
 
 def mark_rollout_dispatch_failed(store, rollout, reason: str):

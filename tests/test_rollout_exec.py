@@ -23,6 +23,7 @@ from app.controlplane.rollout_exec import (
     build_rollout_dispatch_inputs,
     mark_rollout_dispatch_failed,
     resolve_railway_target,
+    target_provider,
 )
 from app.provisioning.runs import RolloutWorkflowDispatcher, dispatch_workflow
 
@@ -158,6 +159,34 @@ def test_resolve_railway_target_fail_closed_when_none():
         resolve_railway_target(_FakeProvStore([]), "dep_a")
 
 
+# --- dedicated_server target semantics (WP5, D-6) -----------------------------
+
+def _hetzner_prov_run():
+    """A provisioning run using the D-6 slot convention: the Hetzner provisioner
+    (P1) writes Hetzner coordinates into the EXISTING Railway-named columns."""
+    return SimpleNamespace(
+        id="r1", deployment_id="dep_a", status="succeeded",
+        railway_project_id="hetzner:2481632", railway_environment_id="onebrain-dep_a",
+        result_payload={"service_ids": {"onebrain-api": "onebrain-api"}},
+        completed_at="t", created_at="t")
+
+
+def test_resolve_railway_target_resolves_hetzner_style_run():
+    # The fail-closed resolver is unchanged — hetzner-slotted coordinates
+    # resolve like any succeeded run; classification is target_provider's job.
+    target = resolve_railway_target(_FakeProvStore([_hetzner_prov_run()]), "dep_a")
+
+    assert target["railway_project_id"] == "hetzner:2481632"
+    assert target["railway_environment_id"] == "onebrain-dep_a"
+    assert target["service_ids"] == {"onebrain-api": "onebrain-api"}
+    assert target_provider(target) == "hetzner"
+
+
+def test_target_provider_railway_default():
+    assert target_provider({"railway_project_id": "proj1", "railway_environment_id": "env1"}) == "railway"
+    assert target_provider({}) == "railway"  # resolve already fail-closes empties upstream
+
+
 # --- dispatcher (injected opener, no network) --------------------------------
 
 class _FakeResp:
@@ -284,6 +313,67 @@ def test_dispatch_rollout_success_path(monkeypatch):
     assert out.status  # RolloutOut returned
     assert store.get_rollout("roll1").exec_status == "dispatched"
     assert store.get_rollout("roll1").external_run_url.endswith("update-customer.yml")
+
+
+class _RecordingDispatcher:
+    """Fake RolloutWorkflowDispatcher that must NEVER fire for a Hetzner target."""
+    calls: list = []
+
+    def __init__(self, settings):
+        pass
+
+    def dispatch(self, inputs, opener=None):
+        _RecordingDispatcher.calls.append(inputs)
+        return "https://github.com/o/repo/actions/workflows/update-customer.yml"
+
+
+def test_dispatch_refuses_hetzner_target(monkeypatch):
+    """Fail-closed (D-6): the GitHub/Railway executor cannot act on a Hetzner
+    box — the operator dispatch 409s, the rollout terminal-fails unclaimed, and
+    the workflow dispatcher is never invoked."""
+    store = _control()
+    _started(store)
+    _RecordingDispatcher.calls = []
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
+    monkeypatch.setattr(provisioning_router, "get_settings", _operator_settings)
+    monkeypatch.setattr(operator_router, "get_provisioning_run_store",
+                        lambda: _FakeProvStore([_hetzner_prov_run()]))
+    monkeypatch.setattr(operator_router, "RolloutWorkflowDispatcher", _RecordingDispatcher)
+
+    with pytest.raises(HTTPException) as ei:
+        operator_router.dispatch_rollout("dep_a", "roll1", _dispatch_body(), principal=_principal("admin"))
+
+    assert ei.value.status_code == 409
+    assert ei.value.detail.startswith("unsupported_dispatch_provider:hetzner")
+    rollout = store.get_rollout("roll1")
+    assert rollout.exec_status == "dispatch_failed"
+    assert rollout.failure_reason.startswith("unsupported_dispatch_provider:hetzner")
+    assert _RecordingDispatcher.calls == []  # never fired
+
+
+def test_fleet_child_dispatch_refuses_hetzner_target(monkeypatch):
+    """The fleet child path never raises: the child is marked dispatch_failed
+    (bookkeeping 'failed') so the reducer counts it toward failure_tolerance,
+    exactly like a missing target today."""
+    store = _control()
+    _RecordingDispatcher.calls = []
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
+    monkeypatch.setattr(operator_router, "get_provisioning_run_store",
+                        lambda: _FakeProvStore([_hetzner_prov_run()]))
+    monkeypatch.setattr(operator_router, "RolloutWorkflowDispatcher", _RecordingDispatcher)
+
+    operator_router._dispatch_child_rollout(
+        "fleet_x", "dep_a", target_version="2026.07.1",
+        callback_url="https://mc/api/rollouts/{rollout_id}/callback", dry_run=True)
+
+    children = store.list_rollouts_for_fleet("fleet_x")
+    assert len(children) == 1
+    assert children[0].status == "failed"
+    assert children[0].exec_status == "dispatch_failed"
+    assert children[0].failure_reason.startswith("unsupported_dispatch_provider:hetzner")
+    assert _RecordingDispatcher.calls == []  # never fired
 
 
 # --- callback router (auth) --------------------------------------------------
