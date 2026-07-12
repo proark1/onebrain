@@ -556,6 +556,89 @@ def test_rollout_cols_arity_matches_mapper():
     assert cols[-1].strip() == "ack_restore_required"
 
 
+def test_start_rollout_insert_persists_fleet_rollout_id():
+    """Store parity (memory vs postgres): the memory store persists the whole
+    RolloutRun dataclass, so a child's fleet_rollout_id linkage survives; the
+    postgres INSERT must write the column too, or list_rollouts_for_fleet
+    returns [] and ring reconciliation counts zero children. The mapper/arity
+    tests above only cover the READ side — this drives the WRITE side through
+    a stub cursor."""
+    import re
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from app.controlplane.base import RolloutRun
+
+    created = datetime(2026, 7, 12, 1, 2, 3, tzinfo=timezone.utc)
+
+    class InsertCursor:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+            self.params = params
+
+        def fetchone(self):
+            # Echo the INSERT params back through the 17-column RETURNING
+            # shape so the read-back travels params -> row -> mapper.
+            by_column = dict(zip(_insert_columns(self.sql), self.params))
+            return (
+                by_column["id"], by_column["deployment_id"],
+                by_column["target_version"], by_column["status"],
+                by_column["started_by"], by_column["notes"], created,
+                "pending", "github_actions", "", "", "", {}, None, None,
+                by_column["fleet_rollout_id"], by_column["ack_restore_required"],
+            )
+
+    class InsertConnection:
+        def __init__(self, cursor):
+            self._cursor = cursor
+            self.committed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def cursor(self):
+            return self._cursor
+
+        def commit(self):
+            self.committed = True
+
+    def _insert_columns(sql: str) -> list[str]:
+        column_list = re.search(r"INSERT INTO control_rollouts\s*\(([^)]*)\)", sql)
+        assert column_list, sql
+        return [column.strip() for column in column_list.group(1).split(",")]
+
+    cursor = InsertCursor()
+    connection = InsertConnection(cursor)
+    store = _bare_postgres_store()
+    store._conn = lambda: connection
+    store.plan_update = lambda deployment_id, target_version, ack_restore_required=False: (
+        SimpleNamespace(allowed=True, reason=""))
+
+    returned = store.start_rollout(RolloutRun(
+        id="roll_child", deployment_id="dep_a", target_version="2026.07.2",
+        status="pending", started_by="fleet:fr_1", fleet_rollout_id="fr_1"))
+
+    columns = _insert_columns(cursor.sql)
+    assert "fleet_rollout_id" in columns
+    assert len(columns) == len(cursor.params)  # write-side arity
+    assert dict(zip(columns, cursor.params))["fleet_rollout_id"] == "fr_1"
+    assert returned.fleet_rollout_id == "fr_1"  # readable back on the postgres path
+    assert connection.committed
+
+
 def test_assistant_workday_contract_migration_structure():
     migration = _assistant_workday_contract_module()
 

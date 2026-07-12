@@ -323,8 +323,9 @@ class PostgresControlPlaneStore:
             cur.execute(
                 f"""
                 INSERT INTO control_rollouts
-                (id, deployment_id, target_version, status, started_by, notes, ack_restore_required)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (id, deployment_id, target_version, status, started_by, notes,
+                 ack_restore_required, fleet_rollout_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING {self._ROLLOUT_COLS}
                 """,
                 (
@@ -335,6 +336,11 @@ class PostgresControlPlaneStore:
                     rollout.started_by,
                     rollout.notes,
                     rollout.ack_restore_required,
+                    # Fleet children link back to their fleet rollout here; the
+                    # memory store persists the whole dataclass, and
+                    # list_rollouts_for_fleet is keyed on this column — dropping
+                    # it would make ring reconciliation count zero children.
+                    rollout.fleet_rollout_id,
                 ),
             )
             row = cur.fetchone()
