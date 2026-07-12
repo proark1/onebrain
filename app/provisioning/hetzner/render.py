@@ -69,6 +69,7 @@ class SecretRefs:
     db_password_env: str = "POSTGRES_PASSWORD"
     redis_password_env: str = "REDIS_PASSWORD"
     owner_bootstrap_env: str = "ONEBRAIN_ADMIN_PASSWORD"
+    admin_email_env: str = "ONEBRAIN_ADMIN_EMAIL"   # paired with owner_bootstrap_env; seed.py needs BOTH to seed a loginable admin
     service_key_env: str = "ONEBRAIN_SERVICE_KEY"
     space_id_env: str = "ONEBRAIN_SPACE_ID"
     backup_key_env: str = "UPDATE_BACKUP_KEY"   # A5: per-box client-side backup key; lives in box.env.
@@ -304,6 +305,11 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             ("ONEBRAIN_FLEET_URL", inp.fleet_url),
             (f"{refs.fleet_key_env}", "${" + refs.fleet_key_env + "}"),
             (f"{refs.llm_key_env}", "${" + refs.llm_key_env + "}"),
+            # The admin seed pair. seed.py (seed_admin_from_env) creates a loginable admin
+            # at container start ONLY when BOTH are non-empty; the box fills them from the
+            # exchanged (customer) / baked (MC) /opt/onebrain/.env. Without the email the box
+            # seeds no admin and — SSH closed — is unreachable. Only onebrain-api seeds.
+            (f"{refs.admin_email_env}", "${" + refs.admin_email_env + "}"),
             (f"{refs.owner_bootstrap_env}", "${" + refs.owner_bootstrap_env + "}"),
             ("ONEBRAIN_MODULE_PROBES_ENABLED", "true"),
             ("ONEBRAIN_LOCAL_MODULES", ",".join(_ordered(inp.enabled_modules))),

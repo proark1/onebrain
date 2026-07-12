@@ -153,6 +153,16 @@ def test_env_files_are_per_service_and_cover_requirements():
     assert "ONEBRAIN_LOCAL_MODULES=" in api
     assert "ONEBRAIN_DATA_DIR=/data" in api
     assert "TRUST_PROXY=1" in api
+    # The admin seed pair — seed.py (seed_admin_from_env) creates a loginable admin at
+    # container start ONLY when BOTH are non-empty. Both are ${VAR} refs filled from the
+    # exchanged (customer) / baked (MC) /opt/onebrain/.env; without the email the box seeds
+    # no admin and — SSH closed — is unreachable.
+    assert "ONEBRAIN_ADMIN_EMAIL=${ONEBRAIN_ADMIN_EMAIL}" in api
+    assert "ONEBRAIN_ADMIN_PASSWORD=${ONEBRAIN_ADMIN_PASSWORD}" in api
+    # Inert for modules that do NOT seed (only onebrain-api runs seed_admin_from_env).
+    for non_seeding in ("env/onebrain-workers.env", "env/communication-api.env",
+                        "env/assistant-service.env", "env/onebrain-admin-ui.env"):
+        assert "ONEBRAIN_ADMIN_EMAIL" not in env[non_seeding]
     # No plaintext secret: every secret key is a ${VAR} ref; DB/redis URLs embed refs.
     for content in env.values():
         for line in content.splitlines():

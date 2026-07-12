@@ -70,20 +70,35 @@ class McArtifacts:
     dns: Optional[DnsRecordRequest]
     fleet_token: str
     secret_values: tuple
+    # The MC box's own admin login (ONEBRAIN_ADMIN_EMAIL/PASSWORD). main() surfaces this
+    # OUT-OF-BAND on the create path — it is the ONE credential the operator must keep (the
+    # MC box seeds this admin at first boot; SSH is closed, so there is no other way in).
+    # admin_password_generated => no operator-set ONEBRAIN_ADMIN_PASSWORD, so it was minted.
+    admin_email: str
+    admin_password: str
+    admin_password_generated: bool
 
 
-def build_mc_bundle(settings, *, dns_token: str, fleet_token: str) -> dict:
+def build_mc_bundle(settings, *, dns_token: str, fleet_token: str,
+                    admin_email: str, admin_password: str) -> dict:
     """The MC box's BAKED bundle (G3-1). Every foundational secret is freshly generated
     here (the MC box is never exchanged, so nothing is stored MC-side). ONEBRAIN_DNS_TOKEN
     is the UNIFIED Cloud API token (same as compute; MC may manage DNS through it); service
     key / space id are empty (MC runs no comm/assistant module). Mirrors the customer bundle
-    in HetznerProvisioner._provision_box_secrets."""
+    in HetznerProvisioner._provision_box_secrets.
+
+    ONEBRAIN_ADMIN_EMAIL/PASSWORD are the admin seed pair seed.py needs to make the MC box
+    loginable (both REQUIRED bundle keys). Unlike a customer box's foundational secrets, the
+    admin password is an OPERATOR-KNOWN value — resolved by build_mc_artifacts (the operator's
+    ONEBRAIN_ADMIN_PASSWORD, else a freshly minted one surfaced out-of-band) and threaded in
+    here — because the operator must be able to log into Mission Control afterward."""
     return {
         "POSTGRES_PASSWORD": secrets.token_urlsafe(32),
         "REDIS_PASSWORD": secrets.token_urlsafe(32),
         "ONEBRAIN_FLEET_KEY": fleet_token,
         "ONEBRAIN_LLM_API_KEY": getattr(settings, "llm_api_key", "") or "",
-        "ONEBRAIN_ADMIN_PASSWORD": secrets.token_urlsafe(32),
+        "ONEBRAIN_ADMIN_EMAIL": admin_email,
+        "ONEBRAIN_ADMIN_PASSWORD": admin_password,
         "ONEBRAIN_SERVICE_KEY": "",
         "ONEBRAIN_SPACE_ID": "",
         "UPDATE_BACKUP_KEY": secrets.token_urlsafe(32),
@@ -123,12 +138,30 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
     if missing:
         raise ValueError(f"--images-json must cover the MC modules; missing: {missing}")
 
+    # The MC box seeds its OWN admin from ONEBRAIN_ADMIN_EMAIL/PASSWORD at first boot (seed.py).
+    # SSH is closed and the MC box is never exchanged, so a box with no admin email is a box the
+    # operator can never log into. FAIL CLOSED without it (both are REQUIRED bundle keys).
+    admin_email = (settings.admin_email or "").strip().lower()
+    if not admin_email:
+        raise ValueError(
+            "ONEBRAIN_ADMIN_EMAIL required — the MC box seeds no admin and you cannot log in "
+            "without it")
+    # The admin password is an OPERATOR-KNOWN value: use the operator's ONEBRAIN_ADMIN_PASSWORD
+    # when set, else mint one and flag it so main() surfaces it out-of-band on the create path
+    # (it is the ONE login credential the operator must keep). Either way it is baked into the
+    # MC box's /opt/onebrain/.env, so the seeded admin's password matches what is surfaced.
+    admin_password = settings.admin_password or ""
+    admin_password_generated = not admin_password
+    if admin_password_generated:
+        admin_password = secrets.token_urlsafe(32)
+
     # DNS now rides the UNIFIED Cloud API (GA 2025-11-10): the SAME Hetzner Cloud token as
     # compute covers DNS — there is no separate ONEBRAIN_FLEET_DNS_TOKEN. Baked as the box's
     # ONEBRAIN_DNS_TOKEN so the MC box can manage DNS through the Cloud API at runtime.
     dns_token = settings.hetzner_api_token
     _, _, fleet_token = generate_fleet_key()
-    bundle = build_mc_bundle(settings, dns_token=dns_token, fleet_token=fleet_token)
+    bundle = build_mc_bundle(settings, dns_token=dns_token, fleet_token=fleet_token,
+                             admin_email=admin_email, admin_password=admin_password)
     errors = validate_bundle(bundle)
     if errors:
         raise ValueError(f"MC secret bundle invalid: {errors[0]}")
@@ -210,13 +243,19 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
         # request SHAPE (pure/no-network); the create path hard-requires the Cloud token.
         dns = DnsRecordRequest(zone_id=settings.fleet_dns_zone_id, name=deployment_id, ipv4="", ttl=300)
 
-    # Everything that must NEVER be echoed: the bundle values + the desired-state private
-    # key + the callback token. Redacted from any printed cloud-init. (Referenced by name,
-    # not overlay position, so reordering the overlay never silently drops the crown-jewel
-    # private key from redaction.)
-    secret_values = tuple(v for v in (list(bundle.values()) + [private_key, callback_token]) if v)
+    # Everything that must NEVER be echoed inside the printed cloud-init: the bundle values
+    # (incl. the baked ONEBRAIN_ADMIN_PASSWORD) + the desired-state private key + the callback
+    # token. admin_password is listed explicitly too (belt-and-suspenders — it is already a
+    # bundle value) so it stays REDACTED from the printed cloud-init regardless of how the
+    # bundle is assembled; main() surfaces it out-of-band, never via the cloud-init dump.
+    # (Referenced by name, not overlay position, so reordering the overlay never silently
+    # drops the crown-jewel private key from redaction.)
+    secret_values = tuple(
+        v for v in (list(bundle.values()) + [private_key, callback_token, admin_password]) if v)
     return McArtifacts(cloud_init=cloud_init, bundle=bundle, server=server, firewall=firewall,
-                       volume=volume, dns=dns, fleet_token=fleet_token, secret_values=secret_values)
+                       volume=volume, dns=dns, fleet_token=fleet_token, secret_values=secret_values,
+                       admin_email=admin_email, admin_password=admin_password,
+                       admin_password_generated=admin_password_generated)
 
 
 def _redact(text: str, secret_values) -> str:
@@ -255,6 +294,9 @@ def _runbook(args) -> str:
         "# admin session. The first-boot in-compose migrate (G3-5) runs `alembic upgrade\n"
         "# head` on the on-box DB automatically; do NOT migrate the MC DB by hand.\n"
         "# No bootstrap token is printed (none is minted for the MC box — it is BAKED, G3-1).\n"
+        "# The Mission Control admin login (email + password) IS printed ONCE on the create\n"
+        "# path (the `SAVE THIS - Mission Control admin login:` line above) — SAVE IT: the MC\n"
+        "# box seeds that admin at first boot and there is no other way in (SSH is closed).\n"
         "#\n"
         "# Wait a few minutes for first boot + in-compose migrate, then confirm the heartbeat:\n"
         f"#   curl -s {args.fleet_public_url.rstrip('/')}/api/fleet/overview \\\n"
@@ -307,6 +349,16 @@ def main(argv=None, *, settings=None, client=None) -> int:
         print(_redact(artifacts.cloud_init, artifacts.secret_values))
         print("\n# create request SHAPE:")
         print(json.dumps(shape, indent=2))
+        # Surface the admin EMAIL (not secret) so the operator can eyeball it; deliberately
+        # print NO real password value in dry-run — note only where it will come from.
+        print("\n# Mission Control admin login (surfaced out-of-band on --no-dry-run):")
+        print(f"#   email:    {artifacts.admin_email}")
+        if artifacts.admin_password_generated:
+            print("#   password: will be GENERATED and printed once on --no-dry-run "
+                  "(set ONEBRAIN_ADMIN_PASSWORD to choose your own instead)")
+        else:
+            print("#   password: the value you set via ONEBRAIN_ADMIN_PASSWORD "
+                  "(printed once on --no-dry-run)")
         print("\n" + runbook)
         return 0
 
@@ -329,6 +381,11 @@ def main(argv=None, *, settings=None, client=None) -> int:
                                   dns=artifacts.dns, firewall=artifacts.firewall)
     print(f"\n# MC box created: server_id={result.server_id} ip={result.public_ipv4} "
           f"firewall_id={result.firewall_id or '(pre-existing)'} fqdn={result.fqdn or '(none)'}")
+    # OUT-OF-BAND: printed to the operator's OWN terminal, NOT into cloud-init/user-data. This
+    # is the ONE credential the operator must keep — the MC box seeds this admin at first boot
+    # and there is no other login (SSH is closed). The password matches the value baked into the
+    # box's /opt/onebrain/.env (operator-set ONEBRAIN_ADMIN_PASSWORD, else the minted one).
+    print(f"\n# SAVE THIS - Mission Control admin login: {artifacts.admin_email} / {artifacts.admin_password}")
     print("\n" + runbook)
     return 0
 

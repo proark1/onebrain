@@ -571,6 +571,11 @@ def test_hetzner_provision_customer_assembles_valid_bundle(monkeypatch):
     owner = users.get_by_email("owner@acme.example")
     assert owner is not None and owner.role_id == "admin"
     assert verify_password(bundle["ONEBRAIN_ADMIN_PASSWORD"], owner.password_hash)
+    # The box admin is LOGINABLE: ONEBRAIN_ADMIN_EMAIL is baked (normalized) alongside the
+    # password, and it matches the platform owner User's email — so the customer logs into
+    # their box with the same identity. seed.py needs BOTH to seed the admin at first boot.
+    assert bundle["ONEBRAIN_ADMIN_EMAIL"] == "owner@acme.example"
+    assert bundle["ONEBRAIN_ADMIN_EMAIL"] == owner.email
 
 
 def test_hetzner_provision_customer_requires_owner_email(monkeypatch):

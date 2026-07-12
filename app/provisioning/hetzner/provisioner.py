@@ -126,10 +126,12 @@ class HetznerProvisioner:
         return bool(self.settings.hetzner_api_token) and self.settings.provisioner_backend == "hetzner"
 
     def dispatch(self, run: ProvisioningRun, *, owner_otp: str = "",
-                 service_key: str = "", space_id: str = "") -> ProvisioningRun:
-        # owner_otp / service_key / space_id are threaded in from the bundle-assembly
-        # seam (provision_customer, G3-3): they are minted by CustomerProvisioner and do
-        # NOT flow to dispatch on their own. They populate the box's secret bundle.
+                 service_key: str = "", space_id: str = "", owner_email: str = "") -> ProvisioningRun:
+        # owner_otp / service_key / space_id / owner_email are threaded in from the
+        # bundle-assembly seam (provision_customer, G3-3): they are minted/collected by
+        # CustomerProvisioner and do NOT flow to dispatch on their own. They populate the
+        # box's secret bundle — owner_email + owner_otp are the ONEBRAIN_ADMIN_EMAIL /
+        # ONEBRAIN_ADMIN_PASSWORD pair seed.py needs to create a loginable box admin.
         if not self.enabled:
             raise RuntimeError(
                 "Hetzner provisioning is not configured (set provisioner_backend=hetzner + token)."
@@ -174,7 +176,8 @@ class HetznerProvisioner:
         callback_token = ""
         if self.prov_store is not None and self.fleet_store is not None:
             bootstrap_token, callback_token = self._provision_box_secrets(
-                run, owner_otp=owner_otp, service_key=service_key, space_id=space_id)
+                run, owner_otp=owner_otp, service_key=service_key, space_id=space_id,
+                owner_email=owner_email)
 
         # 4b. Render cloud-init (pure). A render ValueError (hostile id / a release
         #     image map that fails to cover an enabled module) becomes a
@@ -281,7 +284,8 @@ class HetznerProvisioner:
         )
 
     def _provision_box_secrets(self, run: ProvisioningRun, *, owner_otp: str,
-                               service_key: str, space_id: str) -> tuple[str, str]:
+                               service_key: str, space_id: str,
+                               owner_email: str = "") -> tuple[str, str]:
         """Mint the box's real secrets, seal the RE-READABLE bundle (G1-4 seal_bundle,
         never the one-time envelope), persist it + a single-use first-boot bootstrap
         token, and return (raw_bootstrap_token, raw_callback_token) for the renderer to
@@ -308,6 +312,11 @@ class HetznerProvisioner:
                 "REDIS_PASSWORD": secrets.token_urlsafe(32),
                 "ONEBRAIN_FLEET_KEY": fleet_token,
                 "ONEBRAIN_LLM_API_KEY": getattr(settings, "llm_api_key", "") or "",
+                # The admin seed pair (seed.py needs BOTH). owner_email is the customer's
+                # login email (normalized to match the platform owner User + the box's own
+                # seed-time .strip().lower()); owner_otp is the one-time password. A REQUIRED
+                # bundle key, so an empty email fails validate_bundle -> dispatch_failed.
+                "ONEBRAIN_ADMIN_EMAIL": (owner_email or "").strip().lower(),
                 "ONEBRAIN_ADMIN_PASSWORD": owner_otp,
                 "ONEBRAIN_SERVICE_KEY": service_key,
                 "ONEBRAIN_SPACE_ID": space_id,

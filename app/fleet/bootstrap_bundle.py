@@ -20,7 +20,12 @@ from typing import Dict, List
 # Canonical bundle key order. render_dotenv emits keys in THIS order.
 BUNDLE_KEYS = (
     "POSTGRES_PASSWORD", "REDIS_PASSWORD",
-    "ONEBRAIN_FLEET_KEY", "ONEBRAIN_LLM_API_KEY", "ONEBRAIN_ADMIN_PASSWORD",
+    "ONEBRAIN_FLEET_KEY", "ONEBRAIN_LLM_API_KEY",
+    # ONEBRAIN_ADMIN_EMAIL + ONEBRAIN_ADMIN_PASSWORD are the admin seed pair: seed.py
+    # (seed_admin_from_env) creates a loginable admin at container start ONLY when BOTH
+    # are non-empty. Without the email the box comes up with no admin and — SSH being
+    # closed — is permanently unreachable, so the email is a REQUIRED key (fail closed).
+    "ONEBRAIN_ADMIN_EMAIL", "ONEBRAIN_ADMIN_PASSWORD",
     "ONEBRAIN_SERVICE_KEY", "ONEBRAIN_SPACE_ID",
     "UPDATE_BACKUP_KEY",
     "UPDATE_DESIRED_STATE_PUBLIC_KEYS",   # P5-02: the accepted wrapper-key SET (csv)
@@ -35,7 +40,7 @@ BUNDLE_KEYS = (
 # these must fail closed (dispatch_failed), never provision a box that can't boot.
 REQUIRED_KEYS = (
     "POSTGRES_PASSWORD", "REDIS_PASSWORD",
-    "ONEBRAIN_FLEET_KEY", "ONEBRAIN_ADMIN_PASSWORD",
+    "ONEBRAIN_FLEET_KEY", "ONEBRAIN_ADMIN_EMAIL", "ONEBRAIN_ADMIN_PASSWORD",
     "UPDATE_BACKUP_KEY",
 )
 # Legitimately empty in valid configs: no LLM key (local provider), no comm/assistant

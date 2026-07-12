@@ -17,6 +17,7 @@ def _full_bundle(**overrides) -> dict:
         "REDIS_PASSWORD": "redis-secret",
         "ONEBRAIN_FLEET_KEY": "fk_abc_def",
         "ONEBRAIN_LLM_API_KEY": "",
+        "ONEBRAIN_ADMIN_EMAIL": "owner@example.com",
         "ONEBRAIN_ADMIN_PASSWORD": "owner-otp",
         "ONEBRAIN_SERVICE_KEY": "",
         "ONEBRAIN_SPACE_ID": "",
@@ -84,6 +85,20 @@ def test_validate_bundle_flags_missing_required_key():
 def test_validate_bundle_flags_empty_required_key():
     errors = validate_bundle(_full_bundle(ONEBRAIN_FLEET_KEY="   "))
     assert any("ONEBRAIN_FLEET_KEY" in e for e in errors)
+
+
+def test_admin_email_is_a_required_bundle_key():
+    # A box with no admin email seeds no admin (seed.py needs BOTH email + password) and,
+    # with SSH closed, is permanently unreachable — so the email is REQUIRED, fail closed.
+    assert "ONEBRAIN_ADMIN_EMAIL" in REQUIRED_KEYS
+    assert "ONEBRAIN_ADMIN_EMAIL" in BUNDLE_KEYS
+    # Missing -> flagged.
+    missing = _full_bundle()
+    del missing["ONEBRAIN_ADMIN_EMAIL"]
+    assert any("ONEBRAIN_ADMIN_EMAIL" in e for e in validate_bundle(missing))
+    # Present-but-empty (incl. whitespace-only) -> flagged.
+    assert any("ONEBRAIN_ADMIN_EMAIL" in e for e in validate_bundle(_full_bundle(ONEBRAIN_ADMIN_EMAIL="")))
+    assert any("ONEBRAIN_ADMIN_EMAIL" in e for e in validate_bundle(_full_bundle(ONEBRAIN_ADMIN_EMAIL="  ")))
 
 
 def test_validate_bundle_allows_empty_optional_desired_state_set():

@@ -388,13 +388,14 @@ def _box_integration_credential(result: ProvisioningResult) -> tuple[str, str]:
 
 
 def _dispatch_run(run: ProvisioningRun, *, owner_otp: str = "",
-                  service_key: str = "", space_id: str = "") -> ProvisioningRun:
+                  service_key: str = "", space_id: str = "", owner_email: str = "") -> ProvisioningRun:
     # H-1/H-9: backend switch. Default "github" is today's Railway behavior
     # exactly (dormancy); "hetzner" dispatches through the token-isolating broker.
     # An unknown value fails closed with a named reason — never a silent fallback.
-    # owner_otp/service_key/space_id (G3-3) are threaded from provision_customer into
-    # the Hetzner box secret bundle; the github path ignores them. A retry re-dispatch
-    # passes none — the Hetzner path then reuses the stored bundle (only re-mints a token).
+    # owner_otp/service_key/space_id/owner_email (G3-3) are threaded from provision_customer
+    # into the Hetzner box secret bundle; the github path ignores them. owner_email + owner_otp
+    # are the ONEBRAIN_ADMIN_EMAIL/PASSWORD pair the box needs to seed a loginable admin. A
+    # retry re-dispatch passes none — the Hetzner path then reuses the stored bundle.
     store = get_provisioning_run_store()
     settings = get_settings()
     # getattr default keeps pre-P4 settings fakes (SimpleNamespace) on the github
@@ -405,7 +406,8 @@ def _dispatch_run(run: ProvisioningRun, *, owner_otp: str = "",
             dispatched = HetznerProvisioner(
                 settings, build_hetzner_broker(settings), get_control_plane_store(),
                 prov_store=store, fleet_store=get_fleet_store(),
-            ).dispatch(run, owner_otp=owner_otp, service_key=service_key, space_id=space_id)
+            ).dispatch(run, owner_otp=owner_otp, service_key=service_key, space_id=space_id,
+                       owner_email=owner_email)
         elif backend == "github":
             dispatched = GitHubWorkflowDispatcher(settings).dispatch(run)
         else:
@@ -552,7 +554,8 @@ def provision_customer(body: CustomerProvisionCreate, principal: Principal = Dep
         # a box with no owner/integration module; the github path ignores them.
         service_key, space_id = _box_integration_credential(result)
         run = _dispatch_run(run, owner_otp=result.owner_one_time_password,
-                            service_key=service_key, space_id=space_id)
+                            service_key=service_key, space_id=space_id,
+                            owner_email=body.owner_email)
     return _result_out(result, run)
 
 

@@ -163,9 +163,10 @@ def test_dispatch_maps_api_error_to_dispatch_failed(monkeypatch):
     fake = FakeHetznerClient(fail_on={"create_server"})
     _wire_router(monkeypatch, _settings(secret_encryption_key="unit-test-secret-key"), prov, control, fake)
 
-    # owner_otp threaded (G3-3) so bundle assembly (which runs before the broker) passes
-    # and the run reaches the failing broker create.
-    out = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp")   # must NOT raise
+    # owner_otp + owner_email threaded (G3-3) so bundle assembly (which runs before the broker)
+    # passes and the run reaches the failing broker create.
+    out = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp",
+                                            owner_email="owner@example.com")   # must NOT raise
     assert out.status == STATUS_DISPATCH_FAILED
     assert "Hetzner API error" in out.failure_reason
 
@@ -176,8 +177,10 @@ def test_dispatch_run_router_switch_selects_backend(monkeypatch):
     fake = FakeHetznerClient()
     _wire_router(monkeypatch, _settings(secret_encryption_key="unit-test-secret-key"), prov, control, fake)
 
-    # hetzner backend -> the hetzner executor ran (owner_otp threaded so the bundle is valid).
-    out = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp")
+    # hetzner backend -> the hetzner executor ran (owner_otp + owner_email threaded so the
+    # bundle is valid).
+    out = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp",
+                                            owner_email="owner@example.com")
     assert out.external_provider == "hetzner" and out.status == STATUS_DISPATCHED
     assert len(fake.servers) == 1
 
@@ -349,7 +352,8 @@ def test_dispatch_mints_bundle_and_unconsumed_bootstrap_token():
     settings = _p5_settings()
     out = HetznerProvisioner(settings, InProcessHetznerBroker(fake), control,
                              prov_store=prov, fleet_store=fleet).dispatch(
-        _run(prov), owner_otp="owner-otp", service_key="sk_abc", space_id="space_1")
+        _run(prov), owner_otp="owner-otp", service_key="sk_abc", space_id="space_1",
+        owner_email="Owner@Example.com")
     assert out.status == STATUS_DISPATCHED
 
     # The re-readable bundle is stored with the THREADED owner OTP + service key + space
@@ -357,6 +361,9 @@ def test_dispatch_mints_bundle_and_unconsumed_bootstrap_token():
     bundle = prov.get_secret_bundle("dep_a")
     assert bundle is not None and bundle.secrets_epoch == 0
     body = _open_bundle(prov, settings)
+    # The admin is loginable: BOTH the email and the password are baked. The email is the
+    # threaded owner_email (normalized to match the box's seed-time .strip().lower()).
+    assert body["ONEBRAIN_ADMIN_EMAIL"] == "owner@example.com"
     assert body["ONEBRAIN_ADMIN_PASSWORD"] == "owner-otp"
     assert body["ONEBRAIN_SERVICE_KEY"] == "sk_abc"
     assert body["ONEBRAIN_SPACE_ID"] == "space_1"
@@ -375,13 +382,14 @@ def test_dispatch_mints_bundle_and_unconsumed_bootstrap_token():
 
 
 def test_dispatch_fails_closed_on_invalid_bundle(monkeypatch):
-    # No owner OTP -> ONEBRAIN_ADMIN_PASSWORD empty -> validate_bundle fails -> the run
-    # dispatch-fails and NO server is created (never provision a box that can't come up).
+    # No owner email/OTP -> ONEBRAIN_ADMIN_EMAIL + ONEBRAIN_ADMIN_PASSWORD empty ->
+    # validate_bundle fails -> the run dispatch-fails and NO server is created (never
+    # provision a box that can't seed a loginable admin / can't come up).
     control = _control()
     prov = MemoryProvisioningRunStore()
     fake = FakeHetznerClient()
     _wire_router(monkeypatch, _p5_settings(), prov, control, fake)
-    out = provisioning_router._dispatch_run(_run(prov))   # owner_otp omitted
+    out = provisioning_router._dispatch_run(_run(prov))   # owner_otp + owner_email omitted
     assert out.status == STATUS_DISPATCH_FAILED
     assert "secret bundle invalid" in out.failure_reason
     assert fake.servers == []
@@ -398,7 +406,8 @@ def test_dispatch_fails_closed_when_active_signer_excluded(monkeypatch):
     _wire_router(monkeypatch, _p5_settings(fleet_desired_state_private_key=priv,
                                            fleet_desired_state_public_keys="someone-else"),
                  prov, control, fake)
-    out = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp")
+    out = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp",
+                                            owner_email="owner@example.com")
     assert out.status == STATUS_DISPATCH_FAILED
     assert "active_signer_not_in_public_key_set" in out.failure_reason
     assert fake.servers == []
@@ -407,7 +416,8 @@ def test_dispatch_fails_closed_when_active_signer_excluded(monkeypatch):
     _wire_router(monkeypatch, _p5_settings(fleet_desired_state_private_key=priv,
                                            fleet_desired_state_public_keys=f"someone-else,{pub}"),
                  prov, control, fake)
-    ok = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp")
+    ok = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp",
+                                           owner_email="owner@example.com")
     assert ok.status == STATUS_DISPATCHED
     assert _open_bundle(prov, _p5_settings())["UPDATE_DESIRED_STATE_PUBLIC_KEYS"] == f"someone-else,{pub}"
 
@@ -421,7 +431,8 @@ def test_retry_reuses_stored_bundle_without_reminting():
     fake = FakeHetznerClient()
     p = HetznerProvisioner(_p5_settings(), InProcessHetznerBroker(fake), control,
                            prov_store=prov, fleet_store=fleet)
-    p.dispatch(_run(prov), owner_otp="owner-otp", service_key="sk1", space_id="sp1")
+    p.dispatch(_run(prov), owner_otp="owner-otp", service_key="sk1", space_id="sp1",
+               owner_email="owner@example.com")
     ct1 = prov.get_secret_bundle("dep_a").ciphertext
     keys_after_first = len(fleet.list_keys("dep_a"))
 
@@ -437,7 +448,9 @@ def _p5_dispatch(settings, fake, *, prov=None, fleet=None):
     fleet = fleet if fleet is not None else MemoryFleetStore()
     p = HetznerProvisioner(settings, InProcessHetznerBroker(fake), _control(),
                            prov_store=prov, fleet_store=fleet)
-    return p.dispatch(_run(prov), owner_otp="owner-otp")
+    # owner_email is REQUIRED now (ONEBRAIN_ADMIN_EMAIL is a required bundle key), so a
+    # bundle-building dispatch must thread it or validate_bundle fails closed.
+    return p.dispatch(_run(prov), owner_otp="owner-otp", owner_email="owner@example.com")
 
 
 def test_provision_creates_default_deny_firewall_no_ssh_by_default():
@@ -507,7 +520,8 @@ def test_customer_box_callback_authenticates_with_per_run_token(monkeypatch):
                             provisioning_callback_key_id="cb_global")
     _wire_router(monkeypatch, settings, prov, control, fake)
 
-    dispatched = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp")
+    dispatched = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp",
+                                                   owner_email="owner@example.com")
     assert dispatched.status == STATUS_DISPATCHED
     token = re.search(r"ONEBRAIN_PROVISIONING_CALLBACK_TOKEN=([A-Za-z0-9_-]+)",
                       fake.servers[0].user_data).group(1)
