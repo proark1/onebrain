@@ -79,6 +79,9 @@ class BoxRenderInputs:
     images: dict                         # module_id -> registry/repo@sha256:...  (ReleaseManifest.images)
     fqdn: str = ""                       # <deployment_id>.<fleet_base_domain> ("" -> serve on IP, http only)
     fleet_url: str = ""                  # MC base URL (heartbeat + desired-state GET)
+    run_id: str = ""                     # provisioning run id baked into the box's callback URL + box.env
+                                         # (required to render cloud-init; the box POSTs its smoke result +
+                                         # bootstrap_password to /api/provisioning/runs/<run_id>/callback)
     fleet_public_desired_state_key: str = ""   # baked so the box verifies the wrapper (H-7)
     release_public_key: str = ""               # baked so the box verifies the offline release sig
     registry_allowlist: str = ""               # baked box-local allowlist (B2) — never envelope-supplied
@@ -94,6 +97,10 @@ def _validate(inp: BoxRenderInputs) -> None:
             raise ValueError(f"invalid {label} (charset ^[a-z0-9][a-z0-9._-]*$): {value!r}")
     if inp.fqdn and not _ID_RE.match(inp.fqdn):
         raise ValueError(f"invalid fqdn (charset ^[a-z0-9][a-z0-9._-]*$): {inp.fqdn!r}")
+    # run_id flows into the cloud-init callback URL (a shell sink) + box.env, so it is
+    # held to the same charset guard when present (render_cloud_init also requires it).
+    if inp.run_id and not _ID_RE.match(inp.run_id):
+        raise ValueError(f"invalid run_id (charset ^[a-z0-9][a-z0-9._-]*$): {inp.run_id!r}")
     unknown = [m for m in inp.enabled_modules if m not in MODULE_IDS]
     if unknown:
         raise ValueError(f"unknown enabled modules: {sorted(unknown)}")
@@ -395,7 +402,7 @@ def _box_env(inp: BoxRenderInputs) -> str:
         ("ONEBRAIN_FLEET_URL", inp.fleet_url),
         ("ONEBRAIN_DEPLOYMENT_ID", inp.deployment_id),
         ("ONEBRAIN_FLEET_KEY", "${" + inp.secret_refs.fleet_key_env + "}"),
-        ("ONEBRAIN_RUN_ID", "{run_id}"),
+        ("ONEBRAIN_RUN_ID", inp.run_id),
         ("UPDATE_RELEASE_PUBLIC_KEY", inp.release_public_key),
         ("UPDATE_DESIRED_STATE_PUBLIC_KEY", inp.fleet_public_desired_state_key),
         ("UPDATE_REGISTRY_ALLOWLIST", inp.registry_allowlist),
@@ -417,19 +424,25 @@ def _box_env(inp: BoxRenderInputs) -> str:
 _META = "169.254.169.254"
 
 
-def _callback_curl(status: str, smoke: str, *, extra: str = "") -> str:
+def _callback_curl(status: str, smoke: str, run_id: str, *, extra: str = "") -> str:
     body = f'{{\\"status\\":\\"{status}\\",\\"smoke_status\\":\\"{smoke}\\"{extra}}}'
+    # run_id is baked in at render time (the box can't self-substitute); ${ONEBRAIN_FLEET_URL}
+    # stays a shell ref resolved from box.env. Concatenated (not f-string) so the ${...}
+    # braces are not mistaken for format placeholders.
+    callback_url = "${ONEBRAIN_FLEET_URL}/api/provisioning/runs/" + run_id + "/callback"
     return (
         "set -a; . /opt/onebrain/box.env; set +a; "
         'curl -sf -X POST -H "Authorization: Bearer ${ONEBRAIN_PROVISIONING_CALLBACK_TOKEN}" '
         '-H "Content-Type: application/json" '
         f'--data "{body}" '
-        '"${ONEBRAIN_FLEET_URL}/api/provisioning/runs/{run_id}/callback"'
+        f'"{callback_url}"'
     )
 
 
 def render_cloud_init(inp: BoxRenderInputs) -> str:
     _validate(inp)
+    if not inp.run_id:
+        raise ValueError("run_id is required to render cloud-init (the box callback URL needs it)")
     compose = render_compose(inp)
     caddy = render_caddyfile(inp)
     env_files = render_env_files(inp)
@@ -459,9 +472,10 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
     compose_cmd = (
         f"docker compose --project-name {inp.compose_project} -f {compose_file} {profile_flags}".strip()
     )
-    fail_cb = _callback_curl("failed", "failed", extra=',\\"failure_reason\\":\\"metadata_egress_block_failed\\"')
+    fail_cb = _callback_curl("failed", "failed", inp.run_id,
+                             extra=',\\"failure_reason\\":\\"metadata_egress_block_failed\\"')
     done_cb = _callback_curl(
-        "${ST}", "${SMOKE}",
+        "${ST}", "${SMOKE}", inp.run_id,
         extra=',\\"bootstrap_password\\":\\"${ONEBRAIN_ADMIN_PASSWORD}\\"'
               ',\\"external_run_url\\":\\"$(cat /opt/onebrain/box.instance 2>/dev/null)\\"',
     )

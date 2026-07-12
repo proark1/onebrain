@@ -53,7 +53,7 @@ def _images(modules) -> dict:
     return {m: f"ghcr.io/proark1/{m}@{_digest(idx)}" for idx, m in enumerate(_ALL) if m in set(modules)}
 
 
-def _inputs(modules, *, fqdn="dep_a.fleet.example", role="customer") -> BoxRenderInputs:
+def _inputs(modules, *, fqdn="dep_a.fleet.example", role="customer", run_id="prun_fixture") -> BoxRenderInputs:
     return BoxRenderInputs(
         deployment_id="dep_a",
         account_id="acct_1",
@@ -62,6 +62,7 @@ def _inputs(modules, *, fqdn="dep_a.fleet.example", role="customer") -> BoxRende
         images=_images(modules),
         fqdn=fqdn,
         fleet_url="https://mc.example.com",
+        run_id=run_id,
         fleet_public_desired_state_key="DSPUBKEY",
         release_public_key="RELPUBKEY",
         registry_allowlist="ghcr.io/proark1",
@@ -219,11 +220,20 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
     assert "set -euo pipefail" in wf                                 # update.sh embedded
     assert "verify_desired_state" in wf                              # verifier embedded
     assert "ExecStart=/opt/onebrain/update.sh" in wf                 # systemd unit embedded
-    # both metadata DROP rules (A5, in runcmd) + the {run_id} callback
+    # both metadata DROP rules (A5, in runcmd) + the run-id-substituted callback
     rc = _runcmd_section(ci)
     assert "iptables -I DOCKER-USER -d 169.254.169.254 -j DROP" in rc
     assert "iptables -I OUTPUT -d 169.254.169.254 -j DROP" in rc
-    assert "/api/provisioning/runs/{run_id}/callback" in ci
+    # run_id is baked at render time (no literal placeholder survives), in both the
+    # callback URL and box.env — else the box POSTs to /runs/{run_id}/callback and 404s.
+    assert "/api/provisioning/runs/prun_fixture/callback" in ci
+    assert "ONEBRAIN_RUN_ID=prun_fixture" in ci
+    assert "{run_id}" not in ci
+
+
+def test_cloud_init_requires_run_id():
+    with pytest.raises(ValueError, match="run_id is required"):
+        render_cloud_init(_inputs(_ONEBRAIN, run_id=""))
 
 
 def test_cloud_init_compose_calls_are_anchored():

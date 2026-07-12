@@ -136,6 +136,7 @@ class HetznerProvisioner:
                 images=dict(release.images),
                 fqdn=fqdn,
                 fleet_url=settings.fleet_url,
+                run_id=run.id,   # baked into the box callback URL so the box can report back (not {run_id})
                 fleet_public_desired_state_key=settings.fleet_desired_state_public_key,
                 release_public_key=settings.release_verify_public_key,
                 registry_allowlist=settings.release_registry_allowlist,
