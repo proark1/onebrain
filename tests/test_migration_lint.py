@@ -33,6 +33,15 @@ from app.controlplane.migration_lint import (
     ("ALTER TABLE users ADD COLUMN tier text NOT NULL;", "add_not_null_no_default"),
     ("TRUNCATE audit_log;", "truncate"),
     ("DELETE FROM sessions WHERE expired;", "delete_rows"),
+    # Postgres accepts every ALTER TABLE column action WITHOUT the COLUMN
+    # keyword — the keyword-optional spellings must classify identically.
+    ("ALTER TABLE users DROP email;", "drop_column"),
+    ("ALTER TABLE users DROP IF EXISTS email;", "drop_column"),
+    ("ALTER TABLE users RENAME email TO mail;", "rename"),
+    ("ALTER TABLE users ALTER email TYPE varchar(10);", "retype"),
+    ("ALTER TABLE users ALTER email SET DATA TYPE varchar(10);", "retype"),
+    ("ALTER TABLE users ALTER email SET NOT NULL;", "set_not_null"),
+    ("ALTER TABLE users ADD tier text NOT NULL;", "add_not_null_no_default"),
 ])
 def test_blocking_rule(sql, rule):
     result = classify_sql(sql, source="0099_test.sql")
@@ -74,6 +83,41 @@ def test_lossy_update_is_blocking():
     mismatched = classify_sql("UPDATE t SET a = 1 WHERE b IS NULL;")
     assert mismatched.rollback_kind == ROLLBACK_RESTORE_REQUIRED
     assert [f.rule for f in mismatched.findings] == ["update_dml"]
+
+
+def test_attribute_drops_inside_alter_table_stay_silent():
+    # DROP CONSTRAINT / DROP DEFAULT / DROP NOT NULL are per-column attribute
+    # drops (no row data lost) — the keyword-optional drop_column pattern must
+    # not swallow them, and standalone DROP INDEX is not an ALTER TABLE action.
+    sql = """
+    ALTER TABLE users ALTER COLUMN email DROP DEFAULT;
+    ALTER TABLE users ALTER COLUMN email DROP NOT NULL;
+    ALTER TABLE users DROP CONSTRAINT users_email_key;
+    DROP INDEX IF EXISTS idx_users_email;
+    """
+    result = classify_sql(sql)
+    assert result.rollback_kind == ROLLBACK_CODE_ONLY
+    assert result.findings == ()
+
+
+def test_multi_assignment_update_never_rides_the_backfill_carveout():
+    # B5 tightened: the carve-out is a SINGLE assignment whose SET column is
+    # the null-guarded one. A guarded multi-assignment mass-overwrites the
+    # second column — as destructive as DELETE FROM.
+    multi = classify_sql("UPDATE users SET flag = 1, email = NULL WHERE flag IS NULL;")
+    assert multi.rollback_kind == ROLLBACK_RESTORE_REQUIRED
+    assert [f.rule for f in multi.findings] == ["update_dml"]
+
+    # Any comma in the SET clause falls to blocking (fail-closed): a
+    # COALESCE(a, b) backfill needs the operator override.
+    coalesce = classify_sql("UPDATE t SET x = COALESCE(y, 1) WHERE x IS NULL;")
+    assert coalesce.rollback_kind == ROLLBACK_RESTORE_REQUIRED
+    assert [f.rule for f in coalesce.findings] == ["update_dml"]
+
+    # The narrow single-assignment guarded form stays informational.
+    narrow = classify_sql("UPDATE t SET x = 1 WHERE x IS NULL;")
+    assert narrow.rollback_kind == ROLLBACK_CODE_ONLY
+    assert [f.rule for f in narrow.findings] == ["update_backfill"]
 
 
 def test_add_check_constraint_is_blocking():
@@ -236,6 +280,90 @@ def upgrade() -> None:
 """)
     assert retyped.rollback_kind == ROLLBACK_RESTORE_REQUIRED
     assert [f.rule for f in retyped.findings] == ["retype"]
+
+    renamed = classify_alembic_source("""
+from alembic import op
+
+def upgrade() -> None:
+    op.alter_column("users", "old_name", new_column_name="new_name")
+""")
+    assert renamed.rollback_kind == ROLLBACK_RESTORE_REQUIRED
+    assert [f.rule for f in renamed.findings] == ["rename"]
+
+
+def test_alembic_conn_execute_fails_closed():
+    # The documented alembic pattern `bind = op.get_bind(); bind.execute(...)`
+    # must not bypass the walk: both the get_bind and the .execute flag.
+    source = """
+from alembic import op
+import sqlalchemy as sa
+
+def upgrade() -> None:
+    conn = op.get_bind()
+    conn.execute(sa.text("DROP TABLE users"))
+"""
+    result = classify_alembic_source(source)
+    assert result.rollback_kind == ROLLBACK_RESTORE_REQUIRED
+    assert [f.rule for f in result.findings] == ["non_op_execution", "non_op_execution"]
+    assert all(f.blocking for f in result.findings)
+
+
+def test_alembic_out_of_file_helper_fails_closed():
+    # A call to a function defined OUTSIDE the migration file may execute SQL
+    # this module cannot see — fail closed.
+    source = """
+from alembic import op
+from migration_helpers import run_cleanup
+
+def upgrade() -> None:
+    run_cleanup()
+"""
+    result = classify_alembic_source(source)
+    assert result.rollback_kind == ROLLBACK_RESTORE_REQUIRED
+    assert [f.rule for f in result.findings] == ["non_op_execution"]
+
+
+def test_alembic_in_file_helper_walked_transitively():
+    # A purely-computational in-file helper stays code_only...
+    clean = classify_alembic_source("""
+from alembic import op
+
+def _index_name(table):
+    return "idx_" + table.lower()
+
+def upgrade() -> None:
+    op.create_index(_index_name("users"), "users", ["id"])
+""")
+    assert clean.rollback_kind == ROLLBACK_CODE_ONLY
+    assert clean.findings == ()
+
+    # ...but a helper that executes SQL is walked with the same rules.
+    dirty = classify_alembic_source("""
+from alembic import op
+
+def _cleanup():
+    op.get_bind().execute("DELETE FROM sessions")
+
+def upgrade() -> None:
+    _cleanup()
+""")
+    assert dirty.rollback_kind == ROLLBACK_RESTORE_REQUIRED
+    assert [f.rule for f in dirty.findings] == ["non_op_execution", "non_op_execution"]
+
+
+def test_alembic_batch_alter_table_fails_closed():
+    # The batch idiom: the context manager is unrecognized (fail-closed) and
+    # the destructive method name flags on ANY receiver.
+    source = """
+from alembic import op
+
+def upgrade() -> None:
+    with op.batch_alter_table("users") as batch:
+        batch.drop_column("email")
+"""
+    result = classify_alembic_source(source)
+    assert result.rollback_kind == ROLLBACK_RESTORE_REQUIRED
+    assert [f.rule for f in result.findings] == ["non_op_execution", "drop_column"]
 
 
 def test_alembic_unparseable_source_fails_closed():
