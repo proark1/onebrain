@@ -247,9 +247,19 @@ def bootstrap_exchange(authorization: str = Header(default=""),
         raise HTTPException(status_code=409, detail="active_signer_not_in_public_key_set")
     body = BootstrapExchangeOut(secrets_epoch=bundle_row.secrets_epoch, dotenv=render_dotenv(bundle))
 
-    # G1-2/G1-8: consume the one-time token atomically as the LAST step, after the body
-    # is assembled. A NULL return means a concurrent request already won the race -> 401
-    # with no body (the box retries next tick). The fleet-key rotation path consumes nothing.
+    # G1-2/G1-8: consume the one-time token atomically as the LAST step, after the body is
+    # assembled — so a decrypt/assembly failure never burns the token (the box holds + retries).
+    # A NULL return means a concurrent request already won the race -> 401 with no body. The
+    # fleet-key rotation path consumes nothing.
+    #
+    # ACCEPTED RESIDUAL (low): the DB consume commits just BEFORE this 200 reaches the box, so
+    # a response lost in transit (TCP reset / LB timeout mid-body) still burns the token — the
+    # box finds no /opt/onebrain/.env, re-presents the same (now-consumed) token next tick, and
+    # 401s. This is inherent to single-use semantics (an ACK-gated consume only trades it for a
+    # replay window). A first-boot box holds NO data, so the cheap, correct mitigation is
+    # RE-PROVISION: the stored bundle is re-readable and _provision_box_secrets mints a FRESH
+    # usable token on every re-dispatch. The stall is operator-visible (the first-boot smoke
+    # callback fails). Do NOT read this "consume-last" ordering as "a lost response never bricks".
     if token_secret:
         if prov.consume_bootstrap_token(hash_secret(token_secret)) is None:
             raise HTTPException(status_code=401, detail="Bootstrap token already consumed.")

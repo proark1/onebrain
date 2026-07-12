@@ -321,8 +321,12 @@ class HetznerProvisioner:
                 secrets_epoch=0,
             ))
 
-        # Mint the single-use, short-TTL first-boot token (fresh on every dispatch, incl.
-        # a retry). Only its hash is stored; the raw token is baked into user-data.
+        # Mint the single-use, short-TTL first-boot token (fresh on every dispatch, incl. a
+        # retry). Only its hash is stored; the raw token is baked into user-data. Minting a
+        # FRESH token on every re-dispatch is also the documented recovery path for a first-boot
+        # box stranded by a lost /bootstrap 200 (token consumed, but the box never wrote .env):
+        # re-provision reuses the re-readable stored bundle and hands the box a fresh, usable
+        # token. See app/routers/fleet.py bootstrap_exchange "ACCEPTED RESIDUAL".
         _, token_secret, raw_token = generate_bootstrap_token()
         ttl = max(1, int(getattr(settings, "fleet_bootstrap_token_ttl_seconds", 3600) or 3600))
         expires = datetime.now(timezone.utc) + timedelta(seconds=ttl)

@@ -329,6 +329,20 @@ def test_operator_cloud_init_omits_exchange_but_keeps_drop_persistence():
     assert "systemctl enable --now onebrain-metadata-drop.service" in rc
 
 
+def test_metadata_drop_unit_runs_before_docker_and_precreates_chain():
+    # G1-6 reboot race: the DOCKER-USER drop must be in place BEFORE dockerd starts any
+    # restart:always container. An After=docker unit races the async container start, so the
+    # unit is ordered Before=docker.service and CREATES the DOCKER-USER chain when it does not
+    # yet exist (pre-docker boot) instead of skipping the container-path drop.
+    from app.provisioning.hetzner import render as R
+    unit = R._read_box_file("onebrain-metadata-drop.service")
+    assert "Before=docker.service" in unit
+    assert "After=docker.service" not in unit               # no longer races container start
+    assert "iptables -N DOCKER-USER" in unit                # pre-create the chain (fallback)
+    assert "-I DOCKER-USER -d 169.254.169.254 -j DROP" in unit
+    assert "-I OUTPUT -d 169.254.169.254 -j DROP" in unit
+
+
 def test_render_rejects_hostile_token():
     with pytest.raises(ValueError, match="bootstrap_token"):
         render_cloud_init(_inputs(_ONEBRAIN, bootstrap_token="bt; rm -rf /"))
