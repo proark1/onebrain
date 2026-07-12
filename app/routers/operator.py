@@ -1199,15 +1199,18 @@ def _dispatch_child_rollout(fleet_id: str, deployment_id: str, *, target_version
     except ValueError:
         return  # plan blocked at start — the ring proceeds without this deployment
     rollout = control.get_rollout(child_id)
+    if rollout is None:
+        # The row vanished between start_rollout and the read-back — nothing
+        # to mark failed, and dereferencing below would raise ("never raises").
+        return
     release = control.get_release(target_version)
     deployment = control.get_deployment(deployment_id)
     # Children are created with the default ack_restore_required=False; fleet
     # sweeps can never auto-ack a restore_required release (the R3 guarantee).
     plan = control.plan_update(deployment_id, target_version,
                                ack_restore_required=rollout.ack_restore_required)
-    if not (rollout and release and deployment and plan.allowed):
-        if rollout:
-            mark_rollout_dispatch_failed(control, rollout, "update no longer available")
+    if not (release and deployment and plan.allowed):
+        mark_rollout_dispatch_failed(control, rollout, "update no longer available")
         return
     try:
         railway = resolve_railway_target(get_provisioning_run_store(), deployment_id)

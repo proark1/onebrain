@@ -43,6 +43,7 @@ def probe_module(probe: HealthProbe, *, opener=None, timeout: float = 2.0) -> Op
             status = getattr(response, "status", 0) or response.getcode()
     except urllib.error.HTTPError as exc:  # an HTTP answer IS a live listener
         status = exc.code
+        exc.close()  # the error carries a live response body — do not leak it
     except Exception as exc:
         if probe.fail_open_on_connection_refused and _is_connection_refused(exc):
             return ModuleReport(module_id=probe.module_id, healthy=True)
