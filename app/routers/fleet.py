@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from app.auth.principal import Principal, resolve_principal
 from app.config import get_settings
+from app.controlplane.desired_state import active_pull_attempt_id, sign_desired_state_for
 from app.deps import get_control_plane_store, get_fleet_heartbeat_rate_limiter, get_fleet_store
 from app.fleet.base import FleetKey, Heartbeat
 from app.fleet.enrollment import fleet_enrollment_vars, mint_deployment_fleet_key
@@ -114,7 +115,38 @@ def ingest_heartbeat(body: AnyFleetHeartbeat, authorization: str = Header(defaul
         migration_revision=body.onebrain.migration_revision,
         payload=body.model_dump(),
     ))
-    return HeartbeatAck(deployment_id=body.deployment_id)
+    # ADVISORY fast-path only (B8): the AUTHORITATIVE channel is the box's own GET
+    # /desired-state below. Behaviour-inert while emission is off — env is None when
+    # fleet_desired_state_private_key is unset, so config stays {} byte-for-byte with
+    # today's ack (pinned by test_heartbeat_ack_is_inert_when_emission_off).
+    ack = HeartbeatAck(deployment_id=body.deployment_id)
+    control = get_control_plane_store()
+    env = sign_desired_state_for(control, body.deployment_id, settings=get_settings(),
+                                 now=datetime.now(timezone.utc))
+    if env is not None:
+        ack.config["desired_state"] = {
+            "envelope": env.model_dump(),
+            "attempt_id": active_pull_attempt_id(control, body.deployment_id),
+        }
+    return ack
+
+
+@router.get("/desired-state", response_model=dict | None)
+def get_desired_state(authorization: str = Header(default=""),
+                      x_onebrain_deployment_id: str = Header(default="")):
+    """The AUTHORITATIVE desired-state channel (P1-F): the box authenticates with its
+    OWN fleet key (the same _authenticate_fleet_key as heartbeat, pinned to a
+    deployment) and can fetch ONLY its own desired-state. Read-only; no side effects.
+    Returns None while emission is dormant (no wrapper key configured). The response
+    wraps the signed, verify-don't-trust envelope alongside the unsigned out-of-band
+    attempt_id hint — exactly the shape the box verifier (P4-08) consumes."""
+    key = _authenticate_fleet_key(authorization, x_onebrain_deployment_id.strip())
+    control = get_control_plane_store()
+    env = sign_desired_state_for(control, key.deployment_id, settings=get_settings(),
+                                 now=datetime.now(timezone.utc))
+    if env is None:
+        return None
+    return {"envelope": env.model_dump(), "attempt_id": active_pull_attempt_id(control, key.deployment_id)}
 
 
 # --- key management (operator-admin) -----------------------------------------

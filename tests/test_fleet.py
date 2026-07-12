@@ -802,6 +802,112 @@ def test_ingest_v2_skew_guard_still_applies(monkeypatch):
     assert ei.value.status_code == 400
 
 
+# --- desired-state emission (P4-05) ------------------------------------------
+
+from app.trust.envelope import DesiredStateEnvelope, VersionFloorState, verify_desired_state  # noqa: E402
+from app.trust.release import parse_registry_allowlist, sign_release  # noqa: E402
+from app.trust.signing import generate_keypair as _ds_generate_keypair  # noqa: E402
+
+_DS_WRAP_PRIV, _DS_WRAP_PUB = _ds_generate_keypair()   # MC online wrapper key (D-11)
+_DS_REL_PRIV, _DS_REL_PUB = _ds_generate_keypair()     # OFFLINE release key
+_DS_ALLOW = parse_registry_allowlist("ghcr.io/proark1")
+_DS_IMG = "ghcr.io/proark1/onebrain-api@sha256:" + "a" * 64
+
+
+def _ds_settings(*, key: str = _DS_WRAP_PRIV, ttl: int = 900):
+    # max_skew=0 disables the ingest skew guard so the ack tests can pin a fixed body.
+    from types import SimpleNamespace
+    return SimpleNamespace(fleet_desired_state_private_key=key, fleet_desired_state_ttl_seconds=ttl,
+                           fleet_heartbeat_max_skew_seconds=0)
+
+
+def _ds_signed_release(version: str = "2026.07.0") -> ReleaseManifest:
+    from app.controlplane.base import ReleaseManifest as _RM
+    fields = dict(version=version, git_sha="abc123", modules={"onebrain-api": "0.8.0"},
+                  images={"onebrain-api": _DS_IMG}, migration_from="0041",
+                  migration_to="0041", rollback_kind="")
+    return _RM(status="published", signature=sign_release(fields, _DS_REL_PRIV), **fields)
+
+
+def _ds_verify(envelope_dict: dict) -> list:
+    from datetime import datetime, timezone
+    env = DesiredStateEnvelope.model_validate(envelope_dict)
+    return verify_desired_state(
+        env, desired_state_public_key_b64=_DS_WRAP_PUB, release_public_key_b64=_DS_REL_PUB,
+        expected_deployment_id="dep_a", now=datetime.now(timezone.utc),
+        floor_state=VersionFloorState(), registry_allowlist=_DS_ALLOW)
+
+
+def test_desired_state_endpoint_requires_matching_fleet_key(monkeypatch):
+    store = MemoryFleetStore()
+    token = _minted_key(store, "dep_a")   # key pinned to dep_a
+    control = _control_with("dep_a")
+    control.create_release(_ds_signed_release())
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(fleet_router, "get_settings", _ds_settings)
+
+    # A box cannot fetch another deployment's desired-state.
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.get_desired_state(authorization=f"Bearer {token}", x_onebrain_deployment_id="dep_b")
+    assert ei.value.status_code == 403
+
+
+def test_desired_state_endpoint_returns_wrapped_envelope(monkeypatch):
+    store = MemoryFleetStore()
+    token = _minted_key(store, "dep_a")
+    control = _control_with("dep_a")   # current_version 2026.07.0
+    control.create_release(_ds_signed_release("2026.07.0"))
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(fleet_router, "get_settings", _ds_settings)
+
+    out = fleet_router.get_desired_state(authorization=f"Bearer {token}", x_onebrain_deployment_id="dep_a")
+    assert set(out) == {"envelope", "attempt_id"}
+    assert out["attempt_id"] == ""            # steady-state confirm (no active rollout)
+    assert _ds_verify(out["envelope"]) == []  # the served envelope verifies via app.trust
+
+
+def test_desired_state_endpoint_none_when_emission_off(monkeypatch):
+    store = MemoryFleetStore()
+    token = _minted_key(store, "dep_a")
+    control = _control_with("dep_a")
+    control.create_release(_ds_signed_release())
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(fleet_router, "get_settings", lambda: _ds_settings(key=""))
+
+    assert fleet_router.get_desired_state(authorization=f"Bearer {token}",
+                                          x_onebrain_deployment_id="dep_a") is None
+
+
+def test_heartbeat_ack_is_inert_when_emission_off(monkeypatch):
+    # With no wrapper key configured, the ack carries an EMPTY config — byte-for-byte
+    # identical to today's fleet ack (the dormancy guarantee).
+    store = MemoryFleetStore()
+    token = _minted_key(store, "dep_a")
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: _control_with("dep_a"))
+
+    ack = fleet_router.ingest_heartbeat(_heartbeat_body("dep_a"), authorization=f"Bearer {token}")
+    assert ack.config == {}
+
+
+def test_heartbeat_ack_carries_advisory_when_on(monkeypatch):
+    store = MemoryFleetStore()
+    token = _minted_key(store, "dep_a")
+    control = _control_with("dep_a")
+    control.create_release(_ds_signed_release("2026.07.0"))
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(fleet_router, "get_settings", _ds_settings)
+
+    ack = fleet_router.ingest_heartbeat(_heartbeat_body("dep_a"), authorization=f"Bearer {token}")
+    advisory = ack.config["desired_state"]
+    assert advisory["attempt_id"] == ""
+    assert _ds_verify(advisory["envelope"]) == []   # the advisory envelope verifies too
+
+
 def test_v2_payload_round_trips_update_report():
     hb = _heartbeat_body_v2(
         "dep_a", update=UpdateReport(last_target_version="2026.07.2", outcome="succeeded",
