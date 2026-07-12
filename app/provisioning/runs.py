@@ -740,14 +740,25 @@ def apply_callback(
     if status in TERMINAL_STATUSES:
         completed_at = completed_at or now_iso()
 
+    # D-6 slot preservation (Phase-5). A Hetzner box's succeeded callback reports
+    # only status/smoke_status/bootstrap_password/external_run_url (the done_cb in
+    # app/provisioning/hetzner/render.py) — it does NOT echo the D-6 coordinates
+    # HetznerProvisioner.dispatch already wrote: railway_project_id =
+    # "hetzner:<server_id>", railway_environment_id = <compose_project>, and
+    # result_payload's service_ids + erasure_manifest. Keep the run's value for any
+    # of these the callback omits, mirroring the external_run_id/url `or`-preserve,
+    # so resolve_railway_target can still target a provisioned box for pull-updates.
+    # The Railway path is unaffected: its workflow callback supplies these, so the
+    # callback value wins on every conflict (its result_payload keys override, and
+    # its run.result_payload is empty at callback time so the merge is a no-op).
     return store.update_run(replace(
         run,
         status=status,
         external_run_id=callback.external_run_id or run.external_run_id,
         external_run_url=callback.external_run_url or run.external_run_url,
-        result_payload=callback.result_payload,
-        railway_project_id=callback.railway_project_id,
-        railway_environment_id=callback.railway_environment_id,
+        result_payload={**run.result_payload, **callback.result_payload},
+        railway_project_id=callback.railway_project_id or run.railway_project_id,
+        railway_environment_id=callback.railway_environment_id or run.railway_environment_id,
         service_urls=callback.service_urls,
         migration_revision=callback.migration_revision,
         smoke_status=callback.smoke_status,

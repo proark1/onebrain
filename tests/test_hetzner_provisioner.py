@@ -229,6 +229,44 @@ def test_resolve_target_classifies_hetzner_run():
     assert target_provider(target) == "hetzner"
 
 
+def test_resolve_target_survives_box_callback_that_omits_d6_coordinates():
+    """P5 regression: a LIVE Hetzner box's succeeded callback reports only
+    status/smoke_status/bootstrap_password/external_run_url (see the done_cb in
+    app/provisioning/hetzner/render.py) — it does NOT echo the D-6 coordinates that
+    dispatch wrote. apply_callback must preserve them (unlike the pre-P5 unconditional
+    overwrite, which wiped them to ""), or resolve_railway_target finds no truthy
+    railway_project_id and the box can never be targeted for a pull-update. The
+    Phase-4 test above sidesteps this by re-sending the coordinates in the callback;
+    this one deliberately does NOT."""
+    control = _control()
+    prov = MemoryProvisioningRunStore()
+    fake = FakeHetznerClient()
+    settings = _settings(secret_encryption_key="unit-test-secret-key")
+    dispatched = HetznerProvisioner(settings, InProcessHetznerBroker(fake), control).dispatch(_run(prov))
+    prov.update_run(dispatched)
+
+    # Exactly what the box posts — no railway_project_id / railway_environment_id /
+    # result_payload. With the old unconditional overwrite these wiped to "".
+    applied = apply_callback(prov, settings, dispatched.id, ProvisioningCallback(
+        status="succeeded",
+        smoke_status="passed",
+        bootstrap_password="owner-otp",
+        external_run_url="203.0.113.1",
+    ))
+    # The persisted run kept the dispatch-written coordinates AND the erasure manifest
+    # (the teardown ids), not just the piece resolve_railway_target happens to read.
+    assert applied.railway_project_id == "hetzner:server_1"
+    assert applied.railway_environment_id == "onebrain-dep_a"
+    assert applied.result_payload["service_ids"] == {m: m for m in _MODULES}
+    assert applied.result_payload["erasure_manifest"]["server_id"] == "server_1"
+
+    target = resolve_railway_target(prov, "dep_a")
+    assert target["railway_project_id"] == "hetzner:server_1"
+    assert target["railway_environment_id"] == "onebrain-dep_a"
+    assert target["service_ids"] == {m: m for m in _MODULES}
+    assert target_provider(target) == "hetzner"
+
+
 # --- P4-04: owner one-time password minting (H-10/A8) ------------------------
 
 def test_owner_otp_minted_hash_only_and_flagged():
