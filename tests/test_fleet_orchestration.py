@@ -12,11 +12,12 @@ from fastapi import HTTPException
 import app.routers.operator as operator_router
 from app.auth.principal import Principal
 from app.auth.roles import ROLES
-from app.controlplane.base import CustomerDeployment, DeploymentModule, ReleaseManifest, RolloutRun
+from app.controlplane.base import BackupRun, CustomerDeployment, DeploymentModule, ReleaseManifest, RolloutRun
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.controlplane.orchestration import FleetRolloutRun, advance_fleet_rollout, plan_fleet_rollout
 from app.controlplane.fleet_runner import (
     _deployments_in_ring,
+    _open_next_ring_batch,
     advance_fleet_on_child,
     plan_and_start_fleet_rollout,
     reconcile_fleet_rollout,
@@ -417,6 +418,66 @@ def test_batch_failure_still_pauses_via_reducer():
 
     assert store.get_fleet_rollout("fb").status == "paused"
     assert len(made) == 2
+
+
+def test_open_next_ring_batch_is_strict_noop_on_default_path():
+    """Fix: on the default path (ring_batch_size=0) _open_next_ring_batch is a strict
+    no-op (pre-P4-07 parity). It must return False WITHOUT consulting the store or
+    dispatching — even when all children succeeded — so the current ring is never
+    re-swept for newly-eligible deployments."""
+    class _BoomStore:
+        def list_deployments(self):
+            raise AssertionError("default path must not re-sweep the ring")
+        def plan_update(self, *a, **k):
+            raise AssertionError("default path must not re-plan the ring")
+
+    dispatched = []
+    result = _open_next_ring_batch(
+        _BoomStore(), _fr(("internal", "pilot"), "internal"), [_child("success")],
+        ring_batch_size=0, dispatch_child=lambda *a: dispatched.append(a),
+        only_deployment_ids=frozenset(), include_manual_pinned=False)
+    assert result is False
+    assert dispatched == []
+
+
+def test_default_path_does_not_resweep_newly_eligible_deployment():
+    """Regression: on the default path a deployment that was plan-blocked at ring-open
+    and becomes eligible mid-rollout is NOT re-dispatched into its already-open ring —
+    the fleet advances past it exactly as pre-P4-07. Each ring deployment is dispatched
+    at most once."""
+    store = MemoryControlPlaneStore()
+    # internal ring: dep_a (eligible, has backup) + dep_c (blocked: schema update needs a
+    # fresh backup it lacks); pilot ring: dep_b (eligible, has backup).
+    for dep_id, ring in [("dep_a", "internal"), ("dep_c", "internal"), ("dep_b", "pilot")]:
+        store.create_deployment(CustomerDeployment(id=dep_id, customer_name=dep_id, account_id="acct",
+                                                   release_ring=ring, current_version="2026.07.0",
+                                                   current_migration="0019"))
+        store.upsert_module(DeploymentModule(dep_id, "onebrain-api", "0.7.0"))
+    store.create_release(ReleaseManifest(version="2026.07.1", git_sha="sha",
+                                         modules={"onebrain-api": "0.8.0"},
+                                         migration_to="0020", rollback_kind="code_only"))
+    store.record_backup(BackupRun("bak_a", "dep_a", "success"))
+    store.record_backup(BackupRun("bak_b", "dep_b", "success"))
+    assert store.plan_update("dep_c", "2026.07.1").reason == "backup_required_for_schema_update"
+
+    dispatch, made = _fake_dispatcher(store)
+    plan_and_start_fleet_rollout(
+        store, store, fleet_id="f1", target_version="2026.07.1", git_sha="sha", failure_tolerance=0,
+        started_by="op", created_at="t", callback_url="https://mc/{rollout_id}", dry_run=False,
+        dispatch_child=dispatch)
+    assert made == ["child_dep_a_0"]                        # only dep_a (dep_c blocked at ring-open)
+
+    # dep_c becomes eligible mid-rollout (operator records its backup).
+    store.record_backup(BackupRun("bak_c", "dep_c", "success"))
+    assert store.plan_update("dep_c", "2026.07.1").allowed is True
+
+    _succeed(store, dispatch, "child_dep_a_0")             # default-path callback -> reconcile
+
+    # dep_c is NOT re-swept into the internal ring; the fleet advanced to pilot and
+    # dispatched dep_b instead. No child is ever created for dep_c.
+    assert not any("dep_c" in rid for rid in made)
+    assert store.get_fleet_rollout("f1").current_ring == "pilot"
+    assert any("dep_b" in rid for rid in made)
 
 
 def test_create_fleet_rollout_threads_targeting(monkeypatch):

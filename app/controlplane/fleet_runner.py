@@ -132,6 +132,12 @@ def _open_next_ring_batch(control_store, fleet_run, children, *, ring_batch_size
     child returns False so advance_fleet_rollout evaluates the ring (pause/advance) at
     DRAIN time — a failure is never re-dispatched, so it still counts toward tolerance
     via the UNCHANGED reducer. Threads the A16 named-set/manual override."""
+    if ring_batch_size <= 0:
+        # Default path: the whole ring is dispatched at ring-open, so there is no next
+        # batch. Return False WITHOUT consulting the store (pre-P4-07 parity) — a
+        # deployment that became eligible/unblocked mid-rollout is NOT re-swept into the
+        # already-open ring; advance_fleet_rollout advances past it exactly as before.
+        return False
     if any(child.status not in {"success", "failed"} for child in children):
         return False  # batch still in flight
     if any(child.status == "failed" for child in children):
