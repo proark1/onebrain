@@ -53,3 +53,13 @@ def _missing_tables(conn, required_tables: Iterable[str]) -> list[str]:
             if not row or row[0] is None:
                 missing.append(table)
     return missing
+
+
+def read_live_alembic_revision(dsn: str) -> str:
+    """The revision actually stamped in the database (SELECT version_num FROM
+    alembic_version) — for the ground-truth heartbeat, NOT for validation.
+    One cheap query; caller handles/should isolate failures."""
+    import psycopg
+
+    with psycopg.connect(dsn, connect_timeout=5) as conn:
+        return _read_alembic_revision(conn)

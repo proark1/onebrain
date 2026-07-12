@@ -1,11 +1,24 @@
 """The reporter: a deployment posts its own metadata-only heartbeat to Mission
 Control on a timer.
 
-`collect_heartbeat` builds the fleet.v1 body from this deployment's own
-observability counts — pure of network, so it is unit-testable. `send_heartbeat`
-does the one POST (stdlib urllib, no new dependency; the opener is injectable for
-tests). `report_once` glues them and NEVER raises — a reporting failure must not
-disturb the serving deployment. `start_reporter` runs it on a daemon timer.
+`collect_heartbeat` builds the fleet.v2 body from this deployment's own GROUND
+TRUTH — the CI-stamped build version (ONEBRAIN_BUILD_VERSION, falling back to
+`app.__version__`), the alembic revision actually stamped in the live database
+(pgvector mode; memory mode claims nothing), real store counts, env-gated
+co-located module probes, the on-box update_state.json outcome channel, and
+process uptime — pure of network, so it is unit-testable. `healthy` is
+COMPUTED: any failing collector or a revision mismatch degrades it instead of
+fabricating "true". Each collector is individually failure-isolated (`_safe`),
+so one broken store degrades one field, never the beat. Unhealthy modules do
+NOT zero the onebrain counts — module health is reported per-module and the
+heartbeat's `healthy` property rolls it up. `auth_failures_recent` /
+`api_5xx_recent` remain process-lifetime cumulative counters (unchanged v1
+meaning); `uptime_seconds` is what makes a counter reset readable as a restart.
+
+`send_heartbeat` does the one POST (stdlib urllib, no new dependency; the
+opener is injectable for tests). `report_once` glues them and NEVER raises — a
+reporting failure must not disturb the serving deployment. `start_reporter`
+runs it on a daemon timer.
 """
 
 from __future__ import annotations
@@ -13,43 +26,79 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import urllib.request
 from datetime import datetime, timezone
 
+from app import __version__ as app_version
 from app.config import Settings
-from app.db.schema import REQUIRED_ALEMBIC_REVISION
-from app.fleet.heartbeat import FleetHeartbeat, build_heartbeat
+from app.db.schema import REQUIRED_ALEMBIC_REVISION, read_live_alembic_revision
+from app.fleet.heartbeat import FleetHeartbeat, FleetHeartbeatV2, UpdateReport, build_heartbeat_v2
+from app.fleet.module_probe import collect_module_reports
+from app.fleet.update_state import read_update_report, update_state_path
 
 _log = logging.getLogger("onebrain.fleet")
 
+_PROCESS_START = time.monotonic()
 
-def collect_heartbeat(settings: Settings) -> FleetHeartbeat:
+
+def _safe(fn, default):
+    """(value, ok) — the per-collector isolation primitive: one failing store
+    call degrades that field (and flips healthy) instead of killing the beat."""
+    try:
+        return fn(), True
+    except Exception:
+        return default, False
+
+
+def collect_heartbeat(settings: Settings, *, probe_opener=None) -> FleetHeartbeatV2:
     from app.deps import (
         get_intake_store, get_job_store, get_platform_store, get_service_key_store,
         get_store, get_user_store,
     )
     from app.monitoring import monitoring_snapshot
 
-    metrics = monitoring_snapshot()
-    jobs = get_job_store().summary(recent_failures_limit=0)
-    return build_heartbeat(
+    chunks, ok_chunks = _safe(lambda: get_store().count(), 0)
+    intake, ok_intake = _safe(lambda: get_intake_store().count(), 0)
+    users, ok_users = _safe(lambda: get_user_store().count(), 0)
+    accounts, ok_accounts = _safe(lambda: len(get_platform_store().list_accounts()), 0)
+    keys, ok_keys = _safe(lambda: get_service_key_store().summary().active, 0)
+    jobs, ok_jobs = _safe(lambda: get_job_store().summary(recent_failures_limit=0), None)
+    metrics, _ = _safe(monitoring_snapshot, None)
+
+    if settings.vector_store == "pgvector":
+        revision, ok_rev_read = _safe(lambda: read_live_alembic_revision(settings.pg_database_url), "")
+        revision_ok = ok_rev_read and revision == REQUIRED_ALEMBIC_REVISION
+    else:
+        revision, revision_ok = "", True     # memory mode: no schema to attest — claim nothing
+
+    modules, _ = _safe(lambda: collect_module_reports(settings, opener=probe_opener), [])
+    update, _ = _safe(lambda: read_update_report(update_state_path(settings.data_dir)), UpdateReport())
+
+    healthy = all([ok_chunks, ok_intake, ok_users, ok_accounts, ok_keys, ok_jobs, revision_ok])
+    return build_heartbeat_v2(
         deployment_id=settings.deployment_id,
         reported_at=datetime.now(timezone.utc).isoformat(),
-        migration_revision=REQUIRED_ALEMBIC_REVISION,
-        onebrain_healthy=True,
-        chunks=get_store().count(),
-        intake_records=get_intake_store().count(),
-        users=get_user_store().count(),
-        accounts=len(get_platform_store().list_accounts()),
-        active_service_keys=get_service_key_store().summary().active,
-        jobs_pending=int(jobs.by_status.get("pending", 0)),
-        jobs_failed=int(jobs.by_status.get("failed", 0)),
-        auth_failures_recent=int(metrics.auth_total),
-        api_5xx_recent=int(metrics.api_errors_5xx),
+        version=settings.build_version or app_version,
+        migration_revision=revision,
+        onebrain_healthy=healthy,
+        chunks=chunks,
+        intake_records=intake,
+        users=users,
+        accounts=accounts,
+        active_service_keys=keys,
+        jobs_pending=int(jobs.by_status.get("pending", 0)) if jobs else 0,
+        jobs_failed=int(jobs.by_status.get("failed", 0)) if jobs else 0,
+        auth_failures_recent=int(metrics.auth_total) if metrics else 0,
+        api_5xx_recent=int(metrics.api_errors_5xx) if metrics else 0,
+        uptime_seconds=int(time.monotonic() - _PROCESS_START),
+        modules=modules,
+        update=update,
     )
 
 
-def send_heartbeat(fleet_url: str, fleet_key: str, heartbeat: FleetHeartbeat, *, opener=None, timeout: float = 10.0) -> int:
+def send_heartbeat(fleet_url: str, fleet_key: str, heartbeat: FleetHeartbeat | FleetHeartbeatV2,
+                   *, opener=None, timeout: float = 10.0) -> int:
     """POST the heartbeat; return the HTTP status. `opener(request, timeout)` is
     injectable so tests need no network."""
     url = fleet_url.rstrip("/") + "/api/fleet/heartbeat"

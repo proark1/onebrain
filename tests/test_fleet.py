@@ -466,12 +466,169 @@ def test_collect_heartbeat_builds_metadata_only_payload():
 
     hb = collect_heartbeat(Settings(deployment_id="dep_local"))
 
-    assert hb.contract_version == CONTRACT_VERSION
+    assert hb.contract_version == CONTRACT_VERSION_V2
     assert hb.deployment_id == "dep_local"
-    assert hb.onebrain.migration_revision  # stamped from REQUIRED_ALEMBIC_REVISION
-    # Everything in the payload is a count/flag/version — no free-text customer content.
+    assert hb.onebrain.version == "0.1.0"  # build_version unset -> app.__version__
+    # Memory mode: no schema to attest — claim nothing; computed health holds.
+    assert hb.onebrain.migration_revision == ""
+    assert hb.onebrain.healthy is True
+    # Everything in the payload is a count/flag/version/enum — no free-text customer content.
     payload = hb.model_dump()
-    assert set(payload) == {"contract_version", "deployment_id", "reported_at", "onebrain", "modules"}
+    assert set(payload) == {"contract_version", "deployment_id", "reported_at", "onebrain", "modules", "update"}
+    assert payload["update"]["outcome"] == "none"
+
+
+# --- ground-truth reporter (fleet.v2 emitter) ---------------------------------
+
+def _patch_cheap_stores(monkeypatch):
+    """Replace every store getter collect_heartbeat consults with a working
+    fake so pgvector-mode tests never build a real Postgres-backed store."""
+    from types import SimpleNamespace
+
+    counting = SimpleNamespace(count=lambda: 1)
+    monkeypatch.setattr("app.deps.get_store", lambda: counting)
+    monkeypatch.setattr("app.deps.get_intake_store", lambda: counting)
+    monkeypatch.setattr("app.deps.get_user_store", lambda: counting)
+    monkeypatch.setattr("app.deps.get_platform_store",
+                        lambda: SimpleNamespace(list_accounts=lambda: []))
+    monkeypatch.setattr("app.deps.get_service_key_store",
+                        lambda: SimpleNamespace(summary=lambda: SimpleNamespace(active=0)))
+    monkeypatch.setattr(
+        "app.deps.get_job_store",
+        lambda: SimpleNamespace(summary=lambda recent_failures_limit=0: SimpleNamespace(by_status={})))
+
+
+def test_collect_reports_build_version_when_set():
+    from app.config import Settings
+    from app.fleet.reporter import collect_heartbeat
+
+    hb = collect_heartbeat(Settings(deployment_id="dep_local", build_version="2026.07.2"))
+    assert hb.onebrain.version == "2026.07.2"  # CI-stamped version wins over __version__
+
+
+def test_collect_survives_store_failure_and_degrades_healthy(monkeypatch):
+    from app.config import Settings
+    from app.fleet.reporter import collect_heartbeat
+
+    def boom():
+        raise RuntimeError("store down")
+
+    # collect_heartbeat imports the getter from app.deps at call time.
+    monkeypatch.setattr("app.deps.get_store", boom)
+
+    hb = collect_heartbeat(Settings(deployment_id="dep_local"))  # must not raise
+    assert hb.onebrain.chunks == 0  # degraded field, not a dead beat
+    assert hb.onebrain.healthy is False  # a failing collector flips computed health
+
+
+def test_collect_pgvector_revision_mismatch_marks_unhealthy(monkeypatch):
+    from app.config import Settings
+    from app.db.schema import REQUIRED_ALEMBIC_REVISION
+    from app.fleet.reporter import collect_heartbeat
+
+    _patch_cheap_stores(monkeypatch)
+    # A1 — construction trap: pg_database_url is a read-only derived @property
+    # over the real field database_url; a pg_database_url= kwarg is SILENTLY
+    # dropped (extra="ignore") leaving the DSN "". The DSN must also name a
+    # test database or the pytest DSN guard raises inside _safe, masking the
+    # matching-revision companion case as a confusing failure.
+    settings = Settings(vector_store="pgvector", database_url="postgresql://x/test_y",
+                        deployment_id="dep_pg")
+
+    monkeypatch.setattr("app.fleet.reporter.read_live_alembic_revision", lambda dsn: "0001_baseline")
+    hb = collect_heartbeat(settings)
+    assert hb.onebrain.migration_revision == "0001_baseline"  # live read, not the constant
+    assert hb.onebrain.healthy is False
+
+    monkeypatch.setattr("app.fleet.reporter.read_live_alembic_revision",
+                        lambda dsn: REQUIRED_ALEMBIC_REVISION)
+    hb2 = collect_heartbeat(settings)
+    assert hb2.onebrain.migration_revision == REQUIRED_ALEMBIC_REVISION
+    assert hb2.onebrain.healthy is True
+
+    def boom(dsn):
+        raise OSError("db unreachable")
+
+    monkeypatch.setattr("app.fleet.reporter.read_live_alembic_revision", boom)
+    hb3 = collect_heartbeat(settings)
+    assert hb3.onebrain.migration_revision == ""
+    assert hb3.onebrain.healthy is False
+
+
+def test_collect_reads_update_state_file(tmp_path):
+    import json
+    from app.config import Settings
+    from app.fleet.reporter import collect_heartbeat
+
+    state = {"last_target_version": "2026.07.2", "outcome": "succeeded",
+             "migration_reached": "0019_trust_primitives", "attempt_id": "ro_42",
+             "ts": "2026-07-12T00:00:00+00:00"}
+    (tmp_path / "update_state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    hb = collect_heartbeat(Settings(deployment_id="dep_local", data_dir=str(tmp_path)))
+    payload = hb.model_dump()
+    assert payload["update"]["outcome"] == "succeeded"
+    assert payload["update"]["attempt_id"] == "ro_42"
+
+    (tmp_path / "update_state.json").write_text("{not json", encoding="utf-8")
+    hb2 = collect_heartbeat(Settings(deployment_id="dep_local", data_dir=str(tmp_path)))
+    assert hb2.model_dump()["update"]["outcome"] == "none"  # corrupt file: default, no raise
+
+
+def test_module_probes_off_by_default():
+    from app.config import Settings
+    from app.fleet.reporter import collect_heartbeat
+
+    hb = collect_heartbeat(Settings(deployment_id="dep_local"))
+    assert hb.modules == []  # no probes, no module claims (Railway stays as today)
+
+
+def test_module_probes_collect_reports():
+    from app.config import Settings
+    from app.fleet.module_probe import collect_module_reports
+
+    settings = Settings(
+        deployment_id="dep_local", module_probes_enabled=True,
+        local_modules="communication-api,onebrain-workers,communication-workers")
+
+    def opener(request, timeout):
+        if "communication-api:4000" in request.full_url:
+            return _FakeResponse(200)
+        if "communication-workers:4200" in request.full_url:
+            raise ConnectionRefusedError("refused")
+        raise AssertionError(f"unexpected probe: {request.full_url}")
+
+    reports = {r.module_id: r for r in collect_module_reports(settings, opener=opener)}
+    # onebrain-workers (kind 'none') is absent: no listener means no claim, not a fabricated one.
+    assert set(reports) == {"communication-api", "communication-workers"}
+    assert reports["communication-api"].healthy is True
+    # comm-workers' liveness listener is fail-open on connection refused (comm's own policy).
+    assert reports["communication-workers"].healthy is True
+
+    degraded = collect_module_reports(
+        Settings(deployment_id="dep_local", module_probes_enabled=True,
+                 local_modules="communication-api"),
+        opener=lambda request, timeout: _FakeResponse(503))
+    assert [r.module_id for r in degraded] == ["communication-api"]
+    assert degraded[0].healthy is False  # 5xx from the module: alive but unhealthy
+
+
+def test_report_once_posts_v2():
+    import json
+    from app.config import Settings
+
+    captured = {}
+
+    def opener(request, timeout):
+        captured["body"] = request.data
+        return _FakeResponse(200)
+
+    settings = Settings(fleet_url="https://mc", fleet_key="fk_a_b", deployment_id="dep_a")
+    assert report_once(settings, opener=opener) is True
+
+    body = json.loads(captured["body"])
+    assert body["contract_version"] == "fleet.v2"
+    assert set(body) == {"contract_version", "deployment_id", "reported_at", "onebrain", "modules", "update"}
 
 
 # --- heartbeat ingest hardening ---------------------------------------------
