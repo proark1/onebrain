@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -18,6 +19,8 @@ from app.controlplane.base import (
     HealthCheckRun,
     ReleaseManifest,
     RolloutRun,
+    compute_update_plan,
+    effective_update_policy,
 )
 from app.intake.base import IntakeRecord
 from app.intake.memory import MemoryIntakeStore
@@ -687,3 +690,348 @@ def test_authorize_deployment_prefers_account_id_over_convention(monkeypatch):
     real = _principal("admin")
     object.__setattr__(real, "user_id", "real@x")
     assert [m.module_id for m in operator_router.list_modules("dep_acme", principal=real)] == ["onebrain-api"]
+
+
+# --- Hetzner P0 trust primitives (WP1): data model v2 + hoisted plan gate -----
+
+_DIGEST = "a" * 64
+_IMAGES = {
+    "onebrain-api": f"ghcr.io/proark1/onebrain-api@sha256:{_DIGEST}",
+    "communication-api": f"ghcr.io/proark1/communication-api@sha256:{_DIGEST}",
+}
+_MODULES = {"onebrain-api": "0.8.0", "communication-api": "0.6.0"}
+
+
+def test_release_round_trips_images_and_rollback_kind():
+    store = _store()
+    store.create_release(ReleaseManifest(
+        version="2026.07.6",
+        git_sha="abc123",
+        modules=dict(_MODULES),
+        images=dict(_IMAGES),
+        rollback_kind="code_only",
+        signature="c2lnbmF0dXJl",
+        signing_key_id="release-key-2026",
+    ))
+
+    release = store.get_release("2026.07.6")
+
+    assert release.images == _IMAGES
+    assert release.rollback_kind == "code_only"
+    assert release.signature == "c2lnbmF0dXJl"
+    assert release.signing_key_id == "release-key-2026"
+
+
+def test_release_rejects_non_digest_images():
+    store = _store()
+    # Floating tag.
+    with pytest.raises(ValueError, match="not digest-pinned"):
+        store.create_release(ReleaseManifest(
+            version="v1", git_sha="a", modules={"onebrain-api": "1.0"},
+            images={"onebrain-api": "ghcr.io/x/y:latest"},
+        ))
+    # Digestless ref.
+    with pytest.raises(ValueError, match="not digest-pinned"):
+        store.create_release(ReleaseManifest(
+            version="v2", git_sha="a", modules={"onebrain-api": "1.0"},
+            images={"onebrain-api": "ghcr.io/x/y"},
+        ))
+    # Unknown module key in the images map.
+    with pytest.raises(ValueError, match="cover exactly"):
+        store.create_release(ReleaseManifest(
+            version="v3", git_sha="a", modules={"onebrain-api": "1.0"},
+            images={"unknown-module": f"ghcr.io/x/y@sha256:{_DIGEST}"},
+        ))
+    # images keys != modules keys.
+    with pytest.raises(ValueError, match="cover exactly"):
+        store.create_release(ReleaseManifest(
+            version="v4", git_sha="a", modules={"onebrain-api": "1.0"},
+            images=dict(_IMAGES),
+        ))
+    # Unknown rollback kind.
+    with pytest.raises(ValueError, match="Unknown rollback kind"):
+        store.create_release(ReleaseManifest(
+            version="v5", git_sha="a", modules={"onebrain-api": "1.0"},
+            rollback_kind="who_knows",
+        ))
+
+
+def test_release_without_images_still_valid():
+    store = _store()
+    release = store.create_release(ReleaseManifest(
+        version="2026.07.7", git_sha="legacy", modules=dict(_MODULES),
+    ))
+
+    assert release.images == {}
+    assert release.rollback_kind == ""
+    assert store.plan_update("dep_a", "2026.07.7").allowed is True
+
+
+def test_deployment_update_policy_round_trip_and_validation():
+    store = MemoryControlPlaneStore()
+    store.create_deployment(CustomerDeployment(
+        id="dep_pinned", customer_name="Pinned Co", update_policy="pinned",
+    ))
+    assert store.get_deployment("dep_pinned").update_policy == "pinned"
+
+    with pytest.raises(ValueError, match="Unknown update policy"):
+        store.create_deployment(CustomerDeployment(
+            id="dep_bad", customer_name="Bad", update_policy="whenever",
+        ))
+
+    updated = store.set_update_policy("dep_pinned", "manual")
+    assert updated.update_policy == "manual"
+    assert store.get_deployment("dep_pinned").update_policy == "manual"
+
+    with pytest.raises(ValueError, match="Unknown update policy"):
+        store.set_update_policy("dep_pinned", "")
+    with pytest.raises(ValueError, match="Unknown update policy"):
+        store.set_update_policy("dep_pinned", "yolo")
+    with pytest.raises(ValueError, match="unknown deployment"):
+        store.set_update_policy("dep_missing", "auto")
+
+
+def test_effective_update_policy_fallback():
+    manual_ring = CustomerDeployment(id="d1", customer_name="c", release_ring="manual")
+    pilot_ring = CustomerDeployment(id="d2", customer_name="c", release_ring="pilot")
+    explicit = CustomerDeployment(id="d3", customer_name="c", release_ring="manual",
+                                  update_policy="pinned")
+
+    assert effective_update_policy(manual_ring) == "manual"
+    assert effective_update_policy(pilot_ring) == "auto"
+    assert effective_update_policy(explicit) == "pinned"
+    # getattr-based: SimpleNamespace fakes without update_policy fall back to the ring.
+    assert effective_update_policy(SimpleNamespace(release_ring="manual")) == "manual"
+    assert effective_update_policy(SimpleNamespace(release_ring="stable")) == "auto"
+
+
+def test_plan_blocks_pinned_policy():
+    store = _store()
+    store.create_release(ReleaseManifest(version="2026.07.8", git_sha="a", modules=dict(_MODULES)))
+    store.set_update_policy("dep_a", "pinned")
+
+    plan = store.plan_update("dep_a", "2026.07.8")
+
+    assert plan.allowed is False
+    assert plan.reason == "update_policy_pinned"
+
+    # A pinned deployment may still plan its own current version.
+    store.create_release(ReleaseManifest(
+        version="2026.07.0", git_sha="b",
+        modules={"onebrain-api": "0.7.0", "communication-api": "0.5.0"},
+    ))
+    assert store.plan_update("dep_a", "2026.07.0").allowed is True
+
+
+def test_plan_blocks_yanked_release():
+    store = _store()
+    store.create_release(ReleaseManifest(
+        version="2026.07.9", git_sha="a", modules=dict(_MODULES), status="yanked",
+    ))
+
+    plan = store.plan_update("dep_a", "2026.07.9")
+
+    assert plan.allowed is False
+    assert plan.reason == "release_yanked"
+
+
+def test_plan_restore_required_needs_ack():
+    store = _store()
+    store.create_release(ReleaseManifest(
+        version="2026.07.10", git_sha="a", modules=dict(_MODULES),
+        rollback_kind="restore_required",
+    ))
+    # B6: restore_required always fires the backup gate — seed a fresh backup.
+    store.record_backup(BackupRun("bak_rr", "dep_a", "success"))
+
+    blocked = store.plan_update("dep_a", "2026.07.10")
+    assert blocked.allowed is False
+    assert blocked.reason == "restore_required_ack_needed"
+
+    acked = store.plan_update("dep_a", "2026.07.10", ack_restore_required=True)
+    assert acked.allowed is True
+
+    # A manual-policy deployment is only updated deliberately — no ack needed.
+    store.set_update_policy("dep_a", "manual")
+    manual = store.plan_update("dep_a", "2026.07.10")
+    assert manual.allowed is True
+
+
+def test_plan_reports_rollback_kind():
+    store = _store()
+    store.create_release(ReleaseManifest(
+        version="2026.07.11", git_sha="a", modules=dict(_MODULES),
+        rollback_kind="code_only",
+    ))
+
+    plan = store.plan_update("dep_a", "2026.07.11")
+
+    assert plan.allowed is True
+    assert plan.rollback_kind == "code_only"
+
+
+def test_start_rollout_carries_ack():
+    store = _store()
+    store.create_release(ReleaseManifest(
+        version="2026.07.12", git_sha="a", modules=dict(_MODULES),
+        rollback_kind="restore_required",
+    ))
+    store.record_backup(BackupRun("bak_ack", "dep_a", "success"))
+
+    with pytest.raises(ValueError, match="rollout blocked: restore_required_ack_needed"):
+        store.start_rollout(RolloutRun("roll_noack", "dep_a", "2026.07.12", "running", "admin"))
+
+    rollout = store.start_rollout(RolloutRun(
+        "roll_ack", "dep_a", "2026.07.12", "running", "admin", ack_restore_required=True,
+    ))
+    assert rollout.ack_restore_required is True
+
+    # The success-apply re-check reuses the persisted ack.
+    done = store.update_rollout_status("roll_ack", "success")
+    assert done.status == "success"
+    assert store.get_deployment("dep_a").current_version == "2026.07.12"
+
+
+def test_plan_requires_backup_for_restore_required():
+    store = _store()
+    # migration_to EQUALS current_migration (comm-only destructive DDL): the
+    # migration condition alone would never fire — B6's kind condition must.
+    store.create_release(ReleaseManifest(
+        version="2026.07.13", git_sha="a", modules=dict(_MODULES),
+        migration_from="0041", migration_to="0041",
+        rollback_kind="restore_required",
+    ))
+
+    blocked = store.plan_update("dep_a", "2026.07.13", ack_restore_required=True)
+    assert blocked.allowed is False
+    assert blocked.reason == "backup_required_for_schema_update"
+
+    store.record_backup(BackupRun("bak_b6", "dep_a", "success"))
+    assert store.plan_update("dep_a", "2026.07.13", ack_restore_required=True).allowed is True
+
+    # Dormancy: a legacy release (kind '', no migration change) never hits the gate.
+    store2 = _store()
+    store2.create_release(ReleaseManifest(version="2026.07.14", git_sha="a", modules=dict(_MODULES)))
+    assert store2.plan_update("dep_a", "2026.07.14").allowed is True
+
+
+def test_plan_backup_lookup_is_lazy():
+    deployment = CustomerDeployment(id="dep_l", customer_name="Lazy", release_ring="pilot")
+    release = ReleaseManifest(version="1.0", git_sha="a", modules={"onebrain-api": "1.0"})
+    modules = [DeploymentModule("dep_l", "onebrain-api", "0.9")]
+
+    plan = compute_update_plan(
+        "dep_l", "1.0",
+        deployment=deployment,
+        release=release,
+        modules=modules,
+        latest_backup=lambda: pytest.fail("latest_backup must not be called on a no-gate plan"),
+    )
+
+    assert plan.allowed is True
+    assert plan.modules_to_update == {"onebrain-api": "1.0"}
+
+
+def test_plan_blocks_unsigned_release_when_required(monkeypatch):
+    deployment = CustomerDeployment(id="dep_s", customer_name="Signed", release_ring="pilot")
+    unsigned = ReleaseManifest(version="1.0", git_sha="a", modules={"onebrain-api": "1.0"})
+    modules = [DeploymentModule("dep_s", "onebrain-api", "0.9")]
+
+    blocked = compute_update_plan(
+        "dep_s", "1.0", deployment=deployment, release=unsigned, modules=modules,
+        latest_backup=lambda: None, require_signed_release=True,
+    )
+    assert blocked.allowed is False
+    assert blocked.reason == "release_unsigned"
+
+    signed = replace(unsigned, signature="c2ln")
+    allowed = compute_update_plan(
+        "dep_s", "1.0", deployment=deployment, release=signed, modules=modules,
+        latest_backup=lambda: None, require_signed_release=True,
+    )
+    assert allowed.allowed is True
+
+    # Store level (C2): the flag reaches the stores via app.config.get_settings —
+    # patching operator_router.get_settings would NOT reach require_signed_releases().
+    import app.config as app_config
+
+    monkeypatch.setattr(app_config, "get_settings",
+                        lambda: SimpleNamespace(release_require_signature=True))
+    store = _store()
+    store.create_release(ReleaseManifest(version="2026.07.15", git_sha="a", modules=dict(_MODULES)))
+    plan = store.plan_update("dep_a", "2026.07.15")
+    assert plan.allowed is False
+    assert plan.reason == "release_unsigned"
+
+
+def test_success_apply_recheck_blocks_midflight_yank():
+    store = _store()
+    store.create_release(ReleaseManifest(version="2026.07.16", git_sha="a", modules=dict(_MODULES)))
+    store.start_rollout(RolloutRun("roll_yank", "dep_a", "2026.07.16", "running", "admin"))
+
+    release = store.get_release("2026.07.16")
+    store._releases["2026.07.16"] = replace(release, status="yanked")
+
+    with pytest.raises(ValueError, match="rollout completion blocked: release_yanked"):
+        store.update_rollout_status("roll_yank", "success")
+
+
+def test_success_apply_recheck_blocks_midflight_pin():
+    store = _store()
+    store.create_release(ReleaseManifest(version="2026.07.17", git_sha="a", modules=dict(_MODULES)))
+    store.start_rollout(RolloutRun("roll_pin", "dep_a", "2026.07.17", "running", "admin"))
+
+    store.set_update_policy("dep_a", "pinned")
+
+    with pytest.raises(ValueError, match="rollout completion blocked: update_policy_pinned"):
+        store.update_rollout_status("roll_pin", "success")
+
+
+def test_memory_store_loads_pre_0019_json(tmp_path):
+    """A persistence file written before 0019 (no images/rollback_kind/signature/
+    update_policy/ack keys) must load — _load wipes everything on error."""
+    persist = tmp_path / "controlplane.json"
+    persist.write_text(json.dumps({
+        "deployments": [{
+            "id": "dep_old", "customer_name": "Old Co", "account_id": "",
+            "environment": "production", "deployment_type": "dedicated_railway",
+            "region": "", "release_ring": "manual", "status": "active",
+            "current_version": "2026.06.0", "current_migration": "0040",
+            "created_at": "2026-06-01T00:00:00+00:00",
+        }],
+        "modules": [{
+            "deployment_id": "dep_old", "module_id": "onebrain-api",
+            "version": "0.6.0", "status": "active",
+        }],
+        "releases": [{
+            "version": "2026.06.0", "git_sha": "old", "modules": {"onebrain-api": "0.6.0"},
+            "migration_from": "", "migration_to": "", "security_notes": "",
+            "rollback_plan": "", "status": "draft", "created_at": "",
+        }],
+        "backups": [],
+        "health": [],
+        "rollouts": [{
+            "id": "roll_old", "deployment_id": "dep_old", "target_version": "2026.06.0",
+            "status": "success", "started_by": "admin", "notes": "", "created_at": "",
+            "exec_status": "completed", "external_provider": "github_actions",
+            "external_run_id": "", "external_run_url": "", "failure_reason": "",
+            "request_payload": {}, "dispatched_at": "", "completed_at": "",
+            "fleet_rollout_id": "",
+        }],
+        "fleet_rollouts": [],
+    }), encoding="utf-8")
+
+    store = MemoryControlPlaneStore(persist_path=str(persist))
+
+    deployment = store.get_deployment("dep_old")
+    assert deployment is not None
+    assert deployment.update_policy == ""
+    release = store.get_release("2026.06.0")
+    assert release is not None
+    assert release.images == {}
+    assert release.rollback_kind == ""
+    rollout = store.get_rollout("roll_old")
+    assert rollout is not None
+    assert rollout.ack_restore_required is False
+    # Legacy rows plan exactly as before.
+    assert store.plan_update("dep_old", "2026.06.0").reason == "already_current"

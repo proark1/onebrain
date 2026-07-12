@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import Dict, List, Optional
 
 from app.controlplane.base import (
+    UPDATE_POLICIES,
     BackupRun,
     CustomerDeployment,
     DeploymentModule,
@@ -14,6 +15,8 @@ from app.controlplane.base import (
     ReleaseManifest,
     RolloutRun,
     UpdatePlan,
+    compute_update_plan,
+    require_signed_releases,
     validate_deployment,
     validate_module,
     validate_release,
@@ -70,10 +73,10 @@ class PostgresControlPlaneStore:
                 """
                 INSERT INTO control_deployments
                 (id, customer_name, environment, deployment_type, region, release_ring,
-                 status, current_version, current_migration, account_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 status, current_version, current_migration, account_id, update_policy)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id, customer_name, environment, deployment_type, region,
-                    release_ring, status, current_version, current_migration, created_at, account_id
+                    release_ring, status, current_version, current_migration, created_at, account_id, update_policy
                 """,
                 (
                     deployment.id,
@@ -86,6 +89,7 @@ class PostgresControlPlaneStore:
                     deployment.current_version,
                     deployment.current_migration,
                     deployment.account_id,
+                    deployment.update_policy,
                 ),
             )
             row = cur.fetchone()
@@ -97,7 +101,7 @@ class PostgresControlPlaneStore:
             cur.execute(
                 """
                 SELECT id, customer_name, environment, deployment_type, region,
-                    release_ring, status, current_version, current_migration, created_at, account_id
+                    release_ring, status, current_version, current_migration, created_at, account_id, update_policy
                 FROM control_deployments
                 WHERE id = %s
                 """,
@@ -111,13 +115,29 @@ class PostgresControlPlaneStore:
             cur.execute(
                 """
                 SELECT id, customer_name, environment, deployment_type, region,
-                    release_ring, status, current_version, current_migration, created_at, account_id
+                    release_ring, status, current_version, current_migration, created_at, account_id, update_policy
                 FROM control_deployments
                 ORDER BY lower(customer_name), id
                 """
             )
             rows = cur.fetchall()
         return [self._deployment(row) for row in rows]
+
+    def set_update_policy(self, deployment_id: str, update_policy: str) -> CustomerDeployment:
+        if update_policy not in UPDATE_POLICIES or not update_policy:
+            raise ValueError(f"Unknown update policy: {update_policy}")
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE control_deployments SET update_policy = %s WHERE id = %s "
+                "RETURNING id, customer_name, environment, deployment_type, region, "
+                "release_ring, status, current_version, current_migration, created_at, account_id, update_policy",
+                (update_policy, deployment_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"unknown deployment: {deployment_id}")
+            conn.commit()
+        return self._deployment(row)
 
     def upsert_module(self, module: DeploymentModule) -> DeploymentModule:
         validate_module(module)
@@ -162,10 +182,10 @@ class PostgresControlPlaneStore:
                 """
                 INSERT INTO control_release_manifests
                 (version, git_sha, modules, migration_from, migration_to,
-                 security_notes, rollback_plan, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                 security_notes, rollback_plan, status, images, rollback_kind, signature, signing_key_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
                 RETURNING version, git_sha, modules, migration_from, migration_to,
-                    security_notes, rollback_plan, status, created_at
+                    security_notes, rollback_plan, status, created_at, images, rollback_kind, signature, signing_key_id
                 """,
                 (
                     release.version,
@@ -176,6 +196,10 @@ class PostgresControlPlaneStore:
                     release.security_notes,
                     release.rollback_plan,
                     release.status,
+                    json.dumps(release.images),
+                    release.rollback_kind,
+                    release.signature,
+                    release.signing_key_id,
                 ),
             )
             row = cur.fetchone()
@@ -187,7 +211,7 @@ class PostgresControlPlaneStore:
             cur.execute(
                 """
                 SELECT version, git_sha, modules, migration_from, migration_to,
-                    security_notes, rollback_plan, status, created_at
+                    security_notes, rollback_plan, status, created_at, images, rollback_kind, signature, signing_key_id
                 FROM control_release_manifests
                 WHERE version = %s
                 """,
@@ -201,7 +225,7 @@ class PostgresControlPlaneStore:
             cur.execute(
                 """
                 SELECT version, git_sha, modules, migration_from, migration_to,
-                    security_notes, rollback_plan, status, created_at
+                    security_notes, rollback_plan, status, created_at, images, rollback_kind, signature, signing_key_id
                 FROM control_release_manifests
                 ORDER BY version
                 """
@@ -273,70 +297,35 @@ class PostgresControlPlaneStore:
             row = cur.fetchone()
         return self._health(row) if row else None
 
-    def plan_update(self, deployment_id: str, target_version: str) -> UpdatePlan:
+    def plan_update(self, deployment_id: str, target_version: str, *, ack_restore_required: bool = False) -> UpdatePlan:
         deployment = self.get_deployment(deployment_id)
-        if not deployment:
-            return UpdatePlan(deployment_id, target_version, False, "deployment_not_found")
-        release = self.get_release(target_version)
-        if not release:
-            return UpdatePlan(deployment_id, target_version, False, "release_not_found")
-
-        current = {m.module_id: m.version for m in self.list_modules(deployment_id) if m.status == "active"}
-        if not current:
-            return UpdatePlan(deployment_id, target_version, False, "no_modules_installed")
-        missing = sorted(module_id for module_id in current if module_id not in release.modules)
-        if missing:
-            return UpdatePlan(
-                deployment_id,
-                target_version,
-                False,
-                f"release_missing_modules:{','.join(missing)}",
-                current_modules=current,
-                target_modules=release.modules,
-            )
-        if release.migration_to and release.migration_to != deployment.current_migration:
-            latest = self.latest_backup(deployment_id)
-            if not latest or latest.status != "success":
-                return UpdatePlan(
-                    deployment_id,
-                    target_version,
-                    False,
-                    "backup_required_for_schema_update",
-                    current_modules=current,
-                    target_modules=release.modules,
-                )
-        updates = {
-            module_id: target
-            for module_id, current_version in current.items()
-            for target in [release.modules[module_id]]
-            if current_version != target
-        }
-        return UpdatePlan(
-            deployment_id,
-            target_version,
-            True,
-            "update_available" if updates else "already_current",
-            current_modules=current,
-            target_modules={module_id: release.modules[module_id] for module_id in current},
-            modules_to_update=updates,
+        return compute_update_plan(
+            deployment_id, target_version,
+            deployment=deployment,
+            release=self.get_release(target_version),
+            modules=self.list_modules(deployment_id) if deployment else [],
+            latest_backup=lambda: self.latest_backup(deployment_id),  # lazy (A3): the callable only runs
+                                                                      # inside the backup gate, keeping the
+                                                                      # extra SELECT off every plan_update
+            ack_restore_required=ack_restore_required,
+            require_signed_release=require_signed_releases(),
         )
 
     def start_rollout(self, rollout: RolloutRun) -> RolloutRun:
         validate_run_status(rollout.status)
         if rollout.status == "success":
             raise ValueError("rollout cannot start as success")
-        plan = self.plan_update(rollout.deployment_id, rollout.target_version)
+        plan = self.plan_update(rollout.deployment_id, rollout.target_version,
+                                ack_restore_required=rollout.ack_restore_required)
         if not plan.allowed:
             raise ValueError(f"rollout blocked: {plan.reason}")
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 INSERT INTO control_rollouts
-                (id, deployment_id, target_version, status, started_by, notes)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                RETURNING id, deployment_id, target_version, status, started_by, notes, created_at,
-                    exec_status, external_provider, external_run_id, external_run_url,
-                    failure_reason, request_payload, dispatched_at, completed_at, fleet_rollout_id
+                (id, deployment_id, target_version, status, started_by, notes, ack_restore_required)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING {self._ROLLOUT_COLS}
                 """,
                 (
                     rollout.id,
@@ -345,6 +334,7 @@ class PostgresControlPlaneStore:
                     rollout.status,
                     rollout.started_by,
                     rollout.notes,
+                    rollout.ack_restore_required,
                 ),
             )
             row = cur.fetchone()
@@ -355,13 +345,7 @@ class PostgresControlPlaneStore:
         validate_run_status(status)
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT id, deployment_id, target_version, status, started_by, notes, created_at,
-                    exec_status, external_provider, external_run_id, external_run_url,
-                    failure_reason, request_payload, dispatched_at, completed_at, fleet_rollout_id
-                FROM control_rollouts
-                WHERE id = %s
-                """,
+                f"SELECT {self._ROLLOUT_COLS} FROM control_rollouts WHERE id = %s",
                 (rollout_id,),
             )
             row = cur.fetchone()
@@ -373,7 +357,8 @@ class PostgresControlPlaneStore:
 
             updated = replace(rollout, status=status, notes=notes.strip() or rollout.notes)
             if status == "success" and apply:
-                plan = self.plan_update(rollout.deployment_id, rollout.target_version)
+                plan = self.plan_update(rollout.deployment_id, rollout.target_version,
+                                        ack_restore_required=rollout.ack_restore_required)
                 if not plan.allowed:
                     raise ValueError(f"rollout completion blocked: {plan.reason}")
                 release = self.get_release(rollout.target_version)
@@ -407,13 +392,11 @@ class PostgresControlPlaneStore:
                 )
 
             cur.execute(
-                """
+                f"""
                 UPDATE control_rollouts
                 SET status = %s, notes = %s, updated_at = now()
                 WHERE id = %s
-                RETURNING id, deployment_id, target_version, status, started_by, notes, created_at,
-                    exec_status, external_provider, external_run_id, external_run_url,
-                    failure_reason, request_payload, dispatched_at, completed_at, fleet_rollout_id
+                RETURNING {self._ROLLOUT_COLS}
                 """,
                 (updated.status, updated.notes, rollout_id),
             )
@@ -424,14 +407,8 @@ class PostgresControlPlaneStore:
     def list_rollouts(self, deployment_id: str) -> List[RolloutRun]:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT id, deployment_id, target_version, status, started_by, notes, created_at,
-                    exec_status, external_provider, external_run_id, external_run_url,
-                    failure_reason, request_payload, dispatched_at, completed_at, fleet_rollout_id
-                FROM control_rollouts
-                WHERE deployment_id = %s
-                ORDER BY created_at, id
-                """,
+                f"SELECT {self._ROLLOUT_COLS} FROM control_rollouts "
+                "WHERE deployment_id = %s ORDER BY created_at, id",
                 (deployment_id,),
             )
             rows = cur.fetchall()
@@ -440,7 +417,8 @@ class PostgresControlPlaneStore:
     _ROLLOUT_COLS = (
         "id, deployment_id, target_version, status, started_by, notes, created_at, "
         "exec_status, external_provider, external_run_id, external_run_url, "
-        "failure_reason, request_payload, dispatched_at, completed_at, fleet_rollout_id"
+        "failure_reason, request_payload, dispatched_at, completed_at, fleet_rollout_id, "
+        "ack_restore_required"
     )
     _EXEC_FIELDS = {
         "exec_status", "external_run_id", "external_run_url", "failure_reason",
@@ -614,6 +592,7 @@ class PostgresControlPlaneStore:
             current_migration=row[8],
             created_at=_iso(row[9]),
             account_id=row[10] or "",
+            update_policy=row[11] or "",
         )
 
     def _module(self, row) -> DeploymentModule:
@@ -630,6 +609,10 @@ class PostgresControlPlaneStore:
             rollback_plan=row[6],
             status=row[7],
             created_at=_iso(row[8]),
+            images=_json_dict(row[9]),
+            rollback_kind=row[10] or "",
+            signature=row[11] or "",
+            signing_key_id=row[12] or "",
         )
 
     def _backup(self, row) -> BackupRun:
@@ -659,4 +642,5 @@ class PostgresControlPlaneStore:
             dispatched_at=_iso(row[13]),
             completed_at=_iso(row[14]),
             fleet_rollout_id=row[15] or "",
+            ack_restore_required=bool(row[16]),
         )

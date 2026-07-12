@@ -211,6 +211,16 @@ class Settings(BaseSettings):
     fleet_heartbeat_rate_window_seconds: int = 60
     fleet_heartbeat_max_skew_seconds: int = 3600 # reject reported_at farther than this from now
 
+    # --- Release trust primitives (Hetzner P0; enforcement flags default OFF) ---
+    release_verify_public_key: str = ""        # base64 raw Ed25519 public key; "" disables verification
+    release_require_signature: bool = False    # reject unsigned release creation + block unsigned in plans
+    release_require_signed_images: bool = False # require a non-empty digest-pinned images map on creation
+    release_require_rollback_kind: bool = False # require rollback_kind in {code_only,restore_required} on creation
+    release_registry_allowlist: str = "ghcr.io/proark1"  # csv of allowed image-ref PREFIXES host[/org[/repo]]
+    # ^ repo-prefix granular (B2): a bare host like "ghcr.io" would allowlist every GHCR tenant. The default
+    #   is the org prefix the Phase-2 GHCR CI publishes under; override via ONEBRAIN_RELEASE_REGISTRY_ALLOWLIST
+    #   if the CI org ever differs (a wrong default 400s the first images-carrying release — fail-closed, safe).
+
     # Service surface — per-key rate limit (metered LLM/embedding endpoints) and a
     # cap on how many active keys one tenant may hold.
     service_rate_limit: int = 60

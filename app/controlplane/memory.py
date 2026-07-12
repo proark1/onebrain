@@ -9,6 +9,7 @@ from dataclasses import replace
 from typing import Dict, List, Optional
 
 from app.controlplane.base import (
+    UPDATE_POLICIES,
     BackupRun,
     CustomerDeployment,
     DeploymentModule,
@@ -16,6 +17,8 @@ from app.controlplane.base import (
     ReleaseManifest,
     RolloutRun,
     UpdatePlan,
+    compute_update_plan,
+    require_signed_releases,
     validate_deployment,
     validate_module,
     validate_release,
@@ -92,6 +95,18 @@ class MemoryControlPlaneStore:
     def list_deployments(self) -> List[CustomerDeployment]:
         return sorted(self._deployments.values(), key=lambda d: d.customer_name.lower())
 
+    def set_update_policy(self, deployment_id: str, update_policy: str) -> CustomerDeployment:
+        if update_policy not in UPDATE_POLICIES or not update_policy:
+            raise ValueError(f"Unknown update policy: {update_policy}")
+        with self._lock:
+            deployment = self._deployments.get(deployment_id)
+            if not deployment:
+                raise ValueError(f"unknown deployment: {deployment_id}")
+            updated = replace(deployment, update_policy=update_policy)
+            self._deployments[deployment_id] = updated
+            self._save()
+            return updated
+
     def upsert_module(self, module: DeploymentModule) -> DeploymentModule:
         validate_module(module)
         with self._lock:
@@ -152,51 +167,26 @@ class MemoryControlPlaneStore:
         checks = [h for h in self._health.values() if h.deployment_id == deployment_id]
         return sorted(checks, key=lambda h: h.created_at or h.id)[-1] if checks else None
 
-    def plan_update(self, deployment_id: str, target_version: str) -> UpdatePlan:
+    def plan_update(self, deployment_id: str, target_version: str, *, ack_restore_required: bool = False) -> UpdatePlan:
         deployment = self.get_deployment(deployment_id)
-        if not deployment:
-            return UpdatePlan(deployment_id, target_version, False, "deployment_not_found")
-        release = self.get_release(target_version)
-        if not release:
-            return UpdatePlan(deployment_id, target_version, False, "release_not_found")
-
-        current = {m.module_id: m.version for m in self.list_modules(deployment_id) if m.status == "active"}
-        if not current:
-            return UpdatePlan(deployment_id, target_version, False, "no_modules_installed")
-        missing = sorted(module_id for module_id in current if module_id not in release.modules)
-        if missing:
-            return UpdatePlan(
-                deployment_id, target_version, False, f"release_missing_modules:{','.join(missing)}",
-                current_modules=current, target_modules=release.modules,
-            )
-        if release.migration_to and release.migration_to != deployment.current_migration:
-            latest = self.latest_backup(deployment_id)
-            if not latest or latest.status != "success":
-                return UpdatePlan(
-                    deployment_id, target_version, False, "backup_required_for_schema_update",
-                    current_modules=current, target_modules=release.modules,
-                )
-        updates = {
-            module_id: target
-            for module_id, current_version in current.items()
-            for target in [release.modules[module_id]]
-            if current_version != target
-        }
-        return UpdatePlan(
-            deployment_id,
-            target_version,
-            True,
-            "update_available" if updates else "already_current",
-            current_modules=current,
-            target_modules={module_id: release.modules[module_id] for module_id in current},
-            modules_to_update=updates,
+        return compute_update_plan(
+            deployment_id, target_version,
+            deployment=deployment,
+            release=self.get_release(target_version),
+            modules=self.list_modules(deployment_id) if deployment else [],
+            latest_backup=lambda: self.latest_backup(deployment_id),  # lazy (A3); compute_update_plan
+                                                                      # returns before calling it when
+                                                                      # deployment is None
+            ack_restore_required=ack_restore_required,
+            require_signed_release=require_signed_releases(),
         )
 
     def start_rollout(self, rollout: RolloutRun) -> RolloutRun:
         validate_run_status(rollout.status)
         if rollout.status == "success":
             raise ValueError("rollout cannot start as success")
-        plan = self.plan_update(rollout.deployment_id, rollout.target_version)
+        plan = self.plan_update(rollout.deployment_id, rollout.target_version,
+                                ack_restore_required=rollout.ack_restore_required)
         if not plan.allowed:
             raise ValueError(f"rollout blocked: {plan.reason}")
         with self._lock:
@@ -217,7 +207,8 @@ class MemoryControlPlaneStore:
             updated = replace(rollout, status=status, notes=notes.strip() or rollout.notes)
 
             if status == "success" and apply:
-                plan = self.plan_update(rollout.deployment_id, rollout.target_version)
+                plan = self.plan_update(rollout.deployment_id, rollout.target_version,
+                                        ack_restore_required=rollout.ack_restore_required)
                 if not plan.allowed:
                     raise ValueError(f"rollout completion blocked: {plan.reason}")
                 release = self.get_release(rollout.target_version)

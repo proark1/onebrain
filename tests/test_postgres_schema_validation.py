@@ -434,10 +434,9 @@ def _fleet_rollouts_module():
     return _load_migration_module("0018_fleet_rollouts.py", "fleet_rollouts_migration")
 
 
-def test_fleet_rollouts_migration_is_head():
+def test_fleet_rollouts_migration_structure():
     migration = _fleet_rollouts_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
     assert migration.revision == "0018_fleet_rollouts"
     assert len(migration.revision) <= 32
     assert migration.down_revision == "0017_rollout_execution"
@@ -446,6 +445,115 @@ def test_fleet_rollouts_migration_is_head():
     ).read_text()
     assert "CREATE TABLE IF NOT EXISTS control_fleet_rollouts" in src
     assert "failure_tolerance" in src
+
+
+def _trust_primitives_module():
+    return _load_migration_module("0019_trust_primitives.py", "trust_primitives_migration")
+
+
+def test_trust_primitives_migration_is_head():
+    migration = _trust_primitives_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision == "0019_trust_primitives"
+    assert len(migration.revision) <= 32
+    assert migration.down_revision == "0018_fleet_rollouts"
+    src = (
+        Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0019_trust_primitives.py"
+    ).read_text()
+    assert "ADD COLUMN IF NOT EXISTS" in src
+    assert "update_policy" in src
+    assert "rollback_kind" in src
+    assert "ack_restore_required" in src
+    assert "control_release_manifests" in src
+
+
+# --- positional row mappers (C4) ----------------------------------------------
+# Ground rule 3 (append-only positional columns) is arithmetic — grepping the
+# migration source alone cannot catch an off-by-one, and there is no live
+# Postgres harness, so a swapped index would first manifest on production
+# Railway. These tests feed synthetic row tuples straight through the mappers.
+
+def _bare_postgres_store():
+    from app.controlplane.postgres import PostgresControlPlaneStore
+
+    # Skip __init__ (DSN + schema validation) — the mappers are pure.
+    return object.__new__(PostgresControlPlaneStore)
+
+
+def test_postgres_row_mappers_positional():
+    from datetime import datetime, timezone
+
+    store = _bare_postgres_store()
+    created = datetime(2026, 7, 12, 1, 2, 3, tzinfo=timezone.utc)
+    dispatched = datetime(2026, 7, 12, 4, 5, 6, tzinfo=timezone.utc)
+    completed = datetime(2026, 7, 12, 7, 8, 9, tzinfo=timezone.utc)
+
+    deployment = store._deployment((
+        "dep0", "cust1", "env2", "type3", "region4", "ring5", "status6",
+        "ver7", "mig8", created, "acct10", "policy11",
+    ))
+    assert deployment.id == "dep0"
+    assert deployment.customer_name == "cust1"
+    assert deployment.environment == "env2"
+    assert deployment.deployment_type == "type3"
+    assert deployment.region == "region4"
+    assert deployment.release_ring == "ring5"
+    assert deployment.status == "status6"
+    assert deployment.current_version == "ver7"
+    assert deployment.current_migration == "mig8"
+    assert deployment.created_at == created.isoformat()
+    assert deployment.account_id == "acct10"
+    assert deployment.update_policy == "policy11"
+
+    release = store._release((
+        "ver0", "sha1", {"m": "2"}, "from3", "to4", "notes5", "plan6",
+        "status7", created, {"m": "img9"}, "kind10", "sig11", "keyid12",
+    ))
+    assert release.version == "ver0"
+    assert release.git_sha == "sha1"
+    assert release.modules == {"m": "2"}
+    assert release.migration_from == "from3"
+    assert release.migration_to == "to4"
+    assert release.security_notes == "notes5"
+    assert release.rollback_plan == "plan6"
+    assert release.status == "status7"
+    assert release.created_at == created.isoformat()
+    assert release.images == {"m": "img9"}
+    assert release.rollback_kind == "kind10"
+    assert release.signature == "sig11"
+    assert release.signing_key_id == "keyid12"
+
+    rollout = store._rollout((
+        "roll0", "dep1", "ver2", "status3", "by4", "notes5", created,
+        "exec7", "provider8", "runid9", "runurl10", "fail11", {"k": "payload12"},
+        dispatched, completed, "fleet15", True,
+    ))
+    assert rollout.id == "roll0"
+    assert rollout.deployment_id == "dep1"
+    assert rollout.target_version == "ver2"
+    assert rollout.status == "status3"
+    assert rollout.started_by == "by4"
+    assert rollout.notes == "notes5"
+    assert rollout.created_at == created.isoformat()
+    assert rollout.exec_status == "exec7"
+    assert rollout.external_provider == "provider8"
+    assert rollout.external_run_id == "runid9"
+    assert rollout.external_run_url == "runurl10"
+    assert rollout.failure_reason == "fail11"
+    assert rollout.request_payload == {"k": "payload12"}
+    assert rollout.dispatched_at == dispatched.isoformat()
+    assert rollout.completed_at == completed.isoformat()
+    assert rollout.fleet_rollout_id == "fleet15"
+    assert rollout.ack_restore_required is True
+
+
+def test_rollout_cols_arity_matches_mapper():
+    from app.controlplane.postgres import PostgresControlPlaneStore
+
+    cols = PostgresControlPlaneStore._ROLLOUT_COLS.split(",")
+    assert len(cols) == 17  # _rollout reads indexes 0..16
+    assert cols[-1].strip() == "ack_restore_required"
 
 
 def test_assistant_workday_contract_migration_structure():
