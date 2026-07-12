@@ -264,3 +264,45 @@ def test_apply_floor_bump_raises_floor():
         FloorBump(deployment_scope="dep_other", floor_version="2026.9.0", issued_at="2026-07-12T00:00:00+00:00"),
         REL_PRIV)
     assert bv.verify_floor_bump(scoped.model_dump(), release_public_key_b64=REL_PUB, expected_deployment_id="dep_a") == ["scope_mismatch"]
+
+
+# --- P5-02: rotation-tolerant multi-key verify parity ------------------------
+
+def _box_multi(env, keys_list, *, expected="dep_a", fs=None):
+    return bv.verify_desired_state_multi(
+        env.model_dump(), desired_state_public_keys=keys_list, release_public_key_b64=REL_PUB,
+        expected_deployment_id=expected, now=NOW, floor_state=fs or bv.FloorState(), registry_allowlist=ALLOW)
+
+
+def _app_multi(env, keys_list, *, expected="dep_a", fs=None):
+    return E.verify_desired_state_multi(
+        env, desired_state_public_keys=keys_list, release_public_key_b64=REL_PUB,
+        expected_deployment_id=expected, now=NOW, floor_state=fs or E.VersionFloorState(), registry_allowlist=ALLOW)
+
+
+def test_box_multi_verify_parity_with_app_trust():
+    _other_priv, other_pub = generate_keypair()
+    env = make_env()  # signed by DS_PRIV
+    # Accept via the second key; parity between the twin and app.trust.
+    assert _box_multi(env, [other_pub, DS_PUB]) == _app_multi(env, [other_pub, DS_PUB]) == []
+    # Neither key -> identical ordered last-attempt error.
+    assert (_box_multi(env, [other_pub])
+            == _app_multi(env, [other_pub])
+            == ["envelope_signature_invalid"])
+    # Single-key list == the frozen single-key verify (inertness parity).
+    assert _box_multi(env, [DS_PUB]) == box_verify(env) == []
+    # Empty list -> fail-closed on both.
+    assert _box_multi(env, []) == _app_multi(env, []) == ["envelope_signature_invalid"]
+
+
+def test_box_desired_state_public_keys_env_csv_and_singular_fallback(monkeypatch):
+    # csv SET wins when present...
+    monkeypatch.setenv("UPDATE_DESIRED_STATE_PUBLIC_KEYS", " k1 , k2 ,, k3 ")
+    monkeypatch.setenv("UPDATE_DESIRED_STATE_PUBLIC_KEY", "singular")
+    assert bv._desired_state_public_keys() == ["k1", "k2", "k3"]
+    # ...else fall back to the singular key (a box provisioned before Phase 5).
+    monkeypatch.delenv("UPDATE_DESIRED_STATE_PUBLIC_KEYS", raising=False)
+    assert bv._desired_state_public_keys() == ["singular"]
+    # neither set -> empty list (verify falls back to '' -> fail-closed).
+    monkeypatch.delenv("UPDATE_DESIRED_STATE_PUBLIC_KEY", raising=False)
+    assert bv._desired_state_public_keys() == []

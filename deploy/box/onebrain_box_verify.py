@@ -243,6 +243,34 @@ def verify_bytes(envelope_bytes, **kwargs) -> list:
     return verify_desired_state(envelope, **kwargs)
 
 
+def verify_desired_state_multi(envelope: dict, *, desired_state_public_keys: list, **kwargs) -> list:
+    """P5-02 rotation-tolerant wrapper (parity with app.trust.envelope): try each
+    candidate wrapper public key, return [] on the FIRST acceptance, else the error
+    list from the LAST attempt. An empty key list falls back to a single '' key
+    (fails envelope_signature_invalid — fail-closed). The single-key
+    verify_desired_state above is unchanged."""
+    keys = [k for k in (desired_state_public_keys or []) if k and k.strip()]
+    if not keys:
+        keys = [""]
+    errors = ["envelope_signature_invalid"]
+    for key in keys:
+        errors = verify_desired_state(envelope, desired_state_public_key_b64=key, **kwargs)
+        if not errors:
+            return []
+    return errors
+
+
+def verify_bytes_multi(envelope_bytes, **kwargs) -> list:
+    """json.loads then verify_desired_state_multi (the CLI verify path)."""
+    try:
+        envelope = json.loads(envelope_bytes)
+    except (ValueError, TypeError):
+        return ["malformed_envelope"]
+    if not isinstance(envelope, dict):
+        return ["malformed_envelope"]
+    return verify_desired_state_multi(envelope, **kwargs)
+
+
 def verified_target(envelope: dict) -> dict:
     """The validated target update.sh drives its pull from (A7): version + the
     digest-pinned images map + migration bounds + rollback_kind. Derived SOLELY
@@ -331,9 +359,19 @@ def save_floor_state(path: str, state: FloorState) -> None:
 
 
 # --- CLI ---------------------------------------------------------------------
+def _desired_state_public_keys() -> list:
+    """The accepted wrapper-key SET (P5-02): the csv UPDATE_DESIRED_STATE_PUBLIC_KEYS,
+    falling back to the singular UPDATE_DESIRED_STATE_PUBLIC_KEY for a box provisioned
+    before Phase 5 (back-compat). Empty/whitespace entries dropped."""
+    csv = os.environ.get("UPDATE_DESIRED_STATE_PUBLIC_KEYS", "").strip()
+    if not csv:
+        csv = os.environ.get("UPDATE_DESIRED_STATE_PUBLIC_KEY", "").strip()
+    return [k.strip() for k in csv.split(",") if k.strip()]
+
+
 def _anchors() -> dict:
     return {
-        "desired_state_public_key_b64": os.environ.get("UPDATE_DESIRED_STATE_PUBLIC_KEY", ""),
+        "desired_state_public_keys": _desired_state_public_keys(),
         "release_public_key_b64": os.environ.get("UPDATE_RELEASE_PUBLIC_KEY", ""),
         "expected_deployment_id": os.environ.get("ONEBRAIN_DEPLOYMENT_ID", ""),
         "registry_allowlist": parse_registry_allowlist(os.environ.get("UPDATE_REGISTRY_ALLOWLIST", "")),
@@ -343,7 +381,7 @@ def _anchors() -> dict:
 def _cmd_verify(raw: bytes) -> int:
     anchors = _anchors()
     floor_state = load_floor_state(_floor_state_path())
-    errors = verify_bytes(
+    errors = verify_bytes_multi(
         raw, now=datetime.now(timezone.utc), floor_state=floor_state, **anchors
     )
     if errors:

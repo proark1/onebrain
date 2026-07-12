@@ -18,6 +18,15 @@ def generate_keypair() -> tuple[str, str]:
     return private_b64, public_b64
 
 
+def public_key_from_private(private_key_b64: str) -> str:
+    """Derive the base64 raw public key from a base64 raw Ed25519 private key.
+    Used by the desired-state rotation interlock (G1-1) to check that the key MC
+    is signing with is in the set delivered to boxes. Raises on a malformed key;
+    callers gate on emptiness first (an unset wrapper key means nothing to derive)."""
+    key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(private_key_b64))
+    return base64.b64encode(key.public_key().public_bytes_raw()).decode("ascii")
+
+
 def sign_payload(payload: bytes, private_key_b64: str) -> str:
     """base64 signature. OFFLINE USE ONLY (scripts/sign_release.py)."""
     key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(private_key_b64))

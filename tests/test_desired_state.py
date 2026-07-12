@@ -19,7 +19,10 @@ import pytest
 from app.controlplane.base import CustomerDeployment, DeploymentModule, ReleaseManifest, RolloutRun
 from app.controlplane.desired_state import (
     active_pull_attempt_id,
+    active_signer_in_served_set,
+    active_wrapper_public_key,
     build_desired_state,
+    served_public_key_set,
     sign_desired_state_for,
     target_release_for_deployment,
 )
@@ -142,3 +145,36 @@ def test_active_rollout_target_wins_over_current():
     env = sign_desired_state_for(store, "dep_a", settings=_settings(), now=NOW)
     assert env.release.version == "2026.07.2"
     assert active_pull_attempt_id(store, "dep_a") == "roll_x"
+
+
+# --- P5-02: G1-1 rotation interlock helpers -----------------------------------
+
+def _interlock_settings(*, priv="", pubs="", pub=""):
+    return SimpleNamespace(fleet_desired_state_private_key=priv,
+                           fleet_desired_state_public_keys=pubs,
+                           fleet_desired_state_public_key=pub)
+
+
+def test_active_wrapper_public_key_derives_and_is_empty_when_unset():
+    assert active_wrapper_public_key(_interlock_settings(priv=WRAPPER_PRIV)) == WRAPPER_PUB
+    assert active_wrapper_public_key(_interlock_settings(priv="")) == ""
+
+
+def test_served_public_key_set_prefers_csv_then_singular():
+    assert served_public_key_set(_interlock_settings(pubs=" a , b ,, c ")) == ["a", "b", "c"]
+    assert served_public_key_set(_interlock_settings(pub="only")) == ["only"]
+    assert served_public_key_set(_interlock_settings()) == []
+
+
+def test_active_signer_in_served_set_true_false_and_skip():
+    # Present in the csv set -> True.
+    assert active_signer_in_served_set(
+        _interlock_settings(priv=WRAPPER_PRIV, pubs=f"other,{WRAPPER_PUB}")) is True
+    # Present via the singular fallback -> True.
+    assert active_signer_in_served_set(
+        _interlock_settings(priv=WRAPPER_PRIV, pub=WRAPPER_PUB)) is True
+    # Signing with a key ABSENT from the served set -> False (the brick config).
+    assert active_signer_in_served_set(
+        _interlock_settings(priv=WRAPPER_PRIV, pubs="someone-else")) is False
+    # Emission disabled (no private key) -> True (nothing to sign, nothing to brick).
+    assert active_signer_in_served_set(_interlock_settings(priv="", pubs="")) is True

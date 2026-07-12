@@ -128,6 +128,14 @@ class UpdateReport(BaseModel):
     # BackupRun rows from these fields.
     backup_status: Literal["", "success", "failed"] = ""
     backup_ts: str = Field(default="", max_length=40)
+    # G1-3 convergence signal (P5-02): the secrets_epoch the box last SUCCESSFULLY
+    # applied (wrote /opt/onebrain/.env for). The operator watches this in /overview
+    # to gate a wrapper-key private-key swap on "every box echoes the new epoch" —
+    # without it the swap is blind, which is exactly what makes the G1-1 fleet-wide
+    # brick likely in practice. Additive: old boxes omit it -> default 0 (extra=
+    # "forbid" tolerates a MISSING field, only rejects UNKNOWN ones). MC-first
+    # dual-version ordering (G3-6): MC ingests this before any box emits it.
+    applied_secrets_epoch: int = Field(default=0, ge=0)
 
 
 class OneBrainReportV2(OneBrainReport):

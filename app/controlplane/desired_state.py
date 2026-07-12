@@ -21,6 +21,40 @@ from typing import Optional
 from app.controlplane.base import ReleaseManifest
 from app.trust.envelope import DesiredStateEnvelope, SignedReleaseBlock, sign_desired_state
 from app.trust.release import release_signature_fields
+from app.trust.signing import public_key_from_private
+
+
+# --- wrapper-key rotation custody (P5-02) ------------------------------------
+# MC always holds exactly ONE private desired-state key and signs with it; boxes
+# accept ANY public key in a delivered SET (the overlap set lives on the box, never
+# inside the envelope). The accepted set is delivered via the P5-03 bundle, NOT via
+# the envelope — the signing path here is unchanged (still one private key).
+
+def active_wrapper_public_key(settings) -> str:
+    """The base64 public key MC is currently signing desired-state with, derived
+    from fleet_desired_state_private_key. "" when emission is disabled (no key)."""
+    private_key = (settings.fleet_desired_state_private_key or "").strip()
+    return public_key_from_private(private_key) if private_key else ""
+
+
+def served_public_key_set(settings) -> list[str]:
+    """The wrapper public keys delivered to boxes: the csv overlap set
+    (fleet_desired_state_public_keys) or the singular fleet_desired_state_public_key
+    fallback. Empty/whitespace entries dropped."""
+    csv = settings.fleet_desired_state_public_keys or settings.fleet_desired_state_public_key or ""
+    return [key.strip() for key in csv.split(",") if key.strip()]
+
+
+def active_signer_in_served_set(settings) -> bool:
+    """G1-1 interlock: False only when MC is signing with a wrapper key that is
+    ABSENT from the set delivered to boxes — the config slip that would strand the
+    whole fleet at envelope_signature_invalid (and permanently brick it if the
+    served set never regains the active key). When emission is disabled (no private
+    key), there is nothing to sign with and nothing to brick -> True (inert-safe)."""
+    active = active_wrapper_public_key(settings)
+    if not active:
+        return True
+    return active in served_public_key_set(settings)
 
 
 def target_release_for_deployment(control_store, deployment) -> Optional[ReleaseManifest]:

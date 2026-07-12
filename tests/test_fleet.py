@@ -1044,6 +1044,126 @@ def test_floor_bump_set_clear_list_are_operator_admin_only(monkeypatch):
         fleet_router.list_floor_bumps(principal=non_admin)
 
 
+# --- wrapper-key rotation endpoints + G1-1 interlock + G1-3 convergence (P5-02) ---
+
+def _rot_settings(*, priv="", pubs="", pub=""):
+    from types import SimpleNamespace
+    return SimpleNamespace(fleet_desired_state_private_key=priv,
+                           fleet_desired_state_public_keys=pubs,
+                           fleet_desired_state_public_key=pub)
+
+
+def _prov_with_bundles(*deployment_ids):
+    from app.provisioning.runs import BoxSecretBundle, MemoryProvisioningRunStore
+    prov = MemoryProvisioningRunStore()
+    for dep in deployment_ids:
+        prov.upsert_secret_bundle(BoxSecretBundle(deployment_id=dep, account_id="", ciphertext="ct"))
+    return prov
+
+
+def test_rotate_desired_state_key_bumps_only_boxed_epochs(monkeypatch):
+    control = MemoryControlPlaneStore()
+    for dep in ("dep_a", "dep_b", "dep_c"):
+        control.create_deployment(CustomerDeployment(id=dep, customer_name=dep, release_ring="pilot"))
+    prov = _prov_with_bundles("dep_a", "dep_b")   # dep_c has no bundle (e.g. Railway) -> skipped
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(fleet_router, "get_provisioning_run_store", lambda: prov)
+    monkeypatch.setattr(fleet_router, "get_settings", lambda: _rot_settings())  # emission off -> interlock skipped
+
+    out = fleet_router.rotate_desired_state_key(principal=_principal("admin"))
+    assert out.rotated == 2
+    assert prov.get_secret_bundle("dep_a").secrets_epoch == 1
+    assert prov.get_secret_bundle("dep_b").secrets_epoch == 1
+    assert prov.get_secret_bundle("dep_c") is None
+
+
+def test_rotate_endpoints_409_when_active_signer_excluded(monkeypatch):
+    control = _control_with("dep_a")
+    prov = _prov_with_bundles("dep_a")
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(fleet_router, "get_provisioning_run_store", lambda: prov)
+    # Signing with _DS_WRAP_PRIV but the served set EXCLUDES its public key -> the brick config.
+    monkeypatch.setattr(fleet_router, "get_settings",
+                        lambda: _rot_settings(priv=_DS_WRAP_PRIV, pubs="someone-else"))
+    for call in (lambda: fleet_router.rotate_desired_state_key(principal=_principal("admin")),
+                 lambda: fleet_router.rotate_deployment_secrets("dep_a", principal=_principal("admin"))):
+        with pytest.raises(HTTPException) as ei:
+            call()
+        assert ei.value.status_code == 409
+        assert ei.value.detail == "active_signer_not_in_public_key_set"
+    assert prov.get_secret_bundle("dep_a").secrets_epoch == 0  # nothing bumped while refused
+
+    # Adding the derived public key to the set unblocks the rotation.
+    monkeypatch.setattr(fleet_router, "get_settings",
+                        lambda: _rot_settings(priv=_DS_WRAP_PRIV, pubs=f"someone-else,{_DS_WRAP_PUB}"))
+    assert fleet_router.rotate_desired_state_key(principal=_principal("admin")).rotated == 1
+    assert prov.get_secret_bundle("dep_a").secrets_epoch == 1
+
+
+def test_rotate_deployment_secrets_404s_then_bumps(monkeypatch):
+    control = _control_with("dep_a")   # dep_a exists, no bundle yet
+    prov = _prov_with_bundles()
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(fleet_router, "get_provisioning_run_store", lambda: prov)
+    monkeypatch.setattr(fleet_router, "get_settings", lambda: _rot_settings())
+
+    with pytest.raises(HTTPException) as ei:      # unknown deployment
+        fleet_router.rotate_deployment_secrets("ghost", principal=_principal("admin"))
+    assert ei.value.status_code == 404
+    with pytest.raises(HTTPException) as ei2:     # known deployment, no bundle
+        fleet_router.rotate_deployment_secrets("dep_a", principal=_principal("admin"))
+    assert ei2.value.status_code == 404
+
+    prov.upsert_secret_bundle(_prov_with_bundles("dep_a").get_secret_bundle("dep_a"))
+    out = fleet_router.rotate_deployment_secrets("dep_a", principal=_principal("admin"))
+    assert out.deployment_id == "dep_a" and out.secrets_epoch == 1
+
+
+def test_rotation_endpoints_are_operator_admin_only():
+    non_admin = _principal("front_desk")
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.rotate_desired_state_key(principal=non_admin)
+    assert ei.value.status_code == 403
+    with pytest.raises(HTTPException) as ei2:
+        fleet_router.rotate_deployment_secrets("dep_a", principal=non_admin)
+    assert ei2.value.status_code == 403
+
+
+def test_overview_surfaces_applied_secrets_epoch(monkeypatch):
+    fleet = MemoryFleetStore()
+    fleet.record_heartbeat(Heartbeat(
+        "hb", "dep_a", CONTRACT_VERSION_V2, "2026-07-12T00:00:00+00:00", "2026-07-12T00:00:01+00:00",
+        True, version="2026.07.1",
+        payload=_heartbeat_body_v2("dep_a", update=UpdateReport(applied_secrets_epoch=3)).model_dump()))
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: fleet)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: _control_with("dep_a"))
+
+    out = fleet_router.fleet_overview(principal=_principal("admin"))
+    assert out.deployments[0].applied_secrets_epoch == 3
+
+
+def test_overview_applied_epoch_defaults_zero_for_v1_heartbeat(monkeypatch):
+    # An old (v1) heartbeat carries no update block -> the epoch defaults to 0.
+    fleet = MemoryFleetStore()
+    fleet.record_heartbeat(Heartbeat(
+        "hb", "dep_a", CONTRACT_VERSION, "2026-07-12T00:00:00+00:00", "2026-07-12T00:00:01+00:00",
+        True, version="2026.07.0", payload=_heartbeat_body("dep_a").model_dump()))
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: fleet)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: _control_with("dep_a"))
+    out = fleet_router.fleet_overview(principal=_principal("admin"))
+    assert out.deployments[0].applied_secrets_epoch == 0
+
+
+def test_update_report_applied_secrets_epoch_round_trips_and_defaults():
+    # Additive field survives the v2 heartbeat round-trip...
+    hb = _heartbeat_body_v2("dep_a", update=UpdateReport(applied_secrets_epoch=7))
+    assert FleetHeartbeatV2.model_validate(hb.model_dump()).update.applied_secrets_epoch == 7
+    # ...and an UpdateReport omitting it defaults to 0 (old-box compat; extra="forbid"
+    # tolerates a MISSING field, only rejects UNKNOWN ones).
+    assert UpdateReport().applied_secrets_epoch == 0
+    assert UpdateReport.model_validate({"outcome": "succeeded"}).applied_secrets_epoch == 0
+
+
 def _load_box_verify_twin():
     import importlib.util
     from pathlib import Path

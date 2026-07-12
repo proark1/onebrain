@@ -20,8 +20,17 @@ from pydantic import BaseModel, Field, ValidationError
 from app.auth.principal import Principal, resolve_principal
 from app.config import get_settings
 from app.controlplane.base import ServedFloorBump
-from app.controlplane.desired_state import active_pull_attempt_id, sign_desired_state_for
-from app.deps import get_control_plane_store, get_fleet_heartbeat_rate_limiter, get_fleet_store
+from app.controlplane.desired_state import (
+    active_pull_attempt_id,
+    active_signer_in_served_set,
+    sign_desired_state_for,
+)
+from app.deps import (
+    get_control_plane_store,
+    get_fleet_heartbeat_rate_limiter,
+    get_fleet_store,
+    get_provisioning_run_store,
+)
 from app.fleet.base import FleetKey, Heartbeat
 from app.fleet.enrollment import fleet_enrollment_vars, mint_deployment_fleet_key
 from app.fleet.heartbeat import AnyFleetHeartbeat, FleetHeartbeat  # noqa: F401 — FleetHeartbeat kept for typing
@@ -241,6 +250,63 @@ def list_floor_bumps(principal: Principal = Depends(resolve_principal)):
             for b in get_control_plane_store().list_served_floor_bumps()]
 
 
+# --- desired-state wrapper-key rotation (P5-02, operator-admin) ---------------
+# MC signs desired-state with the ONE online private key; boxes accept ANY key in a
+# delivered SET. Rotation bumps each box's secrets_epoch so it re-fetches the new
+# pubkey set (via the P5-03 bundle channel). No key material passes through these
+# endpoints — the keys are config, delivered by the bundle. G1-1 interlock runs
+# FIRST: refuse to bump an epoch while MC is signing with a key that is not in the
+# served set (that would strand the fleet at envelope_signature_invalid).
+
+class RotateResult(BaseModel):
+    rotated: int          # deployments whose secrets_epoch was bumped
+
+
+class DeploymentRotateResult(BaseModel):
+    deployment_id: str
+    secrets_epoch: int
+
+
+def _require_active_signer_in_served_set() -> None:
+    if not active_signer_in_served_set(get_settings()):
+        raise HTTPException(status_code=409, detail="active_signer_not_in_public_key_set")
+
+
+@router.post("/rotate-desired-state-key", response_model=RotateResult)
+def rotate_desired_state_key(principal: Principal = Depends(resolve_principal)):
+    """Tell every provisioned box to re-fetch the accepted wrapper-key set: bump the
+    secrets_epoch of each deployment that has a secret bundle. Idempotent-safe
+    (re-bumping just raises the epoch). Refuses (409) when the active signer is not
+    in the served set (G1-1)."""
+    _require_operator_admin(principal)
+    _require_active_signer_in_served_set()
+    control = get_control_plane_store()
+    prov = get_provisioning_run_store()
+    rotated = 0
+    for dep in control.list_deployments():
+        # Only boxes with a bundle re-fetch (Railway deployments have none) — skip
+        # those rather than raising, so the count reflects the pull-managed fleet.
+        if prov.get_secret_bundle(dep.id) is not None:
+            prov.bump_secrets_epoch(dep.id)
+            rotated += 1
+    return RotateResult(rotated=rotated)
+
+
+@router.post("/deployments/{deployment_id}/rotate-secrets", response_model=DeploymentRotateResult)
+def rotate_deployment_secrets(deployment_id: str, principal: Principal = Depends(resolve_principal)):
+    """Bump a single deployment's secrets_epoch (single-box secret rotation, e.g. a
+    DB-password re-mint via P5-03). 404 if the deployment is unknown or has no bundle.
+    Same G1-1 interlock first."""
+    _require_operator_admin(principal)
+    _require_active_signer_in_served_set()
+    if not get_control_plane_store().get_deployment(deployment_id):
+        raise HTTPException(status_code=404, detail="No such deployment in the registry.")
+    prov = get_provisioning_run_store()
+    if prov.get_secret_bundle(deployment_id) is None:
+        raise HTTPException(status_code=404, detail="No secret bundle for that deployment.")
+    return DeploymentRotateResult(deployment_id=deployment_id, secrets_epoch=prov.bump_secrets_epoch(deployment_id))
+
+
 # --- key management (operator-admin) -----------------------------------------
 
 class FleetKeyCreate(BaseModel):
@@ -311,6 +377,7 @@ class DeploymentOverview(BaseModel):
     migration_revision: str = ""
     last_reported_at: str = ""
     last_received_at: str = ""
+    applied_secrets_epoch: int = 0   # G1-3: the epoch the box last applied (rotation convergence)
     counts: dict = Field(default_factory=dict)
     open_alerts: list[str] = Field(default_factory=list)
 
@@ -337,6 +404,7 @@ def fleet_overview(principal: Principal = Depends(resolve_principal)):
         hb = latest.get(dep.id)
         alerts = [a.kind for a in fleet.list_open_alerts(dep.id)]
         ob = (hb.payload.get("onebrain") if hb else None) or {}
+        upd = (hb.payload.get("update") if hb else None) or {}   # fleet.v2 UpdateReport (absent on v1)
         row = DeploymentOverview(
             deployment_id=dep.id,
             customer_name=dep.customer_name,
@@ -350,6 +418,7 @@ def fleet_overview(principal: Principal = Depends(resolve_principal)):
             migration_revision=hb.migration_revision if hb else "",
             last_reported_at=hb.reported_at if hb else "",
             last_received_at=hb.received_at if hb else "",
+            applied_secrets_epoch=int(upd.get("applied_secrets_epoch", 0) or 0),
             counts={
                 "users": ob.get("users", 0),
                 "accounts": ob.get("accounts", 0),

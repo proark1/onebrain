@@ -178,6 +178,30 @@ def verify_desired_state(
     return []
 
 
+def verify_desired_state_multi(
+    envelope: DesiredStateEnvelope, *, desired_state_public_keys: list[str], **kw
+) -> list[str]:
+    """Rotation-tolerant wrapper (P5-02): try each candidate wrapper public key and
+    return [] on the FIRST acceptance, else the error list from the LAST attempt (so
+    an all-reject still yields an ordered code). An empty/whitespace key list falls
+    back to a single '' key (which fails envelope_signature_invalid — fail-closed).
+
+    This is a PURE ADDITIVE wrapper: verify_desired_state is unchanged (single-key,
+    frozen), so every existing trust test passes byte-for-byte. The overlap set lives
+    on the box (delivered via the bundle), never inside the envelope — MC still signs
+    with exactly one private key; the box accepts any key in its configured set, so a
+    key rotation can never strand the fleet at envelope_signature_invalid."""
+    keys = [k for k in (desired_state_public_keys or []) if k and k.strip()]
+    if not keys:
+        keys = [""]
+    errors: list[str] = ["envelope_signature_invalid"]
+    for key in keys:
+        errors = verify_desired_state(envelope, desired_state_public_key_b64=key, **kw)
+        if not errors:
+            return []
+    return errors
+
+
 def advance_floor(state: VersionFloorState, envelope: DesiredStateEnvelope) -> VersionFloorState:
     """After a SUCCESSFUL APPLY — defined (B4) as fence passed AND smoke check
     passed, so a failed-smoke auto-rollback (§3e step 7) can never strand a box

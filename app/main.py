@@ -81,6 +81,23 @@ def create_app() -> FastAPI:
 
     # Mission Control only: ingest fleet heartbeats and serve the fleet surface.
     if settings.operator_mode:
+        # G1-1 rotation interlock (fail-fast): when MC is configured to sign desired-
+        # state, the active wrapper public key MUST be in the set delivered to boxes,
+        # or a mis-ordered key rotation would strand the whole fleet at
+        # envelope_signature_invalid (and permanently brick it if the set never regains
+        # the active key). Refuse to boot on an excluding config rather than silently
+        # signing with a key no box accepts. Inert when emission is off (no private
+        # key) — the dormant MC and every non-signing operator instance skip it.
+        from app.controlplane.desired_state import active_signer_in_served_set
+
+        if not active_signer_in_served_set(settings):
+            raise RuntimeError(
+                "ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY's derived public key is not in the "
+                "served wrapper-key set (ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS / "
+                "ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEY). This would strand the fleet at "
+                "envelope_signature_invalid. Add the active signer's public key to the set "
+                "before booting (see scripts/rotate_desired_state_key.py overlap-set)."
+            )
         app.include_router(fleet.router)
         try:
             from app.fleet.retention import start_fleet_retention

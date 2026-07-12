@@ -22,6 +22,7 @@ from app.trust.envelope import (
     sign_desired_state,
     sign_floor_bump,
     verify_desired_state,
+    verify_desired_state_multi,
     verify_floor_bump,
 )
 from app.trust.release import (
@@ -33,7 +34,7 @@ from app.trust.release import (
     verify_images,
     verify_release_signature,
 )
-from app.trust.signing import generate_keypair, sign_payload, verify_payload
+from app.trust.signing import generate_keypair, public_key_from_private, sign_payload, verify_payload
 
 _DIGEST = "b" * 64
 _GOOD_IMAGE = f"ghcr.io/proark1/onebrain-api@sha256:{_DIGEST}"
@@ -593,3 +594,78 @@ def test_release_signature_fields_adapter_matches_stored_shape():
     )
 
     assert release_signature_fields(stored) == fields
+
+
+# --- P5-02: wrapper-key derive + rotation-tolerant multi-key verify -----------
+
+def test_public_key_from_private_matches_generate_keypair():
+    private_key, public_key = generate_keypair()
+    assert public_key_from_private(private_key) == public_key
+
+
+def _multi_verify(envelope, keys_list, release_public_key, *, floor_state=None, now=_NOW):
+    return verify_desired_state_multi(
+        envelope, desired_state_public_keys=keys_list,
+        release_public_key_b64=release_public_key, expected_deployment_id="dep_a",
+        now=now, floor_state=floor_state or VersionFloorState(), registry_allowlist=_ALLOWLIST)
+
+
+def test_verify_multi_accepts_when_second_key_matches(keys):
+    release_private, release_public, mc_private, mc_public = keys
+    _other_priv, other_public = generate_keypair()
+    env = _envelope(_signed_block(release_private), mc_private)
+    # Signed by mc_private; the box holds [other, mc] -> the SECOND key accepts.
+    assert _multi_verify(env, [other_public, mc_public], release_public) == []
+
+
+def test_verify_multi_rejects_when_no_key_matches_with_ordered_last_error(keys):
+    release_private, release_public, mc_private, _mc_public = keys
+    _p1, other1 = generate_keypair()
+    _p2, other2 = generate_keypair()
+    env = _envelope(_signed_block(release_private), mc_private)
+    # Neither key verifies the wrapper -> the LAST attempt's ordered error.
+    assert _multi_verify(env, [other1, other2], release_public) == ["envelope_signature_invalid"]
+
+
+def test_verify_multi_single_key_matches_single_key_byte_for_byte(keys):
+    # Parity/inertness: a one-element list is identical to verify_desired_state.
+    release_private, release_public, mc_private, mc_public = keys
+    env = _envelope(_signed_block(release_private), mc_private)
+    single = _verify(env, mc_public, release_public)
+    multi = _multi_verify(env, [mc_public], release_public)
+    assert multi == single == []
+    # A later gate (below-floor) yields the SAME ordered code on both paths.
+    low = _envelope(_signed_block(release_private, version="2026.07.1"), mc_private)
+    fs = VersionFloorState(floor_version="2026.07.9")
+    assert (_multi_verify(low, [mc_public], release_public, floor_state=fs)
+            == _verify(low, mc_public, release_public, floor=fs)
+            == ["version_below_floor"])
+
+
+def test_verify_multi_empty_list_fails_closed(keys):
+    release_private, release_public, mc_private, _mc_public = keys
+    env = _envelope(_signed_block(release_private), mc_private)
+    # An empty/whitespace key list falls back to a single '' key -> fail-closed.
+    assert _multi_verify(env, [], release_public) == ["envelope_signature_invalid"]
+    assert _multi_verify(env, ["", "   "], release_public) == ["envelope_signature_invalid"]
+
+
+def test_rotation_walk_overlap_prevents_breakage():
+    """The whole point of the overlap SET: a private-key swap never strands a box,
+    because the box accepts the old key until it re-fetches the [old,new] set."""
+    release_private, release_public = generate_keypair()
+    old_priv, old_pub = generate_keypair()
+    new_priv, new_pub = generate_keypair()
+    block = _signed_block(release_private)
+
+    env_old = _envelope(block, old_priv)
+    env_new = _envelope(block, new_priv)
+    # 1. MC signs with OLD; box holds [old_pub] -> accept.
+    assert _multi_verify(env_old, [old_pub], release_public) == []
+    # 2. MC swaps to NEW while the box STILL holds only [old_pub] -> reject (the window
+    #    the epoch-bump re-fetch closes).
+    assert _multi_verify(env_new, [old_pub], release_public) == ["envelope_signature_invalid"]
+    # 3. Box re-fetches the overlap set [old_pub,new_pub] -> the NEW envelope accepts,
+    #    and the OLD one still does too (no flag day).
+    assert _multi_verify(env_new, [old_pub, new_pub], release_public) == []
+    assert _multi_verify(env_old, [old_pub, new_pub], release_public) == []
