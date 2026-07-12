@@ -26,6 +26,7 @@ from app.controlplane.base import (
 from app.config import get_settings
 from app.deps import (
     get_control_plane_store,
+    get_fleet_store,
     get_intake_store,
     get_job_store,
     get_platform_store,
@@ -40,6 +41,7 @@ from app.controlplane.rollout_exec import (
     target_provider,
 )
 from app.controlplane.fleet_runner import plan_and_start_fleet_rollout, reconcile_fleet_rollout
+from app.controlplane.pull_reconcile import reconcile_pull_targets
 from app.controlplane.migration_lint import classify_release
 from app.provisioning.runs import RolloutWorkflowDispatcher
 from app.trust.release import (
@@ -1124,6 +1126,19 @@ def start_rollout(deployment_id: str, body: RolloutCreate, principal: Principal 
     return _rollout_out(rollout)
 
 
+def offer_pull_target(control, rollout) -> None:
+    """Hetzner/pull provider (H-9): the box converges on its OWN signed desired-state
+    (P2/P3), so claim the rollout and mark it OFFERED — exec_status 'dispatched',
+    dispatched_at now, request_payload flagged pull — WITHOUT calling any workflow
+    dispatcher. The box pulls the desired-state and reports the outcome via its
+    UpdateReport; reconcile_pull_targets synthesizes the terminal status. dispatched_at
+    anchors the convergence deadline (H-8)."""
+    if not control.claim_rollout_dispatch(rollout.id):
+        return
+    control.update_rollout_exec(rollout.id, dispatched_at=datetime.now(timezone.utc).isoformat(),
+                                request_payload={"provider": "hetzner", "pull": True})
+
+
 @router.post("/deployments/{deployment_id}/rollouts/{rollout_id}/dispatch", response_model=RolloutOut)
 def dispatch_rollout(
     deployment_id: str,
@@ -1164,13 +1179,12 @@ def dispatch_rollout(
         mark_rollout_dispatch_failed(control, rollout, str(exc))
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if target_provider(railway) != "railway":
-        # Fail closed (D-6): the GitHub/Railway workflow cannot act on a Hetzner
-        # box — dedicated_server updates are pull-based (P2/P3). Fires BEFORE
-        # claim_rollout_dispatch, so the rollout terminal-fails unclaimed,
-        # consistent with the resolve-failure path above.
-        reason = "unsupported_dispatch_provider:hetzner (dedicated_server updates are pull-based; lands in P2/P3)"
-        mark_rollout_dispatch_failed(control, rollout, reason)
-        raise HTTPException(status_code=409, detail=reason)
+        # H-9 (was WP5 fail-closed): the GitHub/Railway workflow cannot act on a
+        # Hetzner box, so OFFER the pull target instead of failing — the box
+        # converges on its own signed desired-state and reports via its
+        # UpdateReport; the reconcile tick resolves it. 200 (offered), no dispatch.
+        offer_pull_target(control, rollout)
+        return _rollout_out(control.get_rollout(rollout_id))
 
     # Atomically claim the pending rollout (compare-and-set exec_status
     # pending->dispatched) BEFORE the network dispatch, so two concurrent requests
@@ -1285,10 +1299,11 @@ def _dispatch_child_rollout(fleet_id: str, deployment_id: str, *, target_version
         mark_rollout_dispatch_failed(control, rollout, str(exc))
         return
     if target_provider(railway) != "railway":
-        # Fail closed (D-6) without raising: the fleet reducer counts the child
-        # toward failure_tolerance, exactly like a missing target today.
-        reason = "unsupported_dispatch_provider:hetzner (dedicated_server updates are pull-based; lands in P2/P3)"
-        mark_rollout_dispatch_failed(control, rollout, reason)
+        # H-9 (was WP5 fail-closed): OFFER the pull child instead of failing it —
+        # the box converges on its own signed desired-state and the reconcile tick
+        # resolves it from the box's UpdateReport. The child sits in-flight
+        # (dispatched), not dispatch_failed.
+        offer_pull_target(control, rollout)
         return
     if not control.claim_rollout_dispatch(child_id):
         return
@@ -1337,6 +1352,24 @@ def list_fleet_rollouts(principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
     _require_operator_mode()
     return [_fleet_out(fr) for fr in get_control_plane_store().list_fleet_rollouts()]
+
+
+@router.post("/fleet-rollouts/reconcile", response_model=list[FleetRolloutOut])
+def reconcile_pull(principal: Principal = Depends(resolve_principal)):
+    """The P4 driver for the pull-path reconcile tick (no scheduler in P4 — this
+    operator-run endpoint or an external cron drives it, exactly as run_watchdog stayed
+    test-only). Synthesizes each offered pull child's terminal status from its box's
+    latest UpdateReport and feeds the UNCHANGED fleet reducer. At rest (no running fleet
+    rollouts) it is a no-op. The reconcile scheduler/daemon is the Phase-5 infra tail."""
+    _require_admin(principal)
+    _require_operator_mode()
+    control = get_control_plane_store()
+    runs = reconcile_pull_targets(
+        control, control, get_fleet_store().latest_heartbeats(),
+        now=datetime.now(timezone.utc),
+        deadline_seconds=get_settings().fleet_pull_convergence_deadline_seconds,
+        dispatch_child=fleet_dispatch_child)
+    return [_fleet_out(r) for r in runs]
 
 
 @router.get("/fleet-rollouts/{fleet_id}", response_model=FleetRolloutOut)

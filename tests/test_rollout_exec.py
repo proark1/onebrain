@@ -327,10 +327,12 @@ class _RecordingDispatcher:
         return "https://github.com/o/repo/actions/workflows/update-customer.yml"
 
 
-def test_dispatch_refuses_hetzner_target(monkeypatch):
-    """Fail-closed (D-6): the GitHub/Railway executor cannot act on a Hetzner
-    box — the operator dispatch 409s, the rollout terminal-fails unclaimed, and
-    the workflow dispatcher is never invoked."""
+def test_dispatch_offers_hetzner_target(monkeypatch):
+    """H-9: the GitHub/Railway executor cannot act on a Hetzner box, so the pull path
+    now OFFERS the rollout instead of failing it — the box converges on its own signed
+    desired-state and reports via its UpdateReport. The operator dispatch returns 200,
+    the rollout is marked offered (exec_status 'dispatched', dispatched_at set,
+    request_payload flagged pull), and the workflow dispatcher is NEVER invoked."""
     store = _control()
     _started(store)
     _RecordingDispatcher.calls = []
@@ -341,21 +343,18 @@ def test_dispatch_refuses_hetzner_target(monkeypatch):
                         lambda: _FakeProvStore([_hetzner_prov_run()]))
     monkeypatch.setattr(operator_router, "RolloutWorkflowDispatcher", _RecordingDispatcher)
 
-    with pytest.raises(HTTPException) as ei:
-        operator_router.dispatch_rollout("dep_a", "roll1", _dispatch_body(), principal=_principal("admin"))
+    out = operator_router.dispatch_rollout("dep_a", "roll1", _dispatch_body(), principal=_principal("admin"))
 
-    assert ei.value.status_code == 409
-    assert ei.value.detail.startswith("unsupported_dispatch_provider:hetzner")
+    assert out.id == "roll1"  # 200 — RolloutOut returned, no HTTPException
     rollout = store.get_rollout("roll1")
-    assert rollout.exec_status == "dispatch_failed"
-    assert rollout.failure_reason.startswith("unsupported_dispatch_provider:hetzner")
+    assert rollout.exec_status == "dispatched" and rollout.dispatched_at
+    assert rollout.request_payload == {"provider": "hetzner", "pull": True}
     assert _RecordingDispatcher.calls == []  # never fired
 
 
-def test_fleet_child_dispatch_refuses_hetzner_target(monkeypatch):
-    """The fleet child path never raises: the child is marked dispatch_failed
-    (bookkeeping 'failed') so the reducer counts it toward failure_tolerance,
-    exactly like a missing target today."""
+def test_fleet_child_offers_hetzner_target(monkeypatch):
+    """The fleet child path OFFERS a Hetzner child (in-flight, dispatched) instead of
+    marking it dispatch_failed — the reconcile tick resolves it from the box's report."""
     store = _control()
     _RecordingDispatcher.calls = []
     monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
@@ -370,9 +369,9 @@ def test_fleet_child_dispatch_refuses_hetzner_target(monkeypatch):
 
     children = store.list_rollouts_for_fleet("fleet_x")
     assert len(children) == 1
-    assert children[0].status == "failed"
-    assert children[0].exec_status == "dispatch_failed"
-    assert children[0].failure_reason.startswith("unsupported_dispatch_provider:hetzner")
+    assert children[0].status == "pending"          # non-terminal, awaiting box convergence
+    assert children[0].exec_status == "dispatched"  # offered, not dispatch_failed
+    assert children[0].request_payload == {"provider": "hetzner", "pull": True}
     assert _RecordingDispatcher.calls == []  # never fired
 
 
