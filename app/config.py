@@ -221,6 +221,11 @@ class Settings(BaseSettings):
     #   is the org prefix the Phase-2 GHCR CI publishes under; override via ONEBRAIN_RELEASE_REGISTRY_ALLOWLIST
     #   if the CI org ever differs (a wrong default 400s the first images-carrying release — fail-closed, safe).
 
+    # --- Ground-truth reporter ---
+    build_version: str = ""                    # CI-stamped running version (ONEBRAIN_BUILD_VERSION); "" -> app.__version__
+    module_probes_enabled: bool = False        # probe co-located module /health endpoints for the heartbeat
+    local_modules: str = ""                    # csv of MODULE_IDS running on this box (compose sets it; Railway leaves "")
+
     # Service surface — per-key rate limit (metered LLM/embedding endpoints) and a
     # cap on how many active keys one tenant may hold.
     service_rate_limit: int = 60
