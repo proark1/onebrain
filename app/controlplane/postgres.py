@@ -14,6 +14,7 @@ from app.controlplane.base import (
     HealthCheckRun,
     ReleaseManifest,
     RolloutRun,
+    ServedFloorBump,
     UpdatePlan,
     compute_update_plan,
     require_signed_releases,
@@ -63,6 +64,7 @@ class PostgresControlPlaneStore:
                     "control_health_checks",
                     "control_rollouts",
                     "control_fleet_rollouts",
+                    "control_served_floor_bumps",
                 ),
             )
 
@@ -584,6 +586,61 @@ class PostgresControlPlaneStore:
             claimed = cur.rowcount == 1
             conn.commit()
         return claimed
+
+    # --- served floor bumps (P5-01) ---
+    def set_served_floor_bump(self, bump: ServedFloorBump) -> ServedFloorBump:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO control_served_floor_bumps (scope, bump_json, floor_version, updated_by)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (scope) DO UPDATE SET
+                    bump_json = EXCLUDED.bump_json,
+                    floor_version = EXCLUDED.floor_version,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = now()
+                RETURNING scope, bump_json, floor_version, updated_by, updated_at
+                """,
+                (bump.scope, bump.bump_json, bump.floor_version, bump.updated_by),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return self._served_floor_bump(row)
+
+    def clear_served_floor_bump(self, scope: str) -> bool:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM control_served_floor_bumps WHERE scope = %s", (scope,))
+            deleted = cur.rowcount == 1
+            conn.commit()
+        return deleted
+
+    def get_served_floor_bump(self, scope: str) -> Optional[ServedFloorBump]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT scope, bump_json, floor_version, updated_by, updated_at "
+                "FROM control_served_floor_bumps WHERE scope = %s",
+                (scope,),
+            )
+            row = cur.fetchone()
+        return self._served_floor_bump(row) if row else None
+
+    def list_served_floor_bumps(self) -> List[ServedFloorBump]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT scope, bump_json, floor_version, updated_by, updated_at "
+                "FROM control_served_floor_bumps ORDER BY scope"
+            )
+            rows = cur.fetchall()
+        return [self._served_floor_bump(row) for row in rows]
+
+    def _served_floor_bump(self, row) -> ServedFloorBump:
+        return ServedFloorBump(
+            scope=row[0],
+            bump_json=row[1],
+            floor_version=row[2] or "",
+            updated_by=row[3] or "",
+            updated_at=_iso(row[4]),
+        )
 
     def _deployment(self, row) -> CustomerDeployment:
         return CustomerDeployment(

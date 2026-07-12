@@ -455,6 +455,10 @@ def _must_change_password_module():
     return _load_migration_module("0020_must_change_password.py", "must_change_password_migration")
 
 
+def _phase5_fleet_secrets_module():
+    return _load_migration_module("0021_phase5_fleet_secrets.py", "phase5_fleet_secrets_migration")
+
+
 def test_trust_primitives_migration_structure_and_chain():
     migration = _trust_primitives_module()
 
@@ -473,19 +477,44 @@ def test_trust_primitives_migration_structure_and_chain():
     assert "control_release_manifests" in src
 
 
-def test_must_change_password_migration_is_head():
+def test_must_change_password_migration_structure_and_chain():
     migration = _must_change_password_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    # 0020 is no longer head (0021 supersedes it); it is the down_revision of head.
     assert migration.revision == "0020_must_change_password"
-    assert len(migration.revision) <= 32
+    assert migration.revision != REQUIRED_ALEMBIC_REVISION
     assert migration.down_revision == "0019_trust_primitives"
+    assert _phase5_fleet_secrets_module().down_revision == migration.revision
     src = (
         Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0020_must_change_password.py"
     ).read_text()
     assert "ADD COLUMN IF NOT EXISTS" in src
     assert "users" in src
     assert "must_change_password" in src
+
+
+def test_phase5_fleet_secrets_migration_is_head():
+    migration = _phase5_fleet_secrets_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision == "0021_phase5_fleet_secrets"
+    assert len(migration.revision) <= 32
+    assert migration.down_revision == "0020_must_change_password"
+    # Three NEW tables only (additive/expand-only).
+    assert {
+        "control_served_floor_bumps",
+        "box_secret_bundles",
+        "box_bootstrap_tokens",
+    } == set(migration.PHASE5_FLEET_SECRET_TABLES)
+    src = (
+        Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0021_phase5_fleet_secrets.py"
+    ).read_text()
+    assert "CREATE TABLE IF NOT EXISTS control_served_floor_bumps" in src
+    assert "CREATE TABLE IF NOT EXISTS box_secret_bundles" in src
+    assert "CREATE TABLE IF NOT EXISTS box_bootstrap_tokens" in src
+    # Expand-only: no column dropped/altered on any existing table.
+    assert "ALTER TABLE" not in src
+    assert "DROP TABLE" not in src.split("def downgrade")[0]
 
 
 # --- positional row mappers (C4) ----------------------------------------------
@@ -566,6 +595,21 @@ def test_postgres_row_mappers_positional():
     assert rollout.completed_at == completed.isoformat()
     assert rollout.fleet_rollout_id == "fleet15"
     assert rollout.ack_restore_required is True
+
+
+def test_served_floor_bump_mapper_positional():
+    """P5-01: the served-floor-bump mapper reads scope, bump_json, floor_version,
+    updated_by, updated_at positionally (SELECT/RETURNING column order must match)."""
+    from datetime import datetime, timezone
+
+    store = _bare_postgres_store()
+    updated = datetime(2026, 7, 12, 1, 2, 3, tzinfo=timezone.utc)
+    bump = store._served_floor_bump(("scope0", "json1", "floor2", "by3", updated))
+    assert bump.scope == "scope0"
+    assert bump.bump_json == "json1"
+    assert bump.floor_version == "floor2"
+    assert bump.updated_by == "by3"
+    assert bump.updated_at == updated.isoformat()
 
 
 def test_rollout_cols_arity_matches_mapper():

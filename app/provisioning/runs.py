@@ -97,6 +97,32 @@ class OneTimeSecretEnvelope:
 
 
 @dataclass(frozen=True)
+class BoxSecretBundle:
+    """The RE-READABLE per-box secret bundle (P5-02/P5-03). Unlike the one-time
+    OneTimeSecretEnvelope, ciphertext is read repeatedly (first boot + every
+    rotation tick) via OneTimeSecretCipher.seal_bundle/open_bundle (raw Fernet, no
+    read_at gate, no TTL). secrets_epoch bumps drive the box's re-fetch."""
+    deployment_id: str
+    account_id: str
+    ciphertext: str
+    key_version: str = "v1"
+    secrets_epoch: int = 0
+    updated_at: str = ""
+
+
+@dataclass(frozen=True)
+class BoxBootstrapToken:
+    """The single-use, short-TTL first-boot bootstrap token (hash only, P5-03).
+    Consumed atomically as the LAST step of a successful bundle delivery (G1-2)."""
+    token_hash: str
+    deployment_id: str
+    account_id: str = ""
+    expires_at: str = ""
+    consumed_at: str = ""
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
 class ProvisioningCallback:
     status: str
     external_run_id: str = ""
@@ -129,6 +155,19 @@ class ProvisioningRunStore(Protocol):
     def get_secret(self, secret_id: str) -> Optional[OneTimeSecretEnvelope]: ...
 
     def mark_secret_read(self, secret_id: str) -> OneTimeSecretEnvelope: ...
+
+    # --- re-readable secret bundles + single-use bootstrap tokens (P5-02/P5-03) ---
+    def upsert_secret_bundle(self, bundle: BoxSecretBundle) -> BoxSecretBundle: ...
+
+    def get_secret_bundle(self, deployment_id: str) -> Optional[BoxSecretBundle]: ...
+
+    def bump_secrets_epoch(self, deployment_id: str) -> int: ...
+
+    def create_bootstrap_token(self, token: BoxBootstrapToken) -> BoxBootstrapToken: ...
+
+    def get_bootstrap_token(self, token_hash: str) -> Optional[BoxBootstrapToken]: ...
+
+    def consume_bootstrap_token(self, token_hash: str) -> Optional[BoxBootstrapToken]: ...
 
 
 def now_iso() -> str:
@@ -233,11 +272,27 @@ class OneTimeSecretCipher:
         except InvalidToken as exc:
             raise ValueError("Secret could not be decrypted.") from exc
 
+    # --- RE-READABLE bundle pair (G1-4 / G2-1) -------------------------------
+    # The secret bundle (P5-02/P5-03) is read repeatedly and indefinitely (first
+    # boot + every rotation tick), so it MUST NOT use envelope()/decrypt() (which
+    # are single-read via read_at AND TTL-expiring). These go straight through the
+    # Fernet primitive with NO read_at gate and NO TTL.
+    def seal_bundle(self, plaintext: str) -> str:
+        return self._fernet.encrypt(plaintext.encode("utf-8")).decode("utf-8")
+
+    def open_bundle(self, ciphertext: str) -> str:
+        try:
+            return self._fernet.decrypt(ciphertext.encode("utf-8")).decode("utf-8")
+        except InvalidToken as exc:
+            raise ValueError("Bundle could not be decrypted.") from exc
+
 
 class MemoryProvisioningRunStore:
     def __init__(self, persist_path: Optional[str] = None):
         self._runs: Dict[str, ProvisioningRun] = {}
         self._secrets: Dict[str, OneTimeSecretEnvelope] = {}
+        self._secret_bundles: Dict[str, BoxSecretBundle] = {}
+        self._bootstrap_tokens: Dict[str, BoxBootstrapToken] = {}
         self._persist_path = persist_path
         self._lock = threading.RLock()
         self._load()
@@ -250,8 +305,16 @@ class MemoryProvisioningRunStore:
                 data = json.load(fh)
             self._runs = {row["id"]: ProvisioningRun(**row) for row in data.get("runs", [])}
             self._secrets = {row["id"]: OneTimeSecretEnvelope(**row) for row in data.get("secrets", [])}
+            # Additive (P5-02/P5-03), back-compatible with a pre-Phase-5 persist file.
+            self._secret_bundles = {
+                row["deployment_id"]: BoxSecretBundle(**row) for row in data.get("secret_bundles", [])
+            }
+            self._bootstrap_tokens = {
+                row["token_hash"]: BoxBootstrapToken(**row) for row in data.get("bootstrap_tokens", [])
+            }
         except Exception:
             self._runs, self._secrets = {}, {}
+            self._secret_bundles, self._bootstrap_tokens = {}, {}
 
     def _save(self) -> None:
         if not self._persist_path:
@@ -261,6 +324,8 @@ class MemoryProvisioningRunStore:
             json.dump({
                 "runs": [asdict(run) for run in self._runs.values()],
                 "secrets": [asdict(secret) for secret in self._secrets.values()],
+                "secret_bundles": [asdict(b) for b in self._secret_bundles.values()],
+                "bootstrap_tokens": [asdict(t) for t in self._bootstrap_tokens.values()],
             }, fh)
 
     def create_run(self, run: ProvisioningRun) -> ProvisioningRun:
@@ -318,6 +383,58 @@ class MemoryProvisioningRunStore:
             self._save()
             return updated
 
+    # --- re-readable secret bundles + single-use bootstrap tokens (P5-02/P5-03) ---
+    def upsert_secret_bundle(self, bundle: BoxSecretBundle) -> BoxSecretBundle:
+        with self._lock:
+            existing = self._secret_bundles.get(bundle.deployment_id)
+            # Preserve the running epoch on a re-seal (bump_secrets_epoch owns it);
+            # a fresh insert keeps the bundle's own (0 for a new box).
+            epoch = existing.secrets_epoch if existing else bundle.secrets_epoch
+            stored = replace(bundle, secrets_epoch=epoch, updated_at=now_iso())
+            self._secret_bundles[bundle.deployment_id] = stored
+            self._save()
+            return stored
+
+    def get_secret_bundle(self, deployment_id: str) -> Optional[BoxSecretBundle]:
+        return self._secret_bundles.get(deployment_id)
+
+    def bump_secrets_epoch(self, deployment_id: str) -> int:
+        with self._lock:
+            existing = self._secret_bundles.get(deployment_id)
+            if not existing:
+                raise ValueError(f"unknown secret bundle: {deployment_id}")
+            updated = replace(existing, secrets_epoch=existing.secrets_epoch + 1, updated_at=now_iso())
+            self._secret_bundles[deployment_id] = updated
+            self._save()
+            return updated.secrets_epoch
+
+    def create_bootstrap_token(self, token: BoxBootstrapToken) -> BoxBootstrapToken:
+        with self._lock:
+            if token.token_hash in self._bootstrap_tokens:
+                raise ValueError(f"bootstrap token already exists: {token.token_hash}")
+            stored = replace(token, created_at=token.created_at or now_iso())
+            self._bootstrap_tokens[token.token_hash] = stored
+            self._save()
+            return stored
+
+    def get_bootstrap_token(self, token_hash: str) -> Optional[BoxBootstrapToken]:
+        return self._bootstrap_tokens.get(token_hash)
+
+    def consume_bootstrap_token(self, token_hash: str) -> Optional[BoxBootstrapToken]:
+        # ATOMIC single-use AND expiry (G1-8), mirroring the postgres single-statement
+        # UPDATE ... WHERE consumed_at IS NULL AND expires_at > now() RETURNING. A NULL
+        # return is uniformly invalid | expired | already-consumed.
+        with self._lock:
+            token = self._bootstrap_tokens.get(token_hash)
+            if not token or token.consumed_at:
+                return None
+            if not token.expires_at or _parse_iso(token.expires_at) <= datetime.now(timezone.utc):
+                return None
+            consumed = replace(token, consumed_at=now_iso())
+            self._bootstrap_tokens[token_hash] = consumed
+            self._save()
+            return consumed
+
 
 class PostgresProvisioningRunStore:
     def __init__(self, dsn: str):
@@ -332,7 +449,15 @@ class PostgresProvisioningRunStore:
 
     def _validate_schema(self) -> None:
         with self._conn() as conn:
-            validate_postgres_schema(conn, ("provisioning_runs", "one_time_secret_envelopes"))
+            validate_postgres_schema(
+                conn,
+                (
+                    "provisioning_runs",
+                    "one_time_secret_envelopes",
+                    "box_secret_bundles",
+                    "box_bootstrap_tokens",
+                ),
+            )
 
     def create_run(self, run: ProvisioningRun) -> ProvisioningRun:
         _validate_status(run.status)
@@ -489,6 +614,121 @@ class PostgresProvisioningRunStore:
         if not row:
             raise ValueError("Secret has already been read or does not exist.")
         return self._secret(row)
+
+    # --- re-readable secret bundles + single-use bootstrap tokens (P5-02/P5-03) ---
+    _BUNDLE_COLS = "deployment_id, account_id, ciphertext, key_version, secrets_epoch, updated_at"
+    _TOKEN_COLS = "token_hash, deployment_id, account_id, expires_at, consumed_at, created_at"
+
+    def upsert_secret_bundle(self, bundle: BoxSecretBundle) -> BoxSecretBundle:
+        with self._conn() as conn, conn.cursor() as cur:
+            # Preserve the running secrets_epoch on a re-seal (bump_secrets_epoch owns it);
+            # a fresh insert takes the bundle's own epoch.
+            cur.execute(
+                f"""
+                INSERT INTO box_secret_bundles
+                (deployment_id, account_id, ciphertext, key_version, secrets_epoch)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (deployment_id) DO UPDATE SET
+                    account_id = EXCLUDED.account_id,
+                    ciphertext = EXCLUDED.ciphertext,
+                    key_version = EXCLUDED.key_version,
+                    updated_at = now()
+                RETURNING {self._BUNDLE_COLS}
+                """,
+                (bundle.deployment_id, bundle.account_id, bundle.ciphertext,
+                 bundle.key_version, bundle.secrets_epoch),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return self._bundle(row)
+
+    def get_secret_bundle(self, deployment_id: str) -> Optional[BoxSecretBundle]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {self._BUNDLE_COLS} FROM box_secret_bundles WHERE deployment_id = %s",
+                (deployment_id,),
+            )
+            row = cur.fetchone()
+        return self._bundle(row) if row else None
+
+    def bump_secrets_epoch(self, deployment_id: str) -> int:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE box_secret_bundles SET secrets_epoch = secrets_epoch + 1, updated_at = now() "
+                "WHERE deployment_id = %s RETURNING secrets_epoch",
+                (deployment_id,),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        if not row:
+            raise ValueError(f"unknown secret bundle: {deployment_id}")
+        return int(row[0])
+
+    def create_bootstrap_token(self, token: BoxBootstrapToken) -> BoxBootstrapToken:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO box_bootstrap_tokens (token_hash, deployment_id, account_id, expires_at, consumed_at)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING {self._TOKEN_COLS}
+                """,
+                (
+                    token.token_hash,
+                    token.deployment_id,
+                    token.account_id,
+                    _parse_iso(token.expires_at) if token.expires_at else None,
+                    _parse_iso(token.consumed_at) if token.consumed_at else None,
+                ),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return self._token(row)
+
+    def get_bootstrap_token(self, token_hash: str) -> Optional[BoxBootstrapToken]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {self._TOKEN_COLS} FROM box_bootstrap_tokens WHERE token_hash = %s",
+                (token_hash,),
+            )
+            row = cur.fetchone()
+        return self._token(row) if row else None
+
+    def consume_bootstrap_token(self, token_hash: str) -> Optional[BoxBootstrapToken]:
+        # ATOMIC single-use AND expiry in ONE statement (G1-8): a builder relying on
+        # the atomic consume alone cannot burn an expired-but-unconsumed token. A NULL
+        # return is uniformly invalid | expired | already-consumed.
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE box_bootstrap_tokens SET consumed_at = now()
+                WHERE token_hash = %s AND consumed_at IS NULL AND expires_at > now()
+                RETURNING {self._TOKEN_COLS}
+                """,
+                (token_hash,),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return self._token(row) if row else None
+
+    def _bundle(self, row) -> BoxSecretBundle:
+        return BoxSecretBundle(
+            deployment_id=row[0],
+            account_id=row[1] or "",
+            ciphertext=row[2],
+            key_version=row[3] or "v1",
+            secrets_epoch=int(row[4]),
+            updated_at=_iso(row[5]),
+        )
+
+    def _token(self, row) -> BoxBootstrapToken:
+        return BoxBootstrapToken(
+            token_hash=row[0],
+            deployment_id=row[1],
+            account_id=row[2] or "",
+            expires_at=_iso(row[3]),
+            consumed_at=_iso(row[4]),
+            created_at=_iso(row[5]),
+        )
 
     def _run_cols(self) -> str:
         return (

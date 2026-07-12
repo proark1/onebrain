@@ -16,6 +16,7 @@ from app.controlplane.base import (
     HealthCheckRun,
     ReleaseManifest,
     RolloutRun,
+    ServedFloorBump,
     UpdatePlan,
     compute_update_plan,
     require_signed_releases,
@@ -36,6 +37,7 @@ class MemoryControlPlaneStore:
         self._health: Dict[str, HealthCheckRun] = {}
         self._rollouts: Dict[str, RolloutRun] = {}
         self._fleet_rollouts: Dict[str, FleetRolloutRun] = {}
+        self._served_floor_bumps: Dict[str, ServedFloorBump] = {}
         self._lock = threading.RLock()
         self._persist_path = persist_path
         self._load()
@@ -59,10 +61,15 @@ class MemoryControlPlaneStore:
                 d["id"]: FleetRolloutRun(**{**d, "ring_order": tuple(d.get("ring_order", []))})
                 for d in data.get("fleet_rollouts", [])
             }
+            # Additive (P5-01), back-compatible with a persist file written before Phase 5.
+            self._served_floor_bumps = {
+                d["scope"]: ServedFloorBump(**d) for d in data.get("served_floor_bumps", [])
+            }
         except Exception:
             self._deployments, self._modules, self._releases = {}, {}, {}
             self._backups, self._health, self._rollouts = {}, {}, {}
             self._fleet_rollouts = {}
+            self._served_floor_bumps = {}
 
     def _save(self) -> None:
         if not self._persist_path:
@@ -78,6 +85,7 @@ class MemoryControlPlaneStore:
                 "rollouts": [r.__dict__ for r in self._rollouts.values()],
                 "fleet_rollouts": [{**f.__dict__, "ring_order": list(f.ring_order)}
                                    for f in self._fleet_rollouts.values()],
+                "served_floor_bumps": [b.__dict__ for b in self._served_floor_bumps.values()],
             }, fh)
 
     def create_deployment(self, deployment: CustomerDeployment) -> CustomerDeployment:
@@ -322,3 +330,23 @@ class MemoryControlPlaneStore:
             self._rollouts[rollout_id] = updated
             self._save()
             return updated
+
+    # --- served floor bumps (P5-01) ---
+    def set_served_floor_bump(self, bump: ServedFloorBump) -> ServedFloorBump:
+        with self._lock:
+            self._served_floor_bumps[bump.scope] = bump
+            self._save()
+            return bump
+
+    def clear_served_floor_bump(self, scope: str) -> bool:
+        with self._lock:
+            existed = self._served_floor_bumps.pop(scope, None) is not None
+            if existed:
+                self._save()
+            return existed
+
+    def get_served_floor_bump(self, scope: str) -> Optional[ServedFloorBump]:
+        return self._served_floor_bumps.get(scope)
+
+    def list_served_floor_bumps(self) -> List[ServedFloorBump]:
+        return sorted(self._served_floor_bumps.values(), key=lambda b: b.scope)

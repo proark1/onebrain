@@ -250,6 +250,21 @@ class Settings(BaseSettings):
     # --- Pull reconcile (P2) ---
     fleet_pull_convergence_deadline_seconds: int = 1800  # a box silent past this after an offer -> synth failed
 
+    # --- Phase 5: desired-state wrapper-key rotation (P5-02) ---
+    fleet_desired_state_public_keys: str = ""   # csv of ACCEPTED wrapper public keys delivered to boxes
+                                                # (rotation overlap set). "" -> falls back to the singular
+                                                # fleet_desired_state_public_key. MC still signs with the ONE
+                                                # fleet_desired_state_private_key; boxes accept ANY key in this set.
+    # --- Phase 5: bootstrap-token exchange (P5-03) ---
+    fleet_bootstrap_token_ttl_seconds: int = 3600   # first-boot token validity window
+    # --- Phase 5: reconcile scheduler (P5-04) ---
+    fleet_reconcile_seconds: int = 0            # 0 = DISABLED (default). >0 = in-process pull-reconcile
+                                                # tick interval in seconds (MC only), clamped to a 30s floor.
+                                                # (G3-4) Default 0 keeps the daemon OFF on the already-deployed
+                                                # dormant MC — auto-advance is opt-in, never flipped by a deploy.
+    # --- Phase 5: network boundary (P5-05) ---
+    hetzner_firewall_allow_ssh: bool = False    # break-glass ONLY; default false = NO inbound 22 rule emitted
+
     # Service surface — per-key rate limit (metered LLM/embedding endpoints) and a
     # cap on how many active keys one tenant may hold.
     service_rate_limit: int = 60

@@ -136,6 +136,18 @@ class RolloutRun:
 
 
 @dataclass(frozen=True)
+class ServedFloorBump:
+    """A pre-signed (offline release-key) FloorBump the operator uploaded for MC to
+    SERVE (P5-01). MC never signs or mutates it — bump_json is the opaque signed
+    FloorBump.model_dump_json(); the box re-verifies the offline signature itself."""
+    scope: str                 # '*' (fleet-wide) or a deployment_id
+    bump_json: str             # signed FloorBump JSON (opaque to MC)
+    floor_version: str = ""    # denormalized for the operator list view
+    updated_by: str = ""
+    updated_at: str = ""
+
+
+@dataclass(frozen=True)
 class UpdatePlan:
     deployment_id: str
     target_version: str
@@ -191,6 +203,15 @@ class ControlPlaneStore(Protocol):
     def claim_rollout_dispatch(self, rollout_id: str) -> bool: ...
 
     def update_rollout_exec(self, rollout_id: str, **fields) -> RolloutRun: ...
+
+    # --- served floor bumps (P5-01 revocation kill-switch) ---
+    def set_served_floor_bump(self, bump: ServedFloorBump) -> ServedFloorBump: ...
+
+    def clear_served_floor_bump(self, scope: str) -> bool: ...
+
+    def get_served_floor_bump(self, scope: str) -> Optional[ServedFloorBump]: ...
+
+    def list_served_floor_bumps(self) -> List[ServedFloorBump]: ...
 
 
 def validate_deployment(deployment: CustomerDeployment) -> None:
