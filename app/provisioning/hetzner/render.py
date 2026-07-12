@@ -196,7 +196,11 @@ def render_compose(inp: BoxRenderInputs) -> str:
             "/opt/onebrain/postgres-init.sh:/docker-entrypoint-initdb.d/postgres-init.sh:ro",
         ],
         healthcheck=[
-            'test: ["CMD-SHELL", "pg_isready -U onebrain"]',
+            # TCP + real DB (not the default unix socket): the official image runs
+            # /docker-entrypoint-initdb.d against a socket-only server (listen_addresses='')
+            # BEFORE opening TCP, so a socket probe can report healthy while migrate
+            # services (depends_on service_healthy) get connection-refused on 5432.
+            'test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U onebrain -d onebrain"]',
             "interval: 10s",
             "timeout: 5s",
             "retries: 5",
