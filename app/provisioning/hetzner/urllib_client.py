@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from app.provisioning.hetzner.client import (
@@ -34,35 +34,48 @@ _TIMEOUT_SECONDS = 20
 class UrllibHetznerClient:
     """The ONLY module that talks to api.hetzner.cloud. stdlib urllib, injectable
     opener (tests need no network — same seam as dispatch_workflow/send_heartbeat).
-    The token is passed IN by the broker; this class never imports get_settings."""
+    The token is passed IN by the broker; this class never imports get_settings.
+
+    ONE Bearer token covers everything — servers, firewalls, volumes AND DNS. DNS was
+    folded into the unified Cloud API (GA 2025-11-10); the legacy dns.hetzner.com host +
+    `Auth-API-Token` header is gone, so there is no separate DNS token or base URL."""
 
     def __init__(
         self,
         api_token: str,
-        dns_token: str = "",
         *,
         opener=None,
         base: str = "https://api.hetzner.cloud/v1",
-        dns_base: str = "https://dns.hetzner.com/api/v1",
     ):
         self._api_token = api_token
-        self._dns_token = dns_token
         self._base = base.rstrip("/")
-        self._dns_base = dns_base.rstrip("/")
         self._opener = opener
 
     # --- transport -------------------------------------------------------------
-    def _open(self, request: Request) -> dict:
-        do_open = self._opener or (lambda req, timeout: urlopen(req, timeout=timeout))
+    @staticmethod
+    def _error_body(exc: HTTPError) -> str:
         try:
-            with do_open(request, _TIMEOUT_SECONDS) as response:
+            return exc.read().decode("utf-8", "replace")
+        except Exception:
+            return getattr(exc, "reason", "") or ""
+
+    def _do_open(self, request: Request):
+        do_open = self._opener or (lambda req, timeout: urlopen(req, timeout=timeout))
+        return do_open(request, _TIMEOUT_SECONDS)
+
+    def _headers(self, *, with_content: bool) -> dict:
+        # The SAME Bearer token as compute — never the legacy `Auth-API-Token` header.
+        headers = {"Authorization": f"Bearer {self._api_token}", "Accept": "application/json"}
+        if with_content:
+            headers["Content-Type"] = "application/json"
+        return headers
+
+    def _open(self, request: Request) -> dict:
+        try:
+            with self._do_open(request) as response:
                 raw = response.read()
         except HTTPError as exc:
-            try:
-                body = exc.read().decode("utf-8", "replace")
-            except Exception:
-                body = getattr(exc, "reason", "") or ""
-            raise HetznerApiError(exc.code, body) from exc
+            raise HetznerApiError(exc.code, self._error_body(exc)) from exc
         except URLError as exc:
             raise HetznerApiError(0, str(getattr(exc, "reason", exc))) from exc
         if not raw:
@@ -72,16 +85,12 @@ class UrllibHetznerClient:
         except (ValueError, UnicodeDecodeError):
             return {}
 
-    def _post(self, path: str, body: dict, *, token: str) -> dict:
+    def _post(self, path: str, body: dict) -> dict:
         request = Request(
             self._base + path,
             data=json.dumps(body).encode("utf-8"),
             method="POST",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
+            headers=self._headers(with_content=True),
         )
         return self._open(request)
 
@@ -95,7 +104,7 @@ class UrllibHetznerClient:
         }
         if req.labels:
             body["labels"] = {str(k): str(v) for k, v in req.labels.items()}
-        data = self._post("/volumes", body, token=self._api_token)
+        data = self._post("/volumes", body)
         volume = data.get("volume", {}) or {}
         return VolumeCreateResult(volume_id=str(volume.get("id", "")))
 
@@ -118,7 +127,7 @@ class UrllibHetznerClient:
             body["automount"] = False
         if req.labels:
             body["labels"] = {str(k): str(v) for k, v in req.labels.items()}
-        data = self._post("/servers", body, token=self._api_token)
+        data = self._post("/servers", body)
         server = data.get("server", {}) or {}
         public_net = server.get("public_net", {}) or {}
         ipv4 = (public_net.get("ipv4") or {}).get("ip", "")
@@ -142,52 +151,56 @@ class UrllibHetznerClient:
         body: dict = {"name": req.name, "rules": rules}
         if req.labels:
             body["labels"] = {str(k): str(v) for k, v in req.labels.items()}
-        data = self._post("/firewalls", body, token=self._api_token)
+        data = self._post("/firewalls", body)
         firewall = data.get("firewall", {}) or {}
         return FirewallCreateResult(firewall_id=str(firewall.get("id", "")))
 
-    # --- DNS (separate host + token; Bearer is not used here) -------------------
-    def _dns_headers(self, *, with_content: bool = True) -> dict:
-        headers = {"Auth-API-Token": self._dns_token, "Accept": "application/json"}
-        if with_content:
-            headers["Content-Type"] = "application/json"
-        return headers
-
-    def _find_dns_record(self, zone_id: str, name: str) -> str:
-        """The id of an existing A record with this name in the zone, or "". Makes the
-        upsert a TRUE upsert (a re-provision / IP change updates the record instead of
-        creating a duplicate A record)."""
-        query = urlencode({"zone_id": zone_id})
-        request = Request(self._dns_base + f"/records?{query}", method="GET",
-                          headers=self._dns_headers(with_content=False))
-        data = self._open(request)
-        for record in data.get("records", []) or []:
-            if record.get("type") == "A" and record.get("name") == name:
-                return str(record.get("id", ""))
-        return ""
+    # --- DNS (unified Cloud API, RRSet model; SAME host + Bearer token as compute) ---
+    # DNS was folded into the Cloud API (GA 2025-11-10): the legacy dns.hetzner.com +
+    # `Auth-API-Token` path is gone, and a Cloud token (Bearer) now authenticates DNS too.
+    # Records are RRSets keyed by (zone-relative name, type), each carrying an ARRAY of
+    # values — there is NO per-record id; you address by name+type. The zone path segment
+    # accepts the zone id OR its name, so `req.zone_id` (settings.fleet_dns_zone_id) can be
+    # either and no separate zone-id lookup is needed.
+    def _rrset_exists(self, zone: str, label: str) -> bool:
+        """Probe whether the zone's `<label>` A RRSet already exists — the idempotency
+        signal for the upsert. 200 -> True, 404 -> False; any other status raises. (If this
+        exact single-RRSet GET path ever 405s, list via GET /zones/{zone}/rrsets?name&type.)"""
+        request = Request(
+            f"{self._base}/zones/{zone}/rrsets/{label}/A",
+            method="GET",
+            headers=self._headers(with_content=False),
+        )
+        try:
+            with self._do_open(request) as response:
+                response.read()
+        except HTTPError as exc:
+            if exc.code == 404:
+                return False
+            raise HetznerApiError(exc.code, self._error_body(exc)) from exc
+        except URLError as exc:
+            raise HetznerApiError(0, str(getattr(exc, "reason", exc))) from exc
+        return True
 
     def upsert_dns_record(self, req: DnsRecordRequest) -> DnsRecordResult:
-        body = {
-            "zone_id": req.zone_id,
-            "type": "A",
-            "name": req.name,
-            "value": req.ipv4,
-            "ttl": int(req.ttl),
-        }
-        # True upsert: PUT an existing A record (same zone + name), else POST a new one.
-        existing_id = self._find_dns_record(req.zone_id, req.name)
-        if existing_id:
-            request = Request(self._dns_base + f"/records/{existing_id}",
-                              data=json.dumps(body).encode("utf-8"), method="PUT",
-                              headers=self._dns_headers())
+        """Idempotent create-or-update of the zone's A RRSet for `req.name` (a zone-RELATIVE
+        label; the apex is "@"). Probe the (name, A) RRSet, then either POST a new RRSet or
+        REPLACE its value list via the set_records action."""
+        zone = quote(req.zone_id, safe="")
+        # Zone-RELATIVE label; empty normalizes to the apex "@" (URL-encoded as %40).
+        label = quote(req.name or "@", safe="")
+        record = {"value": req.ipv4}
+        if self._rrset_exists(zone, label):
+            # set_records REPLACES the full value list, so it is naturally idempotent — the
+            # primary 'update the value(s)' call. (change_ttl handles TTL-only edits; a
+            # value-only upsert never needs it — the ttl was baked at create.)
+            self._post(f"/zones/{zone}/rrsets/{label}/A/actions/set_records", {"records": [record]})
         else:
-            request = Request(self._dns_base + "/records",
-                              data=json.dumps(body).encode("utf-8"), method="POST",
-                              headers=self._dns_headers())
-        data = self._open(request)
-        record = data.get("record", {}) or {}
-        record_id = str(record.get("id", "") or existing_id)
-        zone = record.get("zone_name") or ""
-        name = record.get("name") or req.name
-        fqdn = record.get("fqdn") or (f"{name}.{zone}".rstrip(".") if zone else name)
-        return DnsRecordResult(record_id=record_id, fqdn=fqdn)
+            # Create the RRSet: `name` is the zone-RELATIVE label, `records` the value array.
+            self._post(
+                f"/zones/{zone}/rrsets",
+                {"name": req.name or "@", "type": "A", "ttl": int(req.ttl), "records": [record]},
+            )
+        # The RRSet has no per-record id — it is addressed by name+type; that key is the
+        # stable identifier recorded for teardown (DELETE /zones/{zone}/rrsets/{name}/A).
+        return DnsRecordResult(record_id=f"{req.name or '@'}/A", fqdn=req.name)

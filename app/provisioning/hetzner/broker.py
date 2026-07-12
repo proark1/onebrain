@@ -148,5 +148,6 @@ def build_hetzner_broker(settings, *, client: Optional[HetznerClient] = None) ->
     if client is None:
         from app.provisioning.hetzner.urllib_client import UrllibHetznerClient
 
-        client = UrllibHetznerClient(settings.hetzner_api_token, settings.fleet_dns_token)
+        # ONE Cloud token covers compute AND DNS (unified Cloud API, GA 2025-11-10).
+        client = UrllibHetznerClient(settings.hetzner_api_token)
     return InProcessHetznerBroker(client)

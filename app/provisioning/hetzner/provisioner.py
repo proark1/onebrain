@@ -233,12 +233,11 @@ class HetznerProvisioner:
             )
         dns = None
         if dns_enabled:
-            # Hetzner DNS treats a record name WITHOUT a trailing dot as RELATIVE to the zone,
-            # so the A-record name is the zone-relative LABEL (deployment_id), NOT the full
-            # fqdn — POSTing "dep_a.fleet.example" into zone fleet.example would resolve as
-            # "dep_a.fleet.example.fleet.example" (and _find_dns_record, which compares against
-            # Hetzner's relative names, would never match -> a duplicate A record on every
-            # re-provision). fqdn is kept below for the box hostname / external_run_url.
+            # The Cloud API RRSet name is RELATIVE to the zone, so the A-record name is the
+            # zone-relative LABEL (deployment_id), NOT the full fqdn — a "dep_a.fleet.example"
+            # RRSet in zone fleet.example would resolve as "dep_a.fleet.example.fleet.example"
+            # (and the upsert's name-keyed RRSet probe would never match -> a fresh RRSet on
+            # every re-provision). fqdn is kept below for the box hostname / external_run_url.
             dns = DnsRecordRequest(zone_id=settings.fleet_dns_zone_id, name=run.deployment_id, ipv4="", ttl=300)
 
         # A HetznerApiError IS a RuntimeError; it propagates to _dispatch_run,

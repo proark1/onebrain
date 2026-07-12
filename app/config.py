@@ -239,9 +239,11 @@ class Settings(BaseSettings):
     hetzner_volume_size_gb: int = 10           # data volume so Postgres survives a rebuild
     hetzner_firewall_id: str = ""              # pre-created default-deny firewall, attached in the create call
     # --- DNS (P1) ---
+    # DNS rides the UNIFIED Hetzner Cloud API (GA 2025-11-10): the SAME hetzner_api_token
+    # (Bearer) authenticates DNS — there is NO separate DNS token. The legacy
+    # dns.hetzner.com + Auth-API-Token path (and its own token) is gone.
     fleet_dns_provider: str = ""               # "" | hetzner | cloudflare  ("" -> skip DNS, use raw IP)
-    fleet_dns_zone_id: str = ""
-    fleet_dns_token: str = ""                  # DNS API token (separate from the Hetzner compute token)
+    fleet_dns_zone_id: str = ""                # Hetzner Cloud DNS zone id OR name (the rrset path accepts either)
     fleet_base_domain: str = ""                # e.g. "fleet.example" -> <deployment_id>.fleet.example
     # --- Desired-state emission (P2; MC side). The ONE online private key MC holds (D-11). ---
     fleet_desired_state_private_key: str = ""  # base64 raw Ed25519 wrapper key; "" DISABLES emission (dormant)

@@ -64,15 +64,15 @@ class VolumeCreateResult:
 
 @dataclass(frozen=True)
 class DnsRecordRequest:
-    zone_id: str
-    name: str                               # e.g. "<deployment_id>" (relative to the zone)
+    zone_id: str                            # Cloud API zone id OR name (the rrset path accepts either)
+    name: str                               # zone-RELATIVE label, e.g. "<deployment_id>" ("@" for the apex)
     ipv4: str
     ttl: int = 300
 
 
 @dataclass(frozen=True)
 class DnsRecordResult:
-    record_id: str
+    record_id: str                          # RRSet key "<name>/A" (the model has no per-record id)
     fqdn: str
 
 

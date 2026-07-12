@@ -75,7 +75,7 @@ def test_urllib_client_builds_server_post():
         captured["body"] = json.loads(request.data)
         return _FakeResponse(_SERVER_OK)
 
-    client = UrllibHetznerClient("sentinel-token-XYZ", "dns-token", opener=opener)
+    client = UrllibHetznerClient("sentinel-token-XYZ", opener=opener)
     result = client.create_server(_server_req())
 
     assert captured["url"] == "https://api.hetzner.cloud/v1/servers"
@@ -213,46 +213,67 @@ def test_fake_client_error_injection():
     assert fake.create_volume(VolumeCreateRequest(name="v", size_gb=10, location="nbg1")).volume_id == "vol_1"
 
 
-# --- P5-05: DNS true upsert (opener-injected; no network) --------------------
-
-_ZONE_RECORDS = json.dumps({"records": [
-    {"id": "rec_a", "type": "A", "name": "dep_a", "zone_name": "fleet.example"},
-    {"id": "rec_www", "type": "A", "name": "www"},
-]}).encode("utf-8")
-_ZONE_EMPTY = json.dumps({"records": []}).encode("utf-8")
-_DNS_PUT_OK = json.dumps({"record": {"id": "rec_a", "name": "dep_a", "zone_name": "fleet.example"}}).encode("utf-8")
-_DNS_POST_OK = json.dumps({"record": {"id": "rec_new", "name": "dep_a", "zone_name": "fleet.example"}}).encode("utf-8")
+# --- P5-05 → unified Cloud API DNS RRSet upsert (opener-injected; no network) ---
+# DNS now rides the SAME api.hetzner.cloud host + Bearer token as compute (GA 2025-11-10);
+# records are RRSets addressed by zone-relative name + type, updated via set_records — NOT
+# the legacy dns.hetzner.com /records model with per-record ids and an Auth-API-Token header.
 
 
-def test_dns_upsert_puts_existing_a_record():
-    seen = []
+def _rrset_opener(seen, *, exists: bool):
+    """Record every (method, url, authorization, body) and answer the RRSet existence probe
+    with 200 (exists) or 404 (missing); every create/action POST returns 200 empty."""
 
     def opener(request, timeout):
-        seen.append((request.get_method(), request.full_url, request.get_header("Auth-api-token")))
-        return _FakeResponse(_ZONE_RECORDS if request.get_method() == "GET" else _DNS_PUT_OK)
+        method = request.get_method()
+        body = json.loads(request.data) if request.data else None
+        seen.append((method, request.full_url, request.get_header("Authorization"), body))
+        if method == "GET" and not exists:
+            raise urllib.error.HTTPError(request.full_url, 404, "not found", None, io.BytesIO(b"{}"))
+        return _FakeResponse(b"{}")
 
-    result = UrllibHetznerClient("api-t", "dns-t", opener=opener).upsert_dns_record(
-        DnsRecordRequest(zone_id="z1", name="dep_a", ipv4="203.0.113.5"))
-    # GET the zone's records first, then PUT the MATCHED record (never POST a duplicate).
-    assert seen[0][0] == "GET" and "records?zone_id=z1" in seen[0][1]
-    assert seen[1][0] == "PUT" and seen[1][1].endswith("/records/rec_a")
-    # the DNS token rides the Auth-API-Token header (never a Bearer), on both requests.
-    assert seen[0][2] == "dns-t" and seen[1][2] == "dns-t"
-    assert result.record_id == "rec_a"
+    return opener
 
 
-def test_dns_upsert_posts_when_no_matching_record():
+def test_dns_upsert_replaces_records_on_existing_rrset():
     seen = []
+    result = UrllibHetznerClient("api-t", opener=_rrset_opener(seen, exists=True)).upsert_dns_record(
+        DnsRecordRequest(zone_id="fleet.example", name="dep_a", ipv4="203.0.113.5"))
 
-    def opener(request, timeout):
-        seen.append((request.get_method(), request.full_url))
-        return _FakeResponse(_ZONE_EMPTY if request.get_method() == "GET" else _DNS_POST_OK)
-
-    result = UrllibHetznerClient("api-t", "dns-t", opener=opener).upsert_dns_record(
-        DnsRecordRequest(zone_id="z1", name="dep_a", ipv4="203.0.113.5"))
+    # 1) probe the (name, A) RRSet on the UNIFIED Cloud API host; 2) set_records REPLACES the
+    #    value list (idempotent) — never a legacy /records PUT. The zone path segment is the
+    #    id-or-name (no separate zone-id lookup), and the label is the zone-RELATIVE name.
     assert seen[0][0] == "GET"
-    assert seen[1][0] == "POST" and seen[1][1].endswith("/records")
-    assert result.record_id == "rec_new"
+    assert seen[0][1] == "https://api.hetzner.cloud/v1/zones/fleet.example/rrsets/dep_a/A"
+    assert seen[1][0] == "POST"
+    assert seen[1][1] == (
+        "https://api.hetzner.cloud/v1/zones/fleet.example/rrsets/dep_a/A/actions/set_records")
+    assert seen[1][3] == {"records": [{"value": "203.0.113.5"}]}
+    # The DNS calls carry the SAME compute Bearer token — never the legacy Auth-API-Token.
+    assert all(auth == "Bearer api-t" for _m, _u, auth, _b in seen)
+    assert result.record_id == "dep_a/A"
+
+
+def test_dns_upsert_creates_rrset_when_missing():
+    seen = []
+    result = UrllibHetznerClient("api-t", opener=_rrset_opener(seen, exists=False)).upsert_dns_record(
+        DnsRecordRequest(zone_id="fleet.example", name="dep_a", ipv4="203.0.113.5", ttl=300))
+
+    # 404 on the probe -> POST a NEW RRSet (zone-relative label + records array), not set_records.
+    assert seen[0][0] == "GET"
+    assert seen[1][0] == "POST"
+    assert seen[1][1] == "https://api.hetzner.cloud/v1/zones/fleet.example/rrsets"
+    assert seen[1][3] == {"name": "dep_a", "type": "A", "ttl": 300, "records": [{"value": "203.0.113.5"}]}
+    assert not any("actions/set_records" in url for _m, url, _a, _b in seen)
+    assert result.record_id == "dep_a/A"
+
+
+def test_dns_upsert_apex_uses_encoded_at_label():
+    # Empty label normalizes to the apex "@": %40 in the probe path, literal "@" in the body.
+    seen = []
+    UrllibHetznerClient("api-t", opener=_rrset_opener(seen, exists=False)).upsert_dns_record(
+        DnsRecordRequest(zone_id="z1", name="", ipv4="203.0.113.5"))
+    assert seen[0][1].endswith("/zones/z1/rrsets/%40/A")
+    assert seen[1][3]["name"] == "@"
 
 
 def test_fake_dns_upsert_is_idempotent_by_zone_and_name():

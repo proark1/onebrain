@@ -165,8 +165,9 @@ def test_dns_record_uses_zone_relative_label_not_fqdn():
     # record must carry the LABEL "mc" (deployment_id), not "mc.onlyonebrain.com" — the
     # latter resolves as "mc.onlyonebrain.com.onlyonebrain.com" and the MC box's own
     # self-heartbeat to --fleet-public-url never resolves.
-    settings = Settings(fleet_dns_provider="hetzner", fleet_dns_zone_id="zone_ob",
-                        fleet_dns_token="dns-tok")
+    # DNS auth is now the unified Cloud token (hetzner_api_token) — no separate DNS token
+    # is needed to build the record shape; provider + zone + fqdn are the only gates.
+    settings = Settings(fleet_dns_provider="hetzner", fleet_dns_zone_id="zone_ob")
     art = mc.build_mc_artifacts(_args(_base_argv("--fqdn", "mc.onlyonebrain.com")), settings)
     assert art.dns is not None
     assert art.dns.name == "mc"                       # zone-relative label, NOT the fqdn

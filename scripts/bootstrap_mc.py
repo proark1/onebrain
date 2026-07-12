@@ -20,8 +20,10 @@ box's OWN db, so the reporter heartbeats to itself with no manual enroll. First-
 in-compose migrate (G3-5) runs ``alembic upgrade head`` on the on-box DB — do NOT migrate
 the MC DB "before boot" (impossible; the DB is created inside the box's compose stack).
 
-Secret hygiene: the Hetzner + DNS tokens are read from the environment (never flags,
-never echoed). Dry-run prints the rendered cloud-init with every secret VALUE REDACTED;
+Secret hygiene: the ONE Hetzner Cloud token (which now also covers DNS — the unified
+Cloud API, GA 2025-11-10) is read from the environment (never a flag, never echoed); no
+separate DNS token is needed. Dry-run prints the rendered cloud-init with every secret
+VALUE REDACTED;
 the create path prints only the request SHAPE (never the user-data). Dry-run is the
 default; ``--no-dry-run`` is the single gate to a real create and hard-requires the token.
 """
@@ -30,7 +32,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import secrets
 import sys
 from dataclasses import dataclass
@@ -74,8 +75,9 @@ class McArtifacts:
 def build_mc_bundle(settings, *, dns_token: str, fleet_token: str) -> dict:
     """The MC box's BAKED bundle (G3-1). Every foundational secret is freshly generated
     here (the MC box is never exchanged, so nothing is stored MC-side). ONEBRAIN_DNS_TOKEN
-    is set (MC may manage DNS); service key / space id are empty (MC runs no comm/assistant
-    module). Mirrors the customer bundle in HetznerProvisioner._provision_box_secrets."""
+    is the UNIFIED Cloud API token (same as compute; MC may manage DNS through it); service
+    key / space id are empty (MC runs no comm/assistant module). Mirrors the customer bundle
+    in HetznerProvisioner._provision_box_secrets."""
     return {
         "POSTGRES_PASSWORD": secrets.token_urlsafe(32),
         "REDIS_PASSWORD": secrets.token_urlsafe(32),
@@ -121,7 +123,10 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
     if missing:
         raise ValueError(f"--images-json must cover the MC modules; missing: {missing}")
 
-    dns_token = os.environ.get("ONEBRAIN_FLEET_DNS_TOKEN", "") or getattr(settings, "fleet_dns_token", "")
+    # DNS now rides the UNIFIED Cloud API (GA 2025-11-10): the SAME Hetzner Cloud token as
+    # compute covers DNS — there is no separate ONEBRAIN_FLEET_DNS_TOKEN. Baked as the box's
+    # ONEBRAIN_DNS_TOKEN so the MC box can manage DNS through the Cloud API at runtime.
+    dns_token = settings.hetzner_api_token
     _, _, fleet_token = generate_fleet_key()
     bundle = build_mc_bundle(settings, dns_token=dns_token, fleet_token=fleet_token)
     errors = validate_bundle(bundle)
@@ -197,11 +202,12 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
             location=args.location or settings.hetzner_location,
             labels={"deployment_id": deployment_id, "role": "operator"})
     dns = None
-    if fqdn and settings.fleet_dns_provider == "hetzner" and settings.fleet_dns_zone_id and dns_token:
-        # Zone-relative LABEL (deployment_id), NOT the full fqdn: Hetzner DNS treats a name
-        # without a trailing dot as relative to the zone, so name=fqdn would resolve as
-        # "mc.<zone>.<zone>" and never match on re-provision. fqdn stays the box hostname
-        # (Caddy TLS + external_run_url). The operator sets --fqdn <deployment_id>.<zone>.
+    if fqdn and settings.fleet_dns_provider == "hetzner" and settings.fleet_dns_zone_id:
+        # Zone-relative LABEL (deployment_id), NOT the full fqdn: the Cloud API RRSet name is
+        # relative to the zone, so name=fqdn would resolve as "mc.<zone>.<zone>" and never
+        # match on re-provision. fqdn stays the box hostname (Caddy TLS + external_run_url).
+        # The operator sets --fqdn <deployment_id>.<zone>. No token gate here: this builds the
+        # request SHAPE (pure/no-network); the create path hard-requires the Cloud token.
         dns = DnsRecordRequest(zone_id=settings.fleet_dns_zone_id, name=deployment_id, ipv4="", ttl=300)
 
     # Everything that must NEVER be echoed: the bundle values + the desired-state private
