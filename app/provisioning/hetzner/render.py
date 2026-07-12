@@ -16,6 +16,8 @@ check and `images` values pass `validate_image_ref`; anything failing raises
 
 from __future__ import annotations
 
+import base64
+import gzip
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -458,7 +460,41 @@ def _yaml_block(content: str, indent: str = "      ") -> str:
     return "\n".join((indent + line) if line.strip() else "" for line in lines)
 
 
+# Hetzner Cloud's API rejects user_data over 32768 bytes (422 invalid_input) and serves it
+# VERBATIM, so the WHOLE document cannot be gzip-compressed (cloud-init would receive
+# undecodable base64). Instead, cloud-init's write_files module natively decompresses any
+# entry carrying `encoding: gz+b64` (gzip then base64) back to its ORIGINAL bytes on write.
+# Emitting the LARGE entries (the box scripts + the full compose) that way — while the
+# document itself stays a plain `#cloud-config` — shrinks the payload well under the limit.
+# Entries at or above this many UTF-8 bytes are gz+b64-encoded; smaller ones (env files,
+# Caddyfile, box.env, .env, systemd units) stay plain text for readability. The threshold
+# sits below the smallest box script (onebrain_bootstrap.sh, ~4.7KB) and above every env /
+# config entry (all <2KB), and gz+b64 only helps past ~1KB anyway (tiny files compress to
+# MORE than their plain form once the gzip header is added).
+_GZB64_THRESHOLD = 2048
+
+
 def _write_file_entry(path: str, content: str, permissions: str = "0644") -> str:
+    """A cloud-init write_files entry for ``path`` with ``content`` and ``permissions``.
+
+    Large content (>= ``_GZB64_THRESHOLD`` UTF-8 bytes) is emitted with ``encoding: gz+b64``
+    so the overall cloud-init stays under Hetzner's 32768-byte user_data limit; cloud-init
+    writes the DECOMPRESSED (original) bytes to disk, so the on-box file — content AND
+    permissions — is byte-identical to the plain form. gzip mtime is pinned to 0 so the
+    render is byte-for-byte reproducible (the gzip OS byte is 0xff regardless of platform,
+    so the output is stable across dev/CI too). Small content stays plain for readability."""
+    raw = content.encode("utf-8")
+    if len(raw) >= _GZB64_THRESHOLD:
+        # b64encode over gzip(mtime=0) -> a single-line ASCII scalar of the base64 alphabet
+        # (A-Za-z0-9+/=), which is safe as an unquoted YAML plain scalar: no space, colon,
+        # '#', '|', or newline, and gzip's base64 always starts "H4sI" (never a YAML indicator).
+        blob = base64.b64encode(gzip.compress(raw, mtime=0)).decode("ascii")
+        return (
+            f"  - path: {path}\n"
+            f"    permissions: '{permissions}'\n"
+            f"    encoding: gz+b64\n"
+            f"    content: {blob}\n"
+        )
     return (
         f"  - path: {path}\n"
         f"    permissions: '{permissions}'\n"

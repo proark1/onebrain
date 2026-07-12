@@ -5,7 +5,10 @@ output changes)."""
 
 from __future__ import annotations
 
+import base64
+import gzip
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -17,6 +20,10 @@ from app.provisioning.hetzner.render import (
     render_compose,
     render_env_files,
 )
+
+# The Hetzner Cloud API rejects user_data over this many bytes (422 invalid_input); the
+# rendered cloud-init MUST stay under it (the go-live blocker this file guards).
+_HETZNER_USER_DATA_LIMIT = 32768
 
 
 def _service_names(compose: str) -> set:
@@ -37,6 +44,31 @@ def _runcmd_section(cloud_init: str) -> str:
 
 def _write_files_section(cloud_init: str) -> str:
     return cloud_init.split("\nruncmd:\n", 1)[0]
+
+
+# A write_files entry emitted with cloud-init's `encoding: gz+b64` (large entries only):
+#   - path: <path>
+#     permissions: '<perm>'
+#     encoding: gz+b64
+#     content: <single-line base64 of gzip(original bytes)>
+_GZB64_ENTRY = re.compile(
+    r"^  - path: (?P<path>\S+)\n"
+    r"    permissions: '(?P<perm>[0-7]+)'\n"
+    r"    encoding: gz\+b64\n"
+    r"    content: (?P<blob>\S+)\n",
+    re.MULTILINE,
+)
+
+
+def _gz_b64_entries(cloud_init: str) -> dict:
+    """{path: (permissions, decoded_text)} for every gz+b64 write_files entry, with each
+    entry base64-decoded then gunzipped back to the bytes cloud-init writes to disk."""
+    out = {}
+    for m in _GZB64_ENTRY.finditer(_write_files_section(cloud_init)):
+        decoded = gzip.decompress(base64.b64decode(m.group("blob"))).decode("utf-8")
+        out[m.group("path")] = (m.group("perm"), decoded)
+    return out
+
 
 _GOLDEN = Path(__file__).parent / "golden" / "hetzner"
 _ALL = (
@@ -258,9 +290,13 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
     ):
         assert f"- path: {required}" in wf
     assert "- path: /opt/onebrain/env/" in wf                        # per-service env files
-    assert "set -euo pipefail" in wf                                 # update.sh embedded
-    assert "verify_desired_state" in wf                              # verifier embedded
-    assert "ExecStart=/opt/onebrain/update.sh" in wf                 # systemd unit embedded
+    # update.sh + the verifier are LARGE, so they embed gz+b64 (not plaintext); their DECODED
+    # content still carries the expected markers (a round-trip test below proves byte-identity).
+    gz = _gz_b64_entries(ci)
+    assert "set -euo pipefail" in gz["/opt/onebrain/update.sh"][1]           # update.sh embedded (gz+b64)
+    assert "verify_desired_state" in gz["/opt/onebrain/onebrain_box_verify.py"][1]  # verifier embedded (gz+b64)
+    assert "set -euo pipefail" not in wf                             # NOT present as plaintext (compressed)
+    assert "ExecStart=/opt/onebrain/update.sh" in wf                 # systemd unit embedded (small, plain)
     # both metadata DROP rules (A5, in runcmd) + the run-id-substituted callback
     rc = _runcmd_section(ci)
     assert "iptables -I DOCKER-USER -d 169.254.169.254 -j DROP" in rc
@@ -297,6 +333,81 @@ def test_cloud_init_metadata_block_ordering_and_failguard():
     up = runcmd.index("up -d")
     assert guard < drop_du < drop_out < up      # A10 ordering
     assert "metadata_egress_block_failed" in runcmd    # failed insert -> callback failure
+
+
+# --- Hetzner 32768-byte user_data limit (gz+b64 large-entry encoding) ---------
+def test_customer_cloud_init_under_hetzner_user_data_limit():
+    """The go-live blocker: Hetzner's Cloud API rejects user_data over 32768 bytes. The
+    full-stack customer box (every module) is the largest customer render and MUST fit,
+    with headroom below the hard limit."""
+    for modules in (_ALL, _ONEBRAIN):
+        n = len(render_cloud_init(_inputs(modules)).encode("utf-8"))
+        assert n < _HETZNER_USER_DATA_LIMIT, (
+            f"customer cloud-init {n} bytes exceeds Hetzner's {_HETZNER_USER_DATA_LIMIT}-byte limit")
+    # The onebrain-only box (what the MC box mirrors module-wise) has a comfortable margin.
+    assert len(render_cloud_init(_inputs(_ONEBRAIN)).encode("utf-8")) < 30000
+
+
+def test_cloud_init_large_entries_are_gz_b64_and_roundtrip_byte_identical():
+    """Every LARGE write_files entry (the box scripts + the full compose) is embedded with
+    cloud-init's `encoding: gz+b64`, and base64-decode + gunzip reproduces the ORIGINAL
+    bytes EXACTLY (cloud-init writes those decompressed bytes to disk), with permissions
+    preserved. Small entries (env files, Caddyfile, box.env, systemd units, postgres-init)
+    stay plain text."""
+    from app.provisioning.hetzner import render as R
+
+    inp = _inputs(_ALL)
+    ci = render_cloud_init(inp)
+    gz = _gz_b64_entries(ci)
+
+    # Exactly the large entries are gz+b64: the three box scripts + the (full-stack) compose.
+    expected = {
+        "/opt/onebrain/docker-compose.yml": (render_compose(inp), "0644"),
+        "/opt/onebrain/update.sh": (R._read_box_file("update.sh"), "0755"),
+        "/opt/onebrain/onebrain_bootstrap.sh": (R._read_box_file("onebrain_bootstrap.sh"), "0755"),
+        "/opt/onebrain/onebrain_box_verify.py": (R._read_box_file("onebrain_box_verify.py"), "0644"),
+    }
+    assert set(gz) == set(expected), f"unexpected gz+b64 entry set: {sorted(gz)}"
+    for path, (original, want_perm) in expected.items():
+        got_perm, decoded = gz[path]
+        assert decoded == original, f"{path}: gz+b64 round-trip is not byte-identical to the original"
+        assert got_perm == want_perm, f"{path}: permission {got_perm!r} not preserved (want {want_perm!r})"
+    # The two shell box scripts stay executable (0755) — cloud-init applies these perms to the
+    # DECOMPRESSED file, so the box scripts remain runnable exactly as before.
+    assert gz["/opt/onebrain/update.sh"][0] == "0755"
+    assert gz["/opt/onebrain/onebrain_bootstrap.sh"][0] == "0755"
+
+    # Small entries are NOT compressed — they remain plain `content: |` blocks for readability
+    # (and, for env/.env, so their secret ${VAR}s / baked values stay greppable + redactable).
+    wf = _write_files_section(ci)
+    for plain_path in (
+        "/opt/onebrain/env/onebrain-api.env", "/opt/onebrain/box.env", "/opt/onebrain/Caddyfile",
+        "/opt/onebrain/postgres-init.sh", "/etc/systemd/system/onebrain-update.service",
+        "/etc/systemd/system/onebrain-metadata-drop.service",
+    ):
+        assert plain_path not in gz, f"{plain_path} was unexpectedly gz+b64 encoded"
+        body = wf.split(f"  - path: {plain_path}\n", 1)[1].split("  - path:", 1)[0]
+        assert "content: |" in body and "encoding:" not in body, f"{plain_path} is not a plain entry"
+
+    # Deterministic/reproducible: gzip mtime=0 (+ platform-independent OS byte) -> identical render.
+    assert render_cloud_init(inp) == ci
+
+
+def test_mc_cloud_init_under_hetzner_user_data_limit():
+    """The MC (operator) box — the actual go-live artifact bootstrap_mc renders — fits under
+    Hetzner's 32768-byte user_data limit via build_mc_artifacts, with a comfortable margin,
+    while its baked /opt/onebrain/.env stays PLAIN (so bootstrap_mc._redact can mask its
+    secret values and the boot-config tests can resolve it)."""
+    from tests.test_bootstrap_mc import _args, _base_argv, _mc_settings, mc
+
+    art = mc.build_mc_artifacts(_args(_base_argv()), _mc_settings())
+    n = len(art.server.user_data.encode("utf-8"))
+    assert n < _HETZNER_USER_DATA_LIMIT, (
+        f"MC user_data {n} bytes exceeds Hetzner's {_HETZNER_USER_DATA_LIMIT}-byte limit")
+    assert n < 30000, f"MC user_data {n} bytes has no comfortable margin under {_HETZNER_USER_DATA_LIMIT}"
+    gz = _gz_b64_entries(art.server.user_data)
+    assert "/opt/onebrain/onebrain_box_verify.py" in gz     # the large verifier is compressed
+    assert "/opt/onebrain/.env" not in gz                   # the baked .env stays plain (redaction/tests)
 
 
 def test_update_sh_has_no_crlf():
