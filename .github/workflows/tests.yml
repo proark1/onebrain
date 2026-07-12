@@ -119,7 +119,11 @@ jobs:
           ]
           ignored_dirs = {".git", ".next", "node_modules", ".pytest_cache", "__pycache__", ".onebrain_data"}
           ignored_parts = {"tests", "scripts"}
-          allowed_files = {".github/workflows/provision-customer.yml", "app/users/seed.py"}
+          allowed_files = {
+              ".github/workflows/provision-customer.yml",
+              ".github/workflows/update-customer.yml",
+              "app/users/seed.py",
+          }
           findings = []
           for path in Path(".").rglob("*"):
               if not path.is_file() or any(part in ignored_dirs for part in path.parts):

@@ -73,6 +73,8 @@ export function FleetPanel() {
   }, []);
 
   useEffect(() => {
+    // Initial fetch on mount; state updates land after the request resolves.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh();
   }, [refresh]);
 
