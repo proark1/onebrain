@@ -226,6 +226,30 @@ class Settings(BaseSettings):
     module_probes_enabled: bool = False        # probe co-located module /health endpoints for the heartbeat
     local_modules: str = ""                    # csv of MODULE_IDS running on this box (compose sets it; Railway leaves "")
 
+    # --- Hetzner provisioner (P1; dormant until provisioner_backend="hetzner") ---
+    provisioner_backend: str = "github"        # github | hetzner  (default keeps the Railway/GitHub path)
+    hetzner_api_token: str = ""                # the broker's ONLY secret; injected, never hardcoded
+    hetzner_broker_url: str = ""               # "" -> in-process broker (P4). Set -> remote broker host (P5)
+    hetzner_allow_inprocess_broker: bool = False  # A6: dogfood/test escape hatch. Production Hetzner MUST use the
+                                               # out-of-process broker (hetzner_broker_url). See build_hetzner_broker.
+    hetzner_location: str = "nbg1"             # EU region (nbg1/fsn1/hel1)
+    hetzner_server_type: str = "cx22"
+    hetzner_image: str = "ubuntu-24.04"
+    hetzner_ssh_key_ids: str = ""              # csv of Hetzner SSH key ids (break-glass only; no inbound 22 path)
+    hetzner_volume_size_gb: int = 10           # data volume so Postgres survives a rebuild
+    hetzner_firewall_id: str = ""              # pre-created default-deny firewall, attached in the create call
+    # --- DNS (P1) ---
+    fleet_dns_provider: str = ""               # "" | hetzner | cloudflare  ("" -> skip DNS, use raw IP)
+    fleet_dns_zone_id: str = ""
+    fleet_dns_token: str = ""                  # DNS API token (separate from the Hetzner compute token)
+    fleet_base_domain: str = ""                # e.g. "fleet.example" -> <deployment_id>.fleet.example
+    # --- Desired-state emission (P2; MC side). The ONE online private key MC holds (D-11). ---
+    fleet_desired_state_private_key: str = ""  # base64 raw Ed25519 wrapper key; "" DISABLES emission (dormant)
+    fleet_desired_state_public_key: str = ""   # baked into cloud-init so the box can verify the wrapper
+    fleet_desired_state_ttl_seconds: int = 900 # envelope expiry window
+    # --- Pull reconcile (P2) ---
+    fleet_pull_convergence_deadline_seconds: int = 1800  # a box silent past this after an offer -> synth failed
+
     # Service surface — per-key rate limit (metered LLM/embedding endpoints) and a
     # cap on how many active keys one tenant may hold.
     service_rate_limit: int = 60
