@@ -153,7 +153,9 @@ def _compose_service(name, *, image, profiles=None, command=None, env_file, expo
         lines.append(f"    profiles: [{', '.join(profiles)}]")
     lines.append(f"    restart: {restart}")
     if command is not None:
-        lines.append("    command: [" + ", ".join(f'"{c}"' for c in command) + "]")
+        # JSON-array form; escape embedded double quotes so a shell -c argument that
+        # itself quotes an env ref (redis) renders as valid YAML/JSON.
+        lines.append("    command: [" + ", ".join('"' + c.replace('"', '\\"') + '"' for c in command) + "]")
     lines.append("    env_file:")
     lines.append(f"      - {env_file}")
     if expose:
@@ -203,7 +205,12 @@ def render_compose(inp: BoxRenderInputs) -> str:
     blocks.append(_compose_service(
         "redis",
         image="redis:7",
-        command=["redis-server", "--requirepass", "${REDIS_PASSWORD}"],
+        # requirepass MUST resolve from the in-container REDIS_PASSWORD (env_file), not a
+        # compose-time ${REDIS_PASSWORD} interpolation (which reads the shell/.env — empty
+        # here, so redis would boot passwordless while clients AUTH). The doubled $$ escapes
+        # compose interpolation, leaving $REDIS_PASSWORD for the container shell to expand —
+        # same source the healthcheck and every client's REDIS_URL read.
+        command=["sh", "-c", 'exec redis-server --requirepass "$$REDIS_PASSWORD"'],
         env_file="env/redis.env",
         expose="6379",
         healthcheck=[
