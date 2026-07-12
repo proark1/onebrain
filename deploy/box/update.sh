@@ -183,6 +183,7 @@ PYEOF
 BACKUP_STATUS=""
 BACKUP_TS=""
 PRE_MIGRATION_REV=""
+ENC=""   # encrypted backup path (set in step 4); recover decrypts THIS, never the shredded plaintext
 
 # --- 4. QUIESCE + BACKUP before a schema change -----------------------------
 crosses_migration() { [ "$MIG_FROM" != "$MIG_TO" ] || [ "$ROLLBACK_KIND" = "restore_required" ]; }
@@ -237,8 +238,20 @@ recover_code_only() {
   dc_over "${PROFILE_ARGS[@]}" up -d >>"$LOG" 2>&1 || true
 }
 recover_restore_required() {
-  log "recover restore_required: pg_restore at $PRE_MIGRATION_REV then revert digests"
-  "$PG_RESTORE" "$WORK/backup.sql" >>"$LOG" 2>&1 || true
+  log "recover restore_required: decrypt backup + pg_restore at $PRE_MIGRATION_REV then revert digests"
+  # The plaintext dump was shredded right after encryption (step 4), so the ONLY
+  # surviving copy is the encrypted $ENC. Decrypt it with the SAME cipher+key used to
+  # encrypt (openssl enc -d) into a temp plaintext, restore from THAT, then shred the
+  # temp so customer data never lingers on disk. NEVER pg_restore the deleted
+  # $WORK/backup.sql (that path no longer exists).
+  RESTORE="$WORK/restore.sql"
+  if "$OPENSSL" enc -d -aes-256-cbc -pbkdf2 -pass "pass:${UPDATE_BACKUP_KEY:-}" \
+       -in "$ENC" -out "$RESTORE" 2>>"$LOG"; then
+    "$PG_RESTORE" "$RESTORE" >>"$LOG" 2>&1 || log "pg_restore warned"
+    shred -u "$RESTORE" 2>/dev/null || rm -f "$RESTORE"
+  else
+    log "backup decrypt FAILED; cannot restore DB"
+  fi
   recover_code_only
 }
 if ! "$CURL" -sf "$UPDATE_HEALTH_URL" >/dev/null 2>>"$LOG"; then

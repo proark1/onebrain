@@ -66,6 +66,12 @@ _STUBS = {
     "pg_restore": (
         '#!/usr/bin/env bash\n'
         'echo "pg_restore $*" >> "$STUB_LOG"\n'
+        # The input dump is the last arg; record whether it actually exists so the
+        # dry-run test can prove the recover path decrypted a real backup FIRST (the
+        # plaintext dump was shredded post-encrypt, so a naive restore would find no file).
+        'in=""; for a in "$@"; do in="$a"; done\n'
+        'if [ -n "$in" ] && [ -f "$in" ]; then echo "pg_restore INPUT_PRESENT $in" >> "$STUB_LOG"; '
+        'else echo "pg_restore INPUT_MISSING $in" >> "$STUB_LOG"; fi\n'
         'exit 0\n'
     ),
     "openssl": (
@@ -260,7 +266,27 @@ def test_smoke_fail_restore_required_restores(box):
     result = box.run()
     assert result.returncode == 0, result.stderr
     assert box.state()["outcome"] == "rolled_back"
-    assert "pg_restore" in box.stub_log()           # restore_required -> pg_restore invoked
+    log = box.stub_log()
+    assert "pg_restore" in log                       # restore_required -> pg_restore invoked
+    # The recover path DECRYPTS the .enc backup (openssl enc -d) BEFORE pg_restore, and
+    # pg_restore consumes an existing decrypted file — never the shredded plaintext dump.
+    assert "enc -d" in log
+    assert log.index("enc -d") < log.index("pg_restore")
+    assert "pg_restore INPUT_PRESENT" in log
+    assert "pg_restore INPUT_MISSING" not in log
+
+
+def test_update_sh_recover_restore_decrypts_before_restore():
+    """Static contract: the restore_required recover branch decrypts the encrypted
+    backup (openssl enc -d) BEFORE pg_restore, and restores the DECRYPTED temp — never
+    the shredded plaintext dump ($WORK/backup.sql)."""
+    src = _UPDATE_SH.read_text(encoding="utf-8")
+    start = src.index("recover_restore_required() {")
+    body = src[start:src.index("\n}", start)]
+    decrypt = body.index('"$OPENSSL" enc -d')                 # decrypts the encrypted backup
+    restore = body.index('"$PG_RESTORE"')                     # restores from it
+    assert decrypt < restore                                  # decrypt BEFORE restore
+    assert '"$PG_RESTORE" "$WORK/backup.sql"' not in body     # never the deleted plaintext dump
 
 
 # --- MC unreachable ----------------------------------------------------------
