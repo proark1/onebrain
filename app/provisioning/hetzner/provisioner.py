@@ -232,7 +232,13 @@ class HetznerProvisioner:
             )
         dns = None
         if dns_enabled:
-            dns = DnsRecordRequest(zone_id=settings.fleet_dns_zone_id, name=fqdn, ipv4="", ttl=300)
+            # Hetzner DNS treats a record name WITHOUT a trailing dot as RELATIVE to the zone,
+            # so the A-record name is the zone-relative LABEL (deployment_id), NOT the full
+            # fqdn — POSTing "dep_a.fleet.example" into zone fleet.example would resolve as
+            # "dep_a.fleet.example.fleet.example" (and _find_dns_record, which compares against
+            # Hetzner's relative names, would never match -> a duplicate A record on every
+            # re-provision). fqdn is kept below for the box hostname / external_run_url.
+            dns = DnsRecordRequest(zone_id=settings.fleet_dns_zone_id, name=run.deployment_id, ipv4="", ttl=300)
 
         # A HetznerApiError IS a RuntimeError; it propagates to _dispatch_run,
         # which maps it to dispatch_failed (mirroring dispatch_workflow's shape).
@@ -255,7 +261,9 @@ class HetznerProvisioner:
             external_provider="hetzner",
             railway_project_id=f"hetzner:{result.server_id}",
             railway_environment_id=compose_project,
-            external_run_url=result.fqdn or result.public_ipv4,
+            # The public hostname is the full fqdn we constructed (the DNS record carries only
+            # the zone-relative label); fall back to the raw IP when DNS is disabled.
+            external_run_url=fqdn or result.public_ipv4,
             result_payload={
                 **run.result_payload,
                 "service_ids": {module_id: module_id for module_id in modules},

@@ -198,7 +198,11 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
             labels={"deployment_id": deployment_id, "role": "operator"})
     dns = None
     if fqdn and settings.fleet_dns_provider == "hetzner" and settings.fleet_dns_zone_id and dns_token:
-        dns = DnsRecordRequest(zone_id=settings.fleet_dns_zone_id, name=fqdn, ipv4="", ttl=300)
+        # Zone-relative LABEL (deployment_id), NOT the full fqdn: Hetzner DNS treats a name
+        # without a trailing dot as relative to the zone, so name=fqdn would resolve as
+        # "mc.<zone>.<zone>" and never match on re-provision. fqdn stays the box hostname
+        # (Caddy TLS + external_run_url). The operator sets --fqdn <deployment_id>.<zone>.
+        dns = DnsRecordRequest(zone_id=settings.fleet_dns_zone_id, name=deployment_id, ipv4="", ttl=300)
 
     # Everything that must NEVER be echoed: the bundle values + the desired-state private
     # key + the callback token. Redacted from any printed cloud-init. (Referenced by name,

@@ -137,9 +137,9 @@ def test_dispatch_sets_dns_with_provider():
     ).dispatch(_plain_run())
 
     assert fake.calls[-1] == "upsert_dns_record"        # DNS last
-    assert fake.dns[0].name == "dep_a.fleet.example"
+    assert fake.dns[0].name == "dep_a"                   # zone-relative LABEL, not the full fqdn
     assert fake.dns[0].ipv4 == "203.0.113.1"            # broker filled the empty ipv4 from the server IP
-    assert out.external_run_url == "dep_a.fleet.example"
+    assert out.external_run_url == "dep_a.fleet.example"   # ...but the box hostname is still the full fqdn
     assert out.result_payload["erasure_manifest"]["dns_record_id"] == "dns_1"
 
 
@@ -479,5 +479,7 @@ def test_provision_dns_upserted_for_hetzner_provider():
     fake = FakeHetznerClient()
     out = _p5_dispatch(_p5_settings(fleet_dns_provider="hetzner", fleet_base_domain="fleet.example",
                                     fleet_dns_zone_id="z1"), fake)
-    assert len(fake.dns) == 1 and fake.dns[0].name == "dep_a.fleet.example"
-    assert out.external_run_url == "dep_a.fleet.example"
+    # The A record posts the zone-relative LABEL (Hetzner appends the zone) — NOT the full
+    # fqdn, which would resolve as "dep_a.fleet.example.fleet.example".
+    assert len(fake.dns) == 1 and fake.dns[0].name == "dep_a"
+    assert out.external_run_url == "dep_a.fleet.example"   # the box hostname stays the full fqdn
