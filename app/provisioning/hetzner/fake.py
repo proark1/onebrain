@@ -16,6 +16,7 @@ from app.provisioning.hetzner.client import (
     HetznerApiError,
     ServerCreateRequest,
     ServerCreateResult,
+    ServerInfo,
     VolumeCreateRequest,
     VolumeCreateResult,
 )
@@ -37,6 +38,11 @@ class FakeHetznerClient:
         self._volume_n = 0
         self._dns_n = 0
         self._firewall_n = 0
+        # Created-server registry backing list_servers (the cost-safety read seam):
+        # ordered dicts {id, name, labels, public_ipv4, status, deleted}. `.servers` above
+        # keeps the raw REQUEST log for existing assertions; this holds the minted id/ip +
+        # labels so a later list_servers can dedupe/count against it.
+        self._server_records: List[dict] = []
         # (zone_id, name) -> record_id, so a second upsert of the same A record returns
         # the SAME id (models the true upsert without a network round-trip).
         self._dns_by_name: dict = {}
@@ -58,11 +64,37 @@ class FakeHetznerClient:
         self.servers.append(req)
         self._server_n += 1
         n = self._server_n
-        return ServerCreateResult(
-            server_id=f"server_{n}",
-            public_ipv4=f"203.0.113.{n}",
-            status="initializing",
-        )
+        server_id, ipv4 = f"server_{n}", f"203.0.113.{n}"
+        # Register the minted server so list_servers can find it by label (idempotency +
+        # fleet-cap gates). Labels are copied so a later mutation of the request can't skew it.
+        self._server_records.append({
+            "id": server_id, "name": req.name, "labels": dict(req.labels or {}),
+            "public_ipv4": ipv4, "status": "initializing", "deleted": False,
+        })
+        return ServerCreateResult(server_id=server_id, public_ipv4=ipv4, status="initializing")
+
+    def list_servers(self, label_selector: str) -> List[ServerInfo]:
+        # Read-only: DELIBERATELY not appended to self.calls, so existing exact `calls == [...]`
+        # ordering assertions (which track only mutating create_* ops) stay valid.
+        self._maybe_fail("list_servers")
+        key, sep, value = label_selector.partition("=")
+        if not sep:                       # a selector with no "=" matches nothing (defensive)
+            return []
+        key, value = key.strip(), value.strip()
+        return [
+            ServerInfo(id=r["id"], name=r["name"], labels=dict(r["labels"]),
+                       public_ipv4=r["public_ipv4"], status=r["status"])
+            for r in self._server_records
+            if not r["deleted"] and r["labels"].get(key) == value
+        ]
+
+    def mark_server_deleted(self, server_id: str) -> None:
+        """Test helper (no Protocol delete primitive exists by design, P1-D): simulate a
+        torn-down server so list_servers excludes it — the idempotency gate must then create a
+        fresh box and the cap must stop counting it."""
+        for r in self._server_records:
+            if r["id"] == server_id:
+                r["deleted"] = True
 
     def create_firewall(self, req: FirewallCreateRequest) -> FirewallCreateResult:
         self.calls.append("create_firewall")

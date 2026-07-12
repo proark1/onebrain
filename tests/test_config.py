@@ -28,3 +28,15 @@ def test_registry_allowlist_default_is_org_prefixed():
     # ...but a SAME-HOST, DIFFERENT-ORG ref is rejected under the default (the org boundary bites).
     rejected = verify_images({"onebrain-api": f"ghcr.io/someone-else/img{_DIGEST}"}, parsed)
     assert rejected != []
+
+
+def test_hetzner_server_type_default_is_cx23():
+    # cx22 is no longer offered by Hetzner; the current cheapest CX is cx23. Pin the default
+    # so a box is never provisioned against a retired (uncreatable) server type.
+    assert Settings().hetzner_server_type == "cx23"
+
+
+def test_hetzner_max_fleet_servers_default_cost_cap():
+    # The cost circuit breaker ships ON by default with a small cap — a retry/loop/replay bug
+    # must not be able to mint an unbounded number of billable boxes out of the box.
+    assert Settings().hetzner_max_fleet_servers == 5

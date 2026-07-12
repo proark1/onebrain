@@ -331,3 +331,130 @@ def test_broker_uses_precreated_firewall_when_no_request():
     assert "create_firewall" not in fake.calls
     assert fake.servers[0].firewall_ids == (42,)     # the pre-created id, attached as-is
     assert result.firewall_id == ""                  # nothing created in this flow
+
+
+# --- COST-SAFETY GATEKEEPER: list_servers + idempotency + fleet-size cap -------
+# Nothing else in the fleet prevents duplicate/runaway server creation, so the broker
+# gates on a label read BEFORE every create: reuse an existing deployment (idempotency)
+# and refuse to grow past the fleet cap (cost circuit breaker).
+
+_FLEET = {"managed-by": "onebrain-fleet"}
+
+
+def _fleet_labels(dep):
+    return {"deployment_id": dep, **_FLEET}
+
+
+def test_fake_list_servers_filters_by_exact_selector_and_excludes_deleted():
+    fake = FakeHetznerClient()
+    fake.create_server(_server_req(name="a", labels=_fleet_labels("dep_a")))
+    fake.create_server(_server_req(name="b", labels=_fleet_labels("dep_b")))
+
+    # Exact key=value match on either of the two selectors the broker uses.
+    assert [s.id for s in fake.list_servers("deployment_id=dep_a")] == ["server_1"]
+    assert {s.id for s in fake.list_servers("managed-by=onebrain-fleet")} == {"server_1", "server_2"}
+    assert fake.list_servers("deployment_id=absent") == []      # a non-matching value -> nothing
+    # ServerInfo carries the fields the gates need.
+    only = fake.list_servers("deployment_id=dep_a")[0]
+    assert only.public_ipv4 == "203.0.113.1" and only.labels["deployment_id"] == "dep_a"
+
+    # A deleted server is excluded from BOTH selectors (never reused, never counted).
+    fake.mark_server_deleted("server_1")
+    assert fake.list_servers("deployment_id=dep_a") == []
+    assert [s.id for s in fake.list_servers("managed-by=onebrain-fleet")] == ["server_2"]
+    # list_servers is a READ — it must not pollute the mutating-calls ordering log.
+    assert "list_servers" not in fake.calls
+
+
+def test_urllib_client_list_servers_issues_labelled_get_with_bearer():
+    from urllib.parse import parse_qs, urlsplit
+
+    seen = {}
+    body = json.dumps({"servers": [
+        {"id": 55, "name": "onebrain-dep_a", "labels": {"deployment_id": "dep_a"},
+         "status": "running", "public_net": {"ipv4": {"ip": "203.0.113.55"}}},
+    ]}).encode("utf-8")
+
+    def opener(request, timeout):
+        seen["url"] = request.full_url
+        seen["method"] = request.get_method()
+        seen["auth"] = request.get_header("Authorization")
+        return _FakeResponse(body)
+
+    result = UrllibHetznerClient("api-t", opener=opener).list_servers("deployment_id=dep_a")
+
+    split = urlsplit(seen["url"])
+    assert split.path == "/v1/servers"                          # GET /servers, no create
+    assert seen["method"] == "GET"
+    assert parse_qs(split.query)["label_selector"] == ["deployment_id=dep_a"]
+    assert seen["auth"] == "Bearer api-t"                       # same Bearer token as compute
+    assert len(result) == 1
+    assert result[0].id == "55" and result[0].public_ipv4 == "203.0.113.55"
+    assert result[0].labels == {"deployment_id": "dep_a"} and result[0].status == "running"
+
+
+def test_broker_idempotency_reuses_existing_server_and_creates_nothing():
+    fake = FakeHetznerClient()
+    broker = InProcessHetznerBroker(fake)
+    server = _server_req(firewall_ids=(), labels=_fleet_labels("dep_a"))
+    fw = FirewallCreateRequest(name="fw", rules=(FirewallRule(direction="in", protocol="tcp", port="80"),))
+    vol = VolumeCreateRequest(name="v", size_gb=10, location="nbg1")
+    dns = DnsRecordRequest(zone_id="z1", name="dep_a", ipv4="")
+
+    first = broker.provision_box(server=server, volume=vol, dns=dns, firewall=fw)
+    assert first.reused is False
+    calls_after_first = list(fake.calls)                        # firewall+volume+server+dns
+    assert fake.calls.count("create_server") == 1
+
+    # A second provision for the SAME deployment_id creates NOTHING new (safe to retry forever).
+    second = broker.provision_box(server=server, volume=vol, dns=dns, firewall=fw)
+    assert second.reused is True
+    assert second.server_id == first.server_id and second.public_ipv4 == first.public_ipv4
+    assert second.fqdn == "dep_a"                               # reconstructed from the dns request
+    assert second.firewall_id == "" and second.dns_record_id == "" and second.volume_ids == ()
+    assert fake.calls == calls_after_first                      # NO second create of anything
+    assert fake.calls.count("create_server") == 1
+
+
+def test_broker_fleet_cap_refuses_new_server_when_at_or_over_cap():
+    fake = FakeHetznerClient()
+    fake.create_server(_server_req(name="a", labels=_fleet_labels("dep_1")))
+    fake.create_server(_server_req(name="b", labels=_fleet_labels("dep_2")))
+    broker = InProcessHetznerBroker(fake, max_fleet_servers=2)
+
+    with pytest.raises(RuntimeError, match=r"fleet server cap reached \(2/2\)") as exc:
+        broker.provision_box(server=_server_req(firewall_ids=(), labels=_fleet_labels("dep_new")),
+                             volume=None, dns=None, firewall=None)
+    # The message names the env var the operator raises to grow the fleet.
+    assert "ONEBRAIN_HETZNER_MAX_FLEET_SERVERS" in str(exc.value)
+    # NO third server was created — the breaker fired before the create call.
+    assert fake.calls.count("create_server") == 2
+    assert len(fake.list_servers("managed-by=onebrain-fleet")) == 2
+
+
+def test_broker_fleet_cap_never_trips_on_idempotent_reuse():
+    # Idempotency runs BEFORE the cap, so re-provisioning an EXISTING deployment while the
+    # fleet is already at the cap reuses the box rather than raising (a retry must never be
+    # blocked by the cap it did not grow).
+    fake = FakeHetznerClient()
+    fake.create_server(_server_req(name="a", labels=_fleet_labels("dep_1")))
+    fake.create_server(_server_req(name="b", labels=_fleet_labels("dep_2")))
+    broker = InProcessHetznerBroker(fake, max_fleet_servers=2)
+
+    out = broker.provision_box(server=_server_req(firewall_ids=(), labels=_fleet_labels("dep_1")),
+                               volume=None, dns=None, firewall=None)
+    assert out.reused is True and out.server_id == "server_1"
+    assert fake.calls.count("create_server") == 2               # still just the two seeded
+
+
+def test_build_broker_threads_fleet_cap_from_settings():
+    # The factory wires settings.hetzner_max_fleet_servers into the broker so the breaker is
+    # enforced on every production path (provisioner AND bootstrap_mc go through the factory).
+    fake = FakeHetznerClient()
+    fake.create_server(_server_req(name="a", labels=_fleet_labels("dep_1")))
+    settings = Settings(provisioner_backend="hetzner", hetzner_allow_inprocess_broker=True,
+                        hetzner_max_fleet_servers=1)
+    broker = build_hetzner_broker(settings, client=fake)
+    with pytest.raises(RuntimeError, match="fleet server cap reached"):
+        broker.provision_box(server=_server_req(firewall_ids=(), labels=_fleet_labels("dep_new")),
+                             volume=None, dns=None, firewall=None)

@@ -16,6 +16,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
+# The constant fleet label stamped on EVERY server this control plane creates
+# (in ADDITION to the per-deployment `deployment_id` + role labels). It is the
+# ONLY selector the fleet-size circuit breaker counts, so a server that carries
+# it is a billable box this control plane is responsible for. Defined once here
+# (the client seam) so the provisioner AND the MC bootstrap runner stamp the
+# exact same key/value the broker's cap check queries.
+FLEET_LABEL_KEY = "managed-by"
+FLEET_LABEL_VALUE = "onebrain-fleet"
+
 
 class HetznerApiError(RuntimeError):
     """A non-2xx response (or transport error) from the Hetzner Cloud API. Carries
@@ -47,6 +56,19 @@ class ServerCreateResult:
     server_id: str                          # numeric id as string (D-6: railway_project_id = "hetzner:<server_id>")
     public_ipv4: str
     status: str                             # "initializing" | "running" | ...
+
+
+@dataclass(frozen=True)
+class ServerInfo:
+    """A server as returned by `list_servers` (the cost-safety read seam). Carries the
+    fields the broker's idempotency + fleet-cap gates need: the id/ip to reuse, the labels
+    to match, and the status. A DELETED server is never returned (the gate must not reuse or
+    count a torn-down box)."""
+    id: str
+    name: str
+    labels: dict
+    public_ipv4: str
+    status: str
 
 
 @dataclass(frozen=True)
@@ -103,6 +125,11 @@ class HetznerClient(Protocol):
     def create_volume(self, req: VolumeCreateRequest) -> VolumeCreateResult: ...
 
     def create_server(self, req: ServerCreateRequest) -> ServerCreateResult: ...
+
+    def list_servers(self, label_selector: str) -> list[ServerInfo]: ...
+    # The cost-safety READ seam (no create). `label_selector` is a single Hetzner Cloud
+    # `key=value` selector ("deployment_id=mc" for the idempotency gate, "managed-by=
+    # onebrain-fleet" for the fleet-size cap). Returns only NON-deleted servers.
 
     def upsert_dns_record(self, req: DnsRecordRequest) -> DnsRecordResult: ...
 

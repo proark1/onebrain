@@ -107,6 +107,35 @@ def test_dispatch_creates_server_with_firewall_and_writes_d6_slots():
     assert out.status == STATUS_DISPATCHED
 
 
+def test_dispatch_stamps_constant_fleet_label_on_server():
+    # Every provisioned box carries the constant fleet label (so the cost cap counts it) in
+    # ADDITION to its deployment_id (the idempotency key).
+    control = _control()
+    fake = FakeHetznerClient()
+    HetznerProvisioner(_settings(), InProcessHetznerBroker(fake), control).dispatch(_plain_run())
+    labels = fake.servers[0].labels
+    assert labels["managed-by"] == "onebrain-fleet"
+    assert labels["deployment_id"] == "dep_a"
+
+
+def test_dispatch_is_idempotent_one_server_per_deployment():
+    # COST SAFETY: dispatching TWICE for the same deployment must create exactly ONE server
+    # (and one volume) — a retry/double-dispatch/replayed callback reuses the existing box.
+    control = _control()
+    fake = FakeHetznerClient()
+    prov = HetznerProvisioner(_settings(hetzner_volume_size_gb=10), InProcessHetznerBroker(fake), control)
+
+    first = prov.dispatch(_plain_run())
+    second = prov.dispatch(_plain_run())
+
+    assert fake.calls.count("create_server") == 1        # exactly one server despite two dispatches
+    assert fake.calls.count("create_volume") == 1        # ...and no duplicate volume
+    assert first.railway_project_id == "hetzner:server_1"
+    assert second.railway_project_id == first.railway_project_id     # the reused server id
+    assert second.external_run_url == first.external_run_url
+    assert second.status == STATUS_DISPATCHED
+
+
 def test_dispatch_attaches_data_volume():
     control = _control()
     fake = FakeHetznerClient()

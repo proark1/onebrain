@@ -233,11 +233,17 @@ class Settings(BaseSettings):
     hetzner_allow_inprocess_broker: bool = False  # A6: dogfood/test escape hatch. Production Hetzner MUST use the
                                                # out-of-process broker (hetzner_broker_url). See build_hetzner_broker.
     hetzner_location: str = "nbg1"             # EU region (nbg1/fsn1/hel1)
-    hetzner_server_type: str = "cx22"
+    hetzner_server_type: str = "cx23"          # current cheapest CX (cx22 is no longer offered)
     hetzner_image: str = "ubuntu-24.04"
     hetzner_ssh_key_ids: str = ""              # csv of Hetzner SSH key ids (break-glass only; no inbound 22 path)
     hetzner_volume_size_gb: int = 10           # data volume so Postgres survives a rebuild
     hetzner_firewall_id: str = ""              # pre-created default-deny firewall, attached in the create call
+    # COST CIRCUIT BREAKER (ONEBRAIN_HETZNER_MAX_FLEET_SERVERS): the broker refuses to create
+    # a new box once this many `managed-by=onebrain-fleet` servers already exist (the
+    # idempotency reuse of an existing deployment never counts against it). Nothing else in
+    # the fleet caps server creation, so a retry/loop/replay bug could otherwise mint many
+    # billable boxes. Raise it to grow the fleet; <=0 disables the breaker.
+    hetzner_max_fleet_servers: int = 5
     # --- DNS (P1) ---
     # DNS rides the UNIFIED Hetzner Cloud API (GA 2025-11-10): the SAME hetzner_api_token
     # (Bearer) authenticates DNS — there is NO separate DNS token. The legacy

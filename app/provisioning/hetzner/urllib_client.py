@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from app.provisioning.hetzner.client import (
@@ -24,6 +24,7 @@ from app.provisioning.hetzner.client import (
     HetznerApiError,
     ServerCreateRequest,
     ServerCreateResult,
+    ServerInfo,
     VolumeCreateRequest,
     VolumeCreateResult,
 )
@@ -136,6 +137,37 @@ class UrllibHetznerClient:
             public_ipv4=ipv4,
             status=server.get("status", "initializing"),
         )
+
+    def list_servers(self, label_selector: str) -> list[ServerInfo]:
+        """GET /servers?label_selector=<selector> (the cost-safety read seam). Bearer auth,
+        same host/token as compute. Pages FULLY (per_page=50) so the fleet-size cap can never
+        be undercounted by a truncated first page. The API only returns live servers, so a
+        deleted box never appears — exactly what the idempotency + cap gates require."""
+        servers: list[ServerInfo] = []
+        page = 1
+        while True:
+            query = urlencode({"label_selector": label_selector, "page": page, "per_page": 50})
+            request = Request(
+                f"{self._base}/servers?{query}",
+                method="GET",
+                headers=self._headers(with_content=False),
+            )
+            data = self._open(request)
+            for entry in data.get("servers", []) or []:
+                entry_net = entry.get("public_net", {}) or {}
+                entry_ipv4 = (entry_net.get("ipv4") or {}).get("ip", "")
+                servers.append(ServerInfo(
+                    id=str(entry.get("id", "")),
+                    name=entry.get("name", "") or "",
+                    labels=dict(entry.get("labels", {}) or {}),
+                    public_ipv4=entry_ipv4,
+                    status=entry.get("status", "") or "",
+                ))
+            next_page = ((data.get("meta", {}) or {}).get("pagination", {}) or {}).get("next_page")
+            if not next_page:
+                break
+            page = next_page
+        return servers
 
     def create_firewall(self, req: FirewallCreateRequest) -> FirewallCreateResult:
         # Hetzner Cloud firewalls are default-deny INBOUND: only the listed inbound

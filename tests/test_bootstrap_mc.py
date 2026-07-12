@@ -158,6 +158,56 @@ def test_create_path_drives_injected_client_and_hides_secrets(capsys):
     assert baked_pw not in text
 
 
+def test_create_stamps_constant_fleet_label_on_mc_server():
+    # The MC box carries the constant fleet label (counted by the cost cap) alongside its
+    # deployment_id + role, so it can never be accidentally created twice or run uncapped.
+    settings = _mc_settings(provisioner_backend="hetzner", hetzner_allow_inprocess_broker=True,
+                            hetzner_api_token="tok", hetzner_volume_size_gb=0)
+    fake = FakeHetznerClient()
+    assert mc.main(_base_argv("--no-dry-run"), settings=settings, client=fake) == 0
+    labels = fake.servers[0].labels
+    assert labels["managed-by"] == "onebrain-fleet"
+    assert labels["deployment_id"] == "mc" and labels["role"] == "operator"
+
+
+def test_bootstrap_mc_self_guard_reuses_existing_mc_and_does_not_recreate(capsys):
+    # SELF-GUARD: if an MC box already exists, the broker's idempotency gate reuses it and the
+    # runner says so plainly — it must NOT create a second MC (and must not reprint a login for
+    # a box it never made).
+    from app.provisioning.hetzner.client import (
+        FLEET_LABEL_KEY,
+        FLEET_LABEL_VALUE,
+        ServerCreateRequest,
+    )
+
+    settings = _mc_settings(provisioner_backend="hetzner", hetzner_allow_inprocess_broker=True,
+                            hetzner_api_token="tok", hetzner_volume_size_gb=0)
+    fake = FakeHetznerClient()
+    # Pre-seed an existing MC box (deployment_id=mc + the fleet label).
+    fake.create_server(ServerCreateRequest(
+        name="onebrain-mc", server_type="cx23", image="ubuntu-24.04", location="nbg1",
+        user_data="#cloud-config",
+        labels={"deployment_id": "mc", "role": "operator", FLEET_LABEL_KEY: FLEET_LABEL_VALUE}))
+    assert fake.calls.count("create_server") == 1
+
+    rc = mc.main(_base_argv("--no-dry-run"), settings=settings, client=fake)
+
+    assert rc == 0
+    # NO second MC box created — the idempotency gate reused the existing one.
+    assert fake.calls.count("create_server") == 1
+    assert len(fake.list_servers("deployment_id=mc")) == 1
+    out = capsys.readouterr().out
+    assert "MC already exists (server_id=server_1 ip=203.0.113.1)" in out
+    assert "reused, NOT recreated" in out
+    # The "created" line (which would imply a fresh box) is NOT printed...
+    assert "MC box created" not in out
+    # ...nor is the admin login SURFACED (the freshly generated password was never applied to
+    # the live box). The runbook's help text mentions the phrase generically, so assert the
+    # actual credential line — the admin email after "admin login:" — is absent.
+    assert "admin login: mc-admin@example.com" not in out
+    assert "mc-admin@example.com" not in out
+
+
 def test_create_with_allow_ssh_adds_port_22_rule():
     settings = _mc_settings(provisioner_backend="hetzner", hetzner_allow_inprocess_broker=True,
                             hetzner_api_token="tok", hetzner_firewall_allow_ssh=True)

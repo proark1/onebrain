@@ -47,6 +47,8 @@ from app.fleet.bootstrap_bundle import render_dotenv, validate_bundle  # noqa: E
 from app.fleet.keys import generate_fleet_key  # noqa: E402
 from app.provisioning.hetzner.broker import build_hetzner_broker  # noqa: E402
 from app.provisioning.hetzner.client import (  # noqa: E402
+    FLEET_LABEL_KEY,
+    FLEET_LABEL_VALUE,
     DnsRecordRequest,
     FirewallCreateRequest,
     ServerCreateRequest,
@@ -231,7 +233,11 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
         user_data=cloud_init,
         ssh_key_ids=_ssh_key_ids(settings.hetzner_ssh_key_ids),
         firewall_ids=(settings.hetzner_firewall_id,) if settings.hetzner_firewall_id else (),
-        labels={"deployment_id": deployment_id, "role": "operator"})
+        # The constant fleet label (alongside deployment_id + role) so the MC box is counted
+        # by the fleet-size cap and deduped by the broker's deployment_id idempotency gate —
+        # the MC box can never be accidentally created twice.
+        labels={"deployment_id": deployment_id, "role": "operator",
+                FLEET_LABEL_KEY: FLEET_LABEL_VALUE})
     volume = None
     if settings.hetzner_volume_size_gb > 0:
         volume = VolumeCreateRequest(
@@ -381,8 +387,25 @@ def main(argv=None, *, settings=None, client=None) -> int:
 
     print("# create request SHAPE:")
     print(json.dumps(shape, indent=2))
-    result = broker.provision_box(server=artifacts.server, volume=artifacts.volume,
-                                  dns=artifacts.dns, firewall=artifacts.firewall)
+    try:
+        result = broker.provision_box(server=artifacts.server, volume=artifacts.volume,
+                                      dns=artifacts.dns, firewall=artifacts.firewall)
+    except RuntimeError as exc:   # fleet-size cost cap (or A6 guard) — abort, create nothing
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if result.reused:
+        # SELF-GUARD (G3-1 hygiene): the broker's idempotency gate found an existing MC box
+        # and created NOTHING. Say so plainly instead of implying a fresh create — a second
+        # MC box was NOT (and must not be) made. The freshly assembled artifacts (incl. a
+        # generated admin password) were NOT applied, so we deliberately do NOT reprint the
+        # "SAVE THIS" login: the live box keeps the credential baked at its original create.
+        print(f"\n# MC already exists (server_id={result.server_id} ip={result.public_ipv4}) "
+              "— reused, NOT recreated")
+        print("# The MC admin login is unchanged from the original create (this run baked no new box).")
+        print("\n" + runbook)
+        return 0
+
     print(f"\n# MC box created: server_id={result.server_id} ip={result.public_ipv4} "
           f"firewall_id={result.firewall_id or '(pre-existing)'} fqdn={result.fqdn or '(none)'}")
     # OUT-OF-BAND: printed to the operator's OWN terminal, NOT into cloud-init/user-data. This

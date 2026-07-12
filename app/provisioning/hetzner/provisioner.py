@@ -38,6 +38,8 @@ from app.fleet.enrollment import mint_deployment_fleet_key
 from app.fleet.keys import generate_bootstrap_token, hash_secret
 from app.provisioning.hetzner.broker import HetznerBroker
 from app.provisioning.hetzner.client import (
+    FLEET_LABEL_KEY,
+    FLEET_LABEL_VALUE,
     DnsRecordRequest,
     FirewallCreateRequest,
     FirewallRule,
@@ -224,7 +226,10 @@ class HetznerProvisioner:
             # A pre-created firewall is attached as-is; otherwise the broker creates the
             # default-deny one above and attaches ITS id in the same create call.
             firewall_ids=(settings.hetzner_firewall_id,) if settings.hetzner_firewall_id else (),
-            labels={"deployment_id": run.deployment_id},
+            # The constant fleet label goes on EVERY box (alongside deployment_id) so the
+            # broker's fleet-size cap counts it, and the deployment_id label is the broker's
+            # idempotency key (exactly one server per deployment).
+            labels={"deployment_id": run.deployment_id, FLEET_LABEL_KEY: FLEET_LABEL_VALUE},
         )
         volume = None
         if settings.hetzner_volume_size_gb > 0:
