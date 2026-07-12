@@ -226,6 +226,17 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
     assert "/api/provisioning/runs/{run_id}/callback" in ci
 
 
+def test_cloud_init_compose_calls_are_anchored():
+    """First boot: cloud-init runcmd runs with cwd '/', so every `docker compose`
+    invocation must carry `-f /opt/onebrain/docker-compose.yml` or Compose V2 finds no
+    file and the box never starts (matches update.sh's dc() wrapper)."""
+    runcmd = _runcmd_section(render_cloud_init(_inputs(_ALL)))
+    compose_lines = [ln for ln in runcmd.splitlines() if "docker compose" in ln]
+    assert compose_lines, "expected docker compose calls in runcmd"
+    for ln in compose_lines:
+        assert "-f /opt/onebrain/docker-compose.yml" in ln, f"unanchored compose call: {ln!r}"
+
+
 def test_cloud_init_metadata_block_ordering_and_failguard():
     ci = render_cloud_init(_inputs(_ONEBRAIN))
     runcmd = _runcmd_section(ci)   # isolate runcmd; embedded files also contain "up -d"

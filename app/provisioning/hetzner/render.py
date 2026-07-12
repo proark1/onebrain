@@ -452,7 +452,13 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
     write_files = "".join(entries).rstrip("\n")
 
     profile_flags = " ".join(f"--profile {p}" for p in _enabled_products(inp.enabled_modules))
-    compose_cmd = f"docker compose --project-name {inp.compose_project} {profile_flags}".strip()
+    # Anchor EVERY first-boot compose call to the rendered file: cloud-init runcmd runs
+    # with cwd '/', and Compose V2 would otherwise find no compose file and start
+    # nothing. Mirrors update.sh's dc() wrapper (-f "$COMPOSE").
+    compose_file = "/opt/onebrain/docker-compose.yml"
+    compose_cmd = (
+        f"docker compose --project-name {inp.compose_project} -f {compose_file} {profile_flags}".strip()
+    )
     fail_cb = _callback_curl("failed", "failed", extra=',\\"failure_reason\\":\\"metadata_egress_block_failed\\"')
     done_cb = _callback_curl(
         "${ST}", "${SMOKE}",
