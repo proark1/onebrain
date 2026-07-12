@@ -99,6 +99,21 @@ def create_app() -> FastAPI:
                 "before booting (see scripts/rotate_desired_state_key.py overlap-set)."
             )
         app.include_router(fleet.router)
+
+        # G3-2 (P5-06): idempotent operator first-boot self-seed. Create MC's OWN
+        # deployment row + a fleet key matching the baked ONEBRAIN_FLEET_KEY so the
+        # reporter's self-heartbeat (start_reporter, below) authenticates without a manual
+        # enroll. Runs BEFORE start_reporter; never fatal. No-op off operator_mode / on a
+        # second boot (the row already exists).
+        try:
+            from app.controlplane.self_seed import seed_operator_self_deployment
+            from app.deps import get_control_plane_store, get_fleet_store
+
+            if seed_operator_self_deployment(settings, get_control_plane_store(), get_fleet_store()):
+                logging.getLogger("onebrain").info("Operator self-seed complete (mc deployment + fleet key).")
+        except Exception as exc:  # never fatal
+            logging.getLogger("onebrain").warning("Operator self-seed skipped: %s", exc)
+
         try:
             from app.fleet.retention import start_fleet_retention
 

@@ -97,6 +97,13 @@ class BoxRenderInputs:
     callback_token: str = ""                    # G1-7: the provisioning callback bearer, BAKED in box.env (not a
                                                 # ${VAR} ref) so the metadata-egress-block FAILURE callback
                                                 # authenticates BEFORE the bundle exchange runs.
+    dotenv: str = ""                            # P5-06 (G3-1): the MC box (role=operator) BAKES its full
+                                                # /opt/onebrain/.env directly into cloud-init — it boots with an
+                                                # EMPTY DB and cannot self-exchange (a self-served /bootstrap 404s,
+                                                # so its own Postgres would never come up). This is the
+                                                # render_dotenv(mc_bundle) body (+ the operator-overlay ${VAR}
+                                                # values). Empty for a CUSTOMER box, which FETCHES /opt/onebrain/.env
+                                                # via the exchange (onebrain_bootstrap.sh) instead.
     secret_refs: SecretRefs = field(default_factory=SecretRefs)
 
 
@@ -490,6 +497,12 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         entries.append(_write_file_entry(f"/opt/onebrain/{rel_path}", content))
     entries.append(_write_file_entry("/opt/onebrain/Caddyfile", caddy))
     entries.append(_write_file_entry("/opt/onebrain/box.env", _box_env(inp), "0600"))
+    # P5-06 (G3-1): the MC box (role=operator) bakes its full /opt/onebrain/.env (0600 —
+    # it carries every foundational secret) directly, because it cannot exchange for it
+    # (empty DB at boot). A customer box leaves dotenv empty and fetches .env via the
+    # bootstrap exchange, so nothing is baked here for it.
+    if inp.dotenv:
+        entries.append(_write_file_entry("/opt/onebrain/.env", inp.dotenv, "0600"))
     entries.append(_write_file_entry(
         "/opt/onebrain/postgres-init.sh", _read_box_file("postgres-init.sh"), "0755"))
     entries.append(_write_file_entry(
