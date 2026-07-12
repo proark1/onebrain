@@ -503,6 +503,109 @@ def test_external_provisioning_requires_callback_url_before_writes(monkeypatch):
     assert runs.list_runs() == []
 
 
+def test_hetzner_provision_customer_assembles_valid_bundle(monkeypatch):
+    # A full customer provision on the Hetzner backend threads owner_email -> the owner OTP,
+    # which is the REQUIRED ONEBRAIN_ADMIN_PASSWORD bundle key. Before the threading the
+    # bundle failed validate_bundle and the run dispatch_failed; with it, a valid re-readable
+    # bundle is assembled and the run is dispatched.
+    import json
+
+    from app.auth.passwords import verify_password
+    from app.config import Settings
+    from app.controlplane.base import ReleaseManifest
+    from app.fleet.memory import MemoryFleetStore
+    from app.provisioning.bundles import CORE_MODULES
+    from app.provisioning.hetzner.broker import InProcessHetznerBroker
+    from app.provisioning.hetzner.fake import FakeHetznerClient
+    from app.provisioning.runs import OneTimeSecretCipher
+    from app.users.memory import MemoryUserStore
+
+    platform, control = _stores()
+    users = MemoryUserStore()
+    runs = MemoryProvisioningRunStore()
+    fleet = MemoryFleetStore()
+    fake = FakeHetznerClient()
+
+    # A digest-pinned release the box will run (Hetzner fails closed without one).
+    control.create_release(ReleaseManifest(
+        version="0.1.0", git_sha="abc", modules={m: "0.1.0" for m in CORE_MODULES},
+        images={m: f"ghcr.io/proark1/{m}@sha256:{'a' * 64}" for m in CORE_MODULES},
+        rollback_kind="code_only",
+    ))
+    settings = Settings(
+        provisioner_backend="hetzner", hetzner_api_token="tok",
+        hetzner_allow_inprocess_broker=True, hetzner_firewall_id="fw1",
+        hetzner_volume_size_gb=0, secret_encryption_key="unit-test-secret-key",
+        fleet_url="https://mc.example",
+    )
+    monkeypatch.setattr(provisioning_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(provisioning_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(provisioning_router, "get_service_key_store", lambda: MemoryServiceKeyStore())
+    monkeypatch.setattr(provisioning_router, "get_user_store", lambda: users)
+    monkeypatch.setattr(provisioning_router, "get_provisioning_run_store", lambda: runs)
+    monkeypatch.setattr(provisioning_router, "get_fleet_store", lambda: fleet)
+    monkeypatch.setattr(provisioning_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(provisioning_router, "build_hetzner_broker", lambda s: InProcessHetznerBroker(fake))
+
+    created = provisioning_router.provision_customer(
+        provisioning_router.CustomerProvisionCreate(
+            customer_name="Acme", bundle_id="onebrain_only", account_id="acme",
+            deployment_id="dep_acme", initial_version="0.1.0",
+            owner_email="Owner@Acme.example",
+            external_provisioning=True,
+            callback_url="https://admin.example/api/onebrain/provisioning/runs/{run_id}/callback",
+        ),
+        principal=_principal("admin"),
+    )
+
+    # The run dispatched (validate_bundle passed) — NOT dispatch_failed — and a box was created.
+    assert created.provisioning_run is not None
+    assert created.provisioning_run.status == "dispatched", created.provisioning_run.failure_reason
+    assert len(fake.servers) == 1
+
+    # A valid re-readable bundle was assembled; its ADMIN_PASSWORD is exactly the owner OTP.
+    bundle_row = runs.get_secret_bundle("dep_acme")
+    assert bundle_row is not None
+    bundle = json.loads(OneTimeSecretCipher(settings).open_bundle(bundle_row.ciphertext))
+    assert bundle["ONEBRAIN_ADMIN_PASSWORD"]
+    owner = users.get_by_email("owner@acme.example")
+    assert owner is not None and owner.role_id == "admin"
+    assert verify_password(bundle["ONEBRAIN_ADMIN_PASSWORD"], owner.password_hash)
+
+
+def test_hetzner_provision_customer_requires_owner_email(monkeypatch):
+    # Fail FAST (400) rather than surface an opaque dispatch_failed when owner_email is
+    # missing on the Hetzner backend (the owner OTP is a required bundle key).
+    from app.config import Settings
+
+    platform, control = _stores()
+    runs = MemoryProvisioningRunStore()
+    settings = Settings(provisioner_backend="hetzner", hetzner_api_token="tok",
+                        hetzner_allow_inprocess_broker=True)
+    monkeypatch.setattr(provisioning_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(provisioning_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(provisioning_router, "get_service_key_store", lambda: MemoryServiceKeyStore())
+    monkeypatch.setattr(provisioning_router, "get_provisioning_run_store", lambda: runs)
+    monkeypatch.setattr(provisioning_router, "get_settings", lambda: settings)
+
+    with pytest.raises(HTTPException) as exc:
+        provisioning_router.provision_customer(
+            provisioning_router.CustomerProvisionCreate(
+                customer_name="Acme", bundle_id="onebrain_only", account_id="acme",
+                deployment_id="dep_acme", initial_version="0.1.0",
+                external_provisioning=True,
+                callback_url="https://admin.example/cb/{run_id}",
+            ),
+            principal=_principal("admin"),
+        )
+    assert exc.value.status_code == 400
+    assert "owner_email" in exc.value.detail
+    # Failed fast BEFORE any account / deployment / run writes.
+    assert platform.list_accounts() == []
+    assert control.list_deployments() == []
+    assert runs.list_runs() == []
+
+
 def test_retry_rejects_non_failed_provisioning_run(monkeypatch):
     runs = MemoryProvisioningRunStore()
     run = create_run(

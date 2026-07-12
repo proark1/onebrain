@@ -17,6 +17,7 @@ from app.deps import (
     get_platform_store,
     get_provisioning_run_store,
     get_service_key_store,
+    get_user_store,
 )
 from app.platform.base import BrandTheme, DEFAULT_BRAND_THEME
 from app.provisioning.bundles import BUNDLES, ProvisioningBundle
@@ -99,6 +100,12 @@ class CustomerProvisionCreate(BaseModel):
     account_kind: str = Field(default="organization", pattern="^(person|organization|family|project)$")
     account_id: str | None = Field(default=None, max_length=120)
     deployment_id: str | None = Field(default=None, max_length=120)
+    # The owner admin's email. When set (and a user store is wired), CustomerProvisioner
+    # mints the owner with a one-time password; that OTP is ONEBRAIN_ADMIN_PASSWORD, a
+    # REQUIRED Hetzner bundle key — without it a hetzner-backend provision fails validate_bundle
+    # and dispatch_fails. Free-text (an email carries @/./+, so it is NOT charset-constrained
+    # like the workflow-interpolated structural fields); the OTP, not the email, reaches the box.
+    owner_email: str = Field(default="", max_length=320)
     deployment_type: str = Field(default="dedicated_railway", max_length=80)
     region: str = Field(default="", max_length=80)
     release_ring: str = Field(default="manual", max_length=80)
@@ -475,16 +482,26 @@ def provision_customer(body: CustomerProvisionCreate, principal: Principal = Dep
         if not body.callback_url.strip():
             raise HTTPException(status_code=400, detail="External provisioning requires a callback URL.")
         _validate_callback_url(body.callback_url)
+        # A Hetzner box cannot come up without the owner OTP (ONEBRAIN_ADMIN_PASSWORD is a
+        # REQUIRED bundle key). Fail FAST with a clear reason rather than letting the box
+        # secret bundle fail validate_bundle later and surface as an opaque dispatch_failed.
+        if getattr(get_settings(), "provisioner_backend", "github") == "hetzner" and not body.owner_email.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="A Hetzner provision requires owner_email: the owner one-time password "
+                       "is the required ONEBRAIN_ADMIN_PASSWORD secret-bundle key.")
     account_id = body.account_id or _default_account_id(body.customer_name)
     deployment_id = body.deployment_id or f"dep_{account_id}"
     try:
         result = CustomerProvisioner(
             get_platform_store(), get_control_plane_store(), get_service_key_store(),
+            get_user_store(),
         ).provision(
             account_id=account_id,
             account_kind=body.account_kind,
             customer_name=body.customer_name,
             owner_user_id=principal.user_id,
+            owner_email=body.owner_email,
             bundle_id=body.bundle_id,
             deployment_id=deployment_id,
             deployment_type=body.deployment_type,
