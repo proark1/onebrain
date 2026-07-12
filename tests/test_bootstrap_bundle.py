@@ -17,6 +17,7 @@ def _full_bundle(**overrides) -> dict:
         "REDIS_PASSWORD": "redis-secret",
         "ONEBRAIN_FLEET_KEY": "fk_abc_def",
         "ONEBRAIN_LLM_API_KEY": "",
+        "ONEBRAIN_AUTH_SECRET": "a" * 64,   # >= MIN_KEY_LENGTHS floor (32); token_hex(32) in prod
         "ONEBRAIN_ADMIN_EMAIL": "owner@example.com",
         "ONEBRAIN_ADMIN_PASSWORD": "owner-otp",
         "ONEBRAIN_SERVICE_KEY": "",
@@ -48,7 +49,7 @@ def test_render_dotenv_emits_only_present_keys_in_canonical_order_lf():
     # LF only, no CR.
     assert "\r" not in dotenv
     lines = dotenv.splitlines()
-    # All ten keys present -> ten lines, in BUNDLE_KEYS order.
+    # Every bundle key present -> one line each, in BUNDLE_KEYS order.
     assert [line.split("=", 1)[0] for line in lines] == list(BUNDLE_KEYS)
     assert "POSTGRES_PASSWORD=pg-secret" in lines
     assert "UPDATE_DESIRED_STATE_PUBLIC_KEYS=pub1,pub2" in lines
@@ -104,3 +105,26 @@ def test_admin_email_is_a_required_bundle_key():
 def test_validate_bundle_allows_empty_optional_desired_state_set():
     # Inert default: no wrapper key configured -> empty pubkey set is valid.
     assert validate_bundle(_full_bundle(UPDATE_DESIRED_STATE_PUBLIC_KEYS="")) == []
+
+
+def test_auth_secret_is_a_required_bundle_key():
+    # A box with no ONEBRAIN_AUTH_SECRET crashes onebrain-api on startup (app/main.py refuses
+    # to boot without a strong cookie secret), so it is REQUIRED — never provision it.
+    from app.fleet.bootstrap_bundle import MIN_KEY_LENGTHS
+
+    assert "ONEBRAIN_AUTH_SECRET" in REQUIRED_KEYS
+    assert "ONEBRAIN_AUTH_SECRET" in BUNDLE_KEYS
+    assert MIN_KEY_LENGTHS["ONEBRAIN_AUTH_SECRET"] == 32
+    missing = _full_bundle()
+    del missing["ONEBRAIN_AUTH_SECRET"]
+    assert any("ONEBRAIN_AUTH_SECRET" in e for e in validate_bundle(missing))
+    assert any("ONEBRAIN_AUTH_SECRET" in e for e in validate_bundle(_full_bundle(ONEBRAIN_AUTH_SECRET="")))
+
+
+def test_validate_bundle_flags_weak_auth_secret_below_floor():
+    # Present-but-too-short is as fatal as missing: app/main.py's >=32 guard would boot-loop
+    # the box, so a <32-char ONEBRAIN_AUTH_SECRET must fail closed here.
+    errors = validate_bundle(_full_bundle(ONEBRAIN_AUTH_SECRET="short"))
+    assert any("ONEBRAIN_AUTH_SECRET" in e and "at least 32" in e for e in errors)
+    # Exactly 32 chars clears the floor.
+    assert validate_bundle(_full_bundle(ONEBRAIN_AUTH_SECRET="x" * 32)) == []

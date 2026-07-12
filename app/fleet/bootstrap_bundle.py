@@ -21,6 +21,12 @@ from typing import Dict, List
 BUNDLE_KEYS = (
     "POSTGRES_PASSWORD", "REDIS_PASSWORD",
     "ONEBRAIN_FLEET_KEY", "ONEBRAIN_LLM_API_KEY",
+    # ONEBRAIN_AUTH_SECRET signs session cookies. app/main.py FAILS CLOSED (RuntimeError,
+    # refuses to boot) unless it is a strong (>=32-char) non-default secret, so a box that
+    # bakes no value crashes onebrain-api on startup. A fresh per-box secrets.token_hex(32)
+    # is minted into the bundle (MC + customer), making it a REQUIRED key with a min-length
+    # floor (validate_bundle) — never provision a box whose api can't come up.
+    "ONEBRAIN_AUTH_SECRET",
     # ONEBRAIN_ADMIN_EMAIL + ONEBRAIN_ADMIN_PASSWORD are the admin seed pair: seed.py
     # (seed_admin_from_env) creates a loginable admin at container start ONLY when BOTH
     # are non-empty. Without the email the box comes up with no admin and — SSH being
@@ -40,9 +46,14 @@ BUNDLE_KEYS = (
 # these must fail closed (dispatch_failed), never provision a box that can't boot.
 REQUIRED_KEYS = (
     "POSTGRES_PASSWORD", "REDIS_PASSWORD",
-    "ONEBRAIN_FLEET_KEY", "ONEBRAIN_ADMIN_EMAIL", "ONEBRAIN_ADMIN_PASSWORD",
+    "ONEBRAIN_FLEET_KEY", "ONEBRAIN_AUTH_SECRET",
+    "ONEBRAIN_ADMIN_EMAIL", "ONEBRAIN_ADMIN_PASSWORD",
     "UPDATE_BACKUP_KEY",
 )
+# Extra floor for keys the app itself rejects when too short. ONEBRAIN_AUTH_SECRET must
+# clear app/main.py's >=32-char cookie-secret guard, so a present-but-weak value is as
+# fatal as a missing one — reject it here rather than boot-loop the box.
+MIN_KEY_LENGTHS = {"ONEBRAIN_AUTH_SECRET": 32}
 # Legitimately empty in valid configs: no LLM key (local provider), no comm/assistant
 # module (service key + space id), dormant desired-state emission (empty pubkey set),
 # and DNS unmanaged (customer box). These are allowed to be empty/absent.
@@ -59,13 +70,22 @@ def render_dotenv(bundle: Dict[str, str]) -> str:
 
 
 def validate_bundle(bundle: Dict[str, str]) -> List[str]:
-    """Return an ordered list of error strings for REQUIRED keys that are missing or
-    empty (empty OPTIONAL keys — DNS token, space id, service/LLM keys, pubkey set —
-    are allowed). An empty list means the bundle is safe to ship."""
+    """Return an ordered list of error strings for REQUIRED keys that are missing, empty,
+    or below their MIN_KEY_LENGTHS floor (empty OPTIONAL keys — DNS token, space id,
+    service/LLM keys, pubkey set — are allowed). An empty list means the bundle is safe
+    to ship."""
     errors: List[str] = []
     for key in REQUIRED_KEYS:
         if key not in bundle:
             errors.append(f"missing required bundle key: {key}")
-        elif not str(bundle[key]).strip():
+            continue
+        value = str(bundle[key])
+        if not value.strip():
             errors.append(f"empty required bundle key: {key}")
+            continue
+        min_len = MIN_KEY_LENGTHS.get(key)
+        if min_len is not None and len(value) < min_len:
+            errors.append(
+                f"weak required bundle key: {key} must be at least {min_len} chars "
+                "(app/main.py refuses to boot with a short cookie secret)")
     return errors

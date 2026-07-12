@@ -68,6 +68,7 @@ class SecretRefs:
     llm_key_env: str = "ONEBRAIN_LLM_API_KEY"
     db_password_env: str = "POSTGRES_PASSWORD"
     redis_password_env: str = "REDIS_PASSWORD"
+    auth_secret_env: str = "ONEBRAIN_AUTH_SECRET"   # session-cookie signing secret; app/main.py refuses to boot without a strong one
     owner_bootstrap_env: str = "ONEBRAIN_ADMIN_PASSWORD"
     admin_email_env: str = "ONEBRAIN_ADMIN_EMAIL"   # paired with owner_bootstrap_env; seed.py needs BOTH to seed a loginable admin
     service_key_env: str = "ONEBRAIN_SERVICE_KEY"
@@ -298,19 +299,38 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
     if module_id in ("onebrain-api", "onebrain-workers"):
         pairs += [("ONEBRAIN_VECTOR_STORE", "pgvector"),
                   ("ONEBRAIN_DATABASE_URL", _db_url("onebrain")),
-                  ("ONEBRAIN_DATA_DIR", "/data")]
+                  ("ONEBRAIN_DATA_DIR", "/data"),
+                  # Production-boot essentials, baked on BOTH the api and the worker (they open
+                  # the same tenant Postgres). ONEBRAIN_ENVIRONMENT=production makes
+                  # settings.is_production_like True, which ARMS validate_runtime_safety's net
+                  # (pgvector + a real DSN + RLS) instead of silently skipping it on a box that
+                  # otherwise defaults to the dev environment. ONEBRAIN_RLS_ENFORCED=true then
+                  # enforces Postgres row-level security so tenant isolation is ON — mandatory
+                  # for a multi-tenant customer box (and required once production-like). Fixed
+                  # literals (not per-box secrets), so they live in the render, not the bundle.
+                  ("ONEBRAIN_ENVIRONMENT", "production"),
+                  ("ONEBRAIN_RLS_ENFORCED", "true")]
     if module_id == "onebrain-api":
         pairs += [
             ("ONEBRAIN_DEPLOYMENT_ID", inp.deployment_id),
             ("ONEBRAIN_FLEET_URL", inp.fleet_url),
             (f"{refs.fleet_key_env}", "${" + refs.fleet_key_env + "}"),
             (f"{refs.llm_key_env}", "${" + refs.llm_key_env + "}"),
+            # The session-cookie signing secret. app/main.py FAILS CLOSED (RuntimeError,
+            # refuses to boot) unless this is a strong (>=32-char) non-default value, so it is
+            # a bundle SECRET — a fresh per-box secrets.token_hex(32) minted by the MC/customer
+            # bundle — delivered via /opt/onebrain/.env, the SAME ${VAR} mechanism as
+            # ONEBRAIN_ADMIN_PASSWORD. Only onebrain-api validates/signs with it, so it is NOT
+            # baked on the worker (whose entrypoint never constructs the app).
+            (f"{refs.auth_secret_env}", "${" + refs.auth_secret_env + "}"),
             # The admin seed pair. seed.py (seed_admin_from_env) creates a loginable admin
             # at container start ONLY when BOTH are non-empty; the box fills them from the
             # exchanged (customer) / baked (MC) /opt/onebrain/.env. Without the email the box
             # seeds no admin and — SSH closed — is unreachable. Only onebrain-api seeds.
             (f"{refs.admin_email_env}", "${" + refs.admin_email_env + "}"),
             (f"{refs.owner_bootstrap_env}", "${" + refs.owner_bootstrap_env + "}"),
+            # Every box is fronted by Caddy TLS, so session cookies must carry the Secure flag.
+            ("ONEBRAIN_COOKIE_SECURE", "true"),
             ("ONEBRAIN_MODULE_PROBES_ENABLED", "true"),
             ("ONEBRAIN_LOCAL_MODULES", ",".join(_ordered(inp.enabled_modules))),
         ]

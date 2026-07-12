@@ -312,6 +312,11 @@ class HetznerProvisioner:
                 "REDIS_PASSWORD": secrets.token_urlsafe(32),
                 "ONEBRAIN_FLEET_KEY": fleet_token,
                 "ONEBRAIN_LLM_API_KEY": getattr(settings, "llm_api_key", "") or "",
+                # Strong per-box session-cookie secret (64 hex chars). app/main.py refuses to
+                # boot onebrain-api without a >=32-char non-default value; a box provisioned
+                # without it would crash-loop. Sealed into the re-readable bundle like every
+                # other foundational secret and delivered via the /bootstrap exchange.
+                "ONEBRAIN_AUTH_SECRET": secrets.token_hex(32),
                 # The admin seed pair (seed.py needs BOTH). owner_email is the customer's
                 # login email (normalized to match the platform owner User + the box's own
                 # seed-time .strip().lower()); owner_otp is the one-time password. A REQUIRED

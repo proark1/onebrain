@@ -138,6 +138,7 @@ def test_compose_full_stack():
 _SECRET_KEYS = (
     "POSTGRES_PASSWORD", "REDIS_PASSWORD", "ONEBRAIN_FLEET_KEY",
     "ONEBRAIN_LLM_API_KEY", "ONEBRAIN_SERVICE_KEY", "ONEBRAIN_ADMIN_PASSWORD",
+    "ONEBRAIN_AUTH_SECRET",
 )
 
 
@@ -173,6 +174,25 @@ def test_env_files_are_per_service_and_cover_requirements():
                 assert "${POSTGRES_PASSWORD}" in value    # password is a ref, never plaintext
             if key == "REDIS_URL":
                 assert "${REDIS_PASSWORD}" in value
+
+
+def test_env_bakes_production_boot_essentials():
+    env = render_env_files(_inputs(_ALL))
+    api = env["env/onebrain-api.env"]
+    workers = env["env/onebrain-workers.env"]
+    # ONEBRAIN_ENVIRONMENT=production arms is_production_like -> validate_runtime_safety's net;
+    # ONEBRAIN_RLS_ENFORCED=true enforces tenant isolation. Both belong on the api AND the
+    # worker (they share the tenant Postgres).
+    for content in (api, workers):
+        assert "ONEBRAIN_ENVIRONMENT=production" in content
+        assert "ONEBRAIN_RLS_ENFORCED=true" in content
+        assert "ONEBRAIN_VECTOR_STORE=pgvector" in content
+    # The cookie secret (a ${VAR} ref) + Secure cookies live ONLY on onebrain-api — the worker
+    # never constructs the app / signs cookies, so it neither validates nor needs the secret.
+    assert "ONEBRAIN_AUTH_SECRET=${ONEBRAIN_AUTH_SECRET}" in api
+    assert "ONEBRAIN_COOKIE_SECURE=true" in api
+    assert "ONEBRAIN_AUTH_SECRET" not in workers
+    assert "ONEBRAIN_COOKIE_SECURE" not in workers
 
 
 def test_per_product_databases_are_distinct():

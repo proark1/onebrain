@@ -97,6 +97,10 @@ def build_mc_bundle(settings, *, dns_token: str, fleet_token: str,
         "REDIS_PASSWORD": secrets.token_urlsafe(32),
         "ONEBRAIN_FLEET_KEY": fleet_token,
         "ONEBRAIN_LLM_API_KEY": getattr(settings, "llm_api_key", "") or "",
+        # Strong per-box session-cookie secret (64 hex chars). app/main.py refuses to boot
+        # onebrain-api without a >=32-char non-default value; freshly minted here (never
+        # stored MC-side — the MC box is baked, not exchanged).
+        "ONEBRAIN_AUTH_SECRET": secrets.token_hex(32),
         "ONEBRAIN_ADMIN_EMAIL": admin_email,
         "ONEBRAIN_ADMIN_PASSWORD": admin_password,
         "ONEBRAIN_SERVICE_KEY": "",
