@@ -613,6 +613,45 @@ def test_module_probes_collect_reports():
     assert degraded[0].healthy is False  # 5xx from the module: alive but unhealthy
 
 
+def test_module_probe_http_error_is_live_listener_and_closed():
+    """A >=400 answer arrives as a raised urllib HTTPError: it IS a live
+    listener (healthy = status < 500), and the error's live response body
+    must be closed rather than leaked."""
+    import urllib.error
+
+    from app.fleet.module_probe import probe_module
+    from app.module_manifest import HealthProbe
+
+    class _TrackedHTTPError(urllib.error.HTTPError):
+        def __init__(self, code):
+            super().__init__("http://communication-api:4000/health", code, "err", None, None)
+            self.was_closed = False
+
+        def close(self):
+            self.was_closed = True
+            super().close()
+
+    probe = HealthProbe(module_id="communication-api", kind="http", port=4000, path="/health")
+
+    err = _TrackedHTTPError(404)
+
+    def opener_404(request, timeout):
+        raise err
+
+    report = probe_module(probe, opener=opener_404)
+    assert report.healthy is True  # 404 = a live listener answering
+    assert err.was_closed
+
+    err = _TrackedHTTPError(503)
+
+    def opener_503(request, timeout):
+        raise err
+
+    report = probe_module(probe, opener=opener_503)
+    assert report.healthy is False  # 5xx = alive but unhealthy
+    assert err.was_closed
+
+
 def test_report_once_posts_v2():
     import json
     from app.config import Settings

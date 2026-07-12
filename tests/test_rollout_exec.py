@@ -376,6 +376,29 @@ def test_fleet_child_dispatch_refuses_hetzner_target(monkeypatch):
     assert _RecordingDispatcher.calls == []  # never fired
 
 
+def test_fleet_child_dispatch_vanished_row_never_raises(monkeypatch):
+    """If the child row vanishes between start_rollout and the read-back, the
+    dispatch path returns quietly: nothing to mark failed, nothing dispatched,
+    and the never-raises contract holds (the None-guard runs before any
+    dereference of the read-back rollout)."""
+    store = _control()
+    _RecordingDispatcher.calls = []
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
+    monkeypatch.setattr(operator_router, "RolloutWorkflowDispatcher", _RecordingDispatcher)
+    monkeypatch.setattr(store, "get_rollout", lambda rollout_id: None)
+
+    operator_router._dispatch_child_rollout(
+        "fleet_x", "dep_a", target_version="2026.07.1",
+        callback_url="https://mc/api/rollouts/{rollout_id}/callback", dry_run=True)
+
+    children = store.list_rollouts_for_fleet("fleet_x")
+    assert len(children) == 1
+    assert children[0].status == "pending"       # created, never marked failed
+    assert children[0].exec_status == "pending"  # no dispatch_failed bookkeeping
+    assert _RecordingDispatcher.calls == []      # dispatcher never fired
+
+
 # --- callback router (auth) --------------------------------------------------
 
 def _callback_settings():
