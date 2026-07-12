@@ -36,7 +36,37 @@ from app.provisioning.hetzner.client import (
     VolumeCreateRequest,
 )
 from app.provisioning.hetzner.render import BoxRenderInputs, render_cloud_init
-from app.provisioning.runs import STATUS_DISPATCHED, ProvisioningRun, now_iso
+from app.provisioning.runs import (
+    STATUS_DISPATCHED,
+    OneTimeSecretCipher,
+    ProvisioningRun,
+    now_iso,
+)
+
+
+def store_owner_one_time_password(prov_store, settings, run: ProvisioningRun, otp: str) -> ProvisioningRun:
+    """H-10/A8: wrap the owner OTP (minted hash-only by CustomerProvisioner) in a
+    short-TTL OneTimeSecretEnvelope (purpose 'owner_one_time_password'; the TTL is
+    the existing bootstrap-secret TTL, so no new column), store it, and point the
+    run's bootstrap_secret_id + erasure_manifest.secret_ids at it. The owner OTP
+    IS the bootstrap secret for a Hetzner box, so the EXISTING read_bootstrap_secret
+    endpoint returns it once. No-op (returns the run unchanged) when otp is empty."""
+    if not otp:
+        return run
+    envelope = OneTimeSecretCipher(settings).envelope(
+        purpose="owner_one_time_password",
+        account_id=run.account_id,
+        deployment_id=run.deployment_id,
+        plaintext=otp,
+    )
+    stored = prov_store.create_secret(envelope)
+    manifest = dict(run.result_payload.get("erasure_manifest", {}))
+    manifest["secret_ids"] = list(manifest.get("secret_ids", [])) + [stored.id]
+    return prov_store.update_run(replace(
+        run,
+        bootstrap_secret_id=stored.id,
+        result_payload={**run.result_payload, "erasure_manifest": manifest},
+    ))
 
 
 def _ssh_key_ids(csv: str) -> tuple[int, ...]:

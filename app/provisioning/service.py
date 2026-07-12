@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import re
+import secrets
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from app.auth.passwords import hash_password
 from app.controlplane.base import CustomerDeployment, DeploymentModule, validate_deployment, validate_module
 from app.platform.base import Account, AppInstallation, AuditEvent, BrandTheme, BRAND_COLOR_FIELDS, Space, default_brand_theme
 from app.provisioning.bundles import ProvisioningBundle, get_bundle
 from app.servicekeys.base import SCOPE_READ, SCOPE_WRITE, ServiceKey, generate_key, hash_secret
+from app.users.base import User
 
 
 _ID_RE = re.compile(r"[^a-z0-9_]+")
@@ -46,6 +49,9 @@ class ProvisioningResult:
     credentials: List[ProvisionedCredential]
     brand_theme: BrandTheme
     app_brand_themes: List[BrandTheme]
+    # H-10: the owner's one-time password, returned ONCE when an owner is minted
+    # (owner_email set). Stored hash-only on the User; never persisted in plaintext.
+    owner_one_time_password: str = ""
 
 
 PURPOSE_SCOPES = {
@@ -59,10 +65,11 @@ EXTERNAL_CREDENTIAL_APPS = frozenset({"assistant", "communication"})
 
 
 class CustomerProvisioner:
-    def __init__(self, platform_store, control_plane_store, service_key_store=None):
+    def __init__(self, platform_store, control_plane_store, service_key_store=None, user_store=None):
         self.platform_store = platform_store
         self.control_plane_store = control_plane_store
         self.service_key_store = service_key_store
+        self.user_store = user_store
 
     def _scopes_for(self, purposes: tuple[str, ...]) -> tuple[str, ...]:
         scopes: list[str] = []
@@ -148,6 +155,7 @@ class CustomerProvisioner:
         mint_integration_keys: bool = False,
         brand_theme: BrandTheme | None = None,
         app_brand_themes: Optional[Dict[str, BrandTheme]] = None,
+        owner_email: str = "",
     ) -> ProvisioningResult:
         bundle = get_bundle(bundle_id)
         account_id = normalize_id(account_id)
@@ -202,6 +210,26 @@ class CustomerProvisioner:
             name=customer_name,
             owner_user_id=owner_user_id,
         ))
+
+        # H-10: when an owner email is supplied (and a user store is wired), mint
+        # the owner admin with a random one-time password stored HASH-ONLY +
+        # must_change_password=True. The plaintext OTP is returned ONCE on the
+        # result (the caller wraps it in a short-TTL OneTimeSecretEnvelope, A8);
+        # it is never persisted in plaintext anywhere.
+        owner_one_time_password = ""
+        normalized_owner_email = (owner_email or "").strip().lower()
+        if normalized_owner_email and self.user_store is not None:
+            owner_one_time_password = secrets.token_urlsafe(18)
+            self.user_store.create(User(
+                id=f"usr_owner_{account_id}",
+                email=normalized_owner_email,
+                display_name=f"{customer_name} owner",
+                password_hash=hash_password(owner_one_time_password),
+                tenant_id=account_id,
+                role_id="admin",
+                location="",
+                must_change_password=True,
+            ))
 
         spaces_by_key: dict[str, Space] = {}
         for template in bundle.spaces:
@@ -279,4 +307,5 @@ class CustomerProvisioner:
             credentials=credentials,
             brand_theme=created_brand_theme,
             app_brand_themes=resolved_app_brand_themes,
+            owner_one_time_password=owner_one_time_password,
         )

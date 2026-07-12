@@ -4,11 +4,22 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException, Response
+
+import app.config as config_mod
+import app.deps as deps
+import app.auth.principal as principal_mod
+import app.routers.auth as auth_router
 from app.auth.passwords import hash_password, verify_password
-from app.auth.principal import principal_from_user
+from app.auth.principal import principal_from_user, resolve_principal
+from app.auth.throttle import LoginThrottle
 from app.auth.tokens import make_token, read_token
 from app.config import Settings
+from app.schemas import LoginRequest
 from app.security.policy import Classification
+from app.sessions.memory import MemorySessionStore
+from app.users.base import User
 from app.users.memory import MemoryUserStore
 from app.users.seed import DEMO_PASSWORD, seed_admin_from_env, seed_users_if_empty
 
@@ -84,3 +95,151 @@ def test_principal_from_user_maps_role_and_scope():
     fd = principal_from_user(store.get_by_email("frontdesk.munich@nftgym.de"))
     assert fd.role_id == "front_desk"
     assert fd.locations == frozenset({"munich"})
+
+
+# --- P4-04: first-login one-time password + must_change_password (H-10) --------
+
+def _mc_wire(monkeypatch, sessions, users):
+    """Wire the auth router + resolve_principal against in-memory stores (mirrors
+    tests/test_sessions.py::_wire)."""
+    settings = SimpleNamespace(auth_secret="unit-test-secret", session_days=7, cookie_secure=False)
+    monkeypatch.setattr(deps, "get_session_store", lambda: sessions)
+    monkeypatch.setattr(deps, "get_user_store", lambda: users)
+    monkeypatch.setattr(auth_router, "get_session_store", lambda: sessions)
+    monkeypatch.setattr(auth_router, "get_user_store", lambda: users)
+    monkeypatch.setattr(auth_router, "get_login_throttle", lambda: LoginThrottle(5, 900))
+    monkeypatch.setattr(auth_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(config_mod, "get_settings", lambda: settings)
+    monkeypatch.setattr(principal_mod, "get_settings", lambda: settings, raising=False)
+
+
+def _mc_user(must_change=True, pw="OldPassw0rd!!") -> User:
+    return User(id="u1", email="owner@x.de", display_name="Owner",
+                password_hash=hash_password(pw), tenant_id="acct", role_id="admin",
+                location="", must_change_password=must_change)
+
+
+def _login_token(sessions, users) -> str:
+    resp = Response()
+    auth_router.login(LoginRequest(email="owner@x.de", password="OldPassw0rd!!"), resp)
+    head = resp.headers.get("set-cookie", "").split(";", 1)[0]
+    assert head.startswith("ob_session=")
+    return head[len("ob_session="):]
+
+
+def _req(endpoint):
+    return SimpleNamespace(scope={"endpoint": endpoint})
+
+
+def test_login_surfaces_must_change_password(monkeypatch):
+    sessions, users = MemorySessionStore(), MemoryUserStore()
+    users.create(_mc_user(must_change=True))
+    _mc_wire(monkeypatch, sessions, users)
+
+    resp = Response()
+    out = auth_router.login(LoginRequest(email="owner@x.de", password="OldPassw0rd!!"), resp)
+    assert out["must_change_password"] is True
+    assert resp.headers.get("set-cookie", "").startswith("ob_session=")   # session still issued
+
+
+def test_resolve_principal_blocks_until_password_changed(monkeypatch):
+    sessions, users = MemorySessionStore(), MemoryUserStore()
+    users.create(_mc_user(must_change=True))
+    _mc_wire(monkeypatch, sessions, users)
+    token = _login_token(sessions, users)
+
+    from app.routers.session import me as session_me
+
+    # An allowlisted (module, name) endpoint returns the principal.
+    principal = resolve_principal(ob_session=token, request=_req(session_me))
+    assert principal.must_change_password is True
+
+    # A non-allowlisted endpoint -> 403 password_change_required.
+    def dashboard():
+        return None
+    with pytest.raises(HTTPException) as exc:
+        resolve_principal(ob_session=token, request=_req(dashboard))
+    assert exc.value.status_code == 403 and exc.value.detail == "password_change_required"
+
+    # A11 regression: a callable NAMED `me` but in a DIFFERENT module (this test
+    # module, not app.routers.session) is STILL blocked — a bare-name match would
+    # have wrongly allowed it.
+    def me():
+        return None
+    with pytest.raises(HTTPException) as exc2:
+        resolve_principal(ob_session=token, request=_req(me))
+    assert exc2.value.status_code == 403
+
+    # No request at all (direct/programmatic call) is treated as non-allowlisted.
+    with pytest.raises(HTTPException):
+        resolve_principal(ob_session=token)
+
+
+def test_change_password_clears_flag_and_revokes_sessions(monkeypatch):
+    sessions, users = MemorySessionStore(), MemoryUserStore()
+    users.create(_mc_user(must_change=True))
+    _mc_wire(monkeypatch, sessions, users)
+    _login_token(sessions, users)   # a live session to burn
+    principal = principal_from_user(users.get("u1"))
+
+    # Wrong current password -> 401.
+    with pytest.raises(HTTPException) as e1:
+        auth_router.change_password(
+            auth_router.ChangePasswordRequest(current_password="nope!!", new_password="BrandNewPass123"),
+            principal=principal)
+    assert e1.value.status_code == 401
+
+    # New == current -> 400.
+    with pytest.raises(HTTPException) as e2:
+        auth_router.change_password(
+            auth_router.ChangePasswordRequest(current_password="OldPassw0rd!!", new_password="OldPassw0rd!!"),
+            principal=principal)
+    assert e2.value.status_code == 400
+
+    # Valid change -> flag cleared in the store + all sessions revoked.
+    out = auth_router.change_password(
+        auth_router.ChangePasswordRequest(current_password="OldPassw0rd!!", new_password="BrandNewPass123"),
+        principal=principal)
+    assert out["ok"] is True and out["sessions_revoked"] >= 1
+    updated = users.get("u1")
+    assert updated.must_change_password is False
+    assert verify_password("BrandNewPass123", updated.password_hash)
+
+    # A subsequent resolve for the same user no longer 403s (the flag is cleared).
+    # Re-login with the NEW password (the change revoked the old session).
+    def dashboard():
+        return None
+    resp = Response()
+    auth_router.login(LoginRequest(email="owner@x.de", password="BrandNewPass123"), resp)
+    new_token = resp.headers.get("set-cookie", "").split(";", 1)[0][len("ob_session="):]
+    assert resolve_principal(ob_session=new_token, request=_req(dashboard)).user_id == "u1"
+
+
+def test_change_password_rejects_short_new_password():
+    import pydantic
+    # <12 chars fails the pydantic model (FastAPI surfaces this as 422).
+    with pytest.raises(pydantic.ValidationError):
+        auth_router.ChangePasswordRequest(current_password="whatever", new_password="short")
+
+
+def test_update_password_store_roundtrip():
+    users = MemoryUserStore()
+    users.create(_mc_user(must_change=True))
+    updated = users.update_password("u1", hash_password("newpassword123"), must_change_password=False)
+    assert updated.must_change_password is False
+    assert verify_password("newpassword123", updated.password_hash)
+    assert users.get("u1").must_change_password is False
+    with pytest.raises(KeyError):
+        users.update_password("nope", "h", must_change_password=False)
+
+
+def test_postgres_user_row_maps_must_change_password_at_index_9():
+    # C4 positional mapper: a swapped index would first manifest on production
+    # Railway (no live Postgres harness here), so feed a synthetic 10-slot tuple.
+    from app.users.postgres import PostgresUserStore
+
+    store = object.__new__(PostgresUserStore)
+    user = store._row(("u1", "a@x.de", "A", "hash", "tenant", "admin", "loc", "active", None, True))
+    assert user.must_change_password is True
+    assert user.id == "u1" and user.status == "active" and user.created_at == ""
+    assert store._row(("u2", "b@x.de", "B", "h", "t", "admin", "", "active", None, False)).must_change_password is False

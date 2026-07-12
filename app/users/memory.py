@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import pickle
 import threading
+from dataclasses import replace
 from typing import Dict, List, Optional
 
 from app.users.base import User
@@ -43,6 +44,16 @@ class MemoryUserStore:
             self._by_email[user.email.strip().lower()] = user.id
             self._save()
             return user
+
+    def update_password(self, user_id: str, password_hash: str, *, must_change_password: bool) -> User:
+        with self._lock:
+            user = self._by_id.get(user_id)
+            if not user:
+                raise KeyError(f"unknown user: {user_id}")
+            updated = replace(user, password_hash=password_hash, must_change_password=must_change_password)
+            self._by_id[user_id] = updated
+            self._save()
+            return updated
 
     def delete_by_email(self, email: str) -> bool:
         with self._lock:

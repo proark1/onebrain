@@ -6,8 +6,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from pydantic import BaseModel, Field
 
-from app.auth.passwords import DUMMY_HASH, verify_password
+from app.auth.passwords import DUMMY_HASH, hash_password, verify_password
 from app.auth.principal import SESSION_COOKIE, Principal, resolve_principal
 from app.auth.tokens import make_session_token, read_session_token
 from app.config import get_settings
@@ -63,7 +64,33 @@ def login(body: LoginRequest, response: Response):
         max_age=ttl, httponly=True, samesite="lax",
         secure=settings.cookie_secure, path="/",
     )
-    return {"email": user.email, "display_name": user.display_name, "role_id": user.role_id}
+    # H-10: surface the flag so the client redirects to a change-password screen.
+    # The session is still issued — resolve_principal's gate blocks privileged
+    # calls until the credential is rotated.
+    return {"email": user.email, "display_name": user.display_name, "role_id": user.role_id,
+            "must_change_password": user.must_change_password}
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=12, max_length=1024)
+
+
+@router.post("/change-password")
+def change_password(body: ChangePasswordRequest, principal: Principal = Depends(resolve_principal)):
+    """Self-service rotation (authenticated; acts only on the caller's own user).
+    Clears must_change_password and burns every session so the OTP session cannot
+    be replayed after the change (H-10)."""
+    store = get_user_store()
+    user = store.get(principal.user_id)
+    if not user or not verify_password(body.current_password, user.password_hash):
+        record_auth_failure("change_password_invalid")
+        raise HTTPException(status_code=401, detail="Current password is incorrect.")
+    if body.new_password == body.current_password:
+        raise HTTPException(status_code=400, detail="New password must differ from the current one.")
+    store.update_password(user.id, hash_password(body.new_password), must_change_password=False)
+    revoked = get_session_store().revoke_all_for_user(user.id)
+    return {"ok": True, "sessions_revoked": revoked}
 
 
 @router.post("/logout")

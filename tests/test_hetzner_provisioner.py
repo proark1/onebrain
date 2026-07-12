@@ -227,3 +227,60 @@ def test_resolve_target_classifies_hetzner_run():
     assert target["railway_environment_id"] == "onebrain-dep_a"
     assert target["service_ids"] == {m: m for m in _MODULES}
     assert target_provider(target) == "hetzner"
+
+
+# --- P4-04: owner one-time password minting (H-10/A8) ------------------------
+
+def test_owner_otp_minted_hash_only_and_flagged():
+    from app.auth.passwords import verify_password
+    from app.platform.memory import MemoryPlatformStore
+    from app.provisioning.hetzner.provisioner import store_owner_one_time_password
+    from app.provisioning.service import CustomerProvisioner
+    from app.users.memory import MemoryUserStore
+
+    platform = MemoryPlatformStore()
+    control = MemoryControlPlaneStore()
+    users = MemoryUserStore()
+
+    result = CustomerProvisioner(platform, control, None, users).provision(
+        account_id="acct_owner", account_kind="organization", customer_name="Owner Co",
+        owner_user_id="usr_op", bundle_id="onebrain_only", deployment_id="dep_owner",
+        deployment_type="dedicated_railway", region="", release_ring="pilot",
+        initial_version="0.1.0", owner_email="Owner@Example.com",
+    )
+
+    # Plaintext OTP returned exactly once.
+    otp = result.owner_one_time_password
+    assert otp
+
+    # The owner User: admin, must_change flagged, tenant = account, hash matches.
+    owner = users.get_by_email("owner@example.com")
+    assert owner is not None
+    assert owner.role_id == "admin"
+    assert owner.must_change_password is True
+    assert owner.tenant_id == "acct_owner"
+    assert verify_password(otp, owner.password_hash)
+    # NEVER persisted in plaintext — only the hash is stored.
+    assert owner.password_hash != otp
+    assert otp not in owner.password_hash
+
+    # The run's bootstrap_secret_id points at a stored owner-OTP envelope, recorded
+    # in the erasure manifest; the envelope holds ciphertext, not the plaintext.
+    prov = MemoryProvisioningRunStore()
+    run = _run(prov, dep="dep_owner")
+    settings = Settings(secret_encryption_key="unit-test-secret-key")
+    updated = store_owner_one_time_password(prov, settings, run, otp)
+    assert updated.bootstrap_secret_id
+    envelope = prov.get_secret(updated.bootstrap_secret_id)
+    assert envelope.purpose == "owner_one_time_password"
+    assert updated.result_payload["erasure_manifest"]["secret_ids"] == [envelope.id]
+    assert otp not in envelope.ciphertext
+
+    # No owner_email -> no owner minted, no OTP (today's behavior, dormant).
+    plain = CustomerProvisioner(MemoryPlatformStore(), MemoryControlPlaneStore(), None, users).provision(
+        account_id="acct_none", account_kind="organization", customer_name="No Owner",
+        owner_user_id="usr_op", bundle_id="onebrain_only", deployment_id="dep_none",
+        deployment_type="dedicated_railway", region="", release_ring="pilot", initial_version="0.1.0",
+    )
+    assert plain.owner_one_time_password == ""
+    assert store_owner_one_time_password(prov, settings, _run(prov, dep="dep_none"), "").bootstrap_secret_id == ""

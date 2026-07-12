@@ -26,9 +26,11 @@ class PostgresUserStore:
     def _row(self, r) -> User:
         return User(id=r[0], email=r[1], display_name=r[2], password_hash=r[3],
                     tenant_id=r[4], role_id=r[5], location=r[6], status=r[7],
-                    created_at=r[8].isoformat() if r[8] else "")
+                    created_at=r[8].isoformat() if r[8] else "",
+                    must_change_password=bool(r[9]))
 
-    _COLS = "id, email, display_name, password_hash, tenant_id, role_id, location, status, created_at"
+    _COLS = ("id, email, display_name, password_hash, tenant_id, role_id, location, status, "
+             "created_at, must_change_password")
 
     def get(self, user_id: str) -> Optional[User]:
         with self._conn() as conn, conn.cursor() as cur:
@@ -45,13 +47,27 @@ class PostgresUserStore:
     def create(self, user: User) -> User:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO users (id, email, display_name, password_hash, tenant_id, role_id, location, status) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (email) DO NOTHING",
+                "INSERT INTO users (id, email, display_name, password_hash, tenant_id, role_id, location, "
+                "status, must_change_password) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (email) DO NOTHING",
                 (user.id, user.email.strip().lower(), user.display_name, user.password_hash,
-                 user.tenant_id, user.role_id, user.location, user.status),
+                 user.tenant_id, user.role_id, user.location, user.status, user.must_change_password),
             )
             conn.commit()
         return user
+
+    def update_password(self, user_id: str, password_hash: str, *, must_change_password: bool) -> User:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE users SET password_hash = %s, must_change_password = %s WHERE id = %s "
+                f"RETURNING {self._COLS}",
+                (password_hash, must_change_password, user_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        if not row:
+            raise KeyError(f"unknown user: {user_id}")
+        return self._row(row)
 
     def delete_by_email(self, email: str) -> bool:
         with self._conn() as conn, conn.cursor() as cur:

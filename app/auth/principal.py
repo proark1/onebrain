@@ -47,6 +47,7 @@ class Principal:
     space_ids: Optional[frozenset] = None
     app_id: str = ""
     purposes: Optional[frozenset] = None
+    must_change_password: bool = False   # H-10: gates every non-allowlisted endpoint until rotated
 
     @property
     def is_employee(self) -> bool:
@@ -93,10 +94,28 @@ def principal_from_user(user) -> Principal:
         tenant_id=user.tenant_id or HUMAN_TENANT,
         display_name=user.display_name,
         email=user.email,
+        must_change_password=getattr(user, "must_change_password", False),
     )
 
 
-def resolve_principal(ob_session: str = Cookie(default="")) -> Principal:
+# A11: the must_change_password gate matches a MODULE-QUALIFIED identity, never a
+# bare __name__. A bare-name match would implicitly allowlist ANY same-named
+# endpoint anywhere in the app (notably `me`, a common name), silently widening
+# the gate that confines a freshly-provisioned OTP admin. These (module, name)
+# pairs are pinned to the SPECIFIC auth/session routers (confirmed at build time:
+# change_password/logout live in app.routers.auth; me/list_roles/list_locations
+# live in app.routers.session). A must-change user may authenticate, read /me,
+# change the password, or log out — nothing else.
+_MUST_CHANGE_ALLOWED = frozenset({
+    ("app.routers.auth", "change_password"),
+    ("app.routers.auth", "logout"),
+    ("app.routers.session", "me"),
+    ("app.routers.session", "list_roles"),
+    ("app.routers.session", "list_locations"),
+})
+
+
+def resolve_principal(ob_session: str = Cookie(default=""), request: Request = None) -> Principal:
     from app.config import get_settings
     from app.deps import get_session_store, get_user_store
 
@@ -122,7 +141,21 @@ def resolve_principal(ob_session: str = Cookie(default="")) -> Principal:
     if not user or user.status != "active":
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    return principal_from_user(user)
+    principal = principal_from_user(user)
+    if principal.must_change_password:
+        # Single chokepoint: a must-change user is authenticated (the session is
+        # real) but 403'd out of every endpoint except the (module, name)-pinned
+        # allowlist until the credential is rotated. Reuses the request.scope
+        # ["endpoint"] mechanism (like _usage_endpoint_from_request) but keys on
+        # (__module__, __name__) so an unrelated same-named function cannot widen it.
+        endpoint = request.scope.get("endpoint") if request is not None else None
+        identity = (
+            (getattr(endpoint, "__module__", ""), getattr(endpoint, "__name__", ""))
+            if endpoint is not None else ("", "")
+        )
+        if identity not in _MUST_CHANGE_ALLOWED:
+            raise HTTPException(status_code=403, detail="password_change_required")
+    return principal
 
 
 # The service surface. A service key never conveys a role or a clearance above

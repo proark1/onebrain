@@ -451,13 +451,18 @@ def _trust_primitives_module():
     return _load_migration_module("0019_trust_primitives.py", "trust_primitives_migration")
 
 
-def test_trust_primitives_migration_is_head():
+def _must_change_password_module():
+    return _load_migration_module("0020_must_change_password.py", "must_change_password_migration")
+
+
+def test_trust_primitives_migration_structure_and_chain():
     migration = _trust_primitives_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    # 0019 is no longer head (0020 supersedes it); it is the down_revision of head.
     assert migration.revision == "0019_trust_primitives"
-    assert len(migration.revision) <= 32
+    assert migration.revision != REQUIRED_ALEMBIC_REVISION
     assert migration.down_revision == "0018_fleet_rollouts"
+    assert _must_change_password_module().down_revision == migration.revision
     src = (
         Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0019_trust_primitives.py"
     ).read_text()
@@ -466,6 +471,21 @@ def test_trust_primitives_migration_is_head():
     assert "rollback_kind" in src
     assert "ack_restore_required" in src
     assert "control_release_manifests" in src
+
+
+def test_must_change_password_migration_is_head():
+    migration = _must_change_password_module()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision == "0020_must_change_password"
+    assert len(migration.revision) <= 32
+    assert migration.down_revision == "0019_trust_primitives"
+    src = (
+        Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0020_must_change_password.py"
+    ).read_text()
+    assert "ADD COLUMN IF NOT EXISTS" in src
+    assert "users" in src
+    assert "must_change_password" in src
 
 
 # --- positional row mappers (C4) ----------------------------------------------
