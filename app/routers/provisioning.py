@@ -14,6 +14,8 @@ from app.config import get_settings
 from app.deps import get_control_plane_store, get_platform_store, get_provisioning_run_store, get_service_key_store
 from app.platform.base import BrandTheme, DEFAULT_BRAND_THEME
 from app.provisioning.bundles import BUNDLES, ProvisioningBundle
+from app.provisioning.hetzner.broker import build_hetzner_broker
+from app.provisioning.hetzner.provisioner import HetznerProvisioner
 from app.provisioning.runs import (
     GitHubWorkflowDispatcher,
     ProvisioningCallback,
@@ -363,9 +365,23 @@ def _run_out(run: ProvisioningRun) -> ProvisioningRunOut:
 
 
 def _dispatch_run(run: ProvisioningRun) -> ProvisioningRun:
+    # H-1/H-9: backend switch. Default "github" is today's Railway behavior
+    # exactly (dormancy); "hetzner" dispatches through the token-isolating broker.
+    # An unknown value fails closed with a named reason — never a silent fallback.
     store = get_provisioning_run_store()
+    settings = get_settings()
+    # getattr default keeps pre-P4 settings fakes (SimpleNamespace) on the github
+    # path — the dormant default is today's Railway behavior exactly.
+    backend = getattr(settings, "provisioner_backend", "github")
     try:
-        dispatched = GitHubWorkflowDispatcher(get_settings()).dispatch(run)
+        if backend == "hetzner":
+            dispatched = HetznerProvisioner(
+                settings, build_hetzner_broker(settings), get_control_plane_store()
+            ).dispatch(run)
+        elif backend == "github":
+            dispatched = GitHubWorkflowDispatcher(settings).dispatch(run)
+        else:
+            return mark_dispatch_failed(store, run, f"unknown provisioner_backend: {backend}")
     except RuntimeError as exc:
         return mark_dispatch_failed(store, run, str(exc))
     return store.update_run(dispatched)
