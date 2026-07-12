@@ -40,6 +40,12 @@ from app.controlplane.rollout_exec import (
 )
 from app.controlplane.fleet_runner import plan_and_start_fleet_rollout, reconcile_fleet_rollout
 from app.provisioning.runs import RolloutWorkflowDispatcher
+from app.trust.release import (
+    parse_registry_allowlist,
+    release_signature_fields_from_body,
+    verify_images,
+    verify_release_signature,
+)
 from app.monitoring import MonitoringSummary, monitoring_snapshot
 from app.platform.base import AuditEvent
 from app.schemas import BrandThemeOut, ServiceKeyInfo
@@ -57,6 +63,7 @@ class DeploymentCreate(BaseModel):
     status: str = Field(default="active", max_length=80)
     current_version: str = Field(default="", max_length=80)
     current_migration: str = Field(default="", max_length=80)
+    update_policy: str = Field(default="", max_length=20)
     id: str | None = Field(default=None, max_length=120)
 
 
@@ -70,6 +77,7 @@ class DeploymentOut(BaseModel):
     status: str
     current_version: str = ""
     current_migration: str = ""
+    update_policy: str = ""
 
 
 class ModuleUpsert(BaseModel):
@@ -94,6 +102,10 @@ class ReleaseCreate(BaseModel):
     security_notes: str = ""
     rollback_plan: str = ""
     status: str = "draft"
+    images: dict[str, str] = Field(default_factory=dict)
+    rollback_kind: str = ""
+    signature: str = ""
+    signing_key_id: str = ""
 
 
 class ReleaseOut(BaseModel):
@@ -105,6 +117,10 @@ class ReleaseOut(BaseModel):
     security_notes: str = ""
     rollback_plan: str = ""
     status: str = "draft"
+    images: dict[str, str] = Field(default_factory=dict)
+    rollback_kind: str = ""
+    signature: str = ""
+    signing_key_id: str = ""
 
 
 class BackupCreate(BaseModel):
@@ -141,12 +157,18 @@ class UpdatePlanOut(BaseModel):
     current_modules: dict[str, str] = Field(default_factory=dict)
     target_modules: dict[str, str] = Field(default_factory=dict)
     modules_to_update: dict[str, str] = Field(default_factory=dict)
+    rollback_kind: str = ""
+
+
+class UpdatePolicyUpdate(BaseModel):
+    update_policy: str = Field(min_length=1, max_length=20)
 
 
 class RolloutCreate(BaseModel):
     target_version: str
     status: str = "pending"
     notes: str = ""
+    ack_restore_required: bool = False
     id: str | None = None
 
 
@@ -167,6 +189,7 @@ class RolloutOut(BaseModel):
     status: str
     started_by: str
     notes: str = ""
+    ack_restore_required: bool = False
 
 
 class OperatorAccountOut(BaseModel):
@@ -380,7 +403,8 @@ def _release_out(r: ReleaseManifest) -> ReleaseOut:
     return ReleaseOut(
         version=r.version, git_sha=r.git_sha, modules=r.modules, migration_from=r.migration_from,
         migration_to=r.migration_to, security_notes=r.security_notes, rollback_plan=r.rollback_plan,
-        status=r.status,
+        status=r.status, images=r.images, rollback_kind=r.rollback_kind, signature=r.signature,
+        signing_key_id=r.signing_key_id,
     )
 
 
@@ -396,7 +420,7 @@ def _plan_out(p: UpdatePlan) -> UpdatePlanOut:
     return UpdatePlanOut(
         deployment_id=p.deployment_id, target_version=p.target_version, allowed=p.allowed,
         reason=p.reason, current_modules=p.current_modules, target_modules=p.target_modules,
-        modules_to_update=p.modules_to_update,
+        modules_to_update=p.modules_to_update, rollback_kind=p.rollback_kind,
     )
 
 
@@ -404,6 +428,7 @@ def _rollout_out(r: RolloutRun) -> RolloutOut:
     return RolloutOut(
         id=r.id, deployment_id=r.deployment_id, target_version=r.target_version,
         status=r.status, started_by=r.started_by, notes=r.notes,
+        ack_restore_required=r.ack_restore_required,
     )
 
 
@@ -790,6 +815,7 @@ def create_deployment(body: DeploymentCreate, principal: Principal = Depends(res
             status=body.status.strip(),
             current_version=body.current_version.strip(),
             current_migration=body.current_migration.strip(),
+            update_policy=body.update_policy.strip(),
         ))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -881,6 +907,18 @@ def upsert_module(deployment_id: str, body: ModuleUpsert, principal: Principal =
     return _module_out(module)
 
 
+@router.post("/deployments/{deployment_id}/policy", response_model=DeploymentOut)
+def set_update_policy(deployment_id: str, body: UpdatePolicyUpdate,
+                      principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    _authorize_deployment(principal, deployment_id)
+    try:
+        deployment = get_control_plane_store().set_update_policy(deployment_id, body.update_policy.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _deployment_out(deployment)
+
+
 @router.get("/releases", response_model=list[ReleaseOut])
 def list_releases(principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
@@ -890,6 +928,31 @@ def list_releases(principal: Principal = Depends(resolve_principal)):
 @router.post("/releases", response_model=ReleaseOut)
 def create_release(body: ReleaseCreate, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
+    settings = get_settings()
+    errors: list[str] = []
+    images = {k.strip(): v.strip() for k, v in body.images.items()}
+    if settings.release_require_signed_images and not images:
+        errors.append("release requires a digest-pinned images map")
+    if images:
+        # C7 / ground rule 1: the registry allowlist deliberately has NO off
+        # flag — supplying an images map is itself the opt-in.
+        errors += verify_images(images, parse_registry_allowlist(settings.release_registry_allowlist))
+    if settings.release_require_rollback_kind and body.rollback_kind.strip() not in ("code_only", "restore_required"):
+        errors.append("release requires rollback_kind (code_only|restore_required)")
+    if body.signature or settings.release_require_signature:
+        # A present signature is ALWAYS verified even when not required — a bad
+        # signature must never be stored as if good. Verification runs over the
+        # SAME stripped values that are persisted (A6), so the stored row
+        # re-verifies later (P2 envelope computation, audits).
+        if settings.release_require_signature and not body.signature:
+            errors.append("release signature is required")
+        elif not settings.release_verify_public_key:
+            errors.append("release signature verification key is not configured")
+        elif body.signature and not verify_release_signature(
+                release_signature_fields_from_body(body), body.signature, settings.release_verify_public_key):
+            errors.append("release signature verification failed")
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
     try:
         release = get_control_plane_store().create_release(ReleaseManifest(
             version=body.version.strip(),
@@ -900,6 +963,10 @@ def create_release(body: ReleaseCreate, principal: Principal = Depends(resolve_p
             security_notes=body.security_notes.strip(),
             rollback_plan=body.rollback_plan.strip(),
             status=body.status.strip(),
+            images=images,
+            rollback_kind=body.rollback_kind.strip(),
+            signature=body.signature.strip(),
+            signing_key_id=body.signing_key_id.strip(),
         ))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -955,10 +1022,12 @@ def latest_health(deployment_id: str, principal: Principal = Depends(resolve_pri
 
 
 @router.get("/deployments/{deployment_id}/update-plan/{target_version}", response_model=UpdatePlanOut)
-def update_plan(deployment_id: str, target_version: str, principal: Principal = Depends(resolve_principal)):
+def update_plan(deployment_id: str, target_version: str, ack_restore_required: bool = False,
+                principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
     _authorize_deployment(principal, deployment_id)
-    return _plan_out(get_control_plane_store().plan_update(deployment_id, target_version))
+    return _plan_out(get_control_plane_store().plan_update(
+        deployment_id, target_version, ack_restore_required=ack_restore_required))
 
 
 @router.get("/deployments/{deployment_id}/rollouts", response_model=list[RolloutOut])
@@ -980,6 +1049,7 @@ def start_rollout(deployment_id: str, body: RolloutCreate, principal: Principal 
             status=body.status.strip(),
             started_by=principal.user_id,
             notes=body.notes.strip(),
+            ack_restore_required=body.ack_restore_required,
         ))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1010,7 +1080,8 @@ def dispatch_rollout(
     if active and active.id != rollout_id:
         raise HTTPException(status_code=409, detail="Another rollout is already in progress for this deployment.")
 
-    plan = control.plan_update(deployment_id, rollout.target_version)
+    plan = control.plan_update(deployment_id, rollout.target_version,
+                               ack_restore_required=rollout.ack_restore_required)
     if not plan.allowed:
         raise HTTPException(status_code=409, detail=f"Update blocked: {plan.reason}")
     release = control.get_release(rollout.target_version)
@@ -1121,7 +1192,10 @@ def _dispatch_child_rollout(fleet_id: str, deployment_id: str, *, target_version
     rollout = control.get_rollout(child_id)
     release = control.get_release(target_version)
     deployment = control.get_deployment(deployment_id)
-    plan = control.plan_update(deployment_id, target_version)
+    # Children are created with the default ack_restore_required=False; fleet
+    # sweeps can never auto-ack a restore_required release (the R3 guarantee).
+    plan = control.plan_update(deployment_id, target_version,
+                               ack_restore_required=rollout.ack_restore_required)
     if not (rollout and release and deployment and plan.allowed):
         if rollout:
             mark_rollout_dispatch_failed(control, rollout, "update no longer available")

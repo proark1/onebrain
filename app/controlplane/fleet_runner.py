@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional, Tuple
 
+from app.controlplane.base import effective_update_policy
 from app.controlplane.orchestration import (
     FleetRolloutPlan,
     FleetRolloutRun,
@@ -24,10 +25,11 @@ from app.controlplane.orchestration import (
 
 def _deployments_in_ring(control_store, ring: str, target_version: str) -> List[str]:
     """Deployments in `ring` that still need `target_version` (re-planned now, so a
-    schema-changing update re-checks its backup at dispatch time, not just at plan)."""
+    schema-changing update re-checks its backup at dispatch time, not just at plan
+    — and a deployment whose policy left "auto" mid-rollout is never re-swept)."""
     ids = []
     for dep in control_store.list_deployments():
-        if dep.release_ring != ring:
+        if dep.release_ring != ring or effective_update_policy(dep) != "auto":
             continue
         plan = control_store.plan_update(dep.id, target_version)
         if plan.allowed and plan.reason != "already_current":

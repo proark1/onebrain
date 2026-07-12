@@ -28,6 +28,13 @@ from app.jobs.base import JOB_DOCUMENT_INGEST, JOB_SERVICE_CAPTURE
 from app.jobs.memory import MemoryJobStore
 from app.monitoring import record_api_error, record_auth_failure, reset_monitoring_metrics
 from app.controlplane.memory import MemoryControlPlaneStore
+from app.trust.release import (
+    release_signature_fields,
+    release_signature_fields_from_body,
+    sign_release,
+    verify_release_signature,
+)
+from app.trust.signing import generate_keypair
 from app.platform.base import Account, AppInstallation, Space
 from app.platform.memory import MemoryPlatformStore
 from app.servicekeys.base import SCOPE_READ, ServiceKey, hash_secret
@@ -55,9 +62,22 @@ def _principal(role_id: str) -> Principal:
     )
 
 
-def _operator_settings():
-    # Mission Control context: operator sees/manages the whole fleet (scoping bypassed).
-    return SimpleNamespace(is_operator_surface=True, operator_mode=True)
+def _operator_settings(**over):
+    # Mission Control context: operator sees/manages the whole fleet (scoping
+    # bypassed). Carries the release trust keys (spec §2 defaults — all inert)
+    # plus the dispatch plumbing keys so endpoint tests share one helper.
+    data = dict(
+        is_operator_surface=True, operator_mode=True,
+        release_verify_public_key="",
+        release_require_signature=False,
+        release_require_signed_images=False,
+        release_require_rollback_kind=False,
+        release_registry_allowlist="ghcr.io/proark1",
+        provisioning_callback_key_id="",
+        provisioning_callback_allowed_hosts="",
+    )
+    data.update(over)
+    return SimpleNamespace(**data)
 
 
 def _store() -> MemoryControlPlaneStore:
@@ -1035,3 +1055,245 @@ def test_memory_store_loads_pre_0019_json(tmp_path):
     assert rollout.ack_restore_required is False
     # Legacy rows plan exactly as before.
     assert store.plan_update("dep_old", "2026.06.0").reason == "already_current"
+
+
+# --- Hetzner P0 trust primitives (WP4): operator-surface gates ------------------
+
+def test_create_release_endpoint_accepts_and_returns_images(monkeypatch):
+    store = _store()
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
+
+    out = operator_router.create_release(operator_router.ReleaseCreate(
+        version="2026.07.18", git_sha="abc123", modules=dict(_MODULES),
+        images=dict(_IMAGES), rollback_kind="code_only",
+    ), principal=_admin())
+
+    assert out.images == _IMAGES
+    assert out.rollback_kind == "code_only"
+    stored = store.get_release("2026.07.18")
+    assert stored.images == _IMAGES
+    assert stored.rollback_kind == "code_only"
+
+
+def test_create_release_endpoint_rejects_off_allowlist_registry(monkeypatch):
+    store = _store()
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings",
+                        lambda: _operator_settings(release_registry_allowlist="ghcr.io/proark1"))
+
+    for ref in (
+        f"docker.io/x/y@sha256:{_DIGEST}",
+        f"ghcr.io/otherorg/x@sha256:{_DIGEST}",  # same host, different org — the B2 case
+    ):
+        body = operator_router.ReleaseCreate(
+            version="v_allow", git_sha="a", modules={"onebrain-api": "1.0"},
+            images={"onebrain-api": ref})
+        with pytest.raises(HTTPException) as ei:
+            operator_router.create_release(body, principal=_admin())
+        assert ei.value.status_code == 400
+        assert "not in registry allowlist" in ei.value.detail
+    assert store.get_release("v_allow") is None  # never persisted
+
+
+def test_create_release_endpoint_verifies_signature_when_present(monkeypatch):
+    store = _store()
+    private_key, public_key = generate_keypair()
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings",
+                        lambda: _operator_settings(release_verify_public_key=public_key))
+
+    body = operator_router.ReleaseCreate(
+        version="2026.07.20", git_sha="abc123", modules=dict(_MODULES),
+        images=dict(_IMAGES), rollback_kind="code_only",
+    )
+    signature = sign_release(release_signature_fields_from_body(body), private_key)
+    out = operator_router.create_release(
+        body.model_copy(update={"signature": signature}), principal=_admin())
+    assert out.signature == signature
+
+    # A tampered field no longer matches the signed payload — refused even
+    # though no release_require_* flag is on (a present signature is always
+    # verified; a bad one must never be stored as if good).
+    tampered = body.model_copy(update={"git_sha": "abc124", "signature": signature})
+    with pytest.raises(HTTPException) as ei:
+        operator_router.create_release(tampered, principal=_admin())
+    assert ei.value.status_code == 400
+    assert "release signature verification failed" in ei.value.detail
+
+
+def test_signed_release_reverifies_from_stored_row(monkeypatch):
+    """A6: the signature is computed over the STRIPPED values the endpoint
+    persists, so the STORED row re-verifies — not just the raw request body."""
+    store = _store()
+    private_key, public_key = generate_keypair()
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings",
+                        lambda: _operator_settings(release_verify_public_key=public_key))
+
+    body = operator_router.ReleaseCreate(
+        version=" 2026.07.22 ",
+        git_sha=" abc123 ",
+        modules={" onebrain-api ": " 0.8.0 ", "communication-api": "0.6.0"},
+        images={" onebrain-api ": f" {_IMAGES['onebrain-api']} ",
+                "communication-api": _IMAGES["communication-api"]},
+        migration_from=" 0041 ",
+        migration_to=" 0041 ",
+        rollback_kind=" code_only ",
+    )
+    signature = sign_release(release_signature_fields_from_body(body), private_key)
+
+    operator_router.create_release(
+        body.model_copy(update={"signature": signature}), principal=_admin())
+
+    release = store.get_release("2026.07.22")
+    assert release is not None
+    assert release.git_sha == "abc123"
+    assert release.images == _IMAGES
+    assert verify_release_signature(
+        release_signature_fields(release), release.signature, public_key) is True
+
+
+def test_create_release_endpoint_requires_signature_when_flag_on(monkeypatch):
+    store = _store()
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings",
+                        lambda: _operator_settings(release_require_signature=True))
+    body = operator_router.ReleaseCreate(version="2026.07.23", git_sha="a", modules=dict(_MODULES))
+
+    with pytest.raises(HTTPException) as ei:
+        operator_router.create_release(body, principal=_admin())
+    assert ei.value.status_code == 400
+    assert "release signature is required" in ei.value.detail
+
+    # Dormancy: all flags off, no signature -> still creates (today's flow).
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
+    out = operator_router.create_release(body, principal=_admin())
+    assert out.signature == ""
+
+
+def test_create_release_flags_off_still_enforces_allowlist(monkeypatch):
+    """C7 / ground rule 1: supplying an images map is itself the opt-in — with
+    EVERY release_require_* flag off, an off-allowlist image still 400s. There
+    is deliberately no enforcement flag for the allowlist."""
+    store = _store()
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)  # all flags off
+
+    body = operator_router.ReleaseCreate(
+        version="v_c7", git_sha="a", modules={"onebrain-api": "1.0"},
+        images={"onebrain-api": f"docker.io/evil/onebrain-api@sha256:{_DIGEST}"})
+    with pytest.raises(HTTPException) as ei:
+        operator_router.create_release(body, principal=_admin())
+    assert ei.value.status_code == 400
+    assert "not in registry allowlist" in ei.value.detail
+
+
+def test_set_update_policy_endpoint_authz_and_validation(monkeypatch):
+    store = _store()
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
+
+    with pytest.raises(HTTPException) as ei:  # non-admin refused
+        operator_router.set_update_policy(
+            "dep_a", operator_router.UpdatePolicyUpdate(update_policy="manual"),
+            principal=_principal("front_desk"))
+    assert ei.value.status_code == 403
+
+    with pytest.raises(HTTPException) as ei:  # bad vocabulary
+        operator_router.set_update_policy(
+            "dep_a", operator_router.UpdatePolicyUpdate(update_policy="yolo"),
+            principal=_admin())
+    assert ei.value.status_code == 400
+
+    out = operator_router.set_update_policy(
+        "dep_a", operator_router.UpdatePolicyUpdate(update_policy="pinned"),
+        principal=_admin())
+    assert out.update_policy == "pinned"
+    assert store.get_deployment("dep_a").update_policy == "pinned"
+
+
+def test_dispatch_requires_ack_for_restore_required(monkeypatch):
+    """D-10 at the dispatch gate. WITH-ack half: an acked rollout against a
+    restore_required release on an auto deployment dispatches past the plan
+    gate. Ack-less half (A5): start_rollout re-runs the plan gate, so an
+    ack-less rollout on an AUTO deployment can never be CREATED directly — the
+    only in-model route is start under manual policy, flip to auto, dispatch."""
+    import app.routers.provisioning as provisioning_router
+
+    def _restore_required_store():
+        s = _store()
+        s.create_release(ReleaseManifest(
+            version="2026.07.24", git_sha="a", modules=dict(_MODULES),
+            rollback_kind="restore_required"))
+        s.record_backup(BackupRun("bak_disp", "dep_a", "success"))  # B6
+        return s
+
+    prov_runs = [SimpleNamespace(
+        id="r1", deployment_id="dep_a", status="succeeded", railway_project_id="p1",
+        railway_environment_id="e1", result_payload={"service_ids": {}},
+        completed_at="t", created_at="t")]
+
+    class _ProvStore:
+        def list_runs(self, account_id="", deployment_id=""):
+            return [r for r in prov_runs if not deployment_id or r.deployment_id == deployment_id]
+
+    dispatched = []
+
+    class _FakeDispatcher:
+        def __init__(self, settings):
+            pass
+
+        def dispatch(self, inputs, opener=None):
+            dispatched.append(inputs)
+            return "https://github.com/o/repo/actions/workflows/update-customer.yml"
+
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
+    monkeypatch.setattr(provisioning_router, "get_settings", _operator_settings)
+    monkeypatch.setattr(operator_router, "get_provisioning_run_store", lambda: _ProvStore())
+    monkeypatch.setattr(operator_router, "RolloutWorkflowDispatcher", _FakeDispatcher)
+    body = operator_router.RolloutDispatch(
+        callback_url="https://mc.example/api/rollouts/{rollout_id}/callback", dry_run=True)
+
+    # WITH ack: dispatches.
+    store = _restore_required_store()
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    store.start_rollout(RolloutRun("roll_acked", "dep_a", "2026.07.24", "pending", "op",
+                                   ack_restore_required=True))
+    out = operator_router.dispatch_rollout("dep_a", "roll_acked", body, principal=_admin())
+    assert out.ack_restore_required is True
+    assert len(dispatched) == 1
+    assert store.get_rollout("roll_acked").exec_status == "dispatched"
+
+    # Ack-less (A5 construction — do not improvise another path).
+    store2 = _restore_required_store()
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store2)
+    store2.set_update_policy("dep_a", "manual")
+    store2.start_rollout(RolloutRun("roll_noack", "dep_a", "2026.07.24", "pending", "op"))
+    store2.set_update_policy("dep_a", "auto")
+
+    with pytest.raises(HTTPException) as ei:
+        operator_router.dispatch_rollout("dep_a", "roll_noack", body, principal=_admin())
+    assert ei.value.status_code == 409
+    assert "restore_required_ack_needed" in ei.value.detail
+    assert len(dispatched) == 1  # the dispatcher was never called again
+    assert store2.get_rollout("roll_noack").exec_status == "pending"  # plan-blocked, not terminal
+
+
+def test_update_plan_endpoint_passes_ack_param(monkeypatch):
+    store = _store()
+    store.create_release(ReleaseManifest(
+        version="2026.07.19", git_sha="a", modules=dict(_MODULES),
+        rollback_kind="restore_required"))
+    store.record_backup(BackupRun("bak_plan_ack", "dep_a", "success"))  # B6
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
+
+    blocked = operator_router.update_plan("dep_a", "2026.07.19", principal=_admin())
+    assert blocked.allowed is False
+    assert blocked.reason == "restore_required_ack_needed"
+    assert blocked.rollback_kind == "restore_required"
+
+    acked = operator_router.update_plan(
+        "dep_a", "2026.07.19", ack_restore_required=True, principal=_admin())
+    assert acked.allowed is True

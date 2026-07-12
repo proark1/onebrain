@@ -20,6 +20,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
+from app.controlplane.base import effective_update_policy
+
 # The auto-swept rings, in widening order. "manual" is deliberately excluded — a
 # manual-ring deployment opts out of fleet rollouts and is never swept.
 RING_ORDER: Tuple[str, ...] = ("internal", "pilot", "early", "stable")
@@ -74,8 +76,10 @@ def plan_fleet_rollout(deployments, target_version: str, plan_for: Callable, rin
     skipped: List[str] = []
     blocked: Dict[str, str] = {}
     for dep in deployments:
+        if effective_update_policy(dep) != "auto":
+            continue  # manual/pinned deployments are only updated when explicitly targeted
         if dep.release_ring not in by_ring:
-            continue  # manual / unknown ring: opted out of fleet sweeps
+            continue  # unknown ring: opted out of fleet sweeps
         plan = plan_for(dep.id, target_version)
         if plan.reason == "already_current":
             skipped.append(dep.id)

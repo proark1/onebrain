@@ -15,7 +15,11 @@ from app.auth.roles import ROLES
 from app.controlplane.base import CustomerDeployment, DeploymentModule, ReleaseManifest, RolloutRun
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.controlplane.orchestration import FleetRolloutRun, advance_fleet_rollout, plan_fleet_rollout
-from app.controlplane.fleet_runner import advance_fleet_on_child, plan_and_start_fleet_rollout
+from app.controlplane.fleet_runner import (
+    _deployments_in_ring,
+    advance_fleet_on_child,
+    plan_and_start_fleet_rollout,
+)
 from app.controlplane.rollout_exec import RolloutCallback, apply_rollout_callback
 
 
@@ -51,6 +55,24 @@ def test_plan_buckets_by_ring_skips_current_blocks_and_excludes_manual():
 def test_plan_not_deployable_when_all_current():
     plan = plan_fleet_rollout([_dep("a", "pilot")], "v2", _plan_for({"a": (True, "already_current")}))
     assert plan.deployable is False and plan.waves == ()
+
+
+def test_plan_excludes_manual_and_pinned_policies():
+    """WP4: fleet sweeps are auto-policy only. manual/pinned deployments are
+    excluded up front — they appear in neither waves nor blocked; '' policy on
+    an auto ring keeps the legacy ring convention (dormancy)."""
+    deps = [
+        SimpleNamespace(id="m", release_ring="pilot", update_policy="manual"),
+        SimpleNamespace(id="p", release_ring="pilot", update_policy="pinned"),
+        SimpleNamespace(id="a", release_ring="pilot", update_policy="auto"),
+        SimpleNamespace(id="e", release_ring="pilot", update_policy=""),
+    ]
+
+    plan = plan_fleet_rollout(deps, "v2", _plan_for({}))
+
+    assert {w.ring: list(w.deployment_ids) for w in plan.waves} == {"pilot": ["a", "e"]}
+    assert plan.skipped == ()
+    assert plan.blocked == {}  # excluded, not surfaced as pre-flight failures
 
 
 # --- pure reducer ------------------------------------------------------------
@@ -271,6 +293,19 @@ def test_runner_advances_through_sync_failures_within_tolerance():
         started_by="op", created_at="t", callback_url="cb", dry_run=False, dispatch_child=dispatch)
     # each ring has 1 failure <= tolerance 1, so the loop advances through both rings.
     assert store.get_fleet_rollout("f2").status == "succeeded"
+
+
+def test_ring_redispatch_respects_policy_change():
+    """WP4: a deployment whose policy left 'auto' after the fleet rollout
+    started must not be re-swept when its ring is dispatched."""
+    store = _fleet_control()
+    assert _deployments_in_ring(store, "pilot", "2026.07.1") == ["dep_pilot"]
+
+    store.set_update_policy("dep_pilot", "manual")
+
+    assert _deployments_in_ring(store, "pilot", "2026.07.1") == []
+    # The other ring is untouched.
+    assert _deployments_in_ring(store, "internal", "2026.07.1") == ["dep_int"]
 
 
 def test_advance_fleet_ring_cas_single_winner():
