@@ -106,6 +106,18 @@ def create_app() -> FastAPI:
         except Exception as exc:  # never fatal
             logging.getLogger("onebrain").warning("Fleet retention not started: %s", exc)
 
+        # Pull-path reconcile daemon (P5-04). OFF by default (fleet_reconcile_seconds=0,
+        # G3-4) — starts only when the operator explicitly opts in with a positive
+        # interval, so landing this does NOT flip auto-advance on the dormant MC. Never
+        # fatal; each tick's failure is isolated inside reconcile_once.
+        try:
+            from app.controlplane.reconcile_scheduler import start_reconcile_scheduler
+
+            if start_reconcile_scheduler(settings):
+                logging.getLogger("onebrain").info("Fleet reconcile scheduler enabled.")
+        except Exception as exc:  # never fatal
+            logging.getLogger("onebrain").warning("Fleet reconcile scheduler not started: %s", exc)
+
     @app.get("/health")
     def health():
         return {"status": "ok", "chunks": get_store().count()}
