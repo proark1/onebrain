@@ -19,6 +19,7 @@ from app.controlplane.fleet_runner import (
     _deployments_in_ring,
     advance_fleet_on_child,
     plan_and_start_fleet_rollout,
+    reconcile_fleet_rollout,
 )
 from app.controlplane.rollout_exec import RolloutCallback, apply_rollout_callback
 
@@ -317,3 +318,126 @@ def test_advance_fleet_ring_cas_single_winner():
     assert store.advance_fleet_ring("f", "internal", "pilot") is False  # from_ring no longer matches
     store.update_fleet_rollout("f", status="paused")
     assert store.advance_fleet_ring("f", "pilot", "early") is False     # not running
+
+
+# --- P4-07 targeting: named-set / manual-pinned override ----------------------
+
+def test_named_set_restricts_to_listed():
+    deps = [_dep("a", "internal"), _dep("b", "internal"), _dep("c", "pilot")]
+    plan = plan_fleet_rollout(deps, "v2", _plan_for({}), only_deployment_ids=frozenset({"a", "c"}))
+    # b is auto+eligible but never bucketed — it is not in the named set.
+    assert {w.ring: list(w.deployment_ids) for w in plan.waves} == {"internal": ["a"], "pilot": ["c"]}
+    assert plan.blocked == {} and plan.skipped == ()
+
+
+def test_named_set_overrides_manual_pinned_policy():
+    # A pinned-policy deployment in a real (auto-swept) ring. The PURE planner's fake
+    # plan_for returns allowed, so this isolates the policy-override bucketing.
+    pinned = SimpleNamespace(id="p", release_ring="pilot", update_policy="pinned")
+    plan = plan_fleet_rollout([pinned], "v2", _plan_for({}),
+                              only_deployment_ids=frozenset({"p"}), include_manual_pinned=True)
+    assert {w.ring: list(w.deployment_ids) for w in plan.waves} == {"pilot": ["p"]}
+    # Named but WITHOUT the override flag -> the policy exclusion stands.
+    plan2 = plan_fleet_rollout([pinned], "v2", _plan_for({}), only_deployment_ids=frozenset({"p"}))
+    assert plan2.waves == ()
+
+
+def test_manual_pinned_override_redispatched_in_non_first_ring():
+    """A16: a NAMED manual deployment in a non-first ring is re-dispatched when its ring
+    opens (its plan gate still applies at dispatch — manual passes it). With the
+    defaults it is filtered out — pinning the fix and the safe-degradation default."""
+    store = _fleet_control()               # dep_int (internal), dep_pilot (pilot)
+    store.set_update_policy("dep_pilot", "manual")   # opts out of unconditional auto sweeps
+
+    assert _deployments_in_ring(store, "pilot", "2026.07.1",
+                                only_deployment_ids=frozenset({"dep_pilot"}),
+                                include_manual_pinned=True) == ["dep_pilot"]
+    # Safe-degradation default (e.g. after a mid-rollout MC restart): auto-only filter.
+    assert _deployments_in_ring(store, "pilot", "2026.07.1") == []
+
+
+# --- P4-07 targeting: intra-ring staggering (batch cap) -----------------------
+
+def _ring_of(n: int, ring: str = "internal") -> MemoryControlPlaneStore:
+    store = MemoryControlPlaneStore()
+    for i in range(n):
+        store.create_deployment(CustomerDeployment(id=f"d{i}", customer_name=f"d{i}", account_id="acct",
+                                                   release_ring=ring, current_version="2026.07.0"))
+        store.upsert_module(DeploymentModule(f"d{i}", "onebrain-api", "0.7.0"))
+    store.create_release(ReleaseManifest(version="2026.07.1", git_sha="sha", modules={"onebrain-api": "0.8.0"}))
+    return store
+
+
+def test_ring_batch_caps_inflight():
+    store = _ring_of(5)
+    dispatch, made = _fake_dispatcher(store)
+    plan_and_start_fleet_rollout(
+        store, store, fleet_id="fb", target_version="2026.07.1", git_sha="sha", failure_tolerance=0,
+        started_by="op", created_at="t", callback_url="https://mc/{rollout_id}", dry_run=False,
+        dispatch_child=dispatch, ring_batch_size=2)
+    assert len(made) == 2   # batch cap: only 2 of 5 in flight
+
+    def _drain(batch):
+        for rid in [r for r in made if store.get_rollout(r).status == "pending"]:
+            apply_rollout_callback(store, rid, RolloutCallback(status="succeeded"))
+        return reconcile_fleet_rollout(store, store, "fb", dispatch_child=dispatch, ring_batch_size=batch)
+
+    _drain(2)
+    assert len(made) == 4   # next 2 opened only after the first batch drained
+    _drain(2)
+    assert len(made) == 5   # the last 1
+    _drain(2)
+    assert store.get_fleet_rollout("fb").status == "succeeded"   # ring advances only when all 5 drained
+
+
+def test_ring_batch_zero_dispatches_whole_ring():
+    store = _ring_of(4)
+    dispatch, made = _fake_dispatcher(store)
+    plan_and_start_fleet_rollout(
+        store, store, fleet_id="fz", target_version="2026.07.1", git_sha="sha", failure_tolerance=0,
+        started_by="op", created_at="t", callback_url="https://mc/{rollout_id}", dry_run=False,
+        dispatch_child=dispatch, ring_batch_size=0)
+    assert len(made) == 4   # batch_size=0 -> whole ring at once (today's behavior)
+
+
+def test_batch_failure_still_pauses_via_reducer():
+    store = _ring_of(3)
+    dispatch, made = _fake_dispatcher(store)
+    plan_and_start_fleet_rollout(
+        store, store, fleet_id="fb", target_version="2026.07.1", git_sha="sha", failure_tolerance=0,
+        started_by="op", created_at="t", callback_url="cb/{rollout_id}", dry_run=False,
+        dispatch_child=dispatch, ring_batch_size=2)
+    assert len(made) == 2
+
+    # One of the first batch fails -> the reducer pauses at drain (1 failure > tolerance 0),
+    # and the next batch never opens (a failure is never re-dispatched by the batcher).
+    apply_rollout_callback(store, made[0], RolloutCallback(status="succeeded"))
+    apply_rollout_callback(store, made[1], RolloutCallback(status="failed", failure_reason="boom"))
+    reconcile_fleet_rollout(store, store, "fb", dispatch_child=dispatch, ring_batch_size=2)
+
+    assert store.get_fleet_rollout("fb").status == "paused"
+    assert len(made) == 2
+
+
+def test_create_fleet_rollout_threads_targeting(monkeypatch):
+    store = _fleet_control()   # dep_int (internal), dep_pilot (pilot)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _op_settings)
+    monkeypatch.setattr(operator_router, "get_provisioning_run_store", lambda: None)
+    calls = []
+
+    def fake_child(fid, did, **kw):
+        calls.append(did)
+        store.start_rollout(RolloutRun(id=f"c_{did}", deployment_id=did, target_version="2026.07.1",
+                                       status="pending", started_by="fleet", fleet_rollout_id=fid))
+    monkeypatch.setattr(operator_router, "_dispatch_child_rollout", fake_child)
+    import app.routers.provisioning as prov
+    monkeypatch.setattr(prov, "get_settings", _op_settings)
+
+    out = operator_router.create_fleet_rollout(
+        operator_router.FleetRolloutCreate(target_version="2026.07.1", callback_url="https://mc/{rollout_id}",
+                                           dry_run=True, deployment_ids=["dep_pilot"]),
+        principal=_principal("admin"))
+    # Named set {dep_pilot}: dep_int (internal) is never bucketed; only pilot runs.
+    assert out.plan.waves == {"pilot": ["dep_pilot"]}
+    assert calls == ["dep_pilot"]

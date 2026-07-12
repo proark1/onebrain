@@ -69,15 +69,31 @@ class FleetRolloutPlan:
         return any(w.deployment_ids for w in self.waves)
 
 
-def plan_fleet_rollout(deployments, target_version: str, plan_for: Callable, ring_order=RING_ORDER) -> FleetRolloutPlan:
+def plan_fleet_rollout(deployments, target_version: str, plan_for: Callable, ring_order=RING_ORDER, *,
+                       only_deployment_ids: "frozenset[str]" = frozenset(),
+                       include_manual_pinned: bool = False) -> FleetRolloutPlan:
     """Bucket deployments into ordered ring waves. `plan_for(deployment_id,
-    target_version)` is injected (= ControlPlaneStore.plan_update) so this is pure."""
+    target_version)` is injected (= ControlPlaneStore.plan_update) so this is pure.
+
+    P4-07 targeting (additive; defaults reproduce today's signature exactly):
+    - only_deployment_ids: when non-empty, a NAMED SET — a deployment not in it is
+      skipped entirely (neither bucketed nor surfaced as blocked).
+    - include_manual_pinned: a manual/pinned deployment is normally excluded from
+      fleet sweeps; when it is explicitly NAMED and this flag is set, the policy
+      exclusion is overridden (a deliberate operator update). The R3 restore_required
+      ack still applies at DISPATCH (plan_for) — this override never auto-acks; a
+      pinned deployment targeting a different version is still plan-blocked there.
+    Whole-ring waves are unchanged (no synthetic ring labels / no chunking here)."""
     by_ring: Dict[str, List[str]] = {ring: [] for ring in ring_order}
     skipped: List[str] = []
     blocked: Dict[str, str] = {}
     for dep in deployments:
+        if only_deployment_ids and dep.id not in only_deployment_ids:
+            continue  # named-set: only the listed deployments participate
         if effective_update_policy(dep) != "auto":
-            continue  # manual/pinned deployments are only updated when explicitly targeted
+            # manual/pinned deployments are only swept when explicitly named + overridden
+            if not (include_manual_pinned and dep.id in only_deployment_ids):
+                continue
         if dep.release_ring not in by_ring:
             continue  # unknown ring: opted out of fleet sweeps
         plan = plan_for(dep.id, target_version)

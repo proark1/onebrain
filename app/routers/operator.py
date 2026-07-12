@@ -1219,6 +1219,10 @@ class FleetRolloutCreate(BaseModel):
     callback_url: str = Field(min_length=1, max_length=500)
     failure_tolerance: int = Field(default=0, ge=0, le=10000)
     dry_run: bool = True
+    # P4-07 targeting (all defaults reproduce today's whole-fleet, whole-ring sweep):
+    deployment_ids: list[str] = Field(default_factory=list, max_length=1000)  # named set ("" -> all eligible)
+    include_manual_pinned: bool = False       # override manual/pinned policy for NAMED deployments
+    ring_batch_size: int = Field(default=0, ge=0, le=10000)  # 0 -> whole ring at once; >0 caps in-flight/ring
 
 
 class FleetRolloutOut(BaseModel):
@@ -1342,7 +1346,9 @@ def create_fleet_rollout(body: FleetRolloutCreate, principal: Principal = Depend
         control, control, fleet_id=f"fleet_{uuid4().hex[:12]}", target_version=body.target_version,
         git_sha=release.git_sha, failure_tolerance=body.failure_tolerance,
         started_by=principal.user_id, created_at=datetime.now(timezone.utc).isoformat(),
-        callback_url=body.callback_url, dry_run=body.dry_run, dispatch_child=fleet_dispatch_child)
+        callback_url=body.callback_url, dry_run=body.dry_run, dispatch_child=fleet_dispatch_child,
+        ring_batch_size=body.ring_batch_size, only_deployment_ids=frozenset(body.deployment_ids),
+        include_manual_pinned=body.include_manual_pinned)
     return FleetRolloutCreateOut(
         fleet_rollout=_fleet_out(fleet_run) if fleet_run else None, plan=_fleet_plan_out(plan))
 
