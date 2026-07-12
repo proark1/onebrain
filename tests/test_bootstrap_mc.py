@@ -50,6 +50,11 @@ def test_dry_run_bakes_operator_env_and_omits_bootstrap_token():
 
     # Operator overlay (A14) + the desired-state PRIVATE key as a ${VAR} ref.
     assert "ONEBRAIN_IS_OPERATOR_SURFACE=true" in ci
+    # The MC box is actually armed as Mission Control: operator_mode is baked BOTH as the
+    # onebrain-api env literal (the settable field is_operator_surface does NOT set) and in
+    # the baked /opt/onebrain/.env overlay — without it the whole fleet surface is dormant.
+    assert "ONEBRAIN_OPERATOR_MODE=true" in ci
+    assert ci.count("ONEBRAIN_OPERATOR_MODE=true") >= 2      # onebrain-api.env literal + baked .env overlay
     assert "ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY=${ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY}" in ci
     # The baked /opt/onebrain/.env carries the foundational secrets with REAL values.
     assert "/opt/onebrain/.env" in ci
@@ -77,6 +82,43 @@ def test_dry_run_main_exit_zero_no_client_and_redacts_secrets(capsys):
     assert priv not in out                                   # the crown-jewel key never printed
     # A generated bundle secret value never appears verbatim either (redacted in the .env dump).
     assert not re.search(r"POSTGRES_PASSWORD=[A-Za-z0-9_-]{20,}", out)
+
+
+def _last_env_value(ci: str, key: str):
+    """The LAST `KEY=value` in the rendered cloud-init. The baked /opt/onebrain/.env is
+    written AFTER env/onebrain-api.env, so the last occurrence is the real baked value
+    (the earlier one is the onebrain-api.env ${VAR} ref)."""
+    matches = re.findall(rf"(?m)^\s*{re.escape(key)}=(.*)$", ci)
+    return matches[-1] if matches else None
+
+
+def test_signing_mc_bakes_public_key_set_so_g1_1_startup_passes():
+    # A signing-enabled MC (private key set) must bake its APP-level accepted wrapper-key
+    # SET, or it fails its OWN G1-1 startup assertion the moment operator_mode is on (finding
+    # #1) — an unbootable box the instant MC becomes a real control plane.
+    from app.controlplane.desired_state import active_signer_in_served_set, active_wrapper_public_key
+
+    priv, pub = generate_keypair()
+    settings = Settings(fleet_desired_state_private_key=priv, fleet_desired_state_public_keys=pub)
+    ci = mc.build_mc_artifacts(_args(_base_argv()), settings).cloud_init
+
+    # onebrain-api.env references it as a ${VAR}; the baked .env supplies the real value.
+    assert "ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS=${ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS}" in ci
+    assert _last_env_value(ci, "ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS") == pub
+    assert _last_env_value(ci, "ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY") == priv
+    assert _last_env_value(ci, "ONEBRAIN_OPERATOR_MODE") == "true"
+
+    # Reconstruct the MC box's OWN Settings from the baked values: a signing-enabled MC does
+    # NOT brick — its active signer is in its served set (active_signer_in_served_set True),
+    # which is exactly what app/main.py asserts at startup under operator_mode.
+    box = Settings(
+        operator_mode=True,
+        fleet_desired_state_private_key=_last_env_value(ci, "ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY"),
+        fleet_desired_state_public_keys=_last_env_value(ci, "ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS"),
+    )
+    assert box.operator_mode is True
+    assert active_wrapper_public_key(box) == pub
+    assert active_signer_in_served_set(box) is True
 
 
 # --- create path: injected client, default-deny firewall, secret hygiene -----

@@ -185,13 +185,21 @@ def test_per_product_databases_are_distinct():
 
 def test_render_operator_overlay():
     op = render_env_files(_inputs(_ALL, role="operator"))["env/onebrain-api.env"]
+    # The settable field that actually arms Mission Control (is_operator_surface is a
+    # read-only @property, so the surface flag alone leaves operator_mode False).
+    assert "ONEBRAIN_OPERATOR_MODE=true" in op
     assert "ONEBRAIN_IS_OPERATOR_SURFACE=true" in op
+    assert "ONEBRAIN_FLEET_PUBLIC_URL=https://mc.example.com" in op   # MC's own public URL
     assert "ONEBRAIN_FLEET_URL=https://mc.example.com" in op        # self-pointing (caller sets the URL)
     assert "ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS=" in op
     assert "ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY=${ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY}" in op
+    # G1-1: the box's OWN accepted wrapper-key set, or its startup assertion bricks it.
+    assert "ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS=${ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS}" in op
     cust = render_env_files(_inputs(_ALL, role="customer"))["env/onebrain-api.env"]
+    assert "ONEBRAIN_OPERATOR_MODE" not in cust                     # a customer box is NEVER Mission Control
     assert "ONEBRAIN_IS_OPERATOR_SURFACE" not in cust
     assert "ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY" not in cust
+    assert "ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS" not in cust
     assert "ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS" not in cust
 
 

@@ -335,11 +335,28 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
     # A14 operator overlay (dormant in P4; only onebrain-api carries it).
     if module_id == "onebrain-api" and inp.role == "operator":
         pairs += [
+            # The whole Mission Control surface (fleet router, G3-2 self-seed, P5-04
+            # scheduler) is gated on settings.operator_mode. ONEBRAIN_IS_OPERATOR_SURFACE
+            # is a READ-ONLY @property derived FROM operator_mode/operator_console — the env
+            # var does NOT set operator_mode, so it alone leaves the MC box with no fleet
+            # surface. ONEBRAIN_OPERATOR_MODE is the settable field that actually arms MC;
+            # bake it true (and its own public URL) so the single go-live command yields a
+            # live, self-enrolled, heartbeating MC.
+            ("ONEBRAIN_OPERATOR_MODE", "true"),
             ("ONEBRAIN_IS_OPERATOR_SURFACE", "true"),
+            ("ONEBRAIN_FLEET_PUBLIC_URL", inp.fleet_url),
             ("ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS",
              "${ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS}"),
             ("ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY",
              "${ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY}"),
+            # G1-1 interlock input: the APP-level accepted wrapper-key SET the box verifies
+            # its OWN active signer against at startup. Without this the MC box has an EMPTY
+            # served set while signing with the private key above -> active_signer_in_served_set()
+            # is False -> onebrain-api RuntimeErrors on every boot (and /bootstrap 409s every
+            # customer bundle). A ${VAR} ref filled from the operator .env (bootstrap_mc bakes
+            # the value, which its preflight already asserts contains the derived active signer).
+            ("ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS",
+             "${ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS}"),
         ]
     return pairs
 

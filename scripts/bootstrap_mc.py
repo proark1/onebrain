@@ -132,9 +132,19 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
     # ${VAR} values the render references but that are NOT bundle keys (the desired-state
     # PRIVATE key — MC's own signing key from escrow — and the callback allowed-hosts).
     dotenv = render_dotenv(bundle)
+    private_key = getattr(settings, "fleet_desired_state_private_key", "") or ""
     overlay = [
-        ("ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY",
-         getattr(settings, "fleet_desired_state_private_key", "") or ""),
+        # Arm Mission Control: is_operator_surface is a read-only @property, so the render's
+        # ONEBRAIN_IS_OPERATOR_SURFACE=true does NOT set operator_mode. Bake the settable
+        # field so the fleet router + G3-2 self-seed + P5-04 scheduler come up on the MC box.
+        ("ONEBRAIN_OPERATOR_MODE", "true"),
+        ("ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY", private_key),
+        # The APP-level accepted wrapper-key SET (G1-1). Sourced from the operator's own
+        # served set — build_mc_artifacts' preflight above already asserts it contains the
+        # active signer — so the MC box passes its OWN G1-1 startup assertion (and /bootstrap
+        # never 409s a customer bundle). The render references it as a ${VAR} in onebrain-api.env.
+        ("ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS",
+         settings.fleet_desired_state_public_keys or settings.fleet_desired_state_public_key),
         ("ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS",
          getattr(settings, "provisioning_callback_allowed_hosts", "") or ""),
     ]
@@ -191,8 +201,10 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
         dns = DnsRecordRequest(zone_id=settings.fleet_dns_zone_id, name=fqdn, ipv4="", ttl=300)
 
     # Everything that must NEVER be echoed: the bundle values + the desired-state private
-    # key + the callback token. Redacted from any printed cloud-init.
-    secret_values = tuple(v for v in (list(bundle.values()) + [overlay[0][1], callback_token]) if v)
+    # key + the callback token. Redacted from any printed cloud-init. (Referenced by name,
+    # not overlay position, so reordering the overlay never silently drops the crown-jewel
+    # private key from redaction.)
+    secret_values = tuple(v for v in (list(bundle.values()) + [private_key, callback_token]) if v)
     return McArtifacts(cloud_init=cloud_init, bundle=bundle, server=server, firewall=firewall,
                        volume=volume, dns=dns, fleet_token=fleet_token, secret_values=secret_values)
 
