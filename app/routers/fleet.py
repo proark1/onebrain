@@ -10,20 +10,23 @@ customer-serving deployment never ingests or exposes fleet state.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.auth.principal import Principal, resolve_principal
 from app.config import get_settings
+from app.controlplane.base import ServedFloorBump
 from app.controlplane.desired_state import active_pull_attempt_id, sign_desired_state_for
 from app.deps import get_control_plane_store, get_fleet_heartbeat_rate_limiter, get_fleet_store
 from app.fleet.base import FleetKey, Heartbeat
 from app.fleet.enrollment import fleet_enrollment_vars, mint_deployment_fleet_key
 from app.fleet.heartbeat import AnyFleetHeartbeat, FleetHeartbeat  # noqa: F401 — FleetHeartbeat kept for typing
 from app.fleet.keys import generate_fleet_key, hash_secret, parse_fleet_key, verify_secret
+from app.trust.envelope import FloorBump, verify_floor_bump
 
 router = APIRouter(prefix="/api/fleet", tags=["fleet"])
 
@@ -147,6 +150,95 @@ def get_desired_state(authorization: str = Header(default=""),
     if env is None:
         return None
     return {"envelope": env.model_dump(), "attempt_id": active_pull_attempt_id(control, key.deployment_id)}
+
+
+# --- floor-bump serving (P5-01 revocation kill-switch) -----------------------
+# The offline-signed floor bump is the revocation mechanism for a yanked-but-still-
+# signed release. The release key is NEVER on MC: the operator signs the bump offline
+# (scripts/sign_release.py bump-floor) and uploads the finished JSON; MC only stores
+# and serves it verbatim. The box re-verifies the OFFLINE signature itself, so a
+# compromised MC serving a forged bump is rejected box-side; MC's store-time
+# verification is defense-in-depth + operator UX.
+
+class FloorBumpServeOut(BaseModel):
+    floor_bump: dict  # the pre-signed FloorBump.model_dump() — served verbatim
+
+
+class FloorBumpSet(BaseModel):
+    bump: dict  # a signed FloorBump JSON (from scripts/sign_release.py bump-floor)
+
+
+class FloorBumpInfo(BaseModel):
+    scope: str
+    floor_version: str = ""
+    updated_by: str = ""
+    updated_at: str = ""
+
+
+@router.get("/floor-bump", response_model=FloorBumpServeOut | None)
+def get_floor_bump(authorization: str = Header(default=""),
+                   x_onebrain_deployment_id: str = Header(default="")):
+    """Serve the most-specific pre-signed floor bump for the authenticated box.
+    Fleet-key auth (same _authenticate_fleet_key as heartbeat/desired-state, pinned
+    to a deployment); read-only, no side effects. Resolves the deployment-scoped bump
+    first, then the fleet-wide '*' fallback. Returns None when neither exists. MC does
+    NOT re-sign or mutate the bump."""
+    key = _authenticate_fleet_key(authorization, x_onebrain_deployment_id.strip())
+    control = get_control_plane_store()
+    served = control.get_served_floor_bump(key.deployment_id) or control.get_served_floor_bump("*")
+    if served is None:
+        return None
+    return FloorBumpServeOut(floor_bump=json.loads(served.bump_json))
+
+
+@router.post("/floor-bump", response_model=FloorBumpInfo)
+def set_floor_bump(body: FloorBumpSet, principal: Principal = Depends(resolve_principal)):
+    """Set the served floor bump (operator-admin). MC verifies the OFFLINE signature
+    before storing. 409 when release_verify_public_key is unset (cannot verify an
+    unverifiable kill-switch). 400 on a malformed body or a rejected signature.
+    (G2-4) deployment_scope is fed as expected_deployment_id, so scope_mismatch is
+    UNREACHABLE here — the only reachable store-time reject codes are
+    signature_invalid and version_not_comparable. Real per-box scope enforcement
+    happens box-side against the box's OWN deployment_id."""
+    _require_operator_admin(principal)
+    settings = get_settings()
+    if not settings.release_verify_public_key:
+        raise HTTPException(status_code=409,
+                            detail="ONEBRAIN_RELEASE_VERIFY_PUBLIC_KEY is not configured; refusing to serve an unverifiable floor bump.")
+    try:
+        bump = FloorBump.model_validate(body.bump)
+    except ValidationError:
+        raise HTTPException(status_code=400, detail="Malformed floor bump.")
+    errors = verify_floor_bump(bump, release_public_key_b64=settings.release_verify_public_key,
+                               expected_deployment_id=bump.deployment_scope)
+    if errors:
+        raise HTTPException(status_code=400, detail=f"Floor bump rejected: {errors[0]}")
+    stored = get_control_plane_store().set_served_floor_bump(ServedFloorBump(
+        scope=bump.deployment_scope,
+        bump_json=bump.model_dump_json(),
+        floor_version=bump.floor_version,
+        updated_by=principal.user_id,
+    ))
+    return FloorBumpInfo(scope=stored.scope, floor_version=stored.floor_version,
+                         updated_by=stored.updated_by, updated_at=stored.updated_at)
+
+
+@router.delete("/floor-bump")
+def clear_floor_bump(scope: str = "", principal: Principal = Depends(resolve_principal)):
+    """Clear the served bump for a scope ('*' or a deployment_id); 404 if absent."""
+    _require_operator_admin(principal)
+    if not get_control_plane_store().clear_served_floor_bump(scope):
+        raise HTTPException(status_code=404, detail="No served floor bump for that scope.")
+    return {"cleared": scope}
+
+
+@router.get("/floor-bumps", response_model=list[FloorBumpInfo])
+def list_floor_bumps(principal: Principal = Depends(resolve_principal)):
+    """List the currently-served bumps (operator visibility of the kill-switch state)."""
+    _require_operator_admin(principal)
+    return [FloorBumpInfo(scope=b.scope, floor_version=b.floor_version,
+                          updated_by=b.updated_by, updated_at=b.updated_at)
+            for b in get_control_plane_store().list_served_floor_bumps()]
 
 
 # --- key management (operator-admin) -----------------------------------------

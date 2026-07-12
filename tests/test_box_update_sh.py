@@ -45,6 +45,8 @@ _STUBS = {
         'echo "curl $*" >> "$STUB_LOG"\n'
         'url=""; for a in "$@"; do url="$a"; done\n'
         'case "$url" in\n'
+        '  *floor-bump*) [ -f "$CTRL/floor_bump_fail" ] && exit 22; '
+        'cat "$CTRL/floor_bump_serve.json" 2>/dev/null || printf "null" ;;\n'
         '  *desired-state*) [ -f "$CTRL/fetch_fail" ] && exit 22; cat "$CTRL/serve.json" ;;\n'
         '  *health*) [ -f "$CTRL/smoke_fail" ] && exit 22; printf "OK" ;;\n'
         '  *) : ;;\n'
@@ -112,6 +114,22 @@ def signed_serve(*, version="2026.7.2", images=None, migration_from="0020", migr
     return {"envelope": dumped, "attempt_id": attempt_id}
 
 
+def signed_floor_bump(floor_version="2026.7.5", *, scope="*", tamper=False) -> dict:
+    """The MC serve shape {"floor_bump": <signed FloorBump.model_dump()>}. Signed with
+    the OFFLINE release key (REL_PRIV) the box's UPDATE_RELEASE_PUBLIC_KEY verifies."""
+    from app.trust.envelope import FloorBump, sign_floor_bump
+
+    bump = sign_floor_bump(
+        FloorBump(deployment_scope=scope, floor_version=floor_version,
+                  issued_at="2026-07-12T00:00:00+00:00"),
+        REL_PRIV,
+    )
+    dumped = bump.model_dump()
+    if tamper:
+        dumped["signature"] = base64.b64encode(b"z" * 64).decode()
+    return {"floor_bump": dumped}
+
+
 class _Harness:
     def __init__(self, root: Path):
         self.root = root
@@ -152,6 +170,13 @@ class _Harness:
 
     def set_serve(self, serve: dict):
         (self.ctrl / "serve.json").write_bytes(json.dumps(serve).encode("utf-8"))
+
+    def set_floor_bump_serve(self, served: dict):
+        (self.ctrl / "floor_bump_serve.json").write_bytes(json.dumps(served).encode("utf-8"))
+
+    def floor_state(self):
+        p = self.data / "onebrain_update" / "floor_state.json"
+        return json.loads(p.read_text()) if p.exists() else None
 
     def touch(self, name: str):
         (self.ctrl / name).write_bytes(b"")
@@ -301,6 +326,46 @@ def test_mc_unreachable_holds_last_known_good(box):
     assert result.returncode == 0, result.stderr
     assert box.pulled() == []                        # nothing destructive
     assert box.state() is None                       # no outcome written (a missed poll, not a rejection)
+
+
+# --- P5-01 floor-bump fetch + apply ------------------------------------------
+def test_floor_bump_fetched_and_applied_raises_local_floor(box):
+    # A served, signed bump is fetched in step 0 and applied by the box verifier;
+    # the local floor rises. No desired-state served -> the run stops after step 0.
+    box.set_floor_bump_serve(signed_floor_bump("2026.7.5"))
+    result = box.run()
+    assert result.returncode == 0, result.stderr
+    floor = box.floor_state()
+    assert floor is not None and floor["floor_version"] == "2026.7.5"
+
+
+def test_floor_bump_step_precedes_desired_state_fetch():
+    # Step 0 (kill-switch) must run BEFORE the desired-state fetch so a revoked box
+    # raises its floor even if it would otherwise pull.
+    src = _UPDATE_SH.read_text(encoding="utf-8")
+    assert src.index("/api/fleet/floor-bump") < src.index("/api/fleet/desired-state")
+
+
+def test_forged_floor_bump_is_rejected_box_side_and_held(box):
+    # A bump with a broken signature is rejected by the box verifier (verify-don't-
+    # trust): the floor does NOT rise, and the run continues non-fatally.
+    box.set_floor_bump_serve(signed_floor_bump("2026.7.9", tamper=True))
+    result = box.run()
+    assert result.returncode == 0, result.stderr
+    floor = box.floor_state()
+    assert floor is None or floor.get("floor_version", "") != "2026.7.9"
+    log = (box.data / "onebrain_update" / "update.log").read_text()
+    assert "floor bump apply rejected" in log
+
+
+def test_no_floor_bump_served_is_a_noop(box):
+    # No served bump and no desired-state -> step 0 no-ops (serves "null"), the run
+    # stops cleanly, and nothing is applied (no floor written, no outcome). The
+    # happy-path tests above already cover step 0 not disturbing a real update.
+    result = box.run()
+    assert result.returncode == 0, result.stderr
+    assert box.floor_state() is None   # no bump applied
+    assert box.state() is None         # no desired-state -> no outcome
 
 
 # --- shellcheck (CI-only; A4) ------------------------------------------------

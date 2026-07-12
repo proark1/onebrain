@@ -98,6 +98,37 @@ json.dump({
 PYEOF
 }
 
+# --- 0. FETCH + APPLY served floor bump (revocation kill-switch) ------------
+# Runs BEFORE the desired-state fetch so a revoked box raises its local floor even
+# if it would otherwise pull. Non-fatal / hold-on-unreachable (same discipline as
+# the desired-state GET): a missing MC, no served bump, or a rejected bump never
+# aborts the run. The box verifier re-checks the OFFLINE release signature
+# (apply-floor-bump -> verify_floor_bump) against this box's OWN deployment id, so a
+# compromised MC serving a forged/mis-scoped bump is rejected here.
+log "fetch floor bump"
+BUMP="$WORK/floor_bump.json"
+BUMP_INNER="$WORK/bump_inner.json"
+if "$CURL" -sf \
+     -H "Authorization: Bearer ${ONEBRAIN_FLEET_KEY:-}" \
+     -H "X-OneBrain-Deployment-Id: ${ONEBRAIN_DEPLOYMENT_ID:-}" \
+     "${ONEBRAIN_FLEET_URL:-}/api/fleet/floor-bump" >"$BUMP" 2>>"$LOG" \
+   && [ -s "$BUMP" ] && ! grep -qx 'null' "$BUMP"; then
+  # Unwrap {"floor_bump": {...}} -> the signed bump; SystemExit(1) (skips apply) when
+  # the body carries no bump object. Guarded by `if` so set -e never aborts here.
+  if "$PYTHON" - "$BUMP" "$BUMP_INNER" 2>>"$LOG" <<'PYEOF'
+import sys, json
+outer = json.load(open(sys.argv[1]))
+inner = outer.get("floor_bump")
+if not isinstance(inner, dict):
+    raise SystemExit(1)
+json.dump(inner, open(sys.argv[2], "w"))
+PYEOF
+  then
+    "$PYTHON" "$UPDATE_VERIFY_BIN" apply-floor-bump <"$BUMP_INNER" >>"$LOG" 2>&1 \
+      || log "floor bump apply rejected (held local floor)"
+  fi
+fi
+
 # --- 1. FETCH desired-state -------------------------------------------------
 log "fetch desired-state"
 SERVE="$WORK/serve.json"

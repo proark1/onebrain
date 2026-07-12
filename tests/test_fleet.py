@@ -908,6 +908,155 @@ def test_heartbeat_ack_carries_advisory_when_on(monkeypatch):
     assert _ds_verify(advisory["envelope"]) == []   # the advisory envelope verifies too
 
 
+# --- floor-bump serving (P5-01) ----------------------------------------------
+
+from app.trust.envelope import FloorBump, sign_floor_bump  # noqa: E402
+
+_FB_REL_PRIV, _FB_REL_PUB = _ds_generate_keypair()   # OFFLINE release key for bumps
+
+
+def _fb_settings(*, verify_key: str = _FB_REL_PUB):
+    from types import SimpleNamespace
+    return SimpleNamespace(release_verify_public_key=verify_key)
+
+
+def _signed_bump(floor_version: str = "2026.07.5", *, scope: str = "*",
+                 priv: str = _FB_REL_PRIV) -> dict:
+    bump = sign_floor_bump(
+        FloorBump(deployment_scope=scope, floor_version=floor_version,
+                  issued_at="2026-07-12T00:00:00+00:00"),
+        priv)
+    return bump.model_dump()
+
+
+def test_floor_bump_serve_returns_null_when_none_set(monkeypatch):
+    # Inertness: no served rows -> serve returns None (update.sh step 0 no-ops).
+    store = MemoryFleetStore()
+    token = _minted_key(store, "dep_a")
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: _control_with("dep_a"))
+    assert fleet_router.get_floor_bump(authorization=f"Bearer {token}",
+                                       x_onebrain_deployment_id="dep_a") is None
+
+
+def test_floor_bump_set_verify_serve_roundtrip(monkeypatch):
+    store = MemoryFleetStore()
+    token = _minted_key(store, "dep_a")
+    control = _control_with("dep_a")
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(fleet_router, "get_settings", _fb_settings)
+
+    info = fleet_router.set_floor_bump(
+        fleet_router.FloorBumpSet(bump=_signed_bump("2026.07.5")), principal=_principal("admin"))
+    assert info.scope == "*" and info.floor_version == "2026.07.5"
+
+    served = fleet_router.get_floor_bump(authorization=f"Bearer {token}", x_onebrain_deployment_id="dep_a")
+    assert served.floor_bump["floor_version"] == "2026.07.5"
+    # The served bytes verify on the box (feed them to the app-free twin).
+    bv = _load_box_verify_twin()
+    assert bv.verify_floor_bump(served.floor_bump, release_public_key_b64=_FB_REL_PUB,
+                                expected_deployment_id="dep_a") == []
+
+
+def test_floor_bump_scoped_takes_precedence_over_fleet_wide(monkeypatch):
+    store = MemoryFleetStore()
+    token_a = _minted_key(store, "dep_a")
+    token_b = _minted_key(store, "dep_b")
+    control = MemoryControlPlaneStore()
+    for dep in ("dep_a", "dep_b"):
+        control.create_deployment(CustomerDeployment(id=dep, customer_name=dep, release_ring="pilot"))
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(fleet_router, "get_settings", _fb_settings)
+
+    fleet_router.set_floor_bump(fleet_router.FloorBumpSet(bump=_signed_bump("2026.07.1", scope="*")),
+                                principal=_principal("admin"))
+    fleet_router.set_floor_bump(fleet_router.FloorBumpSet(bump=_signed_bump("2026.07.9", scope="dep_a")),
+                                principal=_principal("admin"))
+
+    # dep_a gets its scoped bump; dep_b falls back to the fleet-wide '*'.
+    a = fleet_router.get_floor_bump(authorization=f"Bearer {token_a}", x_onebrain_deployment_id="dep_a")
+    b = fleet_router.get_floor_bump(authorization=f"Bearer {token_b}", x_onebrain_deployment_id="dep_b")
+    assert a.floor_bump["floor_version"] == "2026.07.9"
+    assert b.floor_bump["floor_version"] == "2026.07.1"
+
+
+def test_floor_bump_set_rejects_bad_signature(monkeypatch):
+    store = MemoryFleetStore()
+    control = _control_with("dep_a")
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
+    # A verify key that does NOT match the throwaway signer -> signature_invalid.
+    throwaway_priv, _ = _ds_generate_keypair()
+    monkeypatch.setattr(fleet_router, "get_settings", _fb_settings)  # verify with _FB_REL_PUB
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.set_floor_bump(
+            fleet_router.FloorBumpSet(bump=_signed_bump("2026.07.5", priv=throwaway_priv)),
+            principal=_principal("admin"))
+    assert ei.value.status_code == 400
+
+
+def test_floor_bump_set_409_when_verify_key_unset(monkeypatch):
+    store = MemoryFleetStore()
+    control = _control_with("dep_a")
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(fleet_router, "get_settings", lambda: _fb_settings(verify_key=""))
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.set_floor_bump(
+            fleet_router.FloorBumpSet(bump=_signed_bump("2026.07.5")), principal=_principal("admin"))
+    assert ei.value.status_code == 409
+
+
+def test_floor_bump_clear_and_list(monkeypatch):
+    store = MemoryFleetStore()
+    control = _control_with("dep_a")
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(fleet_router, "get_settings", _fb_settings)
+
+    fleet_router.set_floor_bump(fleet_router.FloorBumpSet(bump=_signed_bump("2026.07.5")),
+                                principal=_principal("admin"))
+    listed = fleet_router.list_floor_bumps(principal=_principal("admin"))
+    assert [b.scope for b in listed] == ["*"]
+
+    assert fleet_router.clear_floor_bump(scope="*", principal=_principal("admin")) == {"cleared": "*"}
+    assert fleet_router.list_floor_bumps(principal=_principal("admin")) == []
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.clear_floor_bump(scope="*", principal=_principal("admin"))  # already gone
+    assert ei.value.status_code == 404
+
+
+def test_floor_bump_set_clear_list_are_operator_admin_only(monkeypatch):
+    store = MemoryFleetStore()
+    control = _control_with("dep_a")
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: store)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(fleet_router, "get_settings", _fb_settings)
+    non_admin = _principal("front_desk")
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.set_floor_bump(fleet_router.FloorBumpSet(bump=_signed_bump()), principal=non_admin)
+    assert ei.value.status_code == 403
+    with pytest.raises(HTTPException):
+        fleet_router.clear_floor_bump(scope="*", principal=non_admin)
+    with pytest.raises(HTTPException):
+        fleet_router.list_floor_bumps(principal=non_admin)
+
+
+def _load_box_verify_twin():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "deploy" / "box" / "onebrain_box_verify.py"
+    spec = importlib.util.spec_from_file_location("onebrain_box_verify", path)
+    mod = importlib.util.module_from_spec(spec)
+    import sys as _sys
+    _sys.modules["onebrain_box_verify"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def test_v2_payload_round_trips_update_report():
     hb = _heartbeat_body_v2(
         "dep_a", update=UpdateReport(last_target_version="2026.07.2", outcome="succeeded",
