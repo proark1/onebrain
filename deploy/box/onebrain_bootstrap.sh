@@ -42,8 +42,10 @@ log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG" 2>/dev/n
 # the FIRST exchange delivered inside the bundle.
 if [ -f "$ENV_FILE" ]; then
   FIRST_BOOT=0
+  set -a
   # shellcheck disable=SC1090
-  set -a; . "$ENV_FILE"; set +a
+  . "$ENV_FILE"
+  set +a
   AUTH="${ONEBRAIN_FLEET_KEY:-}"
 else
   FIRST_BOOT=1
