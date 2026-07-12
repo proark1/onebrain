@@ -13,6 +13,7 @@ codes below are contract; fields may extend additively."""
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Dict, Literal, Optional
 
@@ -78,14 +79,24 @@ def sign_desired_state(envelope: DesiredStateEnvelope, desired_state_private_key
     return envelope.model_copy(update={"envelope_signature": signature})
 
 
+# A version segment is ASCII digits ONLY. int()'s laxness — surrounding
+# whitespace, '+'/'-' signs, unicode digits ('١'), '_' separators — is
+# rejected as a non-integer segment (fail-closed per the docstring rule).
+# Leading zeros stay valid: the house calver grammar ("2026.07.1") zero-pads
+# months, and "07" == "7" under integer comparison.
+_VERSION_SEGMENT_RE = re.compile(r"[0-9]+")
+
+
 def compare_versions(a: str, b: str) -> Optional[int]:
     """-1/0/1 on dot-separated integer versions (shorter zero-padded);
-    None when either side has a non-integer segment (caller fails closed)."""
-    try:
-        parts_a = [int(segment) for segment in (a or "").split(".")]
-        parts_b = [int(segment) for segment in (b or "").split(".")]
-    except ValueError:
+    None when either side has a non-integer segment (caller fails closed).
+    Segments must be ASCII [0-9]+ — see _VERSION_SEGMENT_RE."""
+    segments_a = (a or "").split(".")
+    segments_b = (b or "").split(".")
+    if not all(_VERSION_SEGMENT_RE.fullmatch(segment) for segment in segments_a + segments_b):
         return None
+    parts_a = [int(segment) for segment in segments_a]
+    parts_b = [int(segment) for segment in segments_b]
     width = max(len(parts_a), len(parts_b))
     parts_a += [0] * (width - len(parts_a))
     parts_b += [0] * (width - len(parts_b))
@@ -126,8 +137,10 @@ def verify_desired_state(
     builder who wires the floor from the envelope hands floor control to MC).
     version_below_floor uses compare_versions(envelope.release.version,
     floor_state.floor_version) < 0 (empty floor = no floor yet -> passes).
-    images checked via trust.release.verify_images. Keys are the locally
-    configured ones only — envelope_key_id is never honored (B8)."""
+    images checked via trust.release.verify_images; an EMPTY images map is
+    images_invalid too — an envelope that pins no images verifies nothing,
+    so accepting it would let a box converge on unpinned content. Keys are
+    the locally configured ones only — envelope_key_id is never honored (B8)."""
     if not verify_payload(
         canonical_envelope_payload(envelope), envelope.envelope_signature, desired_state_public_key_b64
     ):
@@ -157,6 +170,8 @@ def verify_desired_state(
             return ["version_not_comparable"]
         if comparison < 0:
             return ["version_below_floor"]
+    if not block.images:
+        return ["images_invalid:empty images map (envelope pins nothing)"]
     image_errors = verify_images(dict(block.images), registry_allowlist)
     if image_errors:
         return [f"images_invalid:{error}" for error in image_errors]

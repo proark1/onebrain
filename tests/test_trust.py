@@ -140,6 +140,12 @@ def test_parse_registry_allowlist():
     assert parsed == frozenset({"ghcr.io/proark1", "registry.example:5000/team"})
     assert parse_registry_allowlist("") == frozenset()
 
+    # A trailing '/' would silently match nothing (the prefix match appends its
+    # own '/' boundary) — normalize it away; a bare '/' entry is just blank.
+    slashed = parse_registry_allowlist("ghcr.io/proark1/, /")
+    assert slashed == frozenset({"ghcr.io/proark1"})
+    assert verify_images({"onebrain-api": _GOOD_IMAGE}, slashed) == []
+
 
 def test_verify_images_allowlist():
     assert verify_images({"onebrain-api": _GOOD_IMAGE}, _ALLOWLIST) == []
@@ -323,6 +329,19 @@ def test_envelope_rejects_off_allowlist_images(keys):
     assert errors[0].startswith("images_invalid:")
 
 
+def test_envelope_rejects_empty_images_map(keys):
+    """A signed release block whose images map is EMPTY pins nothing — the
+    envelope would 'verify' while asserting no content at all. Refused."""
+    release_private, release_public, mc_private, mc_public = keys
+    envelope = _envelope(_signed_block(release_private, images={}), mc_private)
+
+    errors = _verify(envelope, mc_public, release_public)
+
+    assert len(errors) == 1
+    assert errors[0].startswith("images_invalid:")
+    assert "empty" in errors[0]
+
+
 def test_advance_floor_monotonic_and_records_nonce(keys):
     release_private, _, mc_private, _ = keys
     state = VersionFloorState()
@@ -472,6 +491,17 @@ def test_compare_versions():
     assert compare_versions("1", "1.x") is None
     assert compare_versions("", "1") is None
     assert compare_versions("1.2-rc1", "1.2") is None  # no semver suffixes in P0
+
+    # Segments are ASCII [0-9]+ only — int()'s laxness never sneaks a
+    # non-canonical string through the version grammar (fail-closed).
+    assert compare_versions(" 1", "1") is None          # whitespace
+    assert compare_versions("1. 2", "1.2") is None
+    assert compare_versions("+1", "1") is None          # sign characters
+    assert compare_versions("1.-2", "1.2") is None
+    assert compare_versions("١.٢", "1.2") is None  # unicode digits
+    assert compare_versions("1_0", "10") is None        # underscore separators
+    # Leading zeros remain the house calver grammar ("07" == month 7).
+    assert compare_versions("2026.07.1", "2026.7.1") == 0
 
 
 # --- offline CLI --------------------------------------------------------------------

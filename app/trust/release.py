@@ -98,12 +98,15 @@ def parse_registry_allowlist(csv_value: str) -> frozenset[str]:
     """'ghcr.io/proark1, registry.example:5000/team' -> frozenset of lowercased
     PREFIX entries host[/org[/repo]] (blanks dropped). Repo-prefix granular (B2):
     a bare host entry on a multi-tenant registry (ghcr.io) would allowlist every
-    tenant — the backstop against a compromised-MC-signed image would be porous."""
-    return frozenset(
-        entry.strip().lower()
+    tenant — the backstop against a compromised-MC-signed image would be porous.
+    Trailing '/' is stripped ('ghcr.io/proark1/' == 'ghcr.io/proark1'): the
+    prefix match appends its own '/' boundary, so a slashed entry would
+    otherwise silently match nothing."""
+    entries = (
+        entry.strip().lower().rstrip("/")
         for entry in (csv_value or "").split(",")
-        if entry.strip()
     )
+    return frozenset(entry for entry in entries if entry)
 
 
 def verify_images(images: dict[str, str], allowlist: frozenset[str]) -> list[str]:
