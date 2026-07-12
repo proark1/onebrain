@@ -88,6 +88,10 @@ _STUBS = {
 
 
 def _unix(path) -> str:
+    # On Linux/macOS the path is already POSIX — cygpath is a Git-Bash/Cygwin-only
+    # tool (absent on CI), so converting is both unnecessary and a None-deref.
+    if _CYGPATH is None:
+        return str(path)
     return subprocess.run([_CYGPATH, "-u", str(path)], capture_output=True, text=True).stdout.strip()
 
 

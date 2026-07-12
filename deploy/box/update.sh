@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2317
+# ^ File-wide (must follow the shebang, clean directive line): helper functions
+#   (dc/dc_over/recover_*/…) run via the main flow and traps; shellcheck's static
+#   call graph misreads them as unreachable. The dry-run harness
+#   (tests/test_box_update_sh.py) proves every one is actually invoked.
 # OneBrain box update agent (architecture §3e, P1-F/P3). The box VERIFIES, never
 # trusts MC (D2): it fetches the signed desired-state, verifies it with the
 # app-free verifier, and derives EVERY pulled image SOLELY from the verifier's
