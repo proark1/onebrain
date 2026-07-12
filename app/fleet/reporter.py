@@ -35,7 +35,12 @@ from app.config import Settings
 from app.db.schema import REQUIRED_ALEMBIC_REVISION, read_live_alembic_revision
 from app.fleet.heartbeat import FleetHeartbeat, FleetHeartbeatV2, UpdateReport, build_heartbeat_v2
 from app.fleet.module_probe import collect_module_reports
-from app.fleet.update_state import read_update_report, update_state_path
+from app.fleet.update_state import (
+    read_applied_secrets_epoch,
+    read_update_report,
+    secrets_epoch_path,
+    update_state_path,
+)
 
 _log = logging.getLogger("onebrain.fleet")
 
@@ -74,6 +79,13 @@ def collect_heartbeat(settings: Settings, *, probe_opener=None) -> FleetHeartbea
 
     modules, _ = _safe(lambda: collect_module_reports(settings, opener=probe_opener), [])
     update, _ = _safe(lambda: read_update_report(update_state_path(settings.data_dir)), UpdateReport())
+    # G1-3: overlay the applied secrets_epoch (recorded by onebrain_bootstrap.sh, a
+    # sibling of update_state.json) so the operator can watch wrapper-key rotation
+    # converge. It lives in its OWN file (a different script owns the secret exchange
+    # than the release update), so it is merged onto the update report here.
+    epoch, _ = _safe(lambda: read_applied_secrets_epoch(secrets_epoch_path(settings.data_dir)), 0)
+    if epoch:
+        update = update.model_copy(update={"applied_secrets_epoch": epoch})
 
     healthy = all([ok_chunks, ok_intake, ok_users, ok_accounts, ok_keys, ok_jobs, revision_ok])
     return build_heartbeat_v2(

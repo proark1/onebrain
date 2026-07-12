@@ -257,6 +257,12 @@ class Settings(BaseSettings):
                                                 # fleet_desired_state_private_key; boxes accept ANY key in this set.
     # --- Phase 5: bootstrap-token exchange (P5-03) ---
     fleet_bootstrap_token_ttl_seconds: int = 3600   # first-boot token validity window
+    # G1-5: the bootstrap exchange returns the FULL secret bundle, so a single fetch
+    # exfiltrates everything a leaked fleet key could reach. Cap it FAR below the
+    # 120/60s heartbeat budget (a handful per minute) with a DEDICATED limiter so a
+    # leaked key cannot poll the bundle. Keyed per deployment (bootstrap:<deployment_id>).
+    fleet_bootstrap_rate_limit: int = 5
+    fleet_bootstrap_rate_window_seconds: int = 60
     # --- Phase 5: reconcile scheduler (P5-04) ---
     fleet_reconcile_seconds: int = 0            # 0 = DISABLED (default). >0 = in-process pull-reconcile
                                                 # tick interval in seconds (MC only), clamped to a 30s floor.

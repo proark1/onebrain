@@ -1,0 +1,22 @@
+[Unit]
+Description=OneBrain metadata-endpoint egress DROP (persist across reboots)
+# G1-6: the cloud-init runcmd inserts these iptables rules once, in memory; they
+# vanish on the first reboot, re-exposing the cloud metadata endpoint (which serves
+# the full user-data, including the bootstrap token). This oneshot re-applies BOTH on
+# every boot. After docker so the DOCKER-USER chain usually exists; the host OUTPUT
+# drop persists regardless, and the DOCKER-USER drop is re-applied once its chain is up.
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# -C tests for an existing rule first so a re-run never duplicates. The host OUTPUT
+# chain always exists, so its drop is unconditional. The DOCKER-USER chain may not
+# exist yet on a bare reboot; guard it so a missing chain never fails the unit (the
+# next compose bring-up recreates it and a later timer-driven boot re-applies).
+ExecStart=/bin/sh -c 'iptables -C OUTPUT -d 169.254.169.254 -j DROP 2>/dev/null || iptables -I OUTPUT -d 169.254.169.254 -j DROP'
+ExecStart=/bin/sh -c 'iptables -L DOCKER-USER -n >/dev/null 2>&1 && { iptables -C DOCKER-USER -d 169.254.169.254 -j DROP 2>/dev/null || iptables -I DOCKER-USER -d 169.254.169.254 -j DROP; } || true'
+
+[Install]
+WantedBy=multi-user.target

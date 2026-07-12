@@ -12,6 +12,7 @@ from app.config import Settings
 from app.controlplane.base import CustomerDeployment, DeploymentModule, ReleaseManifest
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.controlplane.rollout_exec import resolve_railway_target, target_provider
+from app.fleet.memory import MemoryFleetStore
 from app.provisioning.hetzner.broker import InProcessHetznerBroker
 from app.provisioning.hetzner.fake import FakeHetznerClient
 from app.provisioning.hetzner.provisioner import HetznerProvisioner
@@ -78,10 +79,12 @@ def _run(prov, dep="dep_a", version="0.1.0"):
                       requested_by="usr_op", payload={"initial_version": version})
 
 
-def _wire_router(monkeypatch, settings, prov, control, fake):
+def _wire_router(monkeypatch, settings, prov, control, fake, fleet=None):
+    fleet = fleet if fleet is not None else MemoryFleetStore()
     monkeypatch.setattr(provisioning_router, "get_settings", lambda: settings)
     monkeypatch.setattr(provisioning_router, "get_provisioning_run_store", lambda: prov)
     monkeypatch.setattr(provisioning_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(provisioning_router, "get_fleet_store", lambda: fleet)   # P5-03 bundle-assembly seam
     monkeypatch.setattr(provisioning_router, "build_hetzner_broker", lambda s: InProcessHetznerBroker(fake))
 
 
@@ -158,9 +161,11 @@ def test_dispatch_maps_api_error_to_dispatch_failed(monkeypatch):
     control = _control()
     prov = MemoryProvisioningRunStore()
     fake = FakeHetznerClient(fail_on={"create_server"})
-    _wire_router(monkeypatch, _settings(), prov, control, fake)
+    _wire_router(monkeypatch, _settings(secret_encryption_key="unit-test-secret-key"), prov, control, fake)
 
-    out = provisioning_router._dispatch_run(_run(prov))   # must NOT raise
+    # owner_otp threaded (G3-3) so bundle assembly (which runs before the broker) passes
+    # and the run reaches the failing broker create.
+    out = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp")   # must NOT raise
     assert out.status == STATUS_DISPATCH_FAILED
     assert "Hetzner API error" in out.failure_reason
 
@@ -169,10 +174,10 @@ def test_dispatch_run_router_switch_selects_backend(monkeypatch):
     control = _control()
     prov = MemoryProvisioningRunStore()
     fake = FakeHetznerClient()
-    _wire_router(monkeypatch, _settings(), prov, control, fake)
+    _wire_router(monkeypatch, _settings(secret_encryption_key="unit-test-secret-key"), prov, control, fake)
 
-    # hetzner backend -> the hetzner executor ran.
-    out = provisioning_router._dispatch_run(_run(prov))
+    # hetzner backend -> the hetzner executor ran (owner_otp threaded so the bundle is valid).
+    out = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp")
     assert out.external_provider == "hetzner" and out.status == STATUS_DISPATCHED
     assert len(fake.servers) == 1
 
@@ -322,3 +327,104 @@ def test_owner_otp_minted_hash_only_and_flagged():
     )
     assert plain.owner_one_time_password == ""
     assert store_owner_one_time_password(prov, settings, _run(prov, dep="dep_none"), "").bootstrap_secret_id == ""
+
+
+# --- P5-03: box secret-bundle + bootstrap-token assembly (G3-3) ---------------
+
+def _p5_settings(**over):
+    return _settings(secret_encryption_key="unit-test-secret-key", **over)
+
+
+def _open_bundle(prov, settings, dep="dep_a") -> dict:
+    import json
+    from app.provisioning.runs import OneTimeSecretCipher
+    return json.loads(OneTimeSecretCipher(settings).open_bundle(prov.get_secret_bundle(dep).ciphertext))
+
+
+def test_dispatch_mints_bundle_and_unconsumed_bootstrap_token():
+    control = _control()
+    prov = MemoryProvisioningRunStore()
+    fleet = MemoryFleetStore()
+    fake = FakeHetznerClient()
+    settings = _p5_settings()
+    out = HetznerProvisioner(settings, InProcessHetznerBroker(fake), control,
+                             prov_store=prov, fleet_store=fleet).dispatch(
+        _run(prov), owner_otp="owner-otp", service_key="sk_abc", space_id="space_1")
+    assert out.status == STATUS_DISPATCHED
+
+    # The re-readable bundle is stored with the THREADED owner OTP + service key + space
+    # id (G3-3) and the minted foundational secrets + fleet key.
+    bundle = prov.get_secret_bundle("dep_a")
+    assert bundle is not None and bundle.secrets_epoch == 0
+    body = _open_bundle(prov, settings)
+    assert body["ONEBRAIN_ADMIN_PASSWORD"] == "owner-otp"
+    assert body["ONEBRAIN_SERVICE_KEY"] == "sk_abc"
+    assert body["ONEBRAIN_SPACE_ID"] == "space_1"
+    assert body["POSTGRES_PASSWORD"] and body["REDIS_PASSWORD"] and body["UPDATE_BACKUP_KEY"]
+    assert body["ONEBRAIN_FLEET_KEY"].startswith("fk_")
+    # The minted fleet key is registered (box heartbeat + rotation re-fetch auth).
+    assert [k.deployment_id for k in fleet.list_keys("dep_a")] == ["dep_a"]
+
+    # The raw first-boot token is baked into user-data, and its hash is stored UNCONSUMED.
+    import re
+    from app.fleet.keys import hash_secret, parse_bootstrap_token
+    raw = re.search(r"ONEBRAIN_BOOTSTRAP_TOKEN=(bt_[A-Za-z0-9_-]+)", fake.servers[0].user_data)
+    assert raw, "bootstrap token must be baked in box.env"
+    record = prov.get_bootstrap_token(hash_secret(parse_bootstrap_token(raw.group(1))[1]))
+    assert record is not None and not record.consumed_at and record.deployment_id == "dep_a"
+
+
+def test_dispatch_fails_closed_on_invalid_bundle(monkeypatch):
+    # No owner OTP -> ONEBRAIN_ADMIN_PASSWORD empty -> validate_bundle fails -> the run
+    # dispatch-fails and NO server is created (never provision a box that can't come up).
+    control = _control()
+    prov = MemoryProvisioningRunStore()
+    fake = FakeHetznerClient()
+    _wire_router(monkeypatch, _p5_settings(), prov, control, fake)
+    out = provisioning_router._dispatch_run(_run(prov))   # owner_otp omitted
+    assert out.status == STATUS_DISPATCH_FAILED
+    assert "secret bundle invalid" in out.failure_reason
+    assert fake.servers == []
+
+
+def test_dispatch_fails_closed_when_active_signer_excluded(monkeypatch):
+    # G1-1: refuse to ship a bundle whose accepted wrapper-key set excludes MC's active
+    # desired-state signer (that set would strand the box at envelope_signature_invalid).
+    from app.trust.signing import generate_keypair
+    priv, pub = generate_keypair()
+    control = _control()
+    prov = MemoryProvisioningRunStore()
+    fake = FakeHetznerClient()
+    _wire_router(monkeypatch, _p5_settings(fleet_desired_state_private_key=priv,
+                                           fleet_desired_state_public_keys="someone-else"),
+                 prov, control, fake)
+    out = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp")
+    assert out.status == STATUS_DISPATCH_FAILED
+    assert "active_signer_not_in_public_key_set" in out.failure_reason
+    assert fake.servers == []
+
+    # Adding the active signer's derived public key to the set unblocks the provision.
+    _wire_router(monkeypatch, _p5_settings(fleet_desired_state_private_key=priv,
+                                           fleet_desired_state_public_keys=f"someone-else,{pub}"),
+                 prov, control, fake)
+    ok = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp")
+    assert ok.status == STATUS_DISPATCHED
+    assert _open_bundle(prov, _p5_settings())["UPDATE_DESIRED_STATE_PUBLIC_KEYS"] == f"someone-else,{pub}"
+
+
+def test_retry_reuses_stored_bundle_without_reminting():
+    # A retry (bundle already present for the deployment) REUSES it — the owner OTP baked
+    # into it is never re-minted — and only mints a fresh single-use token.
+    control = _control()
+    prov = MemoryProvisioningRunStore()
+    fleet = MemoryFleetStore()
+    fake = FakeHetznerClient()
+    p = HetznerProvisioner(_p5_settings(), InProcessHetznerBroker(fake), control,
+                           prov_store=prov, fleet_store=fleet)
+    p.dispatch(_run(prov), owner_otp="owner-otp", service_key="sk1", space_id="sp1")
+    ct1 = prov.get_secret_bundle("dep_a").ciphertext
+    keys_after_first = len(fleet.list_keys("dep_a"))
+
+    p.dispatch(_run(prov), owner_otp="")   # retry: no fresh OTP
+    assert prov.get_secret_bundle("dep_a").ciphertext == ct1        # bundle preserved (OTP intact)
+    assert len(fleet.list_keys("dep_a")) == keys_after_first        # no duplicate fleet key

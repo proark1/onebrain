@@ -11,7 +11,13 @@ from pydantic import BaseModel, Field, field_validator
 from app.auth.account_access import authorized_account_ids, is_account_admin
 from app.auth.principal import Principal, resolve_principal
 from app.config import get_settings
-from app.deps import get_control_plane_store, get_platform_store, get_provisioning_run_store, get_service_key_store
+from app.deps import (
+    get_control_plane_store,
+    get_fleet_store,
+    get_platform_store,
+    get_provisioning_run_store,
+    get_service_key_store,
+)
 from app.platform.base import BrandTheme, DEFAULT_BRAND_THEME
 from app.provisioning.bundles import BUNDLES, ProvisioningBundle
 from app.provisioning.hetzner.broker import build_hetzner_broker
@@ -364,10 +370,24 @@ def _run_out(run: ProvisioningRun) -> ProvisioningRunOut:
     )
 
 
-def _dispatch_run(run: ProvisioningRun) -> ProvisioningRun:
+def _box_integration_credential(result: ProvisioningResult) -> tuple[str, str]:
+    """The (service_key, space_id) a Hetzner box's comm/assistant services need, drawn
+    from the first minted integration credential (its plaintext key + its first space).
+    ("", "") when the box runs no comm/assistant module — both are OPTIONAL bundle keys."""
+    for cred in result.credentials:
+        if cred.key:
+            return cred.key, (cred.space_ids[0] if cred.space_ids else "")
+    return "", ""
+
+
+def _dispatch_run(run: ProvisioningRun, *, owner_otp: str = "",
+                  service_key: str = "", space_id: str = "") -> ProvisioningRun:
     # H-1/H-9: backend switch. Default "github" is today's Railway behavior
     # exactly (dormancy); "hetzner" dispatches through the token-isolating broker.
     # An unknown value fails closed with a named reason — never a silent fallback.
+    # owner_otp/service_key/space_id (G3-3) are threaded from provision_customer into
+    # the Hetzner box secret bundle; the github path ignores them. A retry re-dispatch
+    # passes none — the Hetzner path then reuses the stored bundle (only re-mints a token).
     store = get_provisioning_run_store()
     settings = get_settings()
     # getattr default keeps pre-P4 settings fakes (SimpleNamespace) on the github
@@ -376,8 +396,9 @@ def _dispatch_run(run: ProvisioningRun) -> ProvisioningRun:
     try:
         if backend == "hetzner":
             dispatched = HetznerProvisioner(
-                settings, build_hetzner_broker(settings), get_control_plane_store()
-            ).dispatch(run)
+                settings, build_hetzner_broker(settings), get_control_plane_store(),
+                prov_store=store, fleet_store=get_fleet_store(),
+            ).dispatch(run, owner_otp=owner_otp, service_key=service_key, space_id=space_id)
         elif backend == "github":
             dispatched = GitHubWorkflowDispatcher(settings).dispatch(run)
         else:
@@ -507,7 +528,14 @@ def provision_customer(body: CustomerProvisionCreate, principal: Principal = Dep
             requested_by=principal.user_id,
             payload=payload,
         )
-        run = _dispatch_run(run)
+        # G3-3: the box secret bundle needs the owner OTP + a comm/assistant integration
+        # service key + its space id — all minted by CustomerProvisioner above, NOT
+        # visible inside HetznerProvisioner.dispatch. Thread them from the result here
+        # (the seam where BOTH the run and the provision result are in scope). Empty for
+        # a box with no owner/integration module; the github path ignores them.
+        service_key, space_id = _box_integration_credential(result)
+        run = _dispatch_run(run, owner_otp=result.owner_one_time_password,
+                            service_key=service_key, space_id=space_id)
     return _result_out(result, run)
 
 

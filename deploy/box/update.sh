@@ -17,7 +17,18 @@
 # .gitattributes). Singleton via a mkdir lock (A2 — no flock dependency).
 set -euo pipefail
 
+ENV_FILE="${ENV_FILE:-/opt/onebrain/.env}"
 BOX_ENV="${BOX_ENV:-/opt/onebrain/box.env}"
+# .env (the exchanged secret bundle, P5-03) is sourced FIRST so box.env's ${VAR} refs
+# (ONEBRAIN_FLEET_KEY, UPDATE_BACKUP_KEY, UPDATE_DESIRED_STATE_PUBLIC_KEYS, ...) re-
+# expand to the delivered real values. Absent on a not-yet-exchanged box -> the refs
+# stay empty and the run holds harmlessly (the fetch below fails auth, non-destructive).
+# shellcheck disable=SC1090
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  . "$ENV_FILE"
+  set +a
+fi
 # shellcheck disable=SC1090
 if [ -f "$BOX_ENV" ]; then
   set -a

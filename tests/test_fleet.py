@@ -1164,6 +1164,210 @@ def test_update_report_applied_secrets_epoch_round_trips_and_defaults():
     assert UpdateReport.model_validate({"outcome": "succeeded"}).applied_secrets_epoch == 0
 
 
+# --- bootstrap-token secret exchange (P5-03) ---------------------------------
+
+_BOOT_KEY = "unit-test-secret-key"
+
+
+def _boot_settings(*, priv="", pubs="", pub="", rate=5, window=60):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        secret_encryption_key=_BOOT_KEY, secret_encryption_key_version="v1",
+        bootstrap_secret_ttl_seconds=3600,
+        fleet_desired_state_private_key=priv,
+        fleet_desired_state_public_keys=pubs, fleet_desired_state_public_key=pub,
+        fleet_bootstrap_rate_limit=rate, fleet_bootstrap_rate_window_seconds=window)
+
+
+def _seed_bundle(prov, settings, *, dep="dep_a", epoch=0, pubs="pub-from-seal", ciphertext=None):
+    import json
+    from app.provisioning.runs import BoxSecretBundle, OneTimeSecretCipher
+    if ciphertext is None:
+        bundle = {"POSTGRES_PASSWORD": "pg", "REDIS_PASSWORD": "rd", "ONEBRAIN_FLEET_KEY": "fk_x_y",
+                  "ONEBRAIN_ADMIN_PASSWORD": "otp", "UPDATE_BACKUP_KEY": "bk",
+                  "UPDATE_DESIRED_STATE_PUBLIC_KEYS": pubs}
+        ciphertext = OneTimeSecretCipher(settings).seal_bundle(json.dumps(bundle))
+    prov.upsert_secret_bundle(BoxSecretBundle(deployment_id=dep, account_id="acct",
+                                              ciphertext=ciphertext, secrets_epoch=epoch))
+
+
+def _seed_token(prov, *, dep="dep_a", ttl_seconds=3600):
+    from datetime import datetime, timedelta, timezone
+    from app.fleet.keys import generate_bootstrap_token, hash_secret
+    from app.provisioning.runs import BoxBootstrapToken
+    _, secret, raw = generate_bootstrap_token()
+    expires = (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).isoformat()
+    prov.create_bootstrap_token(BoxBootstrapToken(token_hash=hash_secret(secret),
+                                                  deployment_id=dep, expires_at=expires))
+    return raw
+
+
+def _wire_bootstrap(monkeypatch, prov, settings, *, fleet=None):
+    from app.auth.throttle import RateLimiter
+    from app.provisioning.runs import MemoryProvisioningRunStore  # noqa: F401 (type hint clarity)
+    fleet = fleet if fleet is not None else MemoryFleetStore()
+    monkeypatch.setattr(fleet_router, "get_provisioning_run_store", lambda: prov)
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: fleet)
+    monkeypatch.setattr(fleet_router, "get_settings", lambda: settings)
+    limiter = RateLimiter(settings.fleet_bootstrap_rate_limit, settings.fleet_bootstrap_rate_window_seconds)
+    monkeypatch.setattr(fleet_router, "get_fleet_bootstrap_rate_limiter", lambda: limiter)
+    return fleet
+
+
+def _prov():
+    from app.provisioning.runs import MemoryProvisioningRunStore
+    return MemoryProvisioningRunStore()
+
+
+def test_bootstrap_first_boot_exchange_returns_dotenv(monkeypatch):
+    prov = _prov()
+    settings = _boot_settings()
+    _seed_bundle(prov, settings, epoch=0)
+    token = _seed_token(prov)
+    _wire_bootstrap(monkeypatch, prov, settings)
+
+    out = fleet_router.bootstrap_exchange(authorization=f"Bearer {token}", x_onebrain_deployment_id="dep_a")
+    assert out.secrets_epoch == 0
+    assert "POSTGRES_PASSWORD=pg" in out.dotenv and "ONEBRAIN_FLEET_KEY=fk_x_y" in out.dotenv
+    # The token is consumed exactly once -> a replay 401s (forces the fleet-key path).
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.bootstrap_exchange(authorization=f"Bearer {token}", x_onebrain_deployment_id="dep_a")
+    assert ei.value.status_code == 401
+
+
+def test_bootstrap_overlays_current_pubkey_set_without_reencrypting(monkeypatch):
+    # A wrapper-key rotation is reflected in the served dotenv via the settings overlay,
+    # WITHOUT re-encrypting the stored bundle (which was sealed with a stale set).
+    prov = _prov()
+    settings = _boot_settings(pubs="new-pub-a,new-pub-b")
+    _seed_bundle(prov, settings, pubs="STALE-SEALED-SET")
+    token = _seed_token(prov)
+    _wire_bootstrap(monkeypatch, prov, settings)
+
+    out = fleet_router.bootstrap_exchange(authorization=f"Bearer {token}", x_onebrain_deployment_id="dep_a")
+    assert "UPDATE_DESIRED_STATE_PUBLIC_KEYS=new-pub-a,new-pub-b" in out.dotenv
+    assert "STALE-SEALED-SET" not in out.dotenv
+
+
+def test_bootstrap_fleet_key_rotation_refetch(monkeypatch):
+    prov = _prov()
+    settings = _boot_settings()
+    _seed_bundle(prov, settings, epoch=3)
+    fleet = MemoryFleetStore()
+    key_token = _minted_key(fleet, "dep_a")
+    _wire_bootstrap(monkeypatch, prov, settings, fleet=fleet)
+
+    out = fleet_router.bootstrap_exchange(authorization=f"Bearer {key_token}", x_onebrain_deployment_id="dep_a")
+    assert out.secrets_epoch == 3        # rotation re-fetch returns the current epoch
+    # The fleet-key path consumes no token and is re-callable.
+    assert fleet_router.bootstrap_exchange(authorization=f"Bearer {key_token}",
+                                           x_onebrain_deployment_id="dep_a").secrets_epoch == 3
+
+
+def test_bootstrap_404_when_no_bundle(monkeypatch):
+    # Inertness: no bundle row -> 404 (dormant until a Hetzner box is provisioned).
+    prov = _prov()
+    settings = _boot_settings()
+    fleet = MemoryFleetStore()
+    key_token = _minted_key(fleet, "dep_a")
+    _wire_bootstrap(monkeypatch, prov, settings, fleet=fleet)
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.bootstrap_exchange(authorization=f"Bearer {key_token}", x_onebrain_deployment_id="dep_a")
+    assert ei.value.status_code == 404
+
+
+def test_bootstrap_rate_limit_is_dedicated_and_low(monkeypatch):
+    # G1-5: a dedicated LOW budget (here 1/window) so a leaked key cannot poll the bundle.
+    prov = _prov()
+    settings = _boot_settings(rate=1)
+    _seed_bundle(prov, settings)
+    fleet = MemoryFleetStore()
+    key_token = _minted_key(fleet, "dep_a")
+    _wire_bootstrap(monkeypatch, prov, settings, fleet=fleet)
+
+    assert fleet_router.bootstrap_exchange(authorization=f"Bearer {key_token}",
+                                           x_onebrain_deployment_id="dep_a").secrets_epoch == 0
+    with pytest.raises(HTTPException) as ei:      # second call within the window -> 429
+        fleet_router.bootstrap_exchange(authorization=f"Bearer {key_token}", x_onebrain_deployment_id="dep_a")
+    assert ei.value.status_code == 429
+
+
+def test_bootstrap_409_when_active_signer_excluded(monkeypatch):
+    # G1-1: never hand a box a pubkey set (overlaid from settings) that excludes MC's
+    # active signer.
+    prov = _prov()
+    settings = _boot_settings(priv=_DS_WRAP_PRIV, pubs="someone-else")   # signer NOT in the set
+    _seed_bundle(prov, settings)
+    token = _seed_token(prov)
+    _wire_bootstrap(monkeypatch, prov, settings)
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.bootstrap_exchange(authorization=f"Bearer {token}", x_onebrain_deployment_id="dep_a")
+    assert ei.value.status_code == 409 and ei.value.detail == "active_signer_not_in_public_key_set"
+    # The 409 fires BEFORE the token is consumed, so the box can retry once the config is fixed.
+    assert prov.get_bootstrap_token(fleet_router.hash_secret(fleet_router.parse_bootstrap_token(token)[1])).consumed_at == ""
+
+
+def test_bootstrap_lost_response_does_not_burn_token(monkeypatch):
+    # G1-2: if bundle load raises (here a corrupt ciphertext), the token is NOT consumed;
+    # a retry succeeds once the bundle is fixed.
+    prov = _prov()
+    settings = _boot_settings()
+    _seed_bundle(prov, settings, ciphertext="corrupt-not-a-fernet-token")
+    token = _seed_token(prov)
+    from app.fleet.keys import hash_secret, parse_bootstrap_token
+    token_hash = hash_secret(parse_bootstrap_token(token)[1])
+    _wire_bootstrap(monkeypatch, prov, settings)
+
+    with pytest.raises(HTTPException) as ei:
+        fleet_router.bootstrap_exchange(authorization=f"Bearer {token}", x_onebrain_deployment_id="dep_a")
+    assert ei.value.status_code == 500
+    assert prov.get_bootstrap_token(token_hash).consumed_at == ""    # token NOT burned
+
+    # Fix the bundle -> the SAME token now succeeds exactly once.
+    _seed_bundle(prov, settings)     # re-seal a valid bundle
+    out = fleet_router.bootstrap_exchange(authorization=f"Bearer {token}", x_onebrain_deployment_id="dep_a")
+    assert "POSTGRES_PASSWORD=pg" in out.dotenv
+    assert prov.get_bootstrap_token(token_hash).consumed_at != ""    # consumed now
+
+
+def test_bootstrap_rejects_malformed_and_expired_token(monkeypatch):
+    prov = _prov()
+    settings = _boot_settings()
+    _seed_bundle(prov, settings)
+    expired = _seed_token(prov, ttl_seconds=-10)   # already expired
+    _wire_bootstrap(monkeypatch, prov, settings)
+    for tok in ("bt_only", expired):
+        with pytest.raises(HTTPException) as ei:
+            fleet_router.bootstrap_exchange(authorization=f"Bearer {tok}", x_onebrain_deployment_id="dep_a")
+        assert ei.value.status_code == 401
+
+
+def test_bootstrap_dotenv_never_logged(monkeypatch, caplog):
+    import logging
+    prov = _prov()
+    settings = _boot_settings()
+    _seed_bundle(prov, settings)
+    token = _seed_token(prov)
+    _wire_bootstrap(monkeypatch, prov, settings)
+    with caplog.at_level(logging.DEBUG):
+        out = fleet_router.bootstrap_exchange(authorization=f"Bearer {token}", x_onebrain_deployment_id="dep_a")
+    assert "POSTGRES_PASSWORD=pg" in out.dotenv           # the secret IS delivered...
+    assert "POSTGRES_PASSWORD=pg" not in caplog.text       # ...but never logged (G1-5)
+
+
+def test_collect_reads_applied_secrets_epoch(tmp_path):
+    # G1-3: the reporter emits the secrets_epoch the box last applied (a sibling of
+    # update_state.json), so the operator can watch rotation converge.
+    from app.config import Settings
+    from app.fleet.reporter import collect_heartbeat
+    (tmp_path / "secrets_epoch").write_text("4\n", encoding="utf-8")
+    hb = collect_heartbeat(Settings(deployment_id="dep_local", data_dir=str(tmp_path)))
+    assert hb.model_dump()["update"]["applied_secrets_epoch"] == 4
+    # Absent (Railway / never exchanged) -> the inert default 0.
+    hb2 = collect_heartbeat(Settings(deployment_id="dep_local", data_dir=str(tmp_path / "none")))
+    assert hb2.model_dump()["update"]["applied_secrets_epoch"] == 0
+
+
 def _load_box_verify_twin():
     import importlib.util
     from pathlib import Path

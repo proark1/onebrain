@@ -25,6 +25,7 @@ _BASH = shutil.which("bash")
 _CYGPATH = shutil.which("cygpath")
 _BOX_DIR = Path(__file__).resolve().parents[1] / "deploy" / "box"
 _UPDATE_SH = _BOX_DIR / "update.sh"
+_BOOTSTRAP_SH = _BOX_DIR / "onebrain_bootstrap.sh"
 _VERIFY_PY = _BOX_DIR / "onebrain_box_verify.py"
 
 pytestmark = pytest.mark.skipif(_BASH is None, reason="bash unavailable (harness needs /usr/bin/bash)")
@@ -47,6 +48,8 @@ _STUBS = {
         'case "$url" in\n'
         '  *floor-bump*) [ -f "$CTRL/floor_bump_fail" ] && exit 22; '
         'cat "$CTRL/floor_bump_serve.json" 2>/dev/null || printf "null" ;;\n'
+        '  *bootstrap*) [ -f "$CTRL/bootstrap_fail" ] && exit 22; '
+        'cat "$CTRL/bootstrap_resp.json" 2>/dev/null || printf "" ;;\n'
         '  *desired-state*) [ -f "$CTRL/fetch_fail" ] && exit 22; cat "$CTRL/serve.json" ;;\n'
         '  *health*) [ -f "$CTRL/smoke_fail" ] && exit 22; printf "OK" ;;\n'
         '  *) : ;;\n'
@@ -164,6 +167,7 @@ class _Harness:
             "UPDATE_HEALTH_URL": "http://127.0.0.1/health",
             "UPDATE_VERIFY_BIN": _unix(_VERIFY_PY),
             "UPDATE_BACKUP_KEY": "testbackupkey",
+            "ONEBRAIN_BOOTSTRAP_TOKEN": "bt_harness_token",   # first-boot exchange auth (P5-03)
         }
         (self.root / "box.env").write_bytes(
             ("\n".join(f"{k}={v}" for k, v in lines.items()) + "\n").encode("utf-8"))
@@ -173,6 +177,17 @@ class _Harness:
 
     def set_floor_bump_serve(self, served: dict):
         (self.ctrl / "floor_bump_serve.json").write_bytes(json.dumps(served).encode("utf-8"))
+
+    def set_bootstrap_resp(self, resp: dict):
+        (self.ctrl / "bootstrap_resp.json").write_bytes(json.dumps(resp).encode("utf-8"))
+
+    def env_content(self):
+        p = self.root / ".env"
+        return p.read_text() if p.exists() else None
+
+    def applied_epoch(self):
+        p = self.data / "onebrain_update" / "secrets_epoch"
+        return p.read_text().strip() if p.exists() else None
 
     def floor_state(self):
         p = self.data / "onebrain_update" / "floor_state.json"
@@ -189,16 +204,28 @@ class _Harness:
         work.mkdir(parents=True, exist_ok=True)
         (work / "last_applied.json").write_bytes(json.dumps({"images": images}).encode("utf-8"))
 
-    def run(self) -> subprocess.CompletedProcess:
-        env = {
+    def _env(self) -> dict:
+        return {
             **os.environ,
             "BOX_ENV": _unix(self.root / "box.env"),
+            # ENV_FILE isolates the scripts from any real /opt/onebrain/.env (P5-03). It
+            # does not exist until onebrain_bootstrap.sh writes it, so update.sh's
+            # .env-first source is a no-op on a fresh box.
+            "ENV_FILE": _unix(self.root / ".env"),
             "STUB_LOG": _unix(self.ctrl / "stub.log"),
             "CTRL": _unix(self.ctrl),
             "PYREAL": _unix(os.sys.executable),
         }
-        cmd = f'export PATH="{_unix(self.bin)}:$PATH"; exec "{_unix(_UPDATE_SH)}"'
-        return subprocess.run([_BASH, "-c", cmd], env=env, capture_output=True, text=True, timeout=120)
+
+    def _exec(self, script: Path) -> subprocess.CompletedProcess:
+        cmd = f'export PATH="{_unix(self.bin)}:$PATH"; exec "{_unix(script)}"'
+        return subprocess.run([_BASH, "-c", cmd], env=self._env(), capture_output=True, text=True, timeout=120)
+
+    def run(self) -> subprocess.CompletedProcess:
+        return self._exec(_UPDATE_SH)
+
+    def run_bootstrap(self) -> subprocess.CompletedProcess:
+        return self._exec(_BOOTSTRAP_SH)
 
     def state(self):
         p = self.data / "onebrain_update" / "update_state.json"
@@ -368,10 +395,63 @@ def test_no_floor_bump_served_is_a_noop(box):
     assert box.state() is None         # no desired-state -> no outcome
 
 
+# --- P5-03 bootstrap exchange (onebrain_bootstrap.sh) ------------------------
+def test_bootstrap_first_boot_writes_env_then_records_epoch(box):
+    # First boot (no .env) writes /opt/onebrain/.env from the served dotenv, and records
+    # the applied epoch ONLY after the write (G1-2/G1-3).
+    box.set_bootstrap_resp({"secrets_epoch": 0, "dotenv": "POSTGRES_PASSWORD=pg\nONEBRAIN_FLEET_KEY=fk_real\n"})
+    result = box.run_bootstrap()
+    assert result.returncode == 0, result.stderr
+    env = box.env_content()
+    assert env is not None and "POSTGRES_PASSWORD=pg" in env and "ONEBRAIN_FLEET_KEY=fk_real" in env
+    assert box.applied_epoch() == "0"
+    # First boot leaves `compose up` to the cloud-init runcmd (no dc up here).
+    assert "up -d" not in box.stub_log()
+
+
+def test_bootstrap_holds_on_unreachable_without_writing_env(box):
+    # Non-2xx / unreachable -> HOLD: no .env, no epoch advance (non-destructive).
+    box.touch("bootstrap_fail")
+    result = box.run_bootstrap()
+    assert result.returncode == 0, result.stderr
+    assert box.env_content() is None
+    assert box.applied_epoch() is None
+
+
+def test_bootstrap_rotation_reapplies_only_on_higher_epoch(box):
+    box.set_bootstrap_resp({"secrets_epoch": 0, "dotenv": "POSTGRES_PASSWORD=v0\n"})
+    assert box.run_bootstrap().returncode == 0
+    assert box.applied_epoch() == "0"
+
+    # An equal/stale served epoch is a no-op: no rewrite, no compose up.
+    box.set_bootstrap_resp({"secrets_epoch": 0, "dotenv": "POSTGRES_PASSWORD=SHOULD_NOT_APPLY\n"})
+    assert box.run_bootstrap().returncode == 0
+    assert "SHOULD_NOT_APPLY" not in (box.env_content() or "")
+
+    # A higher served epoch re-writes .env AND re-applies (dc up -d) so containers reload.
+    box.set_bootstrap_resp({"secrets_epoch": 1, "dotenv": "POSTGRES_PASSWORD=v1\n"})
+    assert box.run_bootstrap().returncode == 0
+    assert "POSTGRES_PASSWORD=v1" in box.env_content()
+    assert box.applied_epoch() == "1"
+    assert "compose" in box.stub_log() and "up -d" in box.stub_log()
+
+
+def test_update_sh_sources_env_before_box_env():
+    # Static: update.sh sources /opt/onebrain/.env (the exchanged secret bundle) BEFORE
+    # box.env, so box.env's ${VAR} refs re-expand to the delivered real values (P5-03).
+    src = _UPDATE_SH.read_text(encoding="utf-8")
+    assert src.index('. "$ENV_FILE"') < src.index('. "$BOX_ENV"')
+
+
+def test_bootstrap_sh_has_no_crlf():
+    assert b"\r" not in _BOOTSTRAP_SH.read_bytes()
+
+
 # --- shellcheck (CI-only; A4) ------------------------------------------------
 def test_shellcheck_clean():
     checker = shutil.which("shellcheck")
     if checker is None:
         pytest.skip("shellcheck absent (CI-only gate; not a local merge gate — A4)")
-    result = subprocess.run([checker, str(_UPDATE_SH)], capture_output=True, text=True)
-    assert result.returncode == 0, result.stdout + result.stderr
+    for script in (_UPDATE_SH, _BOOTSTRAP_SH):
+        result = subprocess.run([checker, str(script)], capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr

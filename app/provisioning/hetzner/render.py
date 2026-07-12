@@ -29,6 +29,10 @@ _DEPLOY_TEMPLATES = _REPO_ROOT / "deploy" / "templates"
 
 # operator-config/server-minted id charset (injection guard).
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+# Short-lived token charset (P5-03). The bootstrap + callback tokens are baked into
+# box.env and flow into a shell/URL sink; secrets.token_urlsafe(...) and the
+# bt_<id>_<secret> grammar both stay within this set.
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 # Canonical module order (golden determinism).
 MODULE_ORDER = (
@@ -87,6 +91,12 @@ class BoxRenderInputs:
     registry_allowlist: str = ""               # baked box-local allowlist (B2) — never envelope-supplied
     trust_proxy: int = 1                        # TRUST_PROXY hop count for the box's real proxy (Caddy = 1)
     role: str = "customer"                      # A14: "customer" | "operator" (operator overlay is dormant in P4)
+    bootstrap_token: str = ""                   # P5-03: the single-use first-boot token, baked in box.env; the box
+                                                # exchanges it ONCE for /opt/onebrain/.env. Empty for the MC box
+                                                # (role=operator, G3-1: baked .env, no exchange) + pure-executor tests.
+    callback_token: str = ""                    # G1-7: the provisioning callback bearer, BAKED in box.env (not a
+                                                # ${VAR} ref) so the metadata-egress-block FAILURE callback
+                                                # authenticates BEFORE the bundle exchange runs.
     secret_refs: SecretRefs = field(default_factory=SecretRefs)
 
 
@@ -101,6 +111,10 @@ def _validate(inp: BoxRenderInputs) -> None:
     # held to the same charset guard when present (render_cloud_init also requires it).
     if inp.run_id and not _ID_RE.match(inp.run_id):
         raise ValueError(f"invalid run_id (charset ^[a-z0-9][a-z0-9._-]*$): {inp.run_id!r}")
+    # The baked short-lived tokens also flow into box.env / a shell sink (P5-03 · G1-7).
+    for label, tok in (("bootstrap_token", inp.bootstrap_token), ("callback_token", inp.callback_token)):
+        if tok and not _TOKEN_RE.match(tok):
+            raise ValueError(f"invalid {label} (charset ^[A-Za-z0-9._-]+$): {tok!r}")
     unknown = [m for m in inp.enabled_modules if m not in MODULE_IDS]
     if unknown:
         raise ValueError(f"unknown enabled modules: {sorted(unknown)}")
@@ -423,12 +437,21 @@ def _box_env(inp: BoxRenderInputs) -> str:
         ("UPDATE_PROFILES", products),
         ("UPDATE_LOCAL_MODULES", ",".join(_ordered(inp.enabled_modules))),
         ("UPDATE_HEALTH_URL", "http://127.0.0.1/health"),
-        # A5: the per-box backup-encryption key + the owner OTP + callback token
-        # are ${VAR} refs; the host-OUTPUT metadata drop bounds their exposure.
+        # A5: the per-box backup-encryption key + the owner OTP are ${VAR} refs filled
+        # by the bootstrap exchange (/opt/onebrain/.env), sourced BEFORE box.env so
+        # these re-expand to the delivered real values.
         ("UPDATE_BACKUP_KEY", "${" + inp.secret_refs.backup_key_env + "}"),
         ("ONEBRAIN_ADMIN_PASSWORD", "${" + inp.secret_refs.owner_bootstrap_env + "}"),
-        ("ONEBRAIN_PROVISIONING_CALLBACK_TOKEN", "${ONEBRAIN_PROVISIONING_CALLBACK_TOKEN}"),
+        # G1-7: the callback token is BAKED (a real value, not a ${VAR} ref) so the
+        # metadata-egress-block FAILURE callback authenticates before the exchange has
+        # run. It stays OUT of the exchange bundle (never a BUNDLE_KEY).
+        ("ONEBRAIN_PROVISIONING_CALLBACK_TOKEN", inp.callback_token),
     ]
+    # P5-03: the single-use first-boot bootstrap token is baked ONLY for a customer box
+    # (which exchanges it for /opt/onebrain/.env). The MC box (role=operator, G3-1) bakes
+    # its .env directly and is never minted a token, so no exchange runs for it.
+    if inp.role != "operator":
+        pairs.append(("ONEBRAIN_BOOTSTRAP_TOKEN", inp.bootstrap_token))
     return _kv(pairs)
 
 
@@ -441,8 +464,12 @@ def _callback_curl(status: str, smoke: str, run_id: str, *, extra: str = "") -> 
     # stays a shell ref resolved from box.env. Concatenated (not f-string) so the ${...}
     # braces are not mistaken for format placeholders.
     callback_url = "${ONEBRAIN_FLEET_URL}/api/provisioning/runs/" + run_id + "/callback"
+    # Source /opt/onebrain/.env (the exchanged bundle) FIRST so box.env's ${VAR} refs
+    # (e.g. ${ONEBRAIN_ADMIN_PASSWORD} in done_cb) re-expand to the delivered real
+    # values; the baked callback token in box.env authenticates fail_cb even before the
+    # exchange has written .env (G1-7). `|| true` keeps a missing .env non-fatal.
     return (
-        "set -a; . /opt/onebrain/box.env; set +a; "
+        "set -a; . /opt/onebrain/.env 2>/dev/null || true; . /opt/onebrain/box.env; set +a; "
         'curl -sf -X POST -H "Authorization: Bearer ${ONEBRAIN_PROVISIONING_CALLBACK_TOKEN}" '
         '-H "Content-Type: application/json" '
         f'--data "{body}" '
@@ -467,12 +494,21 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         "/opt/onebrain/postgres-init.sh", _read_box_file("postgres-init.sh"), "0755"))
     entries.append(_write_file_entry(
         "/opt/onebrain/update.sh", _read_box_file("update.sh"), "0755"))
+    # P5-03: the first-boot/rotation secret-exchange helper (fetches /opt/onebrain/.env).
+    entries.append(_write_file_entry(
+        "/opt/onebrain/onebrain_bootstrap.sh", _read_box_file("onebrain_bootstrap.sh"), "0755"))
     entries.append(_write_file_entry(
         "/opt/onebrain/onebrain_box_verify.py", _read_box_file("onebrain_box_verify.py"), "0644"))
     entries.append(_write_file_entry(
         "/etc/systemd/system/onebrain-update.service", _read_box_file("onebrain-update.service")))
     entries.append(_write_file_entry(
         "/etc/systemd/system/onebrain-update.timer", _read_box_file("onebrain-update.timer")))
+    # G1-6: persist the metadata-egress DROP across reboots (the runcmd iptables -I
+    # rules below are in-memory and vanish on the first reboot; this oneshot re-applies
+    # BOTH on every boot).
+    entries.append(_write_file_entry(
+        "/etc/systemd/system/onebrain-metadata-drop.service",
+        _read_box_file("onebrain-metadata-drop.service")))
     write_files = "".join(entries).rstrip("\n")
 
     profile_flags = " ".join(f"--profile {p}" for p in _enabled_products(inp.enabled_modules))
@@ -506,6 +542,13 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         # the metadata endpoint. A failed insert fails the boot and reports it.
         f"iptables -I DOCKER-USER -d {_META} -j DROP || {{ {fail_cb}; exit 1; }}",
         f"iptables -I OUTPUT -d {_META} -j DROP || {{ {fail_cb}; exit 1; }}",
+        # G1-6: persist BOTH drops across reboots (the -I rules above are in-memory).
+        "systemctl enable --now onebrain-metadata-drop.service",
+        # P5-03: fetch /opt/onebrain/.env via the single-use bootstrap token AFTER the
+        # (now persisted) metadata drop and BEFORE compose pull/up, so compose interpolates
+        # the delivered ${VAR} secrets. Customer box only — the MC box (role=operator)
+        # bakes its .env directly (G3-1) and runs no exchange.
+        *(["bash /opt/onebrain/onebrain_bootstrap.sh || true"] if inp.role != "operator" else []),
         f"{compose_cmd} pull",
         f"{compose_cmd} up -d",
         "systemctl enable --now onebrain-update.timer",

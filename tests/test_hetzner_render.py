@@ -53,7 +53,8 @@ def _images(modules) -> dict:
     return {m: f"ghcr.io/proark1/{m}@{_digest(idx)}" for idx, m in enumerate(_ALL) if m in set(modules)}
 
 
-def _inputs(modules, *, fqdn="dep_a.fleet.example", role="customer", run_id="prun_fixture") -> BoxRenderInputs:
+def _inputs(modules, *, fqdn="dep_a.fleet.example", role="customer", run_id="prun_fixture",
+            bootstrap_token="", callback_token="") -> BoxRenderInputs:
     return BoxRenderInputs(
         deployment_id="dep_a",
         account_id="acct_1",
@@ -67,6 +68,8 @@ def _inputs(modules, *, fqdn="dep_a.fleet.example", role="customer", run_id="pru
         release_public_key="RELPUBKEY",
         registry_allowlist="ghcr.io/proark1",
         role=role,
+        bootstrap_token=bootstrap_token,
+        callback_token=callback_token,
     )
 
 
@@ -263,6 +266,66 @@ def test_update_sh_has_no_crlf():
     from app.provisioning.hetzner import render as R
     raw = (R._DEPLOY_BOX / "update.sh").read_bytes()
     assert b"\r" not in raw
+
+
+# --- P5-03 bootstrap exchange + G1-6 metadata-drop persistence ---------------
+def test_box_env_bakes_bootstrap_and_callback_tokens_only():
+    from app.provisioning.hetzner.render import _box_env
+    be = _box_env(_inputs(_ALL, bootstrap_token="bt_id_sec", callback_token="cbtok"))
+    # G1-7: the callback token is BAKED (a real value), NOT a ${VAR} ref, so fail_cb
+    # authenticates before the exchange.
+    assert "ONEBRAIN_PROVISIONING_CALLBACK_TOKEN=cbtok" in be
+    assert "ONEBRAIN_PROVISIONING_CALLBACK_TOKEN=${" not in be
+    # P5-03: the single-use first-boot token is baked for a customer box.
+    assert "ONEBRAIN_BOOTSTRAP_TOKEN=bt_id_sec" in be
+    # Every OTHER secret stays a ${VAR} ref filled by the exchange (never plaintext).
+    for line in be.splitlines():
+        key, _, value = line.partition("=")
+        if key in ("ONEBRAIN_FLEET_KEY", "UPDATE_BACKUP_KEY", "ONEBRAIN_ADMIN_PASSWORD"):
+            assert value == "${" + key + "}", f"{key} should stay a ref: {line!r}"
+
+
+def test_operator_box_env_omits_bootstrap_token():
+    # G3-1: the MC box (role=operator) bakes its .env directly and runs no exchange, so
+    # it is never given a bootstrap token; the callback token is still baked.
+    from app.provisioning.hetzner.render import _box_env
+    be = _box_env(_inputs(_ALL, role="operator", callback_token="cbtok"))
+    assert "ONEBRAIN_BOOTSTRAP_TOKEN" not in be
+    assert "ONEBRAIN_PROVISIONING_CALLBACK_TOKEN=cbtok" in be
+
+
+def test_cloud_init_embeds_bootstrap_helper_and_metadata_drop_unit():
+    wf = _write_files_section(render_cloud_init(_inputs(_ALL, bootstrap_token="bt_x_y", callback_token="cb")))
+    assert "- path: /opt/onebrain/onebrain_bootstrap.sh" in wf
+    # G1-6: the boot-persistent metadata-egress DROP oneshot is embedded.
+    assert "- path: /etc/systemd/system/onebrain-metadata-drop.service" in wf
+
+
+def test_cloud_init_bootstrap_runcmd_order_and_env_first_source():
+    rc = _runcmd_section(render_cloud_init(_inputs(_ALL, bootstrap_token="bt_x_y", callback_token="cb")))
+    # Order: immediate DROP -> persist across reboots (G1-6) -> secret exchange -> compose up.
+    drop = rc.index("iptables -I OUTPUT -d 169.254.169.254 -j DROP")
+    persist = rc.index("systemctl enable --now onebrain-metadata-drop.service")
+    exchange = rc.index("bash /opt/onebrain/onebrain_bootstrap.sh")
+    up = rc.index("up -d")
+    assert drop < persist < exchange < up
+    # .env-first sourcing so the callbacks' ${VAR} refs re-expand to exchanged secrets.
+    assert ". /opt/onebrain/.env 2>/dev/null || true; . /opt/onebrain/box.env" in rc
+
+
+def test_operator_cloud_init_omits_exchange_but_keeps_drop_persistence():
+    # G3-1: the MC box render carries NO exchange step (it bakes .env), but G1-6's
+    # metadata-drop persistence still applies to it.
+    rc = _runcmd_section(render_cloud_init(_inputs(_ALL, role="operator")))
+    assert "onebrain_bootstrap.sh" not in rc
+    assert "systemctl enable --now onebrain-metadata-drop.service" in rc
+
+
+def test_render_rejects_hostile_token():
+    with pytest.raises(ValueError, match="bootstrap_token"):
+        render_cloud_init(_inputs(_ONEBRAIN, bootstrap_token="bt; rm -rf /"))
+    with pytest.raises(ValueError, match="callback_token"):
+        render_cloud_init(_inputs(_ONEBRAIN, callback_token="a b"))
 
 
 # --- injection discipline ----------------------------------------------------

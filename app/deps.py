@@ -145,6 +145,16 @@ def get_fleet_heartbeat_rate_limiter():
 
 
 @lru_cache
+def get_fleet_bootstrap_rate_limiter():
+    # G1-5: a DEDICATED, aggressively-low limiter for the /api/fleet/bootstrap secret
+    # exchange — never the heartbeat budget (one fetch exfiltrates the whole bundle).
+    from app.auth.throttle import RateLimiter
+
+    settings = get_settings()
+    return RateLimiter(settings.fleet_bootstrap_rate_limit, settings.fleet_bootstrap_rate_window_seconds)
+
+
+@lru_cache
 def get_intake_store():
     from app.intake.factory import build_intake_store
 

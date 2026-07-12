@@ -27,14 +27,23 @@ from app.controlplane.desired_state import (
 )
 from app.deps import (
     get_control_plane_store,
+    get_fleet_bootstrap_rate_limiter,
     get_fleet_heartbeat_rate_limiter,
     get_fleet_store,
     get_provisioning_run_store,
 )
 from app.fleet.base import FleetKey, Heartbeat
+from app.fleet.bootstrap_bundle import render_dotenv
 from app.fleet.enrollment import fleet_enrollment_vars, mint_deployment_fleet_key
 from app.fleet.heartbeat import AnyFleetHeartbeat, FleetHeartbeat  # noqa: F401 — FleetHeartbeat kept for typing
-from app.fleet.keys import generate_fleet_key, hash_secret, parse_fleet_key, verify_secret
+from app.fleet.keys import (
+    generate_fleet_key,
+    hash_secret,
+    parse_bootstrap_token,
+    parse_fleet_key,
+    verify_secret,
+)
+from app.provisioning.runs import OneTimeSecretCipher
 from app.trust.envelope import FloorBump, verify_floor_bump
 
 router = APIRouter(prefix="/api/fleet", tags=["fleet"])
@@ -159,6 +168,92 @@ def get_desired_state(authorization: str = Header(default=""),
     if env is None:
         return None
     return {"envelope": env.model_dump(), "attempt_id": active_pull_attempt_id(control, key.deployment_id)}
+
+
+# --- bootstrap-token secret exchange (P5-03) ---------------------------------
+# A box exchanges its single-use FIRST-BOOT token (or, on a rotation tick, its fleet
+# key) for its re-readable secret bundle, delivered as an /opt/onebrain/.env body. The
+# token is consumed atomically only as the LAST step of a successful 200 AFTER the
+# bundle is assembled (G1-2/G1-8), so a lost response never bricks the box.
+
+class BootstrapExchangeOut(BaseModel):
+    secrets_epoch: int
+    dotenv: str  # the /opt/onebrain/.env body — NEVER logged (G1-5)
+
+
+def _bootstrap_token_unexpired(expires_at: str) -> bool:
+    if not expires_at:
+        return False
+    try:
+        exp = datetime.fromisoformat(expires_at)
+    except (ValueError, TypeError):
+        return False
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return exp > datetime.now(timezone.utc)
+
+
+@router.post("/bootstrap", response_model=BootstrapExchangeOut)
+def bootstrap_exchange(authorization: str = Header(default=""),
+                       x_onebrain_deployment_id: str = Header(default="")):
+    """Deliver a box's re-readable secret bundle as an /opt/onebrain/.env body. Auth is
+    EITHER a single-use, unconsumed+unexpired bootstrap token (first boot) OR the
+    deployment's fleet key (rotation re-fetch); the deployment is derived from the
+    authenticated credential — NEVER a free parameter — so a box can only fetch its OWN
+    bundle. Ordering (G1-2): validate the token, load+decrypt the bundle, assemble the
+    body, and consume the token ONLY as the last step before returning 200."""
+    settings = get_settings()
+    prov = get_provisioning_run_store()
+    token = authorization[7:].strip() if authorization.startswith("Bearer ") else ""
+
+    token_secret = ""
+    if token.startswith("bt_"):
+        parsed = parse_bootstrap_token(token)
+        if not parsed:
+            raise HTTPException(status_code=401, detail="Malformed bootstrap token.")
+        token_secret = parsed[1]
+        record = prov.get_bootstrap_token(hash_secret(token_secret))
+        if record is None or record.consumed_at or not _bootstrap_token_unexpired(record.expires_at):
+            raise HTTPException(status_code=401, detail="Invalid, expired, or consumed bootstrap token.")
+        deployment_id = record.deployment_id
+    else:
+        # Rotation path: a valid fleet key pinned to the header deployment (G1-5 — a
+        # box with a bundle may now fetch its OWN bundle with its fleet key).
+        key = _authenticate_fleet_key(authorization, x_onebrain_deployment_id.strip())
+        deployment_id = key.deployment_id
+
+    # G1-5: a DEDICATED, aggressively-low rate limit keyed by the resolved deployment —
+    # a single fetch exfiltrates the whole bundle, so a leaked key cannot poll it.
+    wait = get_fleet_bootstrap_rate_limiter().check(f"bootstrap:{deployment_id}")
+    if wait:
+        raise HTTPException(status_code=429, detail="Bootstrap rate limit exceeded.",
+                            headers={"Retry-After": str(wait)})
+
+    bundle_row = prov.get_secret_bundle(deployment_id)
+    if bundle_row is None:
+        raise HTTPException(status_code=404, detail="No secret bundle for that deployment.")
+    try:
+        bundle = json.loads(OneTimeSecretCipher(settings).open_bundle(bundle_row.ciphertext))
+    except ValueError:
+        # A decrypt failure must NOT consume the token (G1-2) — the box holds + retries.
+        raise HTTPException(status_code=500, detail="Secret bundle could not be opened.")
+
+    # Overlay the CURRENT accepted wrapper-key set so a rotation is reflected WITHOUT
+    # re-encrypting every bundle; then run the G1-1 interlock on that overlaid set —
+    # never hand a box a set that excludes MC's active signer.
+    bundle["UPDATE_DESIRED_STATE_PUBLIC_KEYS"] = (
+        settings.fleet_desired_state_public_keys or settings.fleet_desired_state_public_key)
+    if not active_signer_in_served_set(settings):
+        raise HTTPException(status_code=409, detail="active_signer_not_in_public_key_set")
+    body = BootstrapExchangeOut(secrets_epoch=bundle_row.secrets_epoch, dotenv=render_dotenv(bundle))
+
+    # G1-2/G1-8: consume the one-time token atomically as the LAST step, after the body
+    # is assembled. A NULL return means a concurrent request already won the race -> 401
+    # with no body (the box retries next tick). The fleet-key rotation path consumes nothing.
+    if token_secret:
+        if prov.consume_bootstrap_token(hash_secret(token_secret)) is None:
+            raise HTTPException(status_code=401, detail="Bootstrap token already consumed.")
+    return body
 
 
 # --- floor-bump serving (P5-01 revocation kill-switch) -----------------------
