@@ -1,0 +1,25 @@
+dep_a.fleet.example {
+    encode gzip
+    header -Server
+    handle /api/* {
+        reverse_proxy onebrain-api:8000
+    }
+    handle /health* {
+        reverse_proxy onebrain-api:8000
+    }
+    handle /assistant/* {
+        reverse_proxy assistant-service:8000
+    }
+    handle /comm/api/* {
+        reverse_proxy communication-api:4000
+    }
+    handle /comm/widget/* {
+        reverse_proxy communication-widget:5174
+    }
+    handle /comm/voice/* {
+        reverse_proxy communication-voice:4100
+    }
+    handle {
+        reverse_proxy onebrain-admin-ui:3000
+    }
+}

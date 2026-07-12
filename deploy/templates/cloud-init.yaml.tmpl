@@ -1,0 +1,18 @@
+#cloud-config
+# Rendered per box by app/provisioning/hetzner/render.render_cloud_init. The
+# write-files and runcmd markers are filled with operator-controlled / server-minted
+# values only - never an untrusted caller value (injection discipline).
+package_update: true
+package_upgrade: false
+packages:
+  - docker.io
+  - docker-compose-plugin
+  - python3
+  - python3-cryptography
+  - unattended-upgrades
+
+write_files:
+{{WRITE_FILES}}
+
+runcmd:
+{{RUNCMD}}

@@ -1,0 +1,12 @@
+[Unit]
+Description=OneBrain box update agent (verify -> pull -> fence -> smoke -> recover)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/onebrain/update.sh
+Nice=10
+IOSchedulingClass=idle
+# The agent must run as root (host-level docker + iptables + host Postgres backup).
+User=root

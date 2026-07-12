@@ -1,0 +1,13 @@
+:80 {
+    encode gzip
+    header -Server
+    handle /api/* {
+        reverse_proxy onebrain-api:8000
+    }
+    handle /health* {
+        reverse_proxy onebrain-api:8000
+    }
+    handle {
+        reverse_proxy onebrain-admin-ui:3000
+    }
+}

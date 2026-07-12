@@ -1,0 +1,10 @@
+# A1 (Hetzner P4): the box artifacts are executed by Cygwin/Git-Bash and by a real
+# Ubuntu box's /usr/bin/bash, neither of which tolerates CRLF in `#!`/`set -euo
+# pipefail` lines. This dev box has core.autocrlf=true and no other .gitattributes,
+# so without these pins a Windows checkout would break execution. Keep LF regardless
+# of platform. The dry-run harness also asserts update.sh contains no CR.
+deploy/box/*.sh text eol=lf
+deploy/box/*.py text eol=lf
+deploy/box/*.service text eol=lf
+deploy/box/*.timer text eol=lf
+deploy/templates/* text eol=lf
