@@ -45,7 +45,7 @@ class ServerCreateRequest:
     image: str
     location: str
     user_data: str                          # rendered cloud-init (P4-02)
-    ssh_key_ids: tuple[int, ...] = ()
+    ssh_key_ids: tuple = ()                  # Hetzner SSH keys: int ids OR string names (API takes either)
     firewall_ids: tuple[int, ...] = ()       # attached IN this create call (H-3) — never create-then-attach
     volume_ids: tuple[int, ...] = ()
     labels: dict = field(default_factory=dict)   # {"deployment_id": ..., "ring": ...}

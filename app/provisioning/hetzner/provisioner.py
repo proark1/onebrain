@@ -83,11 +83,20 @@ def store_owner_one_time_password(prov_store, settings, run: ProvisioningRun, ot
     ))
 
 
-def _ssh_key_ids(csv: str) -> tuple[int, ...]:
-    """Parse the operator-config csv of Hetzner SSH key ids (break-glass only).
-    Non-numeric entries are dropped defensively — there is no inbound-22 path a
-    malformed id could open (H-3 firewall never opens 22)."""
-    return tuple(int(part.strip()) for part in (csv or "").split(",") if part.strip().isdigit())
+def _ssh_key_ids(csv: str) -> tuple:
+    """Parse the operator-config csv of Hetzner SSH keys (break-glass only) — accepts
+    numeric ids OR key NAMES (the Hetzner API's create-server `ssh_keys` field takes
+    either; the console shows names, so operators reference by name). A numeric entry
+    is sent as an int id; anything else is passed through as a key name. Blank entries
+    dropped. No inbound-22 path a bad entry could open (H-3 firewall never opens 22
+    unless hetzner_firewall_allow_ssh)."""
+    out: list = []
+    for part in (csv or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        out.append(int(part) if part.isdigit() else part)
+    return tuple(out)
 
 
 def _default_deny_rules(allow_ssh: bool) -> tuple[FirewallRule, ...]:

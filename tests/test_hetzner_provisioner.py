@@ -578,3 +578,16 @@ def test_customer_box_callback_authenticates_with_per_run_token(monkeypatch):
             x_onebrain_callback_key_id="",
         )
     assert exc.value.status_code == 401
+
+
+def test_ssh_key_ids_accepts_names_and_ids():
+    """break-glass SSH keys: the Hetzner API's ssh_keys field takes int ids OR key
+    names (the console shows names), so _ssh_key_ids must pass names through and coerce
+    numeric entries to ints — dropping only blanks."""
+    from app.provisioning.hetzner.provisioner import _ssh_key_ids
+
+    assert _ssh_key_ids("assaddar-voice-edge-hetzner-2026-07-09") == (
+        "assaddar-voice-edge-hetzner-2026-07-09",)
+    assert _ssh_key_ids("12345") == (12345,)
+    assert _ssh_key_ids("12345, my-key ,") == (12345, "my-key")
+    assert _ssh_key_ids("") == ()
