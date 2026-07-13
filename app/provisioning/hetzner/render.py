@@ -627,14 +627,32 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         "systemctl enable --now docker",
         # Capture the public IP for the callback BEFORE the metadata drop below.
         f"curl -sf http://{_META}/hetzner/v1/metadata/public-ipv4 > /opt/onebrain/box.instance 2>/dev/null || true",
-        # A10: wait until dockerd has created the DOCKER-USER chain (bounded).
+        # A10: wait until dockerd has created the DOCKER-USER chain, BOUNDED (~120s, generous
+        # enough for dockerd to come up on a fresh box) and — critically — on timeout we still
+        # `break` and PROCEED, never hanging the boot. The probe is a plain `iptables -L`
+        # (nft-safe: `iptables` is the iptables-nft backend on ubuntu-24.04) with NO `-w`, so a
+        # transient xtables-lock contention just costs one extra bounded loop iteration rather
+        # than blocking the wait; if the chain never appears the metadata-drop.service below
+        # pre-creates it anyway.
         "i=0; until iptables -L DOCKER-USER -n >/dev/null 2>&1; do i=$((i+1)); "
-        '[ "$i" -ge 60 ] && break; sleep 1; done',
-        # A5: BOTH the bridge (DOCKER-USER) and the host (OUTPUT) egress drops to
-        # the metadata endpoint. A failed insert fails the boot and reports it.
-        f"iptables -I DOCKER-USER -d {_META} -j DROP || {{ {fail_cb}; exit 1; }}",
-        f"iptables -I OUTPUT -d {_META} -j DROP || {{ {fail_cb}; exit 1; }}",
-        # G1-6: persist BOTH drops across reboots (the -I rules above are in-memory).
+        '[ "$i" -ge 120 ] && break; sleep 1; done',
+        # A5: BOTH the bridge (DOCKER-USER) and the host (OUTPUT) egress drops to the metadata
+        # endpoint. FAIL SOFT — report-and-continue, NO `exit 1`. Rationale: a transient insert
+        # failure (an iptables-nft quirk, a DOCKER-USER chain timing/lock race) must NOT abort
+        # cloud-init before `docker compose up`, or the whole box would be bricked (no services,
+        # 80/443 CONNECTION REFUSED) over a defense-in-depth EGRESS rule. That tradeoff is wrong:
+        # inbound is already default-denied by the Hetzner Cloud Firewall (only 80/443 open,
+        # H-3), and the persistent onebrain-metadata-drop.service — ordered Before=docker.service,
+        # started `--now` right below, and re-run on EVERY boot — is the AUTHORITATIVE drop that
+        # reliably enforces the egress block. This in-memory insert is only a fast belt; on
+        # failure we still POST the failure callback (keep the operator signal), then CONTINUE so
+        # the box serves. `-w` makes the insert wait for the xtables lock (dockerd may hold it
+        # briefly at startup) so a lock race is not mistaken for a real failure.
+        f"iptables -w -I DOCKER-USER -d {_META} -j DROP || {{ {fail_cb} || true; }}",
+        f"iptables -w -I OUTPUT -d {_META} -j DROP || {{ {fail_cb} || true; }}",
+        # G1-6: persist BOTH drops across reboots (the -I rules above are in-memory only) AND
+        # apply them NOW via the authoritative oneshot, so the egress block is enforced this boot
+        # even when the fast inserts above failed soft.
         "systemctl enable --now onebrain-metadata-drop.service",
         # P5-03: fetch /opt/onebrain/.env via the single-use bootstrap token AFTER the
         # (now persisted) metadata drop and BEFORE compose pull/up, so compose interpolates

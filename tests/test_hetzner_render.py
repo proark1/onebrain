@@ -299,8 +299,8 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
     assert "ExecStart=/opt/onebrain/update.sh" in wf                 # systemd unit embedded (small, plain)
     # both metadata DROP rules (A5, in runcmd) + the run-id-substituted callback
     rc = _runcmd_section(ci)
-    assert "iptables -I DOCKER-USER -d 169.254.169.254 -j DROP" in rc
-    assert "iptables -I OUTPUT -d 169.254.169.254 -j DROP" in rc
+    assert "iptables -w -I DOCKER-USER -d 169.254.169.254 -j DROP" in rc
+    assert "iptables -w -I OUTPUT -d 169.254.169.254 -j DROP" in rc
     # run_id is baked at render time (no literal placeholder survives), in both the
     # callback URL and box.env — else the box POSTs to /runs/{run_id}/callback and 404s.
     assert "/api/provisioning/runs/prun_fixture/callback" in ci
@@ -324,15 +324,33 @@ def test_cloud_init_compose_calls_are_anchored():
         assert "-f /opt/onebrain/docker-compose.yml" in ln, f"unanchored compose call: {ln!r}"
 
 
-def test_cloud_init_metadata_block_ordering_and_failguard():
+def test_cloud_init_metadata_block_is_fail_soft_before_compose_up():
+    """Box-boot robustness (fix/box-boot-robustness): the metadata-egress DROP is defense in
+    depth (inbound is already firewalled; the onebrain-metadata-drop.service is the
+    authoritative drop), so a transient in-memory insert failure must NOT brick the box. The
+    runcmd metadata-drop lines FAIL SOFT — no `exit 1` — so `docker compose ... up -d` ALWAYS
+    runs after them and the box serves; the failure callback is still POSTed (operator signal)."""
     ci = render_cloud_init(_inputs(_ONEBRAIN))
     runcmd = _runcmd_section(ci)   # isolate runcmd; embedded files also contain "up -d"
     guard = runcmd.index("iptables -L DOCKER-USER")
-    drop_du = runcmd.index("iptables -I DOCKER-USER -d 169.254.169.254 -j DROP")
-    drop_out = runcmd.index("iptables -I OUTPUT -d 169.254.169.254 -j DROP")
-    up = runcmd.index("up -d")
-    assert guard < drop_du < drop_out < up      # A10 ordering
-    assert "metadata_egress_block_failed" in runcmd    # failed insert -> callback failure
+    drop_du = runcmd.index("iptables -w -I DOCKER-USER -d 169.254.169.254 -j DROP")
+    drop_out = runcmd.index("iptables -w -I OUTPUT -d 169.254.169.254 -j DROP")
+    persist = runcmd.index("systemctl enable --now onebrain-metadata-drop.service")
+    compose_up = runcmd.index("up -d")
+    # A10 ordering preserved: wait-for-chain -> both drops -> persist/apply now -> compose up.
+    assert guard < drop_du < drop_out < persist < compose_up
+    # `docker compose ... up -d` is present AND strictly AFTER the metadata step (never gated
+    # behind it / never skipped when a drop insert fails).
+    assert drop_out < runcmd.index("docker compose") < compose_up
+    # FAIL SOFT: the metadata-drop lines no longer abort the boot with `exit 1`; a failed
+    # insert reports-and-continues (`|| true`) so cloud-init proceeds to compose up.
+    assert "exit 1" not in runcmd
+    for start in (drop_du, drop_out):
+        line = runcmd[start:runcmd.index("\n", start)]
+        assert "exit 1" not in line
+        assert "|| true" in line          # report-and-continue, not fail-closed
+    # The failure callback (operator signal) is STILL emitted on an insert failure.
+    assert "metadata_egress_block_failed" in runcmd
 
 
 # --- Hetzner 32768-byte user_data limit (gz+b64 large-entry encoding) ---------
@@ -453,7 +471,7 @@ def test_cloud_init_embeds_bootstrap_helper_and_metadata_drop_unit():
 def test_cloud_init_bootstrap_runcmd_order_and_env_first_source():
     rc = _runcmd_section(render_cloud_init(_inputs(_ALL, bootstrap_token="bt_x_y", callback_token="cb")))
     # Order: immediate DROP -> persist across reboots (G1-6) -> secret exchange -> compose up.
-    drop = rc.index("iptables -I OUTPUT -d 169.254.169.254 -j DROP")
+    drop = rc.index("iptables -w -I OUTPUT -d 169.254.169.254 -j DROP")
     persist = rc.index("systemctl enable --now onebrain-metadata-drop.service")
     exchange = rc.index("bash /opt/onebrain/onebrain_bootstrap.sh")
     up = rc.index("up -d")
