@@ -15,6 +15,7 @@ from app.provisioning.runs import (
     MemoryProvisioningRunStore,
     OneTimeSecretCipher,
     OneTimeSecretEnvelope,
+    ProvisioningRun,
 )
 
 
@@ -205,3 +206,65 @@ def test_postgres_bundle_token_cols_arity_matches_mapper():
 
     assert len(PostgresProvisioningRunStore._BUNDLE_COLS.split(",")) == 6  # _bundle reads 0..5
     assert len(PostgresProvisioningRunStore._TOKEN_COLS.split(",")) == 6   # _token reads 0..5
+
+
+def test_postgres_run_update_persists_external_provider():
+    """A provider dispatcher may reclassify a newly-created run (for example,
+    github_actions -> hetzner); the Postgres update must persist that field."""
+    store = _bare_postgres_provisioning_store()
+    captured = {}
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def execute(self, sql, params):
+            captured["sql"] = sql
+            captured["params"] = params
+
+        def fetchone(self):
+            provider = (
+                captured["params"][1]
+                if "external_provider = %s" in captured["sql"]
+                else "github_actions"
+            )
+            return (
+                "prun_1", "acct_1", "dep_1", "bundle_1", "admin", "dispatched",
+                provider, "", "dev.example", {}, {}, "hetzner:123", "onebrain-dep-1",
+                {}, "", "", "", "", "", None, None, None, None,
+            )
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            pass
+
+    store._conn = lambda: Connection()
+    run = ProvisioningRun(
+        id="prun_1",
+        account_id="acct_1",
+        deployment_id="dep_1",
+        bundle_id="bundle_1",
+        requested_by="admin",
+        status="dispatched",
+        external_provider="hetzner",
+        external_run_url="dev.example",
+        railway_project_id="hetzner:123",
+        railway_environment_id="onebrain-dep-1",
+    )
+
+    updated = store.update_run(run)
+
+    assert updated.external_provider == "hetzner"
+    assert "external_provider = %s" in captured["sql"]

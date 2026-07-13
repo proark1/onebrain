@@ -514,6 +514,7 @@ class PostgresProvisioningRunStore:
                 """
                 UPDATE provisioning_runs
                 SET status = %s,
+                    external_provider = %s,
                     external_run_id = %s,
                     external_run_url = %s,
                     result_payload = %s,
@@ -536,6 +537,7 @@ class PostgresProvisioningRunStore:
                 """,
                 (
                     run.status,
+                    run.external_provider,
                     run.external_run_id,
                     run.external_run_url,
                     json.dumps(run.result_payload),
