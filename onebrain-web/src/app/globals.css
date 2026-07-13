@@ -1907,6 +1907,195 @@ button:disabled,
   padding-top: 12px;
 }
 
+.gateCard,
+.promotionLedger,
+.promotionCard,
+.signatureForm {
+  display: grid;
+  gap: 12px;
+}
+
+.promotionPath {
+  display: grid;
+  grid-template-columns: auto minmax(16px, 1fr) auto minmax(16px, 1fr) auto minmax(16px, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgb(var(--brand-accent-rgb) / 5%);
+}
+
+.promotionPath span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.promotionPath span.complete {
+  color: var(--green);
+}
+
+.promotionPath i {
+  height: 1px;
+  background: var(--line-strong);
+}
+
+.gateIdentity,
+.promotionCard {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--copper);
+  border-radius: var(--radius);
+  background: #fff;
+  padding: 14px;
+  box-shadow: var(--shadow-soft);
+}
+
+.gateIdentity {
+  display: grid;
+  gap: 10px;
+}
+
+.gateFacts,
+.deploymentDates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.deploymentDates {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.gateFacts div,
+.deploymentDates div {
+  display: grid;
+  gap: 2px;
+  border-top: 1px solid rgb(var(--brand-text-rgb) / 8%);
+  padding-top: 7px;
+}
+
+.gateFacts dt,
+.deploymentDates dt {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.gateFacts dd,
+.deploymentDates dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.gateCandidate,
+.promotionHeader,
+.promotionActions,
+.promotionHistory p {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.gateCandidate {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.gateCandidate span {
+  display: grid;
+  gap: 2px;
+}
+
+.gateCandidate small,
+.rolloutLine small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.promotionLedger {
+  max-height: 780px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.promotionCard.state-customer_approved {
+  border-left-color: var(--green);
+}
+
+.promotionCard.state-dev_failed,
+.promotionCard.state-customer_paused,
+.promotionCard.state-yanked {
+  border-left-color: var(--red);
+}
+
+.promotionHeader h3 {
+  font-size: 18px;
+}
+
+.promotionStages {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.promotionStages span {
+  border-top: 3px solid var(--line);
+  color: var(--muted);
+  padding-top: 5px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.promotionStages span.complete {
+  border-color: var(--green);
+  color: var(--ink);
+}
+
+.promotionFailure {
+  border-radius: var(--radius-sm);
+  background: rgb(var(--brand-danger-rgb) / 8%);
+  color: var(--red);
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.signatureForm {
+  border-radius: var(--radius);
+  background: rgb(var(--brand-accent-rgb) / 7%);
+  padding: 10px;
+}
+
+.promotionActions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.promotionHistory {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.promotionHistory summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.promotionHistory p {
+  padding-top: 6px;
+}
+
 .compactList {
   gap: 7px;
 }
@@ -2180,6 +2369,16 @@ button:disabled,
   .documentRow,
   .pendingRow {
     grid-template-columns: 1fr;
+  }
+
+  .gateFacts,
+  .deploymentDates,
+  .promotionStages {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .promotionPath {
+    overflow-x: auto;
   }
 
   .brainDecision strong {

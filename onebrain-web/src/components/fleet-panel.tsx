@@ -54,6 +54,9 @@ export function FleetPanel() {
     callback_url: typeof window === "undefined" ? "" : `${window.location.origin}/api/onebrain/rollouts/{rollout_id}/callback`,
     failure_tolerance: 0,
     dry_run: true,
+    deployment_ids: [],
+    ring_batch_size: 1,
+    include_manual_pinned: false,
   });
   const [mintDeployment, setMintDeployment] = useState("");
 
@@ -147,16 +150,17 @@ export function FleetPanel() {
               <thead>
                 <tr>
                   <th>Health</th><th>Customer</th><th>Ring</th><th>Version</th>
-                  <th>Last seen</th><th>Users</th><th>Alerts</th>
+                  <th>Installed</th><th>Last seen</th><th>Users</th><th>Alerts</th>
                 </tr>
               </thead>
               <tbody>
                 {overview.deployments.map((d) => (
                   <tr key={d.deployment_id}>
                     <td><StatusBadge tone={healthTone(d.healthy)}>{d.healthy === null ? "no data" : d.healthy ? "healthy" : "unhealthy"}</StatusBadge></td>
-                    <td>{d.customer_name || d.deployment_id}</td>
+                    <td>{d.customer_name || d.deployment_id}{d.is_release_gate ? " · dev gate" : ""}</td>
                     <td>{d.release_ring}</td>
                     <td>{d.reported_version || d.current_version || "—"}{d.reported_version && d.current_version && d.reported_version !== d.current_version ? ` (registry ${d.current_version})` : ""}</td>
+                    <td>{d.current_version_deployed_at ? new Date(d.current_version_deployed_at).toLocaleDateString() : "unknown"}</td>
                     <td>{d.last_received_at ? new Date(d.last_received_at).toLocaleString() : "never"}</td>
                     <td>{d.counts?.users ?? "—"}</td>
                     <td>{d.open_alerts.length ? <StatusBadge tone="danger">{d.open_alerts.join(", ")}</StatusBadge> : "—"}</td>
@@ -178,10 +182,18 @@ export function FleetPanel() {
               <label>Callback URL (must contain {"{rollout_id}"})
                 <input value={form.callback_url} onChange={(e) => setForm({ ...form, callback_url: e.target.value })} required />
               </label>
-              <label>Failure tolerance per ring
-                <input type="number" min={0} value={form.failure_tolerance}
-                  onChange={(e) => setForm({ ...form, failure_tolerance: Number(e.target.value) })} />
+              <label>Customer deployment ids (comma separated)
+                <input
+                  value={form.deployment_ids.join(", ")}
+                  onChange={(e) => setForm({
+                    ...form,
+                    deployment_ids: e.target.value.split(",").map((value) => value.trim()).filter(Boolean),
+                  })}
+                  placeholder="dep_customer_a, dep_customer_b"
+                  required
+                />
               </label>
+              <p className="muted">Safety policy: one customer at a time, zero tolerated failures.</p>
               <label className="checkboxRow">
                 <input type="checkbox" checked={form.dry_run} onChange={(e) => setForm({ ...form, dry_run: e.target.checked })} />
                 Dry run (verify plumbing; no version change)
@@ -193,7 +205,7 @@ export function FleetPanel() {
             <div className="tableScroll">
               <table className="adminTable">
                 <thead>
-                  <tr><th>Status</th><th>Version</th><th>Ring</th><th>Tolerance</th><th>Started by</th><th>Actions</th></tr>
+                  <tr><th>Status</th><th>Version</th><th>Ring</th><th>Policy</th><th>Started by</th><th>Actions</th></tr>
                 </thead>
                 <tbody>
                   {rollouts.map((r) => (
@@ -201,7 +213,7 @@ export function FleetPanel() {
                       <td><StatusBadge tone={rolloutTone(r.status)}>{r.status}</StatusBadge></td>
                       <td>{r.target_version}</td>
                       <td>{r.current_ring || "—"} <span className="muted">({r.ring_order.join(" → ")})</span></td>
-                      <td>{r.failure_tolerance}</td>
+                      <td>{r.ring_batch_size} at a time / {r.failure_tolerance} failures</td>
                       <td>{r.started_by}</td>
                       <td className="rowActions">
                         {r.status === "running" ? <button onClick={() => run(() => pauseFleetRollout(r.id), "Paused.")}>Pause</button> : null}

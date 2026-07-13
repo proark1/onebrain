@@ -310,6 +310,13 @@ export type OperatorDeployment = {
   status: string;
   current_version: string;
   current_migration: string;
+  created_at: string;
+  is_release_gate: boolean;
+  current_version_deployed_at: string;
+  last_heartbeat_at: string;
+  last_heartbeat_healthy: boolean | null;
+  last_reported_version: string;
+  last_reported_migration: string;
 };
 
 export type OperatorModule = {
@@ -330,6 +337,42 @@ export type OperatorRelease = {
   status: string;
   created_at: string;
   images: Record<string, string>;
+  rollback_kind: string;
+  signature: string;
+  signing_key_id: string;
+  promotion: OperatorReleasePromotion | null;
+};
+
+export type OperatorPromotionEvent = {
+  id: string;
+  action: string;
+  from_state: string;
+  to_state: string;
+  actor: string;
+  note: string;
+  created_at: string;
+};
+
+export type OperatorReleasePromotion = {
+  state: string;
+  gate_deployment_id: string;
+  dev_rollout_id: string;
+  dev_started_at: string;
+  dev_completed_at: string;
+  dev_verified_at: string;
+  production_signature_attached: boolean;
+  customer_approved_at: string;
+  customer_approved_by: string;
+  customer_paused_at: string;
+  customer_paused_reason: string;
+  failure_reason: string;
+  events: OperatorPromotionEvent[];
+};
+
+export type DevelopmentGate = {
+  deployment: OperatorDeployment | null;
+  ready: boolean;
+  blockers: string[];
 };
 
 export type OperatorBackup = {
@@ -363,6 +406,8 @@ export type OperatorUpdatePlan = {
   current_modules: Record<string, string>;
   target_modules: Record<string, string>;
   modules_to_update: Record<string, string>;
+  rollback_kind: string;
+  warnings: string[];
 };
 
 export type OperatorCustomer = {
@@ -601,6 +646,9 @@ export interface FleetDeploymentOverview {
   release_ring: string;
   status: string;
   current_version: string;
+  created_at: string;
+  current_version_deployed_at: string;
+  is_release_gate: boolean;
   healthy: boolean | null;
   reported_version: string;
   migration_revision: string;
@@ -628,6 +676,9 @@ export interface FleetRollout {
   started_by: string;
   notes: string;
   created_at: string;
+  ring_batch_size: number;
+  deployment_ids: string[];
+  include_manual_pinned: boolean;
 }
 
 export interface FleetRolloutPlan {
@@ -646,6 +697,9 @@ export interface CreateFleetRolloutInput {
   callback_url: string;
   failure_tolerance: number;
   dry_run: boolean;
+  deployment_ids: string[];
+  ring_batch_size: number;
+  include_manual_pinned: boolean;
 }
 
 export interface FleetKeyInfo {

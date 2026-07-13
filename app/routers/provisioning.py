@@ -30,6 +30,7 @@ from app.provisioning.runs import (
     STATUS_CANCELLED,
     STATUS_DISPATCH_FAILED,
     STATUS_FAILED,
+    STATUS_SUCCEEDED,
     apply_callback,
     create_run,
     mark_dispatch_failed,
@@ -107,6 +108,7 @@ class CustomerProvisionCreate(BaseModel):
     # like the workflow-interpolated structural fields); the OTP, not the email, reaches the box.
     owner_email: str = Field(default="", max_length=320)
     deployment_type: str = Field(default="dedicated_railway", max_length=80)
+    environment: str = Field(default="production", max_length=80)
     region: str = Field(default="", max_length=80)
     release_ring: str = Field(default="manual", max_length=80)
     initial_version: str = Field(default="0.1.0", min_length=1, max_length=80)
@@ -120,7 +122,7 @@ class CustomerProvisionCreate(BaseModel):
     callback_url: str = Field(default="", max_length=500)
 
     @field_validator(
-        "bundle_id", "deployment_type", "region", "release_ring",
+        "bundle_id", "deployment_type", "environment", "region", "release_ring",
         "initial_version", "current_migration",
     )
     @classmethod
@@ -479,6 +481,10 @@ def list_bundles(principal: Principal = Depends(resolve_principal)):
 
 @router.post("/customers", response_model=ProvisioningResultOut)
 def provision_customer(body: CustomerProvisionCreate, principal: Principal = Depends(resolve_principal)):
+    return _provision_customer_impl(body, principal)
+
+
+def _provision_customer_impl(body: CustomerProvisionCreate, principal: Principal):
     _require_admin(principal)
     if body.external_provisioning:
         if not body.callback_url.strip():
@@ -507,6 +513,7 @@ def provision_customer(body: CustomerProvisionCreate, principal: Principal = Dep
             bundle_id=body.bundle_id,
             deployment_id=deployment_id,
             deployment_type=body.deployment_type,
+            environment=body.environment,
             region=body.region,
             release_ring=body.release_ring,
             initial_version=body.initial_version,
@@ -659,6 +666,13 @@ def provisioning_callback(
         raise HTTPException(status_code=404, detail="Provisioning run not found.") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if run.status == STATUS_SUCCEEDED and not bool((run.request_payload or {}).get("dry_run")):
+        get_control_plane_store().mark_deployment_provisioned(
+            run.deployment_id,
+            installed_at=run.completed_at,
+            version=str((run.request_payload or {}).get("initial_version", "")),
+            migration=run.migration_revision,
+        )
     return _run_out(run)
 
 

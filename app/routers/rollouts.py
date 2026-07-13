@@ -14,6 +14,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.controlplane.fleet_runner import advance_fleet_on_child
+from app.controlplane.promotion import reconcile_rollout_promotion
 from app.controlplane.rollout_exec import TERMINAL_EXEC_STATUSES, RolloutCallback, apply_rollout_callback
 from app.deps import get_control_plane_store
 from app.routers.provisioning import _require_callback_auth
@@ -49,6 +50,8 @@ def rollout_callback(
         raise HTTPException(status_code=404, detail="Rollout not found.") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    reconcile_rollout_promotion(get_control_plane_store(), rollout)
 
     # If this child rollout just reached a terminal state and belongs to a fleet
     # rollout, advance the parent (pause / open next ring / complete). Never let an

@@ -157,6 +157,23 @@ class HetznerProvisioner:
         ]
         if not modules:
             raise RuntimeError(f"no active modules for deployment {run.deployment_id}")
+        deployment = self.control_store.get_deployment(run.deployment_id)
+        if not deployment:
+            raise RuntimeError(f"deployment {run.deployment_id} no longer exists")
+
+        # Development candidates are signed by a CI-only key that customer boxes
+        # must never trust. Select the baked release verifier from persisted
+        # deployment purpose, not from caller-controlled workflow payload.
+        is_development = deployment.environment == "development"
+        release_public_key = (
+            getattr(settings, "dev_release_verify_public_key", "")
+            if is_development
+            else settings.release_verify_public_key
+        )
+        if is_development and not release_public_key:
+            raise RuntimeError(
+                "development provisioning requires ONEBRAIN_DEV_RELEASE_VERIFY_PUBLIC_KEY"
+            )
 
         # 2. Target release images. FAIL CLOSED: a Hetzner box MUST run signed,
         #    digest-pinned images; a tag-only or unknown release cannot be put on
@@ -204,7 +221,7 @@ class HetznerProvisioner:
                 fleet_url=settings.fleet_url,
                 run_id=run.id,   # baked into the box callback URL so the box can report back (not {run_id})
                 fleet_public_desired_state_key=settings.fleet_desired_state_public_key,
-                release_public_key=settings.release_verify_public_key,
+                release_public_key=release_public_key,
                 registry_allowlist=settings.release_registry_allowlist,
                 bootstrap_token=bootstrap_token,
                 callback_token=callback_token,

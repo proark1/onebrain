@@ -47,6 +47,7 @@ import type {
   FleetKeyInfo,
   MintedFleetKey,
   DeploymentEnrollment,
+  DevelopmentGate,
 } from "@/lib/onebrain-types";
 import { cleanScope, scopeQuery } from "@/lib/onebrain-types";
 
@@ -262,6 +263,76 @@ export function listOperatorDeploymentModules(deploymentId: string): Promise<Ope
 
 export function listOperatorReleases(): Promise<OperatorRelease[]> {
   return requestJson<OperatorRelease[]>("/operator/releases");
+}
+
+export function getDevelopmentGate(): Promise<DevelopmentGate> {
+  return requestJson<DevelopmentGate>("/operator/development-gate");
+}
+
+export function designateDevelopmentGate(deploymentId: string): Promise<DevelopmentGate> {
+  return requestJson<DevelopmentGate>(`/operator/development-gate/${encodeURIComponent(deploymentId)}`, {
+    method: "PUT",
+  });
+}
+
+export function provisionDevelopmentGate(ownerEmail: string, dryRun = true): Promise<{ deployment: { id: string }; dry_run?: boolean }> {
+  return requestJson<{ deployment: { id: string }; dry_run?: boolean }>("/operator/development-gate/provision", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner_email: ownerEmail, region: "nbg1", dry_run: dryRun }),
+  });
+}
+
+export function retryDevelopmentRelease(version: string, note = ""): Promise<OperatorRelease> {
+  return requestJson<OperatorRelease>(`/operator/releases/${encodeURIComponent(version)}/retry-dev`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ note }),
+  });
+}
+
+export function uploadProductionSignature(
+  version: string,
+  signature: string,
+  signingKeyId: string,
+): Promise<OperatorRelease> {
+  return requestJson<OperatorRelease>(`/operator/releases/${encodeURIComponent(version)}/production-signature`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ signature, signing_key_id: signingKeyId }),
+  });
+}
+
+export function approveOperatorRelease(version: string, note = ""): Promise<OperatorRelease> {
+  return requestJson<OperatorRelease>(`/operator/releases/${encodeURIComponent(version)}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ note }),
+  });
+}
+
+export function pauseOperatorRelease(version: string, note: string): Promise<OperatorRelease> {
+  return requestJson<OperatorRelease>(`/operator/releases/${encodeURIComponent(version)}/pause`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ note }),
+  });
+}
+
+export function resumeOperatorRelease(version: string, note: string): Promise<OperatorRelease> {
+  return requestJson<OperatorRelease>(`/operator/releases/${encodeURIComponent(version)}/resume`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ note }),
+  });
+}
+
+export function yankOperatorRelease(version: string, note: string): Promise<OperatorRelease> {
+  return requestJson<OperatorRelease>(`/operator/releases/${encodeURIComponent(version)}/yank`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ note }),
+  });
 }
 
 export function createOperatorRelease(input: CreateOperatorReleaseInput): Promise<OperatorRelease> {

@@ -45,6 +45,9 @@ class FleetRolloutRun:
     # Carried so later rings can be dispatched on advance without re-supplying them.
     callback_url: str = ""             # child callback template (with {rollout_id})
     dry_run: bool = True
+    ring_batch_size: int = 1            # persisted; one customer at a time by default
+    only_deployment_ids: Tuple[str, ...] = ()
+    include_manual_pinned: bool = False
 
 
 @dataclass(frozen=True)

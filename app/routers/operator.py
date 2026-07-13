@@ -9,8 +9,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth.account_access import authorize_account_admin, authorized_account_ids, is_account_admin
 from app.auth.principal import Principal, resolve_principal
@@ -20,6 +20,8 @@ from app.controlplane.base import (
     DeploymentModule,
     HealthCheckRun,
     ReleaseManifest,
+    ReleasePromotion,
+    ReleasePromotionEvent,
     RolloutRun,
     UpdatePlan,
 )
@@ -41,15 +43,24 @@ from app.controlplane.rollout_exec import (
     target_provider,
 )
 from app.controlplane.fleet_runner import plan_and_start_fleet_rollout, reconcile_fleet_rollout
+from app.controlplane.promotion import (
+    attach_production_signature,
+    manifest_digest,
+    prepare_candidate,
+    register_candidate,
+    transition as transition_promotion,
+)
 from app.controlplane.pull_reconcile import reconcile_pull_targets
 from app.controlplane.migration_lint import classify_release
 from app.provisioning.runs import RolloutWorkflowDispatcher
 from app.trust.release import (
     parse_registry_allowlist,
+    release_signature_fields,
     release_signature_fields_from_body,
     verify_images,
     verify_release_signature,
 )
+from app.fleet.keys import verify_secret
 from app.monitoring import MonitoringSummary, monitoring_snapshot
 from app.platform.base import AuditEvent
 from app.schemas import BrandThemeOut, ServiceKeyInfo
@@ -82,6 +93,13 @@ class DeploymentOut(BaseModel):
     current_version: str = ""
     current_migration: str = ""
     update_policy: str = ""
+    created_at: str = ""
+    is_release_gate: bool = False
+    current_version_deployed_at: str = ""
+    last_heartbeat_at: str = ""
+    last_heartbeat_healthy: bool | None = None
+    last_reported_version: str = ""
+    last_reported_migration: str = ""
 
 
 class ModuleUpsert(BaseModel):
@@ -121,6 +139,32 @@ class ReleaseCreate(BaseModel):
     rollback_kind_override: bool = False
 
 
+class PromotionEventOut(BaseModel):
+    id: str
+    action: str
+    from_state: str = ""
+    to_state: str
+    actor: str = ""
+    note: str = ""
+    created_at: str = ""
+
+
+class ReleasePromotionOut(BaseModel):
+    state: str
+    gate_deployment_id: str = ""
+    dev_rollout_id: str = ""
+    dev_started_at: str = ""
+    dev_completed_at: str = ""
+    dev_verified_at: str = ""
+    production_signature_attached: bool = False
+    customer_approved_at: str = ""
+    customer_approved_by: str = ""
+    customer_paused_at: str = ""
+    customer_paused_reason: str = ""
+    failure_reason: str = ""
+    events: list[PromotionEventOut] = Field(default_factory=list)
+
+
 class ReleaseOut(BaseModel):
     version: str
     git_sha: str
@@ -135,6 +179,52 @@ class ReleaseOut(BaseModel):
     rollback_kind: str = ""
     signature: str = ""
     signing_key_id: str = ""
+    promotion: ReleasePromotionOut | None = None
+
+
+class ReleaseCandidateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: str = Field(pattern="^(prepare|register)$")
+    version: str = Field(min_length=1, max_length=120)
+    git_sha: str = Field(min_length=1, max_length=120)
+    modules: dict[str, str]
+    images: dict[str, str]
+    migration_from: str = ""
+    migration_to: str = ""
+    rollback_kind: str = "code_only"
+    security_notes: str = ""
+    rollback_plan: str = ""
+    dev_signature: str = ""
+    dev_signing_key_id: str = ""
+
+
+class ReleaseCandidateOut(BaseModel):
+    release: ReleaseOut
+    manifest_digest: str
+    created: bool = False
+    dispatch_state: str = ""
+
+
+class PromotionNote(BaseModel):
+    note: str = Field(default="", max_length=1000)
+
+
+class ProductionSignatureIn(BaseModel):
+    signature: str = Field(min_length=1, max_length=1000)
+    signing_key_id: str = Field(min_length=1, max_length=120)
+
+
+class DevelopmentGateOut(BaseModel):
+    deployment: DeploymentOut | None = None
+    ready: bool = False
+    blockers: list[str] = Field(default_factory=list)
+
+
+class DevelopmentGateProvisionIn(BaseModel):
+    owner_email: str = Field(min_length=3, max_length=320)
+    region: str = Field(default="nbg1", max_length=80)
+    dry_run: bool = True
 
 
 class BackupCreate(BaseModel):
@@ -172,6 +262,7 @@ class UpdatePlanOut(BaseModel):
     target_modules: dict[str, str] = Field(default_factory=dict)
     modules_to_update: dict[str, str] = Field(default_factory=dict)
     rollback_kind: str = ""
+    warnings: list[str] = Field(default_factory=list)
 
 
 class UpdatePolicyUpdate(BaseModel):
@@ -413,12 +504,37 @@ def _module_out(m: DeploymentModule) -> ModuleOut:
     return ModuleOut(deployment_id=m.deployment_id, module_id=m.module_id, version=m.version, status=m.status)
 
 
-def _release_out(r: ReleaseManifest) -> ReleaseOut:
+def _release_out(
+    r: ReleaseManifest,
+    promotion: ReleasePromotion | None = None,
+    events: list[ReleasePromotionEvent] | None = None,
+) -> ReleaseOut:
+    promotion_out = None
+    if promotion:
+        promotion_out = ReleasePromotionOut(
+            state=promotion.state,
+            gate_deployment_id=promotion.gate_deployment_id,
+            dev_rollout_id=promotion.dev_rollout_id,
+            dev_started_at=promotion.dev_started_at,
+            dev_completed_at=promotion.dev_completed_at,
+            dev_verified_at=promotion.dev_verified_at,
+            production_signature_attached=bool(r.signature),
+            customer_approved_at=promotion.customer_approved_at,
+            customer_approved_by=promotion.customer_approved_by,
+            customer_paused_at=promotion.customer_paused_at,
+            customer_paused_reason=promotion.customer_paused_reason,
+            failure_reason=promotion.failure_reason,
+            events=[PromotionEventOut(**{
+                key: getattr(event, key)
+                for key in PromotionEventOut.model_fields
+            }) for event in (events or [])],
+        )
     return ReleaseOut(
         version=r.version, git_sha=r.git_sha, modules=r.modules, migration_from=r.migration_from,
         migration_to=r.migration_to, security_notes=r.security_notes, rollback_plan=r.rollback_plan,
         status=r.status, created_at=r.created_at, images=r.images, rollback_kind=r.rollback_kind, signature=r.signature,
         signing_key_id=r.signing_key_id,
+        promotion=promotion_out,
     )
 
 
@@ -435,6 +551,7 @@ def _plan_out(p: UpdatePlan) -> UpdatePlanOut:
         deployment_id=p.deployment_id, target_version=p.target_version, allowed=p.allowed,
         reason=p.reason, current_modules=p.current_modules, target_modules=p.target_modules,
         modules_to_update=p.modules_to_update, rollback_kind=p.rollback_kind,
+        warnings=p.warnings,
     )
 
 
@@ -936,7 +1053,550 @@ def set_update_policy(deployment_id: str, body: UpdatePolicyUpdate,
 @router.get("/releases", response_model=list[ReleaseOut])
 def list_releases(principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
-    return [_release_out(r) for r in get_control_plane_store().list_releases()]
+    store = get_control_plane_store()
+    if not get_settings().operator_mode:
+        return [_release_out(release) for release in store.list_releases()]
+    promotions = {promotion.release_version: promotion for promotion in store.list_release_promotions()}
+    return [
+        _release_out(
+            release,
+            promotions.get(release.version),
+            store.list_release_promotion_events(release.version) if release.version in promotions else [],
+        )
+        for release in store.list_releases()
+    ]
+
+
+def _require_candidate_auth(authorization: str, key_id: str) -> str:
+    settings = get_settings()
+    if not settings.operator_mode:
+        raise HTTPException(status_code=404, detail="Release candidate endpoint is not available.")
+    token = authorization[7:].strip() if authorization.startswith("Bearer ") else ""
+    if (
+        not token
+        or not key_id
+        or key_id != settings.release_candidate_key_id
+        or not settings.release_candidate_key_hash
+        or not verify_secret(token, settings.release_candidate_key_hash)
+    ):
+        raise HTTPException(status_code=401, detail="Invalid release candidate credential.")
+    return f"candidate:{key_id}"
+
+
+def _latest_approved_release(store) -> ReleaseManifest | None:
+    approved = [
+        promotion for promotion in store.list_release_promotions()
+        if promotion.state in {"customer_approved", "customer_paused"}
+        and promotion.customer_approved_at
+    ]
+    approved.sort(
+        key=lambda promotion: (promotion.customer_approved_at, promotion.release_version),
+        reverse=True,
+    )
+    if approved:
+        return store.get_release(approved[0].release_version)
+    # Bootstrap only: before the first promotion row exists, accept the newest
+    # active legacy manifest only when its offline production signature verifies.
+    production_key = getattr(get_settings(), "release_verify_public_key", "")
+    trusted = [
+        release for release in store.list_releases()
+        if release.status == "active"
+        and release.signature
+        and production_key
+        and verify_release_signature(release_signature_fields(release), release.signature, production_key)
+    ]
+    trusted.sort(key=lambda release: (release.created_at, release.version), reverse=True)
+    return trusted[0] if trusted else None
+
+
+def _dispatch_development_candidate(store, version: str, *, actor: str) -> ReleasePromotion:
+    promotion = store.get_release_promotion(version)
+    if not promotion or promotion.state not in {"dev_pending", "dev_failed"}:
+        if not promotion:
+            raise ValueError(f"unknown release promotion: {version}")
+        return promotion
+    gate = store.get_release_gate()
+    if not gate:
+        return promotion
+    if store.list_active_rollout(gate.id) or any(
+        queued.state == "dev_deploying"
+        and queued.gate_deployment_id == gate.id
+        and queued.release_version != version
+        for queued in store.list_release_promotions()
+    ):
+        # A successful rollout still needs its exact post-deploy heartbeat before
+        # another candidate may use the gate. Keep later builds queued rather than
+        # turning ordinary CI concurrency into a false development failure.
+        return promotion
+    try:
+        heartbeat_at = datetime.fromisoformat(gate.last_heartbeat_at)
+        if heartbeat_at.tzinfo is None:
+            heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
+        fresh = (datetime.now(timezone.utc) - heartbeat_at).total_seconds() <= max(
+            600, get_settings().fleet_report_seconds * 2
+        )
+    except (TypeError, ValueError):
+        fresh = False
+    if gate.last_heartbeat_healthy is not True or not fresh:
+        return promotion
+    rollout_id = f"roll_dev_{uuid4().hex[:12]}"
+    started_at = datetime.now(timezone.utc).isoformat()
+    promotion = transition_promotion(
+        store,
+        version,
+        to_state="dev_deploying",
+        actor=actor,
+        action="dev_rollout_started" if promotion.state == "dev_pending" else "dev_rollout_retried",
+        fields={
+            "gate_deployment_id": gate.id,
+            "dev_rollout_id": rollout_id,
+            "dev_attempt_id": rollout_id,
+            "dev_started_at": started_at,
+            "dev_completed_at": "",
+            "dev_verified_at": "",
+            "failure_reason": "",
+        },
+    )
+    # Candidate delivery is gated even during the report-only rollout phase. A
+    # warning here is a real dev-readiness failure, not permission to proceed.
+    plan = store.plan_update(gate.id, version)
+    if not plan.allowed or plan.warnings:
+        return transition_promotion(
+            store,
+            version,
+            to_state="dev_failed",
+            actor="mission-control",
+            action="dev_preflight_failed",
+            note=plan.reason if not plan.allowed else ",".join(plan.warnings),
+            fields={"failure_reason": "dev_preflight_failed"},
+        )
+    settings = get_settings()
+    callback_url = (
+        f"{settings.fleet_public_url.rstrip('/')}/api/rollouts/{{rollout_id}}/callback"
+        if settings.fleet_public_url else ""
+    )
+    _dispatch_child_rollout(
+        "",
+        gate.id,
+        target_version=version,
+        callback_url=callback_url,
+        dry_run=False,
+        child_id=rollout_id,
+        started_by=f"release-candidate:{actor}",
+    )
+    rollout = store.get_rollout(rollout_id)
+    if not rollout or rollout.exec_status in {"dispatch_failed", "failed"}:
+        return transition_promotion(
+            store,
+            version,
+            to_state="dev_failed",
+            actor="mission-control",
+            action="dev_dispatch_failed",
+            note="development rollout could not be dispatched",
+            fields={
+                "dev_completed_at": datetime.now(timezone.utc).isoformat(),
+                "failure_reason": "dev_dispatch_failed",
+            },
+        )
+    return promotion
+
+
+def dispatch_waiting_development_candidate(store, *, actor: str = "mission-control") -> ReleasePromotion | None:
+    gate = store.get_release_gate()
+    if not gate or store.list_active_rollout(gate.id):
+        return None
+    pending = [
+        promotion for promotion in store.list_release_promotions()
+        if promotion.state == "dev_pending"
+    ]
+    pending.sort(key=lambda promotion: (promotion.created_at, promotion.release_version))
+    return _dispatch_development_candidate(store, pending[0].release_version, actor=actor) if pending else None
+
+
+@router.post("/release-candidates", response_model=ReleaseCandidateOut)
+def release_candidate(
+    body: ReleaseCandidateRequest,
+    authorization: str = Header(default=""),
+    x_onebrain_candidate_key_id: str = Header(default=""),
+):
+    actor = _require_candidate_auth(authorization, x_onebrain_candidate_key_id)
+    settings = get_settings()
+    store = get_control_plane_store()
+    if body.action == "prepare":
+        try:
+            release = prepare_candidate(
+                version=body.version,
+                git_sha=body.git_sha,
+                changed_modules=body.modules,
+                changed_images=body.images,
+                baseline=_latest_approved_release(store),
+                migration_from=body.migration_from,
+                migration_to=body.migration_to,
+                rollback_kind=body.rollback_kind,
+                security_notes=body.security_notes,
+                rollback_plan=body.rollback_plan,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return ReleaseCandidateOut(
+            release=_release_out(release),
+            manifest_digest=manifest_digest(release),
+            dispatch_state="prepared",
+        )
+
+    release = ReleaseManifest(
+        version=body.version.strip(),
+        git_sha=body.git_sha.strip(),
+        modules={key.strip(): value.strip() for key, value in body.modules.items()},
+        migration_from=body.migration_from.strip(),
+        migration_to=body.migration_to.strip(),
+        security_notes=body.security_notes.strip(),
+        rollback_plan=body.rollback_plan.strip(),
+        status="draft",
+        images={key.strip(): value.strip() for key, value in body.images.items()},
+        rollback_kind=body.rollback_kind.strip(),
+    )
+    image_errors = verify_images(
+        release.images,
+        parse_registry_allowlist(settings.release_registry_allowlist),
+    )
+    if image_errors:
+        raise HTTPException(status_code=400, detail="; ".join(image_errors))
+    try:
+        promotion, created = register_candidate(
+            store,
+            release,
+            dev_signature=body.dev_signature.strip(),
+            dev_signing_key_id=body.dev_signing_key_id.strip(),
+            development_public_key=settings.dev_release_verify_public_key,
+            production_public_key=settings.release_verify_public_key,
+            actor=actor,
+        )
+        promotion = _dispatch_development_candidate(store, release.version, actor=actor)
+    except ValueError as exc:
+        detail = str(exc)
+        status = 409 if "conflict" in detail or "state" in detail else 400
+        raise HTTPException(status_code=status, detail=detail) from exc
+    stored = store.get_release(release.version) or release
+    return ReleaseCandidateOut(
+        release=_release_out(stored, promotion, store.list_release_promotion_events(release.version)),
+        manifest_digest=manifest_digest(stored),
+        created=created,
+        dispatch_state=promotion.state,
+    )
+
+
+def _development_gate_blockers(store, gate: CustomerDeployment) -> list[str]:
+    blockers: list[str] = []
+    if gate.environment != "development" or gate.deployment_type != "dedicated_server":
+        blockers.append("development_gate_shape_invalid")
+    if gate.status != "active":
+        blockers.append("development_gate_inactive")
+    if not any(key.status == "active" for key in get_fleet_store().list_keys(gate.id)):
+        blockers.append("development_gate_not_enrolled")
+    try:
+        heartbeat_at = datetime.fromisoformat(gate.last_heartbeat_at)
+        if heartbeat_at.tzinfo is None:
+            heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
+        if (datetime.now(timezone.utc) - heartbeat_at).total_seconds() > max(
+            600, get_settings().fleet_report_seconds * 2
+        ):
+            blockers.append("deployment_heartbeat_stale")
+    except (TypeError, ValueError):
+        blockers.append("deployment_heartbeat_stale")
+    if gate.last_heartbeat_healthy is not True:
+        blockers.append("deployment_unhealthy")
+    release = store.get_release(gate.current_version) if gate.current_version else None
+    production_key = getattr(get_settings(), "release_verify_public_key", "")
+    if (
+        not release
+        or release.status != "active"
+        or not release.signature
+        or not production_key
+        or not verify_release_signature(release_signature_fields(release), release.signature, production_key)
+        or gate.last_reported_version != release.version
+        or (release.migration_to and gate.last_reported_migration != release.migration_to)
+    ):
+        blockers.append("development_baseline_untrusted")
+    return list(dict.fromkeys(blockers))
+
+
+def _development_gate_out(store) -> DevelopmentGateOut:
+    gate = store.get_release_gate()
+    if not gate:
+        return DevelopmentGateOut(blockers=["development_gate_missing"])
+    blockers = _development_gate_blockers(store, gate)
+    return DevelopmentGateOut(
+        deployment=_deployment_out(gate),
+        ready=not blockers,
+        blockers=blockers,
+    )
+
+
+@router.get("/development-gate", response_model=DevelopmentGateOut)
+def get_development_gate(principal: Principal = Depends(resolve_principal)):
+    _require_admin(principal)
+    _require_operator_mode()
+    return _development_gate_out(get_control_plane_store())
+
+
+@router.put("/development-gate/{deployment_id}", response_model=DevelopmentGateOut)
+def designate_development_gate(
+    deployment_id: str,
+    principal: Principal = Depends(resolve_principal),
+):
+    _require_admin(principal)
+    _require_operator_mode()
+    store = get_control_plane_store()
+    candidate = store.get_deployment(deployment_id)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Deployment not found.")
+    blockers = _development_gate_blockers(store, candidate)
+    if blockers:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Development gate is not ready: {','.join(blockers)}",
+        )
+    try:
+        store.designate_release_gate(deployment_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    dispatch_waiting_development_candidate(store, actor=principal.user_id)
+    return _development_gate_out(store)
+
+
+@router.post("/development-gate/provision")
+def provision_development_gate(
+    body: DevelopmentGateProvisionIn,
+    principal: Principal = Depends(resolve_principal),
+):
+    """Create the dedicated onebrain-only dev server; designation waits for heartbeat readiness."""
+    _require_admin(principal)
+    _require_operator_mode()
+    settings = get_settings()
+    if settings.provisioner_backend != "hetzner":
+        raise HTTPException(status_code=409, detail="Development gate provisioning requires the Hetzner backend.")
+    store = get_control_plane_store()
+    if store.get_release_gate() or store.get_deployment("onebrain-development-gate"):
+        raise HTTPException(status_code=409, detail="A development gate deployment already exists.")
+    baseline = _latest_approved_release(store)
+    if not baseline:
+        raise HTTPException(status_code=409, detail="A trusted approved baseline release is required first.")
+    from app.provisioning.bundles import BUNDLES
+    from app.routers.provisioning import CustomerProvisionCreate, _provision_customer_impl
+
+    module_ids = BUNDLES["onebrain_only"].modules
+    missing = sorted(module_id for module_id in module_ids if module_id not in baseline.modules)
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Baseline release does not cover the onebrain-only bundle: {','.join(missing)}",
+        )
+    missing_images = sorted(module_id for module_id in module_ids if module_id not in baseline.images)
+    image_errors = verify_images(
+        {module_id: baseline.images[module_id] for module_id in module_ids if module_id in baseline.images},
+        parse_registry_allowlist(settings.release_registry_allowlist),
+    )
+    if missing_images or image_errors:
+        detail = [f"missing images: {','.join(missing_images)}"] if missing_images else []
+        detail.extend(image_errors)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Trusted baseline is not deployable: {'; '.join(detail)}",
+        )
+    if body.dry_run:
+        return {
+            "dry_run": True,
+            "deployment": {"id": "onebrain-development-gate"},
+            "account_id": "onebrain-development",
+            "bundle_id": "onebrain_only",
+            "environment": "development",
+            "deployment_type": "dedicated_server",
+            "region": body.region.strip(),
+            "initial_version": baseline.version,
+            "modules": {module_id: baseline.modules[module_id] for module_id in module_ids},
+            "images": {module_id: baseline.images[module_id] for module_id in module_ids},
+        }
+    if not settings.dev_release_verify_public_key:
+        raise HTTPException(
+            status_code=409,
+            detail="Mission Control development release verification key is required.",
+        )
+    callback_url = (
+        f"{settings.fleet_public_url.rstrip('/')}/api/provisioning/runs/{{run_id}}/callback"
+        if settings.fleet_public_url else ""
+    )
+    if not callback_url:
+        raise HTTPException(status_code=409, detail="Mission Control fleet_public_url is required.")
+    return _provision_customer_impl(CustomerProvisionCreate(
+        customer_name="One Brain Development Gate",
+        bundle_id="onebrain_only",
+        account_kind="project",
+        account_id="onebrain-development",
+        deployment_id="onebrain-development-gate",
+        owner_email=body.owner_email.strip(),
+        deployment_type="dedicated_server",
+        environment="development",
+        region=body.region.strip(),
+        release_ring="internal",
+        initial_version=baseline.version,
+        current_migration=baseline.migration_to,
+        module_versions={module_id: baseline.modules[module_id] for module_id in module_ids},
+        mint_integration_keys=False,
+        external_provisioning=True,
+        dry_run=body.dry_run,
+        callback_url=callback_url,
+    ), principal)
+
+
+@router.post("/releases/{version}/retry-dev", response_model=ReleaseOut)
+def retry_development_release(
+    version: str,
+    body: PromotionNote,
+    principal: Principal = Depends(resolve_principal),
+):
+    _require_admin(principal)
+    _require_operator_mode()
+    store = get_control_plane_store()
+    promotion = store.get_release_promotion(version)
+    if not promotion or promotion.state != "dev_failed":
+        raise HTTPException(status_code=409, detail="Only a failed development candidate can be retried.")
+    try:
+        promotion = _dispatch_development_candidate(store, version, actor=principal.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    release = store.get_release(version)
+    return _release_out(release, promotion, store.list_release_promotion_events(version))
+
+
+@router.post("/releases/{version}/production-signature", response_model=ReleaseOut)
+def upload_production_signature(
+    version: str,
+    body: ProductionSignatureIn,
+    principal: Principal = Depends(resolve_principal),
+):
+    _require_admin(principal)
+    _require_operator_mode()
+    settings = get_settings()
+    store = get_control_plane_store()
+    try:
+        release = attach_production_signature(
+            store,
+            version,
+            signature=body.signature.strip(),
+            signing_key_id=body.signing_key_id.strip(),
+            production_public_key=settings.release_verify_public_key,
+            actor=principal.user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    promotion = store.get_release_promotion(version)
+    return _release_out(release, promotion, store.list_release_promotion_events(version))
+
+
+@router.post("/releases/{version}/approve", response_model=ReleaseOut)
+def approve_release(
+    version: str,
+    body: PromotionNote,
+    principal: Principal = Depends(resolve_principal),
+):
+    _require_admin(principal)
+    _require_operator_mode()
+    store = get_control_plane_store()
+    release = store.get_release(version)
+    promotion = store.get_release_promotion(version)
+    gate = store.get_release_gate()
+    if not release or not promotion:
+        raise HTTPException(status_code=404, detail="Release candidate not found.")
+    if not gate or promotion.gate_deployment_id != gate.id:
+        raise HTTPException(status_code=409, detail="Development verification does not match the current gate.")
+    try:
+        # Re-verify at the approval boundary; validation at upload time is not a
+        # substitute for the final safety decision.
+        from app.controlplane.promotion import verify_production_signature_match
+
+        verify_production_signature_match(
+            release,
+            signature=release.signature,
+            production_public_key=get_settings().release_verify_public_key,
+        )
+        promotion = store.approve_release_for_customers(
+            version,
+            signature=release.signature,
+            signing_key_id=release.signing_key_id,
+            actor=principal.user_id,
+            note=body.note.strip(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _release_out(
+        store.get_release(version), promotion, store.list_release_promotion_events(version)
+    )
+
+
+def _promotion_action(
+    version: str,
+    *,
+    to_state: str,
+    action: str,
+    note: str,
+    principal: Principal,
+) -> ReleaseOut:
+    _require_admin(principal)
+    _require_operator_mode()
+    store = get_control_plane_store()
+    now = datetime.now(timezone.utc).isoformat()
+    fields: dict = {}
+    if to_state == "customer_paused":
+        fields = {
+            "customer_paused_at": now,
+            "customer_paused_reason": note.strip() or "operator_pause",
+            "failure_reason": note.strip() or "operator_pause",
+        }
+    elif to_state == "customer_approved":
+        if not note.strip():
+            raise HTTPException(status_code=400, detail="A review note is required to resume customer delivery.")
+        fields = {"customer_paused_reason": "", "failure_reason": ""}
+    elif to_state == "yanked":
+        fields = {"yanked_at": now, "failure_reason": note.strip() or "operator_yank"}
+    try:
+        promotion = transition_promotion(
+            store,
+            version,
+            to_state=to_state,
+            actor=principal.user_id,
+            action=action,
+            note=note.strip(),
+            fields=fields,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _release_out(
+        store.get_release(version), promotion, store.list_release_promotion_events(version)
+    )
+
+
+@router.post("/releases/{version}/pause", response_model=ReleaseOut)
+def pause_release(version: str, body: PromotionNote, principal: Principal = Depends(resolve_principal)):
+    return _promotion_action(
+        version, to_state="customer_paused", action="customer_delivery_paused",
+        note=body.note, principal=principal,
+    )
+
+
+@router.post("/releases/{version}/resume", response_model=ReleaseOut)
+def resume_release(version: str, body: PromotionNote, principal: Principal = Depends(resolve_principal)):
+    return _promotion_action(
+        version, to_state="customer_approved", action="customer_delivery_resumed",
+        note=body.note, principal=principal,
+    )
+
+
+@router.post("/releases/{version}/yank", response_model=ReleaseOut)
+def yank_release(version: str, body: PromotionNote, principal: Principal = Depends(resolve_principal)):
+    return _promotion_action(
+        version, to_state="yanked", action="release_yanked", note=body.note, principal=principal,
+    )
 
 
 _ROLLBACK_RANK = {"code_only": 0, "restore_required": 1}
@@ -1044,7 +1704,6 @@ def create_release(body: ReleaseCreate, principal: Principal = Depends(resolve_p
     return _release_out(release)
 
 
-@router.post("/deployments/{deployment_id}/backups", response_model=BackupOut)
 def record_backup(deployment_id: str, body: BackupCreate, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
     _authorize_deployment(principal, deployment_id)
@@ -1068,7 +1727,6 @@ def latest_backup(deployment_id: str, principal: Principal = Depends(resolve_pri
     return _backup_out(backup) if backup else None
 
 
-@router.post("/deployments/{deployment_id}/health", response_model=HealthOut)
 def record_health(deployment_id: str, body: HealthCreate, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
     _authorize_deployment(principal, deployment_id)
@@ -1165,7 +1823,8 @@ def dispatch_rollout(
         raise HTTPException(status_code=409, detail="Another rollout is already in progress for this deployment.")
 
     plan = control.plan_update(deployment_id, rollout.target_version,
-                               ack_restore_required=rollout.ack_restore_required)
+                               ack_restore_required=rollout.ack_restore_required,
+                               ignore_rollout_id=rollout.id)
     if not plan.allowed:
         raise HTTPException(status_code=409, detail=f"Update blocked: {plan.reason}")
     release = control.get_release(rollout.target_version)
@@ -1223,7 +1882,7 @@ class FleetRolloutCreate(BaseModel):
     # P4-07 targeting (all defaults reproduce today's whole-fleet, whole-ring sweep):
     deployment_ids: list[str] = Field(default_factory=list, max_length=1000)  # named set ("" -> all eligible)
     include_manual_pinned: bool = False       # override manual/pinned policy for NAMED deployments
-    ring_batch_size: int = Field(default=0, ge=0, le=10000)  # 0 -> whole ring at once; >0 caps in-flight/ring
+    ring_batch_size: int = Field(default=1, ge=0, le=10000)  # customer safety default: one at a time
 
 
 class FleetRolloutOut(BaseModel):
@@ -1236,6 +1895,9 @@ class FleetRolloutOut(BaseModel):
     started_by: str = ""
     notes: str = ""
     created_at: str = ""
+    ring_batch_size: int = 1
+    deployment_ids: list[str] = Field(default_factory=list)
+    include_manual_pinned: bool = False
 
 
 class FleetRolloutPlanOut(BaseModel):
@@ -1254,6 +1916,9 @@ def _fleet_out(fr) -> FleetRolloutOut:
         id=fr.id, target_version=fr.target_version, status=fr.status, ring_order=list(fr.ring_order),
         current_ring=fr.current_ring, failure_tolerance=fr.failure_tolerance,
         started_by=fr.started_by, notes=fr.notes, created_at=fr.created_at,
+        ring_batch_size=fr.ring_batch_size,
+        deployment_ids=list(fr.only_deployment_ids),
+        include_manual_pinned=fr.include_manual_pinned,
     )
 
 
@@ -1271,17 +1936,19 @@ def _require_operator_mode() -> None:
 
 
 def _dispatch_child_rollout(fleet_id: str, deployment_id: str, *, target_version: str,
-                            callback_url: str, dry_run: bool) -> None:
+                            callback_url: str, dry_run: bool, child_id: str = "",
+                            started_by: str = "") -> None:
     """Create and dispatch ONE child rollout for a fleet ring. A dispatch failure is
     recorded on the child (dispatch_failed, i.e. bookkeeping 'failed') so the fleet
     reducer counts it toward failure_tolerance; this never raises."""
     control = get_control_plane_store()
     settings = get_settings()
-    child_id = f"roll_{uuid4().hex[:12]}"
+    child_id = child_id or f"roll_{uuid4().hex[:12]}"
     try:
         control.start_rollout(RolloutRun(
             id=child_id, deployment_id=deployment_id, target_version=target_version,
-            status="pending", started_by=f"fleet:{fleet_id}", fleet_rollout_id=fleet_id))
+            status="pending", started_by=started_by or f"fleet:{fleet_id}",
+            fleet_rollout_id=fleet_id))
     except ValueError:
         return  # plan blocked at start — the ring proceeds without this deployment
     rollout = control.get_rollout(child_id)
@@ -1294,7 +1961,8 @@ def _dispatch_child_rollout(fleet_id: str, deployment_id: str, *, target_version
     # Children are created with the default ack_restore_required=False; fleet
     # sweeps can never auto-ack a restore_required release (the R3 guarantee).
     plan = control.plan_update(deployment_id, target_version,
-                               ack_restore_required=rollout.ack_restore_required)
+                               ack_restore_required=rollout.ack_restore_required,
+                               ignore_rollout_id=rollout.id)
     if not (release and deployment and plan.allowed):
         mark_rollout_dispatch_failed(control, rollout, "update no longer available")
         return
@@ -1342,6 +2010,13 @@ def create_fleet_rollout(body: FleetRolloutCreate, principal: Principal = Depend
     release = control.get_release(body.target_version)
     if not release:
         raise HTTPException(status_code=404, detail="No such release.")
+    if getattr(get_settings(), "release_promotion_required", False):
+        if body.failure_tolerance != 0:
+            raise HTTPException(status_code=400, detail="Promoted customer rollouts require failure_tolerance=0.")
+        if body.ring_batch_size != 1:
+            raise HTTPException(status_code=400, detail="Promoted customer rollouts run one deployment at a time.")
+        if not body.deployment_ids:
+            raise HTTPException(status_code=400, detail="Promoted customer rollouts require explicit deployment_ids.")
 
     fleet_run, plan = plan_and_start_fleet_rollout(
         control, control, fleet_id=f"fleet_{uuid4().hex[:12]}", target_version=body.target_version,
@@ -1420,7 +2095,6 @@ def abort_fleet_rollout(fleet_id: str, principal: Principal = Depends(resolve_pr
     return _fleet_transition(fleet_id, principal, to="aborted", allowed_from={"running", "paused"})
 
 
-@router.patch("/rollouts/{rollout_id}", response_model=RolloutOut)
 def update_rollout(rollout_id: str, body: RolloutStatusUpdate, principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
     _authorize_rollout(principal, rollout_id)

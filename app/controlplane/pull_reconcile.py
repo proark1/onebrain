@@ -22,6 +22,7 @@ from pydantic import ValidationError
 
 from app.controlplane.base import BackupRun
 from app.controlplane.fleet_runner import reconcile_fleet_rollout
+from app.controlplane.promotion import reconcile_promotion_timeouts, reconcile_rollout_promotion
 from app.fleet.heartbeat import UpdateReport
 
 _TERMINAL_ROLLOUT = frozenset({"success", "failed"})
@@ -143,6 +144,7 @@ def _apply_child_status(control_store, child, status: str, update_report, *, now
     if status == "success":
         control_store.update_rollout_status(child.id, "success")
         control_store.update_rollout_exec(child.id, exec_status="succeeded", completed_at=now.isoformat())
+        reconcile_rollout_promotion(control_store, control_store.get_rollout(child.id))
         return
     reported_failure = (update_report.attempt_id == child.id
                         and update_report.outcome in ("failed", "rolled_back"))
@@ -150,6 +152,7 @@ def _apply_child_status(control_store, child, status: str, update_report, *, now
     control_store.update_rollout_status(child.id, "failed", notes=reason)
     control_store.update_rollout_exec(child.id, exec_status="failed", completed_at=now.isoformat(),
                                       failure_reason=reason)
+    reconcile_rollout_promotion(control_store, control_store.get_rollout(child.id))
 
 
 def reconcile_pull_targets(control_store, fleet_store, latest_heartbeats: dict, *, now: datetime,
@@ -163,6 +166,11 @@ def reconcile_pull_targets(control_store, fleet_store, latest_heartbeats: dict, 
       5. feed the UNCHANGED reconcile_fleet_rollout -> UNCHANGED advance_fleet_rollout.
     Returns the reconciled fleet runs. Railway children are left untouched (their
     workflow callback owns them). Pure of network; heartbeats + clock injected."""
+    reconcile_promotion_timeouts(
+        control_store,
+        now=now,
+        deadline_seconds=deadline_seconds,
+    )
     runs = []
     for fleet_run in fleet_store.list_fleet_rollouts():
         if fleet_run.status != "running":

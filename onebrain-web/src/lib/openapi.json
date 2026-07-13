@@ -401,6 +401,66 @@
         "title": "AssistantAuditEventOut",
         "type": "object"
       },
+      "AssistantIdentityLoginRequest": {
+        "properties": {
+          "email": {
+            "maxLength": 200,
+            "minLength": 3,
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "AssistantIdentityLoginRequest",
+        "type": "object"
+      },
+      "AssistantIdentityResponse": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "display_name": {
+            "default": "",
+            "title": "Display Name",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "title": "Space Id",
+            "type": "string"
+          },
+          "tenant_id": {
+            "title": "Tenant Id",
+            "type": "string"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "email",
+          "tenant_id",
+          "account_id"
+        ],
+        "title": "AssistantIdentityResponse",
+        "type": "object"
+      },
       "AssistantRecordCreate": {
         "properties": {
           "account_id": {
@@ -694,35 +754,6 @@
         "title": "AuditOut",
         "type": "object"
       },
-      "BackupCreate": {
-        "properties": {
-          "detail": {
-            "default": "",
-            "title": "Detail",
-            "type": "string"
-          },
-          "id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Id"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "title": "BackupCreate",
-        "type": "object"
-      },
       "BackupOut": {
         "properties": {
           "deployment_id": {
@@ -956,6 +987,28 @@
           "modules"
         ],
         "title": "BundleOut",
+        "type": "object"
+      },
+      "ChangePasswordRequest": {
+        "properties": {
+          "current_password": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Current Password",
+            "type": "string"
+          },
+          "new_password": {
+            "maxLength": 1024,
+            "minLength": 12,
+            "title": "New Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "title": "ChangePasswordRequest",
         "type": "object"
       },
       "ConsentIn": {
@@ -1432,6 +1485,12 @@
             "title": "Dry Run",
             "type": "boolean"
           },
+          "environment": {
+            "default": "production",
+            "maxLength": 80,
+            "title": "Environment",
+            "type": "string"
+          },
           "external_provisioning": {
             "default": false,
             "title": "External Provisioning",
@@ -1455,6 +1514,12 @@
             },
             "title": "Module Versions",
             "type": "object"
+          },
+          "owner_email": {
+            "default": "",
+            "maxLength": 320,
+            "title": "Owner Email",
+            "type": "string"
           },
           "region": {
             "default": "",
@@ -1646,6 +1711,12 @@
       },
       "DeploymentCreate": {
         "properties": {
+          "account_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Account Id",
+            "type": "string"
+          },
           "current_migration": {
             "default": "",
             "maxLength": 80,
@@ -1705,6 +1776,12 @@
             "maxLength": 80,
             "title": "Status",
             "type": "string"
+          },
+          "update_policy": {
+            "default": "",
+            "maxLength": 20,
+            "title": "Update Policy",
+            "type": "string"
           }
         },
         "required": [
@@ -1715,6 +1792,11 @@
       },
       "DeploymentOut": {
         "properties": {
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
           "current_migration": {
             "default": "",
             "title": "Current Migration",
@@ -1723,6 +1805,11 @@
           "current_version": {
             "default": "",
             "title": "Current Version",
+            "type": "string"
+          },
+          "current_version_deployed_at": {
+            "default": "",
+            "title": "Current Version Deployed At",
             "type": "string"
           },
           "customer_name": {
@@ -1741,6 +1828,37 @@
             "title": "Id",
             "type": "string"
           },
+          "is_release_gate": {
+            "default": false,
+            "title": "Is Release Gate",
+            "type": "boolean"
+          },
+          "last_heartbeat_at": {
+            "default": "",
+            "title": "Last Heartbeat At",
+            "type": "string"
+          },
+          "last_heartbeat_healthy": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Heartbeat Healthy"
+          },
+          "last_reported_migration": {
+            "default": "",
+            "title": "Last Reported Migration",
+            "type": "string"
+          },
+          "last_reported_version": {
+            "default": "",
+            "title": "Last Reported Version",
+            "type": "string"
+          },
           "region": {
             "title": "Region",
             "type": "string"
@@ -1751,6 +1869,11 @@
           },
           "status": {
             "title": "Status",
+            "type": "string"
+          },
+          "update_policy": {
+            "default": "",
+            "title": "Update Policy",
             "type": "string"
           }
         },
@@ -1764,6 +1887,60 @@
           "status"
         ],
         "title": "DeploymentOut",
+        "type": "object"
+      },
+      "DevelopmentGateOut": {
+        "properties": {
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "deployment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeploymentOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ready": {
+            "default": false,
+            "title": "Ready",
+            "type": "boolean"
+          }
+        },
+        "title": "DevelopmentGateOut",
+        "type": "object"
+      },
+      "DevelopmentGateProvisionIn": {
+        "properties": {
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "owner_email": {
+            "maxLength": 320,
+            "minLength": 3,
+            "title": "Owner Email",
+            "type": "string"
+          },
+          "region": {
+            "default": "nbg1",
+            "maxLength": 80,
+            "title": "Region",
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner_email"
+        ],
+        "title": "DevelopmentGateProvisionIn",
         "type": "object"
       },
       "DocumentSummary": {
@@ -1824,6 +2001,184 @@
         "title": "DocumentSummary",
         "type": "object"
       },
+      "FleetRolloutCreate": {
+        "properties": {
+          "callback_url": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Callback Url",
+            "type": "string"
+          },
+          "deployment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Deployment Ids",
+            "type": "array"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "failure_tolerance": {
+            "default": 0,
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Failure Tolerance",
+            "type": "integer"
+          },
+          "include_manual_pinned": {
+            "default": false,
+            "title": "Include Manual Pinned",
+            "type": "boolean"
+          },
+          "ring_batch_size": {
+            "default": 1,
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Ring Batch Size",
+            "type": "integer"
+          },
+          "target_version": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Target Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_version",
+          "callback_url"
+        ],
+        "title": "FleetRolloutCreate",
+        "type": "object"
+      },
+      "FleetRolloutCreateOut": {
+        "properties": {
+          "fleet_rollout": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FleetRolloutOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "plan": {
+            "$ref": "#/components/schemas/FleetRolloutPlanOut"
+          }
+        },
+        "required": [
+          "plan"
+        ],
+        "title": "FleetRolloutCreateOut",
+        "type": "object"
+      },
+      "FleetRolloutOut": {
+        "properties": {
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_ring": {
+            "default": "",
+            "title": "Current Ring",
+            "type": "string"
+          },
+          "deployment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Deployment Ids",
+            "type": "array"
+          },
+          "failure_tolerance": {
+            "default": 0,
+            "title": "Failure Tolerance",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "include_manual_pinned": {
+            "default": false,
+            "title": "Include Manual Pinned",
+            "type": "boolean"
+          },
+          "notes": {
+            "default": "",
+            "title": "Notes",
+            "type": "string"
+          },
+          "ring_batch_size": {
+            "default": 1,
+            "title": "Ring Batch Size",
+            "type": "integer"
+          },
+          "ring_order": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Ring Order",
+            "type": "array"
+          },
+          "started_by": {
+            "default": "",
+            "title": "Started By",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "target_version": {
+            "title": "Target Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "target_version",
+          "status"
+        ],
+        "title": "FleetRolloutOut",
+        "type": "object"
+      },
+      "FleetRolloutPlanOut": {
+        "properties": {
+          "blocked": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Blocked",
+            "type": "object"
+          },
+          "skipped": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Skipped",
+            "type": "array"
+          },
+          "waves": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Waves",
+            "type": "object"
+          }
+        },
+        "title": "FleetRolloutPlanOut",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1835,35 +2190,6 @@
           }
         },
         "title": "HTTPValidationError",
-        "type": "object"
-      },
-      "HealthCreate": {
-        "properties": {
-          "detail": {
-            "default": "",
-            "title": "Detail",
-            "type": "string"
-          },
-          "id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Id"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "title": "HealthCreate",
         "type": "object"
       },
       "HealthOut": {
@@ -2065,6 +2391,97 @@
           "tenant_id"
         ],
         "title": "JobStatusOut",
+        "type": "object"
+      },
+      "LegalHoldCreate": {
+        "properties": {
+          "legal_basis": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Legal Basis",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "subject_ref": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Subject Ref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "LegalHoldCreate",
+        "type": "object"
+      },
+      "LegalHoldOut": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "active": {
+            "default": true,
+            "title": "Active",
+            "type": "boolean"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "default": "",
+            "title": "Created By",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "legal_basis": {
+            "default": "",
+            "title": "Legal Basis",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "released_at": {
+            "default": "",
+            "title": "Released At",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "title": "Space Id",
+            "type": "string"
+          },
+          "subject_ref": {
+            "default": "",
+            "title": "Subject Ref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account_id"
+        ],
+        "title": "LegalHoldOut",
         "type": "object"
       },
       "LoginRequest": {
@@ -3310,6 +3727,83 @@
         "title": "ProcessorOut",
         "type": "object"
       },
+      "ProductionSignatureIn": {
+        "properties": {
+          "signature": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Signature",
+            "type": "string"
+          },
+          "signing_key_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Signing Key Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signature",
+          "signing_key_id"
+        ],
+        "title": "ProductionSignatureIn",
+        "type": "object"
+      },
+      "PromotionEventOut": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "actor": {
+            "default": "",
+            "title": "Actor",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "from_state": {
+            "default": "",
+            "title": "From State",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "to_state": {
+            "title": "To State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "action",
+          "to_state"
+        ],
+        "title": "PromotionEventOut",
+        "type": "object"
+      },
+      "PromotionNote": {
+        "properties": {
+          "note": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "title": "PromotionNote",
+        "type": "object"
+      },
       "ProviderIn": {
         "properties": {
           "account_id": {
@@ -3929,11 +4423,63 @@
         "title": "ProvisioningRunOut",
         "type": "object"
       },
-      "ReleaseCreate": {
+      "ReleaseCandidateOut": {
         "properties": {
+          "created": {
+            "default": false,
+            "title": "Created",
+            "type": "boolean"
+          },
+          "dispatch_state": {
+            "default": "",
+            "title": "Dispatch State",
+            "type": "string"
+          },
+          "manifest_digest": {
+            "title": "Manifest Digest",
+            "type": "string"
+          },
+          "release": {
+            "$ref": "#/components/schemas/ReleaseOut"
+          }
+        },
+        "required": [
+          "release",
+          "manifest_digest"
+        ],
+        "title": "ReleaseCandidateOut",
+        "type": "object"
+      },
+      "ReleaseCandidateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "pattern": "^(prepare|register)$",
+            "title": "Action",
+            "type": "string"
+          },
+          "dev_signature": {
+            "default": "",
+            "title": "Dev Signature",
+            "type": "string"
+          },
+          "dev_signing_key_id": {
+            "default": "",
+            "title": "Dev Signing Key Id",
+            "type": "string"
+          },
           "git_sha": {
+            "maxLength": 120,
+            "minLength": 1,
             "title": "Git Sha",
             "type": "string"
+          },
+          "images": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Images",
+            "type": "object"
           },
           "migration_from": {
             "default": "",
@@ -3952,6 +4498,11 @@
             "title": "Modules",
             "type": "object"
           },
+          "rollback_kind": {
+            "default": "code_only",
+            "title": "Rollback Kind",
+            "type": "string"
+          },
           "rollback_plan": {
             "default": "",
             "title": "Rollback Plan",
@@ -3960,6 +4511,88 @@
           "security_notes": {
             "default": "",
             "title": "Security Notes",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "version",
+          "git_sha",
+          "modules",
+          "images"
+        ],
+        "title": "ReleaseCandidateRequest",
+        "type": "object"
+      },
+      "ReleaseCreate": {
+        "properties": {
+          "git_sha": {
+            "title": "Git Sha",
+            "type": "string"
+          },
+          "images": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Images",
+            "type": "object"
+          },
+          "migration_delta": {
+            "additionalProperties": true,
+            "title": "Migration Delta",
+            "type": "object"
+          },
+          "migration_from": {
+            "default": "",
+            "title": "Migration From",
+            "type": "string"
+          },
+          "migration_to": {
+            "default": "",
+            "title": "Migration To",
+            "type": "string"
+          },
+          "modules": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Modules",
+            "type": "object"
+          },
+          "rollback_kind": {
+            "default": "",
+            "title": "Rollback Kind",
+            "type": "string"
+          },
+          "rollback_kind_override": {
+            "default": false,
+            "title": "Rollback Kind Override",
+            "type": "boolean"
+          },
+          "rollback_plan": {
+            "default": "",
+            "title": "Rollback Plan",
+            "type": "string"
+          },
+          "security_notes": {
+            "default": "",
+            "title": "Security Notes",
+            "type": "string"
+          },
+          "signature": {
+            "default": "",
+            "title": "Signature",
+            "type": "string"
+          },
+          "signing_key_id": {
+            "default": "",
+            "title": "Signing Key Id",
             "type": "string"
           },
           "status": {
@@ -4015,6 +4648,21 @@
             "title": "Modules",
             "type": "object"
           },
+          "promotion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReleasePromotionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rollback_kind": {
+            "default": "",
+            "title": "Rollback Kind",
+            "type": "string"
+          },
           "rollback_plan": {
             "default": "",
             "title": "Rollback Plan",
@@ -4023,6 +4671,16 @@
           "security_notes": {
             "default": "",
             "title": "Security Notes",
+            "type": "string"
+          },
+          "signature": {
+            "default": "",
+            "title": "Signature",
+            "type": "string"
+          },
+          "signing_key_id": {
+            "default": "",
+            "title": "Signing Key Id",
             "type": "string"
           },
           "status": {
@@ -4041,6 +4699,81 @@
           "modules"
         ],
         "title": "ReleaseOut",
+        "type": "object"
+      },
+      "ReleasePromotionOut": {
+        "properties": {
+          "customer_approved_at": {
+            "default": "",
+            "title": "Customer Approved At",
+            "type": "string"
+          },
+          "customer_approved_by": {
+            "default": "",
+            "title": "Customer Approved By",
+            "type": "string"
+          },
+          "customer_paused_at": {
+            "default": "",
+            "title": "Customer Paused At",
+            "type": "string"
+          },
+          "customer_paused_reason": {
+            "default": "",
+            "title": "Customer Paused Reason",
+            "type": "string"
+          },
+          "dev_completed_at": {
+            "default": "",
+            "title": "Dev Completed At",
+            "type": "string"
+          },
+          "dev_rollout_id": {
+            "default": "",
+            "title": "Dev Rollout Id",
+            "type": "string"
+          },
+          "dev_started_at": {
+            "default": "",
+            "title": "Dev Started At",
+            "type": "string"
+          },
+          "dev_verified_at": {
+            "default": "",
+            "title": "Dev Verified At",
+            "type": "string"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/PromotionEventOut"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "failure_reason": {
+            "default": "",
+            "title": "Failure Reason",
+            "type": "string"
+          },
+          "gate_deployment_id": {
+            "default": "",
+            "title": "Gate Deployment Id",
+            "type": "string"
+          },
+          "production_signature_attached": {
+            "default": false,
+            "title": "Production Signature Attached",
+            "type": "boolean"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "ReleasePromotionOut",
         "type": "object"
       },
       "RetentionPolicyIn": {
@@ -4164,6 +4897,25 @@
         "title": "RetentionPolicyOut",
         "type": "object"
       },
+      "RevokeSessionsRequest": {
+        "description": "Offboarding: force-log-out a user by id or email (one is required).",
+        "properties": {
+          "email": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Email",
+            "type": "string"
+          },
+          "user_id": {
+            "default": "",
+            "maxLength": 200,
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "title": "RevokeSessionsRequest",
+        "type": "object"
+      },
       "RoleInfo": {
         "properties": {
           "clearance": {
@@ -4192,8 +4944,67 @@
         "title": "RoleInfo",
         "type": "object"
       },
+      "RolloutCallbackIn": {
+        "properties": {
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "external_run_id": {
+            "default": "",
+            "maxLength": 200,
+            "title": "External Run Id",
+            "type": "string"
+          },
+          "external_run_url": {
+            "default": "",
+            "maxLength": 500,
+            "title": "External Run Url",
+            "type": "string"
+          },
+          "failure_reason": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Failure Reason",
+            "type": "string"
+          },
+          "migration_revision": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Migration Revision",
+            "type": "string"
+          },
+          "result_payload": {
+            "additionalProperties": true,
+            "title": "Result Payload",
+            "type": "object"
+          },
+          "smoke_status": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Smoke Status",
+            "type": "string"
+          },
+          "status": {
+            "maxLength": 40,
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "RolloutCallbackIn",
+        "type": "object"
+      },
       "RolloutCreate": {
         "properties": {
+          "ack_restore_required": {
+            "default": false,
+            "title": "Ack Restore Required",
+            "type": "boolean"
+          },
           "id": {
             "anyOf": [
               {
@@ -4226,8 +5037,33 @@
         "title": "RolloutCreate",
         "type": "object"
       },
+      "RolloutDispatch": {
+        "properties": {
+          "callback_url": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Callback Url",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "callback_url"
+        ],
+        "title": "RolloutDispatch",
+        "type": "object"
+      },
       "RolloutOut": {
         "properties": {
+          "ack_restore_required": {
+            "default": false,
+            "title": "Ack Restore Required",
+            "type": "boolean"
+          },
           "deployment_id": {
             "title": "Deployment Id",
             "type": "string"
@@ -4262,24 +5098,6 @@
           "started_by"
         ],
         "title": "RolloutOut",
-        "type": "object"
-      },
-      "RolloutStatusUpdate": {
-        "properties": {
-          "notes": {
-            "default": "",
-            "title": "Notes",
-            "type": "string"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "title": "RolloutStatusUpdate",
         "type": "object"
       },
       "ServiceAskRequest": {
@@ -4525,11 +5343,30 @@
             "title": "App Id",
             "type": "string"
           },
+          "contract_version": {
+            "default": "",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "intents": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Intents",
+            "type": "array"
+          },
           "purposes": {
             "items": {
               "type": "string"
             },
             "title": "Purposes",
+            "type": "array"
+          },
+          "record_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Record Types",
             "type": "array"
           },
           "scopes": {
@@ -4886,6 +5723,148 @@
         "title": "ServiceKeyInfo",
         "type": "object"
       },
+      "ServiceRecordDeleteRequest": {
+        "properties": {
+          "account_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "source_ref": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_ref"
+        ],
+        "title": "ServiceRecordDeleteRequest",
+        "type": "object"
+      },
+      "ServiceRecordDeleteResponse": {
+        "properties": {
+          "audit_event_id": {
+            "default": "",
+            "title": "Audit Event Id",
+            "type": "string"
+          },
+          "deleted": {
+            "title": "Deleted",
+            "type": "integer"
+          },
+          "source_ref": {
+            "title": "Source Ref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_ref",
+          "deleted"
+        ],
+        "title": "ServiceRecordDeleteResponse",
+        "type": "object"
+      },
+      "ServiceTombstoneAckOut": {
+        "properties": {
+          "acked_at": {
+            "default": "",
+            "title": "Acked At",
+            "type": "string"
+          },
+          "app_id": {
+            "title": "App Id",
+            "type": "string"
+          },
+          "tombstone_id": {
+            "title": "Tombstone Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tombstone_id",
+          "app_id"
+        ],
+        "title": "ServiceTombstoneAckOut",
+        "type": "object"
+      },
+      "ServiceTombstoneFeedOut": {
+        "properties": {
+          "cursor": {
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "tombstones": {
+            "items": {
+              "$ref": "#/components/schemas/ServiceTombstoneOut"
+            },
+            "title": "Tombstones",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tombstones",
+          "cursor"
+        ],
+        "title": "ServiceTombstoneFeedOut",
+        "type": "object"
+      },
+      "ServiceTombstoneOut": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "space_id": {
+            "default": "",
+            "title": "Space Id",
+            "type": "string"
+          },
+          "target_ref": {
+            "default": "",
+            "title": "Target Ref",
+            "type": "string"
+          },
+          "target_type": {
+            "title": "Target Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "account_id",
+          "target_type"
+        ],
+        "title": "ServiceTombstoneOut",
+        "type": "object"
+      },
       "SessionInfo": {
         "properties": {
           "clearance": {
@@ -4902,9 +5881,19 @@
             "title": "Email",
             "type": "string"
           },
+          "is_operator_surface": {
+            "default": false,
+            "title": "Is Operator Surface",
+            "type": "boolean"
+          },
           "location_label": {
             "title": "Location Label",
             "type": "string"
+          },
+          "operator_mode": {
+            "default": false,
+            "title": "Operator Mode",
+            "type": "boolean"
           },
           "role_id": {
             "title": "Role Id",
@@ -5023,6 +6012,11 @@
             "title": "Reason",
             "type": "string"
           },
+          "rollback_kind": {
+            "default": "",
+            "title": "Rollback Kind",
+            "type": "string"
+          },
           "target_modules": {
             "additionalProperties": {
               "type": "string"
@@ -5033,6 +6027,13 @@
           "target_version": {
             "title": "Target Version",
             "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [
@@ -5042,6 +6043,21 @@
           "reason"
         ],
         "title": "UpdatePlanOut",
+        "type": "object"
+      },
+      "UpdatePolicyUpdate": {
+        "properties": {
+          "update_policy": {
+            "maxLength": 20,
+            "minLength": 1,
+            "title": "Update Policy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "update_policy"
+        ],
+        "title": "UpdatePolicyUpdate",
         "type": "object"
       },
       "ValidationError": {
@@ -5305,6 +6321,58 @@
         ]
       }
     },
+    "/api/auth/change-password": {
+      "post": {
+        "description": "Self-service rotation (authenticated; acts only on the caller's own user).\nClears must_change_password and burns every session so the OTP session cannot\nbe replayed after the change (H-10).",
+        "operationId": "change_password_api_auth_change_password_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Password",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/api/auth/login": {
       "post": {
         "operationId": "login_api_auth_login_post",
@@ -5347,6 +6415,18 @@
     "/api/auth/logout": {
       "post": {
         "operationId": "logout_api_auth_logout_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5355,9 +6435,71 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Logout",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/sessions/revoke": {
+      "post": {
+        "description": "Force-log-out every active session for a user \u2014 the offboarding lever.\n\nAdmin-only, and confined to the caller's own tenant so one company's admin\ncan never revoke another company's sessions.",
+        "operationId": "revoke_sessions_api_auth_sessions_revoke_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeSessionsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Sessions",
         "tags": [
           "auth"
         ]
@@ -6166,68 +7308,6 @@
         ]
       }
     },
-    "/api/operator/deployments/{deployment_id}/backups": {
-      "post": {
-        "operationId": "record_backup_api_operator_deployments__deployment_id__backups_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "deployment_id",
-            "required": true,
-            "schema": {
-              "title": "Deployment Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "ob_session",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Ob Session",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/BackupCreate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BackupOut"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Record Backup",
-        "tags": [
-          "operator"
-        ]
-      }
-    },
     "/api/operator/deployments/{deployment_id}/backups/latest": {
       "get": {
         "operationId": "latest_backup_api_operator_deployments__deployment_id__backups_latest_get",
@@ -6283,68 +7363,6 @@
           }
         },
         "summary": "Latest Backup",
-        "tags": [
-          "operator"
-        ]
-      }
-    },
-    "/api/operator/deployments/{deployment_id}/health": {
-      "post": {
-        "operationId": "record_health_api_operator_deployments__deployment_id__health_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "deployment_id",
-            "required": true,
-            "schema": {
-              "title": "Deployment Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "ob_session",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Ob Session",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HealthCreate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HealthOut"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Record Health",
         "tags": [
           "operator"
         ]
@@ -6526,6 +7544,68 @@
         ]
       }
     },
+    "/api/operator/deployments/{deployment_id}/policy": {
+      "post": {
+        "operationId": "set_update_policy_api_operator_deployments__deployment_id__policy_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePolicyUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Update Policy",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
     "/api/operator/deployments/{deployment_id}/rollouts": {
       "get": {
         "operationId": "list_rollouts_api_operator_deployments__deployment_id__rollouts_get",
@@ -6642,6 +7722,78 @@
         ]
       }
     },
+    "/api/operator/deployments/{deployment_id}/rollouts/{rollout_id}/dispatch": {
+      "post": {
+        "description": "Dispatch a real update-customer workflow run for an existing (pending)\nrollout. Re-checks the plan_update safety gate, guards single-in-flight per\ndeployment, and requires known Railway coordinates (fail-closed).",
+        "operationId": "dispatch_rollout_api_operator_deployments__deployment_id__rollouts__rollout_id__dispatch_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "rollout_id",
+            "required": true,
+            "schema": {
+              "title": "Rollout Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RolloutDispatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RolloutOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dispatch Rollout",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
     "/api/operator/deployments/{deployment_id}/update-plan/{target_version}": {
       "get": {
         "operationId": "update_plan_api_operator_deployments__deployment_id__update_plan__target_version__get",
@@ -6662,6 +7814,16 @@
             "schema": {
               "title": "Target Version",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ack_restore_required",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Ack Restore Required",
+              "type": "boolean"
             }
           },
           {
@@ -6698,6 +7860,507 @@
           }
         },
         "summary": "Update Plan",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/development-gate": {
+      "get": {
+        "operationId": "get_development_gate_api_operator_development_gate_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevelopmentGateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Development Gate",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/development-gate/provision": {
+      "post": {
+        "description": "Create the dedicated onebrain-only dev server; designation waits for heartbeat readiness.",
+        "operationId": "provision_development_gate_api_operator_development_gate_provision_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DevelopmentGateProvisionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Provision Development Gate",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/development-gate/{deployment_id}": {
+      "put": {
+        "operationId": "designate_development_gate_api_operator_development_gate__deployment_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevelopmentGateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Designate Development Gate",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/fleet-rollouts": {
+      "get": {
+        "operationId": "list_fleet_rollouts_api_operator_fleet_rollouts_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/FleetRolloutOut"
+                  },
+                  "title": "Response List Fleet Rollouts Api Operator Fleet Rollouts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Fleet Rollouts",
+        "tags": [
+          "operator"
+        ]
+      },
+      "post": {
+        "operationId": "create_fleet_rollout_api_operator_fleet_rollouts_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetRolloutCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetRolloutCreateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Fleet Rollout",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/fleet-rollouts/reconcile": {
+      "post": {
+        "description": "The P4 driver for the pull-path reconcile tick (no scheduler in P4 \u2014 this\noperator-run endpoint or an external cron drives it, exactly as run_watchdog stayed\ntest-only). Synthesizes each offered pull child's terminal status from its box's\nlatest UpdateReport and feeds the UNCHANGED fleet reducer. At rest (no running fleet\nrollouts) it is a no-op. The reconcile scheduler/daemon is the Phase-5 infra tail.",
+        "operationId": "reconcile_pull_api_operator_fleet_rollouts_reconcile_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/FleetRolloutOut"
+                  },
+                  "title": "Response Reconcile Pull Api Operator Fleet Rollouts Reconcile Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reconcile Pull",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/fleet-rollouts/{fleet_id}": {
+      "get": {
+        "operationId": "get_fleet_rollout_api_operator_fleet_rollouts__fleet_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fleet_id",
+            "required": true,
+            "schema": {
+              "title": "Fleet Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetRolloutOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Fleet Rollout",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/fleet-rollouts/{fleet_id}/abort": {
+      "post": {
+        "operationId": "abort_fleet_rollout_api_operator_fleet_rollouts__fleet_id__abort_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fleet_id",
+            "required": true,
+            "schema": {
+              "title": "Fleet Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetRolloutOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Abort Fleet Rollout",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/fleet-rollouts/{fleet_id}/pause": {
+      "post": {
+        "operationId": "pause_fleet_rollout_api_operator_fleet_rollouts__fleet_id__pause_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fleet_id",
+            "required": true,
+            "schema": {
+              "title": "Fleet Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetRolloutOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pause Fleet Rollout",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/fleet-rollouts/{fleet_id}/resume": {
+      "post": {
+        "operationId": "resume_fleet_rollout_api_operator_fleet_rollouts__fleet_id__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fleet_id",
+            "required": true,
+            "schema": {
+              "title": "Fleet Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetRolloutOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resume Fleet Rollout",
         "tags": [
           "operator"
         ]
@@ -6741,6 +8404,69 @@
           }
         },
         "summary": "Operator Observability",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/release-candidates": {
+      "post": {
+        "operationId": "release_candidate_api_operator_release_candidates_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-onebrain-candidate-key-id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "X-Onebrain-Candidate-Key-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReleaseCandidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReleaseCandidateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Release Candidate",
         "tags": [
           "operator"
         ]
@@ -6844,16 +8570,16 @@
         ]
       }
     },
-    "/api/operator/rollouts/{rollout_id}": {
-      "patch": {
-        "operationId": "update_rollout_api_operator_rollouts__rollout_id__patch",
+    "/api/operator/releases/{version}/approve": {
+      "post": {
+        "operationId": "approve_release_api_operator_releases__version__approve_post",
         "parameters": [
           {
             "in": "path",
-            "name": "rollout_id",
+            "name": "version",
             "required": true,
             "schema": {
-              "title": "Rollout Id",
+              "title": "Version",
               "type": "string"
             }
           },
@@ -6872,7 +8598,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RolloutStatusUpdate"
+                "$ref": "#/components/schemas/PromotionNote"
               }
             }
           },
@@ -6883,7 +8609,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RolloutOut"
+                  "$ref": "#/components/schemas/ReleaseOut"
                 }
               }
             },
@@ -6900,7 +8626,317 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Update Rollout",
+        "summary": "Approve Release",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/releases/{version}/pause": {
+      "post": {
+        "operationId": "pause_release_api_operator_releases__version__pause_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromotionNote"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReleaseOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pause Release",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/releases/{version}/production-signature": {
+      "post": {
+        "operationId": "upload_production_signature_api_operator_releases__version__production_signature_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductionSignatureIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReleaseOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Production Signature",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/releases/{version}/resume": {
+      "post": {
+        "operationId": "resume_release_api_operator_releases__version__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromotionNote"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReleaseOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resume Release",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/releases/{version}/retry-dev": {
+      "post": {
+        "operationId": "retry_development_release_api_operator_releases__version__retry_dev_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromotionNote"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReleaseOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Development Release",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/releases/{version}/yank": {
+      "post": {
+        "operationId": "yank_release_api_operator_releases__version__yank_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromotionNote"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReleaseOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Yank Release",
         "tags": [
           "operator"
         ]
@@ -8590,6 +10626,193 @@
         ]
       }
     },
+    "/api/privacy/accounts/{account_id}/legal-holds": {
+      "get": {
+        "operationId": "list_account_legal_holds_api_privacy_accounts__account_id__legal_holds_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_released",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Released",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/LegalHoldOut"
+                  },
+                  "title": "Response List Account Legal Holds Api Privacy Accounts  Account Id  Legal Holds Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Account Legal Holds",
+        "tags": [
+          "privacy"
+        ]
+      },
+      "post": {
+        "operationId": "create_account_legal_hold_api_privacy_accounts__account_id__legal_holds_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LegalHoldCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegalHoldOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Account Legal Hold",
+        "tags": [
+          "privacy"
+        ]
+      }
+    },
+    "/api/privacy/accounts/{account_id}/legal-holds/{hold_id}/release": {
+      "post": {
+        "operationId": "release_account_legal_hold_api_privacy_accounts__account_id__legal_holds__hold_id__release_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "hold_id",
+            "required": true,
+            "schema": {
+              "title": "Hold Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegalHoldOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Release Account Legal Hold",
+        "tags": [
+          "privacy"
+        ]
+      }
+    },
     "/api/provisioning/bundles": {
       "get": {
         "operationId": "list_bundles_api_provisioning_bundles_get",
@@ -8985,6 +11208,76 @@
         ]
       }
     },
+    "/api/rollouts/{rollout_id}/callback": {
+      "post": {
+        "operationId": "rollout_callback_api_rollouts__rollout_id__callback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rollout_id",
+            "required": true,
+            "schema": {
+              "title": "Rollout Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-onebrain-callback-key-id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "X-Onebrain-Callback-Key-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RolloutCallbackIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rollout Callback",
+        "tags": [
+          "rollouts"
+        ]
+      }
+    },
     "/api/service-keys": {
       "get": {
         "operationId": "list_keys_api_service_keys_get",
@@ -9286,6 +11579,60 @@
           }
         },
         "summary": "Record Assistant Audit Event",
+        "tags": [
+          "service-assistant"
+        ]
+      }
+    },
+    "/api/service/assistant/identity/login": {
+      "post": {
+        "description": "Resolve a OneBrain user for the assistant's session handoff.\n\nOneBrain stays the identity authority: the assistant forwards the user's\nOneBrain credentials once at login, receives the resolved user/account/space,\nand mints only its own session reference \u2014 no OneBrain cookie or session is\nissued here. Mirrors /api/auth/login's protections (timing-safe verification,\nper-account lockout) and binds the resolved user to the service key's tenant.",
+        "operationId": "assistant_identity_login_api_service_assistant_identity_login_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantIdentityLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantIdentityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assistant Identity Login",
         "tags": [
           "service-assistant"
         ]
@@ -9759,6 +12106,177 @@
           }
         },
         "summary": "Intake",
+        "tags": [
+          "service"
+        ]
+      }
+    },
+    "/api/service/records/delete": {
+      "post": {
+        "description": "Module-initiated erasure of a record the module previously synced in.\n\nThe module names the record by the same source_ref it used at intake, so a\ncontact/tenant deletion inside a module can erase the canonical copy here.\nIdempotent (an unknown ref deletes nothing) and refused under a legal hold.",
+        "operationId": "delete_records_api_service_records_delete_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceRecordDeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceRecordDeleteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Records",
+        "tags": [
+          "service"
+        ]
+      }
+    },
+    "/api/service/tombstones": {
+      "get": {
+        "description": "The erasure feed. A module polls forward from `cursor` and mirrors each\ntombstone, then acks it. Operational deletion instructions, not public content,\nso it takes the write scope like the module's other mutating calls.",
+        "operationId": "list_tombstones_api_service_tombstones_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Since",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceTombstoneFeedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Tombstones",
+        "tags": [
+          "service"
+        ]
+      }
+    },
+    "/api/service/tombstones/{tombstone_id}/ack": {
+      "post": {
+        "description": "Record that this module has applied a tombstone. Idempotent.",
+        "operationId": "ack_tombstone_api_service_tombstones__tombstone_id__ack_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tombstone_id",
+            "required": true,
+            "schema": {
+              "title": "Tombstone Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceTombstoneAckOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ack Tombstone",
         "tags": [
           "service"
         ]

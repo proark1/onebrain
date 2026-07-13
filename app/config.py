@@ -227,6 +227,10 @@ class Settings(BaseSettings):
     release_require_signed_images: bool = False # require a non-empty digest-pinned images map on creation
     release_require_rollback_kind: bool = False # require rollback_kind in {code_only,restore_required} on creation
     release_registry_allowlist: str = "ghcr.io/proark1"  # csv of allowed image-ref PREFIXES host[/org[/repo]]
+    release_promotion_required: bool = False  # hard customer gate; report-only warnings while false
+    dev_release_verify_public_key: str = ""   # CI development-signing public key; never trusted by customers
+    release_candidate_key_id: str = ""        # narrowly scoped CI candidate credential id
+    release_candidate_key_hash: str = ""      # sha256$... hash; raw secret is never stored
     # ^ repo-prefix granular (B2): a bare host like "ghcr.io" would allowlist every GHCR tenant. The default
     #   is the org prefix the Phase-2 GHCR CI publishes under; override via ONEBRAIN_RELEASE_REGISTRY_ALLOWLIST
     #   if the CI org ever differs (a wrong default 400s the first images-carrying release — fail-closed, safe).

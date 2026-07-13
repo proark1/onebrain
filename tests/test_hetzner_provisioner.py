@@ -50,12 +50,12 @@ def _settings(**over):
     return Settings(**data)
 
 
-def _control(dep="dep_a", modules=_MODULES, version="0.1.0", images=None):
+def _control(dep="dep_a", modules=_MODULES, version="0.1.0", images=None, environment="production"):
     images = _IMAGES if images is None else images
     store = MemoryControlPlaneStore()
     store.create_deployment(CustomerDeployment(
         id=dep, customer_name="Customer A", account_id="acct_a",
-        release_ring="pilot", current_version=version,
+        environment=environment, release_ring="pilot", current_version=version,
     ))
     for module_id in modules:
         store.upsert_module(DeploymentModule(dep, module_id, "0.1.0"))
@@ -105,6 +105,37 @@ def test_dispatch_creates_server_with_firewall_and_writes_d6_slots():
     assert out.railway_environment_id == "onebrain-dep_a"
     assert out.result_payload["service_ids"] == {m: m for m in _MODULES}
     assert out.status == STATUS_DISPATCHED
+
+
+def test_dispatch_bakes_separate_release_verifiers_for_dev_and_customer_boxes():
+    settings = _settings(
+        release_verify_public_key="production-release-public-key",
+        dev_release_verify_public_key="development-release-public-key",
+    )
+    production_fake = FakeHetznerClient()
+    HetznerProvisioner(settings, InProcessHetznerBroker(production_fake), _control()).dispatch(_plain_run())
+    assert "UPDATE_RELEASE_PUBLIC_KEY=production-release-public-key" in production_fake.servers[0].user_data
+    assert "development-release-public-key" not in production_fake.servers[0].user_data
+
+    development_fake = FakeHetznerClient()
+    development = _control(dep="dev-gate", environment="development")
+    HetznerProvisioner(settings, InProcessHetznerBroker(development_fake), development).dispatch(
+        _plain_run(dep="dev-gate")
+    )
+    assert "UPDATE_RELEASE_PUBLIC_KEY=development-release-public-key" in development_fake.servers[0].user_data
+    assert "production-release-public-key" not in development_fake.servers[0].user_data
+
+
+def test_development_dispatch_fails_before_server_creation_without_dev_key():
+    fake = FakeHetznerClient()
+    control = _control(dep="dev-gate", environment="development")
+
+    with pytest.raises(RuntimeError, match="DEV_RELEASE_VERIFY_PUBLIC_KEY"):
+        HetznerProvisioner(_settings(), InProcessHetznerBroker(fake), control).dispatch(
+            _plain_run(dep="dev-gate")
+        )
+
+    assert fake.servers == []
 
 
 def test_dispatch_stamps_constant_fleet_label_on_server():

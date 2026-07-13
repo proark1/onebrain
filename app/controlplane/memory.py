@@ -6,6 +6,7 @@ import json
 import os
 import threading
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from app.controlplane.base import (
@@ -15,13 +16,17 @@ from app.controlplane.base import (
     DeploymentModule,
     HealthCheckRun,
     ReleaseManifest,
+    ReleasePromotion,
+    ReleasePromotionEvent,
     RolloutRun,
     ServedFloorBump,
     UpdatePlan,
     compute_update_plan,
+    release_promotion_plan_context,
     require_signed_releases,
     validate_deployment,
     validate_module,
+    validate_promotion,
     validate_release,
     validate_run_status,
 )
@@ -33,6 +38,8 @@ class MemoryControlPlaneStore:
         self._deployments: Dict[str, CustomerDeployment] = {}
         self._modules: Dict[tuple[str, str], DeploymentModule] = {}
         self._releases: Dict[str, ReleaseManifest] = {}
+        self._release_promotions: Dict[str, ReleasePromotion] = {}
+        self._release_promotion_events: List[ReleasePromotionEvent] = []
         self._backups: Dict[str, BackupRun] = {}
         self._health: Dict[str, HealthCheckRun] = {}
         self._rollouts: Dict[str, RolloutRun] = {}
@@ -54,11 +61,22 @@ class MemoryControlPlaneStore:
                 for d in data.get("modules", [])
             }
             self._releases = {d["version"]: ReleaseManifest(**d) for d in data.get("releases", [])}
+            self._release_promotions = {
+                d["release_version"]: ReleasePromotion(**d)
+                for d in data.get("release_promotions", [])
+            }
+            self._release_promotion_events = [
+                ReleasePromotionEvent(**d) for d in data.get("release_promotion_events", [])
+            ]
             self._backups = {d["id"]: BackupRun(**d) for d in data.get("backups", [])}
             self._health = {d["id"]: HealthCheckRun(**d) for d in data.get("health", [])}
             self._rollouts = {d["id"]: RolloutRun(**d) for d in data.get("rollouts", [])}
             self._fleet_rollouts = {
-                d["id"]: FleetRolloutRun(**{**d, "ring_order": tuple(d.get("ring_order", []))})
+                d["id"]: FleetRolloutRun(**{
+                    **d,
+                    "ring_order": tuple(d.get("ring_order", [])),
+                    "only_deployment_ids": tuple(d.get("only_deployment_ids", [])),
+                })
                 for d in data.get("fleet_rollouts", [])
             }
             # Additive (P5-01), back-compatible with a persist file written before Phase 5.
@@ -67,6 +85,7 @@ class MemoryControlPlaneStore:
             }
         except Exception:
             self._deployments, self._modules, self._releases = {}, {}, {}
+            self._release_promotions, self._release_promotion_events = {}, []
             self._backups, self._health, self._rollouts = {}, {}, {}
             self._fleet_rollouts = {}
             self._served_floor_bumps = {}
@@ -80,10 +99,16 @@ class MemoryControlPlaneStore:
                 "deployments": [d.__dict__ for d in self._deployments.values()],
                 "modules": [m.__dict__ for m in self._modules.values()],
                 "releases": [r.__dict__ for r in self._releases.values()],
+                "release_promotions": [p.__dict__ for p in self._release_promotions.values()],
+                "release_promotion_events": [e.__dict__ for e in self._release_promotion_events],
                 "backups": [b.__dict__ for b in self._backups.values()],
                 "health": [h.__dict__ for h in self._health.values()],
                 "rollouts": [r.__dict__ for r in self._rollouts.values()],
-                "fleet_rollouts": [{**f.__dict__, "ring_order": list(f.ring_order)}
+                "fleet_rollouts": [{
+                    **f.__dict__,
+                    "ring_order": list(f.ring_order),
+                    "only_deployment_ids": list(f.only_deployment_ids),
+                }
                                    for f in self._fleet_rollouts.values()],
                 "served_floor_bumps": [b.__dict__ for b in self._served_floor_bumps.values()],
             }, fh)
@@ -145,6 +170,246 @@ class MemoryControlPlaneStore:
     def list_releases(self) -> List[ReleaseManifest]:
         return sorted(self._releases.values(), key=lambda r: r.version)
 
+    def create_release_candidate(
+        self,
+        release: ReleaseManifest,
+        promotion: ReleasePromotion,
+        event: ReleasePromotionEvent,
+    ) -> ReleasePromotion:
+        validate_release(release)
+        validate_promotion(promotion)
+        if promotion.release_version != release.version or event.release_version != release.version:
+            raise ValueError("release candidate records must use the same version")
+        with self._lock:
+            if release.version in self._releases or release.version in self._release_promotions:
+                raise ValueError(f"release candidate already exists: {release.version}")
+            self._releases[release.version] = release
+            self._release_promotions[release.version] = promotion
+            self._release_promotion_events.append(event)
+            self._save()
+            return promotion
+
+    def get_release_promotion(self, version: str) -> Optional[ReleasePromotion]:
+        return self._release_promotions.get(version)
+
+    def list_release_promotions(self) -> List[ReleasePromotion]:
+        return sorted(
+            self._release_promotions.values(),
+            key=lambda promotion: (promotion.created_at, promotion.release_version),
+            reverse=True,
+        )
+
+    _PROMOTION_FIELDS = frozenset({
+        "gate_deployment_id", "dev_signature", "dev_signing_key_id", "dev_rollout_id",
+        "dev_attempt_id", "dev_started_at", "dev_completed_at", "dev_verified_at",
+        "customer_approved_at", "customer_approved_by", "customer_paused_at",
+        "customer_paused_reason", "yanked_at", "failure_reason", "updated_at",
+    })
+
+    def transition_release_promotion(
+        self,
+        version: str,
+        from_states: frozenset[str],
+        to_state: str,
+        *,
+        actor: str,
+        action: str,
+        note: str = "",
+        fields: Optional[Dict] = None,
+    ) -> ReleasePromotion:
+        fields = dict(fields or {})
+        bad = set(fields) - self._PROMOTION_FIELDS
+        if bad:
+            raise ValueError(f"cannot update release promotion fields: {sorted(bad)}")
+        validate_promotion(ReleasePromotion(release_version=version, state=to_state))
+        with self._lock:
+            promotion = self._release_promotions.get(version)
+            if not promotion:
+                raise ValueError(f"unknown release promotion: {version}")
+            if promotion.state not in from_states:
+                raise ValueError(
+                    f"release promotion state changed: expected {sorted(from_states)}, got {promotion.state}"
+                )
+            fields.setdefault("updated_at", datetime.now(timezone.utc).isoformat())
+            updated = replace(promotion, state=to_state, **fields)
+            self._release_promotions[version] = updated
+            release = self._releases.get(version)
+            if release and to_state == "yanked":
+                self._releases[version] = replace(release, status="yanked")
+            elif release and to_state == "customer_approved":
+                self._releases[version] = replace(release, status="active")
+            self._release_promotion_events.append(ReleasePromotionEvent(
+                id=f"event-{len(self._release_promotion_events) + 1}",
+                release_version=version,
+                actor=actor,
+                action=action,
+                from_state=promotion.state,
+                to_state=to_state,
+                note=note,
+                metadata=fields,
+                created_at=fields["updated_at"],
+            ))
+            self._save()
+            return updated
+
+    def list_release_promotion_events(self, version: str) -> List[ReleasePromotionEvent]:
+        return [event for event in self._release_promotion_events if event.release_version == version]
+
+    def set_release_production_signature(
+        self,
+        version: str,
+        *,
+        signature: str,
+        signing_key_id: str,
+        actor: str,
+    ) -> ReleaseManifest:
+        with self._lock:
+            release = self._releases.get(version)
+            promotion = self._release_promotions.get(version)
+            if not release or not promotion:
+                raise ValueError(f"unknown release candidate: {version}")
+            if promotion.state != "dev_verified":
+                raise ValueError("release_not_dev_verified")
+            if release.signature:
+                if release.signature == signature and release.signing_key_id == signing_key_id:
+                    return release
+                raise ValueError("production_signature_already_attached")
+            updated = replace(release, signature=signature, signing_key_id=signing_key_id)
+            self._releases[version] = updated
+            now = datetime.now(timezone.utc).isoformat()
+            self._release_promotion_events.append(ReleasePromotionEvent(
+                id=f"event-{len(self._release_promotion_events) + 1}",
+                release_version=version,
+                actor=actor,
+                action="production_signature_attached",
+                from_state=promotion.state,
+                to_state=promotion.state,
+                metadata={"signing_key_id": signing_key_id},
+                created_at=now,
+            ))
+            self._save()
+            return updated
+
+    def approve_release_for_customers(
+        self,
+        version: str,
+        *,
+        signature: str,
+        signing_key_id: str,
+        actor: str,
+        note: str = "",
+    ) -> ReleasePromotion:
+        if not signature or not signing_key_id:
+            raise ValueError("production signature and signing key id are required")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            release = self._releases.get(version)
+            promotion = self._release_promotions.get(version)
+            if not release or not promotion:
+                raise ValueError(f"unknown release candidate: {version}")
+            if promotion.state != "dev_verified":
+                raise ValueError(f"release must be dev_verified, got {promotion.state}")
+            if release.signature != signature or release.signing_key_id != signing_key_id:
+                raise ValueError("production signature must be attached before approval")
+            self._releases[version] = replace(
+                release,
+                status="active",
+                signature=signature,
+                signing_key_id=signing_key_id,
+            )
+            updated = replace(
+                promotion,
+                state="customer_approved",
+                customer_approved_at=now,
+                customer_approved_by=actor,
+                failure_reason="",
+                updated_at=now,
+            )
+            self._release_promotions[version] = updated
+            self._release_promotion_events.append(ReleasePromotionEvent(
+                id=f"event-{len(self._release_promotion_events) + 1}",
+                release_version=version,
+                actor=actor,
+                action="customer_approved",
+                from_state=promotion.state,
+                to_state="customer_approved",
+                note=note,
+                metadata={"signing_key_id": signing_key_id},
+                created_at=now,
+            ))
+            self._save()
+            return updated
+
+    def get_release_gate(self) -> Optional[CustomerDeployment]:
+        return next(
+            (deployment for deployment in self._deployments.values()
+             if deployment.is_release_gate and deployment.status == "active"),
+            None,
+        )
+
+    def designate_release_gate(self, deployment_id: str) -> CustomerDeployment:
+        with self._lock:
+            deployment = self._deployments.get(deployment_id)
+            if not deployment:
+                raise ValueError(f"unknown deployment: {deployment_id}")
+            if deployment.environment != "development" or deployment.deployment_type != "dedicated_server":
+                raise ValueError("release gate must be a dedicated development server")
+            if deployment.status != "active":
+                raise ValueError("release gate must be active")
+            for existing_id, existing in tuple(self._deployments.items()):
+                if existing.is_release_gate and existing_id != deployment_id:
+                    self._deployments[existing_id] = replace(existing, is_release_gate=False)
+            updated = replace(deployment, is_release_gate=True)
+            self._deployments[deployment_id] = updated
+            self._save()
+            return updated
+
+    def update_deployment_telemetry(
+        self,
+        deployment_id: str,
+        *,
+        heartbeat_at: str,
+        healthy: bool,
+        reported_version: str = "",
+        reported_migration: str = "",
+    ) -> CustomerDeployment:
+        with self._lock:
+            deployment = self._deployments.get(deployment_id)
+            if not deployment:
+                raise ValueError(f"unknown deployment: {deployment_id}")
+            updated = replace(
+                deployment,
+                last_heartbeat_at=heartbeat_at,
+                last_heartbeat_healthy=healthy,
+                last_reported_version=reported_version,
+                last_reported_migration=reported_migration,
+            )
+            self._deployments[deployment_id] = updated
+            self._save()
+            return updated
+
+    def mark_deployment_provisioned(
+        self,
+        deployment_id: str,
+        *,
+        installed_at: str,
+        version: str,
+        migration: str = "",
+    ) -> CustomerDeployment:
+        with self._lock:
+            deployment = self._deployments.get(deployment_id)
+            if not deployment:
+                raise ValueError(f"unknown deployment: {deployment_id}")
+            updated = replace(
+                deployment,
+                current_version=version or deployment.current_version,
+                current_migration=migration or deployment.current_migration,
+                current_version_deployed_at=installed_at,
+            )
+            self._deployments[deployment_id] = updated
+            self._save()
+            return updated
+
     def record_backup(self, backup: BackupRun) -> BackupRun:
         validate_run_status(backup.status)
         with self._lock:
@@ -175,18 +440,50 @@ class MemoryControlPlaneStore:
         checks = [h for h in self._health.values() if h.deployment_id == deployment_id]
         return sorted(checks, key=lambda h: h.created_at or h.id)[-1] if checks else None
 
-    def plan_update(self, deployment_id: str, target_version: str, *, ack_restore_required: bool = False) -> UpdatePlan:
+    def plan_update(
+        self,
+        deployment_id: str,
+        target_version: str,
+        *,
+        ack_restore_required: bool = False,
+        ignore_rollout_id: str = "",
+    ) -> UpdatePlan:
+        return self._plan_update(
+            deployment_id,
+            target_version,
+            ack_restore_required=ack_restore_required,
+            ignore_rollout_id=ignore_rollout_id,
+        )
+
+    def _plan_update(
+        self,
+        deployment_id: str,
+        target_version: str,
+        *,
+        ack_restore_required: bool,
+        ignore_rollout_id: str,
+    ) -> UpdatePlan:
         deployment = self.get_deployment(deployment_id)
+        release = self.get_release(target_version)
+        promotion = self.get_release_promotion(target_version)
+        gate = self.get_release_gate()
         return compute_update_plan(
             deployment_id, target_version,
             deployment=deployment,
-            release=self.get_release(target_version),
+            release=release,
             modules=self.list_modules(deployment_id) if deployment else [],
             latest_backup=lambda: self.latest_backup(deployment_id),  # lazy (A3); compute_update_plan
                                                                       # returns before calling it when
                                                                       # deployment is None
             ack_restore_required=ack_restore_required,
             require_signed_release=require_signed_releases(),
+            promotion=promotion,
+            gate_deployment_id=gate.id if gate else "",
+            active_rollout=bool(
+                (active := self.list_active_rollout(deployment_id))
+                and active.id != ignore_rollout_id
+            ),
+            **release_promotion_plan_context(release, promotion),
         )
 
     def start_rollout(self, rollout: RolloutRun) -> RolloutRun:
@@ -215,8 +512,12 @@ class MemoryControlPlaneStore:
             updated = replace(rollout, status=status, notes=notes.strip() or rollout.notes)
 
             if status == "success" and apply:
-                plan = self.plan_update(rollout.deployment_id, rollout.target_version,
-                                        ack_restore_required=rollout.ack_restore_required)
+                plan = self._plan_update(
+                    rollout.deployment_id,
+                    rollout.target_version,
+                    ack_restore_required=rollout.ack_restore_required,
+                    ignore_rollout_id=rollout.id,
+                )
                 if not plan.allowed:
                     raise ValueError(f"rollout completion blocked: {plan.reason}")
                 release = self.get_release(rollout.target_version)
@@ -235,6 +536,7 @@ class MemoryControlPlaneStore:
                     deployment,
                     current_version=release.version,
                     current_migration=release.migration_to or deployment.current_migration,
+                    current_version_deployed_at=datetime.now(timezone.utc).isoformat(),
                 )
 
             self._rollouts[rollout_id] = updated

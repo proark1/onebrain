@@ -1,12 +1,11 @@
 """Compute the signed desired-state a box converges to (architecture §3b/§3e).
 
 PURE: the control store, the clock, and the signing key are injected; there is no
-network and no scheduler. The two-key trust chain (D-11) is assembled here but the
-box VERIFIES it, never trusts it: the embedded SignedReleaseBlock carries the
-release's stored OFFLINE signature (which Mission Control cannot forge, so a
-compromised MC can never introduce an unsigned image), and the thin wrapper is
-signed by MC's single online desired-state key (whose compromise can only choose
-WHICH offline-signed, promoted release a box runs).
+network and no scheduler. Customer boxes receive the stored OFFLINE production
+signature. Only the designated development gate receives the promotion's CI
+development signature. The thin wrapper is signed by MC's online desired-state
+key; every box still verifies the embedded release signature against its locally
+configured trust root.
 
 Emission is DORMANT until fleet_desired_state_private_key is configured:
 sign_desired_state_for returns None, so today's fleet sees no desired-state at all.
@@ -71,15 +70,16 @@ def target_release_for_deployment(control_store, deployment) -> Optional[Release
 
 
 def build_desired_state(deployment, release, *, floor_version: str, now, ttl_seconds: int,
-                        nonce: str) -> DesiredStateEnvelope:
+                        nonce: str, release_signature: str = "") -> DesiredStateEnvelope:
     """Assemble the UNSIGNED envelope. The SignedReleaseBlock is reconstructed from the
     STORED release fields + release.signature — Phase-3 WP4 signed that signature over
     exactly the persisted (stripped) values, so it re-verifies byte-for-byte on the box.
     Raises ValueError if release.signature is empty: an unsigned release is never offered
     to a box (the box would reject it anyway; fail loud on MC instead of shipping a dud)."""
-    if not release.signature:
+    signature = release_signature or release.signature
+    if not signature:
         raise ValueError("refusing to offer an unsigned release as desired-state")
-    block = SignedReleaseBlock(**release_signature_fields(release), signature=release.signature)
+    block = SignedReleaseBlock(**release_signature_fields(release), signature=signature)
     return DesiredStateEnvelope(
         deployment_id=deployment.id,
         release=block,
@@ -104,11 +104,27 @@ def sign_desired_state_for(control_store, deployment_id: str, *, settings, now,
     if deployment is None:
         return None
     release = target_release_for_deployment(control_store, deployment)
-    if release is None or not release.signature:
+    if release is None:
+        return None
+    promotion = control_store.get_release_promotion(release.version)
+    if getattr(settings, "release_promotion_required", False):
+        if deployment.is_release_gate:
+            if not promotion or promotion.state not in {
+                "dev_pending", "dev_deploying", "dev_verified", "customer_approved",
+            }:
+                return None
+        elif not promotion or promotion.state != "customer_approved":
+            return None
+    release_signature = release.signature
+    if deployment.is_release_gate:
+        if promotion and promotion.gate_deployment_id in {"", deployment.id}:
+            release_signature = promotion.dev_signature
+    if not release_signature:
         return None
     envelope = build_desired_state(
         deployment, release, floor_version=release.version, now=now,
         ttl_seconds=settings.fleet_desired_state_ttl_seconds, nonce=nonce_factory(),
+        release_signature=release_signature,
     )
     return sign_desired_state(envelope, private_key)
 

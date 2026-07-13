@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.auth.principal import Principal, resolve_principal
 from app.config import get_settings
 from app.controlplane.base import ServedFloorBump
+from app.controlplane.promotion import reconcile_heartbeat_promotion
 from app.controlplane.desired_state import (
     active_pull_attempt_id,
     active_signer_in_served_set,
@@ -125,23 +126,33 @@ def ingest_heartbeat(body: AnyFleetHeartbeat, authorization: str = Header(defaul
     _reject_skewed_reported_at(body.reported_at)
     store = get_fleet_store()
     store.touch_key(key.id, _now())
+    received_at = _now()
     store.record_heartbeat(Heartbeat(
         id=f"hb_{uuid4().hex}",
         deployment_id=body.deployment_id,
         contract_version=body.contract_version,
         reported_at=body.reported_at,
-        received_at=_now(),
+        received_at=received_at,
         healthy=body.healthy,
         version=body.onebrain.version,
         migration_revision=body.onebrain.migration_revision,
         payload=body.model_dump(),
     ))
+    control = get_control_plane_store()
+    reconcile_heartbeat_promotion(control, body, received_at=received_at)
+    deployment = control.get_deployment(body.deployment_id)
+    if deployment and deployment.is_release_gate and body.healthy:
+        # A candidate may have arrived before the gate was healthy. The first
+        # healthy heartbeat opens exactly one waiting candidate; later candidates
+        # remain pending behind the active dev rollout.
+        from app.routers.operator import dispatch_waiting_development_candidate
+
+        dispatch_waiting_development_candidate(control, actor=f"fleet:{body.deployment_id}")
     # ADVISORY fast-path only (B8): the AUTHORITATIVE channel is the box's own GET
     # /desired-state below. Behaviour-inert while emission is off — env is None when
     # fleet_desired_state_private_key is unset, so config stays {} byte-for-byte with
     # today's ack (pinned by test_heartbeat_ack_is_inert_when_emission_off).
     ack = HeartbeatAck(deployment_id=body.deployment_id)
-    control = get_control_plane_store()
     env = sign_desired_state_for(control, body.deployment_id, settings=get_settings(),
                                  now=datetime.now(timezone.utc))
     if env is not None:
@@ -477,6 +488,9 @@ class DeploymentOverview(BaseModel):
     release_ring: str
     status: str
     current_version: str = ""
+    created_at: str = ""
+    current_version_deployed_at: str = ""
+    is_release_gate: bool = False
     healthy: bool | None = None
     reported_version: str = ""
     migration_revision: str = ""
@@ -518,6 +532,9 @@ def fleet_overview(principal: Principal = Depends(resolve_principal)):
             release_ring=dep.release_ring,
             status=dep.status,
             current_version=dep.current_version,
+            created_at=dep.created_at,
+            current_version_deployed_at=dep.current_version_deployed_at,
+            is_release_gate=dep.is_release_gate,
             healthy=hb.healthy if hb else None,
             reported_version=hb.version if hb else "",
             migration_revision=hb.migration_revision if hb else "",

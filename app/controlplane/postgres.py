@@ -13,13 +13,17 @@ from app.controlplane.base import (
     DeploymentModule,
     HealthCheckRun,
     ReleaseManifest,
+    ReleasePromotion,
+    ReleasePromotionEvent,
     RolloutRun,
     ServedFloorBump,
     UpdatePlan,
     compute_update_plan,
+    release_promotion_plan_context,
     require_signed_releases,
     validate_deployment,
     validate_module,
+    validate_promotion,
     validate_release,
     validate_run_status,
 )
@@ -65,20 +69,29 @@ class PostgresControlPlaneStore:
                     "control_rollouts",
                     "control_fleet_rollouts",
                     "control_served_floor_bumps",
+                    "control_release_promotions",
+                    "control_release_promotion_events",
                 ),
             )
+
+    _DEPLOYMENT_COLS = (
+        "id, customer_name, environment, deployment_type, region, release_ring, "
+        "status, current_version, current_migration, created_at, account_id, update_policy, "
+        "is_release_gate, current_version_deployed_at, last_heartbeat_at, "
+        "last_heartbeat_healthy, last_reported_version, last_reported_migration"
+    )
 
     def create_deployment(self, deployment: CustomerDeployment) -> CustomerDeployment:
         validate_deployment(deployment)
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 INSERT INTO control_deployments
                 (id, customer_name, environment, deployment_type, region, release_ring,
-                 status, current_version, current_migration, account_id, update_policy)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id, customer_name, environment, deployment_type, region,
-                    release_ring, status, current_version, current_migration, created_at, account_id, update_policy
+                 status, current_version, current_migration, account_id, update_policy,
+                 is_release_gate, current_version_deployed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING {self._DEPLOYMENT_COLS}
                 """,
                 (
                     deployment.id,
@@ -92,6 +105,8 @@ class PostgresControlPlaneStore:
                     deployment.current_migration,
                     deployment.account_id,
                     deployment.update_policy,
+                    deployment.is_release_gate,
+                    deployment.current_version_deployed_at or None,
                 ),
             )
             row = cur.fetchone()
@@ -101,12 +116,7 @@ class PostgresControlPlaneStore:
     def get_deployment(self, deployment_id: str) -> Optional[CustomerDeployment]:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT id, customer_name, environment, deployment_type, region,
-                    release_ring, status, current_version, current_migration, created_at, account_id, update_policy
-                FROM control_deployments
-                WHERE id = %s
-                """,
+                f"SELECT {self._DEPLOYMENT_COLS} FROM control_deployments WHERE id = %s",
                 (deployment_id,),
             )
             row = cur.fetchone()
@@ -115,12 +125,8 @@ class PostgresControlPlaneStore:
     def list_deployments(self) -> List[CustomerDeployment]:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT id, customer_name, environment, deployment_type, region,
-                    release_ring, status, current_version, current_migration, created_at, account_id, update_policy
-                FROM control_deployments
-                ORDER BY lower(customer_name), id
-                """
+                f"SELECT {self._DEPLOYMENT_COLS} FROM control_deployments "
+                "ORDER BY lower(customer_name), id"
             )
             rows = cur.fetchall()
         return [self._deployment(row) for row in rows]
@@ -131,8 +137,7 @@ class PostgresControlPlaneStore:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 "UPDATE control_deployments SET update_policy = %s WHERE id = %s "
-                "RETURNING id, customer_name, environment, deployment_type, region, "
-                "release_ring, status, current_version, current_migration, created_at, account_id, update_policy",
+                f"RETURNING {self._DEPLOYMENT_COLS}",
                 (update_policy, deployment_id),
             )
             row = cur.fetchone()
@@ -235,6 +240,352 @@ class PostgresControlPlaneStore:
             rows = cur.fetchall()
         return [self._release(row) for row in rows]
 
+    _PROMOTION_COLS = (
+        "release_version, state, gate_deployment_id, dev_signature, dev_signing_key_id, "
+        "dev_rollout_id, dev_attempt_id, dev_started_at, dev_completed_at, dev_verified_at, "
+        "customer_approved_at, customer_approved_by, customer_paused_at, "
+        "customer_paused_reason, yanked_at, failure_reason, created_at, updated_at"
+    )
+    _PROMOTION_FIELDS = frozenset({
+        "gate_deployment_id", "dev_signature", "dev_signing_key_id", "dev_rollout_id",
+        "dev_attempt_id", "dev_started_at", "dev_completed_at", "dev_verified_at",
+        "customer_approved_at", "customer_approved_by", "customer_paused_at",
+        "customer_paused_reason", "yanked_at", "failure_reason", "updated_at",
+    })
+    _PROMOTION_TIMESTAMPS = frozenset({
+        "dev_started_at", "dev_completed_at", "dev_verified_at", "customer_approved_at",
+        "customer_paused_at", "yanked_at", "updated_at",
+    })
+
+    def create_release_candidate(
+        self,
+        release: ReleaseManifest,
+        promotion: ReleasePromotion,
+        event: ReleasePromotionEvent,
+    ) -> ReleasePromotion:
+        validate_release(release)
+        validate_promotion(promotion)
+        if promotion.release_version != release.version or event.release_version != release.version:
+            raise ValueError("release candidate records must use the same version")
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO control_release_manifests
+                (version, git_sha, modules, migration_from, migration_to, security_notes,
+                 rollback_plan, status, images, rollback_kind, signature, signing_key_id)
+                VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+                """,
+                (
+                    release.version, release.git_sha, json.dumps(release.modules),
+                    release.migration_from, release.migration_to, release.security_notes,
+                    release.rollback_plan, release.status, json.dumps(release.images),
+                    release.rollback_kind, release.signature, release.signing_key_id,
+                ),
+            )
+            cur.execute(
+                f"""
+                INSERT INTO control_release_promotions
+                (release_version, state, gate_deployment_id, dev_signature, dev_signing_key_id,
+                 dev_rollout_id, dev_attempt_id, failure_reason)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING {self._PROMOTION_COLS}
+                """,
+                (
+                    promotion.release_version, promotion.state,
+                    promotion.gate_deployment_id or None, promotion.dev_signature,
+                    promotion.dev_signing_key_id, promotion.dev_rollout_id or None,
+                    promotion.dev_attempt_id, promotion.failure_reason,
+                ),
+            )
+            row = cur.fetchone()
+            self._insert_promotion_event(cur, event)
+            conn.commit()
+        return self._promotion(row)
+
+    def get_release_promotion(self, version: str) -> Optional[ReleasePromotion]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {self._PROMOTION_COLS} FROM control_release_promotions "
+                "WHERE release_version = %s",
+                (version,),
+            )
+            row = cur.fetchone()
+        return self._promotion(row) if row else None
+
+    def list_release_promotions(self) -> List[ReleasePromotion]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {self._PROMOTION_COLS} FROM control_release_promotions "
+                "ORDER BY created_at DESC, release_version DESC"
+            )
+            rows = cur.fetchall()
+        return [self._promotion(row) for row in rows]
+
+    def transition_release_promotion(
+        self,
+        version: str,
+        from_states: frozenset[str],
+        to_state: str,
+        *,
+        actor: str,
+        action: str,
+        note: str = "",
+        fields: Optional[Dict] = None,
+    ) -> ReleasePromotion:
+        fields = dict(fields or {})
+        bad = set(fields) - self._PROMOTION_FIELDS
+        if bad:
+            raise ValueError(f"cannot update release promotion fields: {sorted(bad)}")
+        validate_promotion(ReleasePromotion(release_version=version, state=to_state))
+        updated_at = fields.pop("updated_at", "")
+        sets = ["state = %s"]
+        params: List = [to_state]
+        if updated_at:
+            sets.append("updated_at = %s::timestamptz")
+            params.append(updated_at)
+        else:
+            sets.append("updated_at = now()")
+        for key, value in fields.items():
+            if key in self._PROMOTION_TIMESTAMPS:
+                sets.append(f"{key} = %s::timestamptz")
+                params.append(value or None)
+            else:
+                sets.append(f"{key} = %s")
+                params.append(value or None if key in {"gate_deployment_id", "dev_rollout_id"} else value)
+        params.extend([version, list(from_states)])
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE control_release_promotions SET {', '.join(sets)} "
+                "WHERE release_version = %s AND state = ANY(%s) "
+                f"RETURNING {self._PROMOTION_COLS}",
+                tuple(params),
+            )
+            row = cur.fetchone()
+            if not row:
+                cur.execute(
+                    "SELECT state FROM control_release_promotions WHERE release_version = %s",
+                    (version,),
+                )
+                got = cur.fetchone()
+                if not got:
+                    raise ValueError(f"unknown release promotion: {version}")
+                raise ValueError(
+                    f"release promotion state changed: expected {sorted(from_states)}, got {got[0]}"
+                )
+            previous_state = next(iter(from_states)) if len(from_states) == 1 else ""
+            if to_state == "yanked":
+                cur.execute(
+                    "UPDATE control_release_manifests SET status = 'yanked' WHERE version = %s",
+                    (version,),
+                )
+            elif to_state == "customer_approved":
+                cur.execute(
+                    "UPDATE control_release_manifests SET status = 'active' WHERE version = %s",
+                    (version,),
+                )
+            self._insert_promotion_event(cur, ReleasePromotionEvent(
+                id="",
+                release_version=version,
+                actor=actor,
+                action=action,
+                from_state=previous_state,
+                to_state=to_state,
+                note=note,
+                metadata=fields,
+            ))
+            conn.commit()
+        return self._promotion(row)
+
+    def list_release_promotion_events(self, version: str) -> List[ReleasePromotionEvent]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, release_version, actor, action, from_state, to_state, note, metadata, created_at "
+                "FROM control_release_promotion_events WHERE release_version = %s "
+                "ORDER BY created_at ASC, id ASC",
+                (version,),
+            )
+            rows = cur.fetchall()
+        return [self._promotion_event(row) for row in rows]
+
+    def set_release_production_signature(
+        self,
+        version: str,
+        *,
+        signature: str,
+        signing_key_id: str,
+        actor: str,
+    ) -> ReleaseManifest:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT promotion.state, manifest.signature, manifest.signing_key_id "
+                "FROM control_release_promotions AS promotion "
+                "JOIN control_release_manifests AS manifest "
+                "ON manifest.version = promotion.release_version "
+                "WHERE promotion.release_version = %s FOR UPDATE",
+                (version,),
+            )
+            existing = cur.fetchone()
+            if not existing:
+                raise ValueError(f"unknown release candidate: {version}")
+            if existing[0] != "dev_verified":
+                raise ValueError("release_not_dev_verified")
+            if existing[1]:
+                if existing[1] == signature and (existing[2] or "") == signing_key_id:
+                    cur.execute(
+                        "SELECT version, git_sha, modules, migration_from, migration_to, "
+                        "security_notes, rollback_plan, status, created_at, images, rollback_kind, "
+                        "signature, signing_key_id FROM control_release_manifests WHERE version = %s",
+                        (version,),
+                    )
+                    return self._release(cur.fetchone())
+                raise ValueError("production_signature_already_attached")
+            cur.execute(
+                "UPDATE control_release_manifests SET signature = %s, signing_key_id = %s "
+                "WHERE version = %s RETURNING version, git_sha, modules, migration_from, migration_to, "
+                "security_notes, rollback_plan, status, created_at, images, rollback_kind, signature, signing_key_id",
+                (signature, signing_key_id, version),
+            )
+            row = cur.fetchone()
+            self._insert_promotion_event(cur, ReleasePromotionEvent(
+                id="", release_version=version, actor=actor,
+                action="production_signature_attached", from_state="dev_verified",
+                to_state="dev_verified", metadata={"signing_key_id": signing_key_id},
+            ))
+            conn.commit()
+        return self._release(row)
+
+    def approve_release_for_customers(
+        self,
+        version: str,
+        *,
+        signature: str,
+        signing_key_id: str,
+        actor: str,
+        note: str = "",
+    ) -> ReleasePromotion:
+        if not signature or not signing_key_id:
+            raise ValueError("production signature and signing key id are required")
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE control_release_promotions SET state = 'customer_approved', "
+                "customer_approved_at = now(), customer_approved_by = %s, "
+                "failure_reason = '', updated_at = now() "
+                "WHERE release_version = %s AND state = 'dev_verified' "
+                "AND EXISTS (SELECT 1 FROM control_release_manifests AS manifest "
+                "WHERE manifest.version = release_version AND manifest.signature = %s "
+                "AND manifest.signing_key_id = %s) "
+                f"RETURNING {self._PROMOTION_COLS}",
+                (actor, version, signature, signing_key_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("release must be dev_verified before customer approval")
+            cur.execute(
+                "UPDATE control_release_manifests SET status = 'active', signature = %s, signing_key_id = %s "
+                "WHERE version = %s",
+                (signature, signing_key_id, version),
+            )
+            self._insert_promotion_event(cur, ReleasePromotionEvent(
+                id="", release_version=version, actor=actor, action="customer_approved",
+                from_state="dev_verified", to_state="customer_approved", note=note,
+                metadata={"signing_key_id": signing_key_id},
+            ))
+            conn.commit()
+        return self._promotion(row)
+
+    def get_release_gate(self) -> Optional[CustomerDeployment]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {self._DEPLOYMENT_COLS} FROM control_deployments "
+                "WHERE is_release_gate = true AND status = 'active' LIMIT 1"
+            )
+            row = cur.fetchone()
+        return self._deployment(row) if row else None
+
+    def designate_release_gate(self, deployment_id: str) -> CustomerDeployment:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT environment, deployment_type, status FROM control_deployments "
+                "WHERE id = %s FOR UPDATE",
+                (deployment_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"unknown deployment: {deployment_id}")
+            if row[0] != "development" or row[1] != "dedicated_server":
+                raise ValueError("release gate must be a dedicated development server")
+            if row[2] != "active":
+                raise ValueError("release gate must be active")
+            cur.execute("UPDATE control_deployments SET is_release_gate = false WHERE is_release_gate = true")
+            cur.execute(
+                "UPDATE control_deployments SET is_release_gate = true WHERE id = %s "
+                f"RETURNING {self._DEPLOYMENT_COLS}",
+                (deployment_id,),
+            )
+            updated = cur.fetchone()
+            conn.commit()
+        return self._deployment(updated)
+
+    def update_deployment_telemetry(
+        self,
+        deployment_id: str,
+        *,
+        heartbeat_at: str,
+        healthy: bool,
+        reported_version: str = "",
+        reported_migration: str = "",
+    ) -> CustomerDeployment:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE control_deployments SET last_heartbeat_at = %s::timestamptz, "
+                "last_heartbeat_healthy = %s, last_reported_version = %s, "
+                "last_reported_migration = %s WHERE id = %s "
+                f"RETURNING {self._DEPLOYMENT_COLS}",
+                (
+                    heartbeat_at, healthy, reported_version, reported_migration,
+                    deployment_id,
+                ),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"unknown deployment: {deployment_id}")
+            conn.commit()
+        return self._deployment(row)
+
+    def mark_deployment_provisioned(
+        self,
+        deployment_id: str,
+        *,
+        installed_at: str,
+        version: str,
+        migration: str = "",
+    ) -> CustomerDeployment:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE control_deployments SET current_version = COALESCE(NULLIF(%s, ''), current_version), "
+                "current_migration = COALESCE(NULLIF(%s, ''), current_migration), "
+                "current_version_deployed_at = %s::timestamptz WHERE id = %s "
+                f"RETURNING {self._DEPLOYMENT_COLS}",
+                (version, migration, installed_at, deployment_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"unknown deployment: {deployment_id}")
+            conn.commit()
+        return self._deployment(row)
+
+    @staticmethod
+    def _insert_promotion_event(cur, event: ReleasePromotionEvent) -> None:
+        cur.execute(
+            "INSERT INTO control_release_promotion_events "
+            "(release_version, actor, action, from_state, to_state, note, metadata) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)",
+            (
+                event.release_version, event.actor, event.action, event.from_state,
+                event.to_state, event.note, json.dumps(event.metadata),
+            ),
+        )
+
     def record_backup(self, backup: BackupRun) -> BackupRun:
         validate_run_status(backup.status)
         if not self.get_deployment(backup.deployment_id):
@@ -299,18 +650,50 @@ class PostgresControlPlaneStore:
             row = cur.fetchone()
         return self._health(row) if row else None
 
-    def plan_update(self, deployment_id: str, target_version: str, *, ack_restore_required: bool = False) -> UpdatePlan:
+    def plan_update(
+        self,
+        deployment_id: str,
+        target_version: str,
+        *,
+        ack_restore_required: bool = False,
+        ignore_rollout_id: str = "",
+    ) -> UpdatePlan:
+        return self._plan_update(
+            deployment_id,
+            target_version,
+            ack_restore_required=ack_restore_required,
+            ignore_rollout_id=ignore_rollout_id,
+        )
+
+    def _plan_update(
+        self,
+        deployment_id: str,
+        target_version: str,
+        *,
+        ack_restore_required: bool,
+        ignore_rollout_id: str,
+    ) -> UpdatePlan:
         deployment = self.get_deployment(deployment_id)
+        release = self.get_release(target_version)
+        promotion = self.get_release_promotion(target_version)
+        gate = self.get_release_gate()
         return compute_update_plan(
             deployment_id, target_version,
             deployment=deployment,
-            release=self.get_release(target_version),
+            release=release,
             modules=self.list_modules(deployment_id) if deployment else [],
             latest_backup=lambda: self.latest_backup(deployment_id),  # lazy (A3): the callable only runs
                                                                       # inside the backup gate, keeping the
                                                                       # extra SELECT off every plan_update
             ack_restore_required=ack_restore_required,
             require_signed_release=require_signed_releases(),
+            promotion=promotion,
+            gate_deployment_id=gate.id if gate else "",
+            active_rollout=bool(
+                (active := self.list_active_rollout(deployment_id))
+                and active.id != ignore_rollout_id
+            ),
+            **release_promotion_plan_context(release, promotion),
         )
 
     def start_rollout(self, rollout: RolloutRun) -> RolloutRun:
@@ -365,8 +748,12 @@ class PostgresControlPlaneStore:
 
             updated = replace(rollout, status=status, notes=notes.strip() or rollout.notes)
             if status == "success" and apply:
-                plan = self.plan_update(rollout.deployment_id, rollout.target_version,
-                                        ack_restore_required=rollout.ack_restore_required)
+                plan = self._plan_update(
+                    rollout.deployment_id,
+                    rollout.target_version,
+                    ack_restore_required=rollout.ack_restore_required,
+                    ignore_rollout_id=rollout.id,
+                )
                 if not plan.allowed:
                     raise ValueError(f"rollout completion blocked: {plan.reason}")
                 release = self.get_release(rollout.target_version)
@@ -389,7 +776,8 @@ class PostgresControlPlaneStore:
                     """
                     UPDATE control_deployments
                     SET current_version = %s,
-                        current_migration = %s
+                        current_migration = %s,
+                        current_version_deployed_at = now()
                     WHERE id = %s
                     """,
                     (
@@ -505,17 +893,24 @@ class PostgresControlPlaneStore:
 
     # --- fleet rollouts (Phase 2 orchestration) ---
     _FLEET_COLS = ("id, target_version, git_sha, status, ring_order, current_ring, "
-                   "failure_tolerance, started_by, notes, created_at, callback_url, dry_run")
+                   "failure_tolerance, started_by, notes, created_at, callback_url, dry_run, "
+                   "ring_batch_size, only_deployment_ids, include_manual_pinned")
 
     def _fleet_rollout(self, row) -> FleetRolloutRun:
         ring_order = row[4]
         if isinstance(ring_order, str):
             ring_order = json.loads(ring_order) if ring_order else []
+        only_deployment_ids = row[13] if len(row) > 13 else []
+        if isinstance(only_deployment_ids, str):
+            only_deployment_ids = json.loads(only_deployment_ids) if only_deployment_ids else []
         return FleetRolloutRun(
             id=row[0], target_version=row[1], git_sha=row[2] or "", status=row[3],
             ring_order=tuple(ring_order or ()), current_ring=row[5] or "",
             failure_tolerance=int(row[6]), started_by=row[7] or "", notes=row[8] or "",
             created_at=_iso(row[9]), callback_url=row[10] or "", dry_run=bool(row[11]),
+            ring_batch_size=int(row[12]) if len(row) > 12 else 1,
+            only_deployment_ids=tuple(only_deployment_ids or ()),
+            include_manual_pinned=bool(row[14]) if len(row) > 14 else False,
         )
 
     def create_fleet_rollout(self, fleet_run: FleetRolloutRun) -> FleetRolloutRun:
@@ -523,13 +918,15 @@ class PostgresControlPlaneStore:
             cur.execute(
                 "INSERT INTO control_fleet_rollouts "
                 "(id, target_version, git_sha, status, ring_order, current_ring, "
-                " failure_tolerance, started_by, notes, callback_url, dry_run) "
-                "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s) "
+                " failure_tolerance, started_by, notes, callback_url, dry_run, ring_batch_size, "
+                " only_deployment_ids, include_manual_pinned) "
+                "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s) "
                 f"RETURNING {self._FLEET_COLS}",
                 (fleet_run.id, fleet_run.target_version, fleet_run.git_sha, fleet_run.status,
                  json.dumps(list(fleet_run.ring_order)), fleet_run.current_ring,
                  fleet_run.failure_tolerance, fleet_run.started_by, fleet_run.notes,
-                 fleet_run.callback_url, fleet_run.dry_run),
+                 fleet_run.callback_url, fleet_run.dry_run, fleet_run.ring_batch_size,
+                 json.dumps(list(fleet_run.only_deployment_ids)), fleet_run.include_manual_pinned),
             )
             row = cur.fetchone()
             conn.commit()
@@ -656,6 +1053,36 @@ class PostgresControlPlaneStore:
             created_at=_iso(row[9]),
             account_id=row[10] or "",
             update_policy=row[11] or "",
+            is_release_gate=bool(row[12]) if len(row) > 12 else False,
+            current_version_deployed_at=_iso(row[13]) if len(row) > 13 else "",
+            last_heartbeat_at=_iso(row[14]) if len(row) > 14 else "",
+            last_heartbeat_healthy=(
+                None if len(row) <= 15 or row[15] is None else bool(row[15])
+            ),
+            last_reported_version=(row[16] or "") if len(row) > 16 else "",
+            last_reported_migration=(row[17] or "") if len(row) > 17 else "",
+        )
+
+    def _promotion(self, row) -> ReleasePromotion:
+        return ReleasePromotion(
+            release_version=row[0], state=row[1], gate_deployment_id=row[2] or "",
+            dev_signature=row[3] or "", dev_signing_key_id=row[4] or "",
+            dev_rollout_id=row[5] or "", dev_attempt_id=row[6] or "",
+            dev_started_at=_iso(row[7]), dev_completed_at=_iso(row[8]),
+            dev_verified_at=_iso(row[9]), customer_approved_at=_iso(row[10]),
+            customer_approved_by=row[11] or "", customer_paused_at=_iso(row[12]),
+            customer_paused_reason=row[13] or "", yanked_at=_iso(row[14]),
+            failure_reason=row[15] or "", created_at=_iso(row[16]), updated_at=_iso(row[17]),
+        )
+
+    def _promotion_event(self, row) -> ReleasePromotionEvent:
+        metadata = row[7]
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata or "{}")
+        return ReleasePromotionEvent(
+            id=str(row[0]), release_version=row[1], actor=row[2] or "", action=row[3],
+            from_state=row[4] or "", to_state=row[5], note=row[6] or "",
+            metadata=metadata or {}, created_at=_iso(row[8]),
         )
 
     def _module(self, row) -> DeploymentModule:

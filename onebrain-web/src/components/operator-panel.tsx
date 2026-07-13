@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { MetricStrip, Notice, PageHeader, Panel, Tabs } from "@/components/admin-ui";
 import {
-  createOperatorRelease,
+  approveOperatorRelease,
+  designateDevelopmentGate,
+  getDevelopmentGate,
   getOperatorUpdatePlan,
   latestOperatorBackup,
   latestOperatorHealth,
@@ -16,16 +18,20 @@ import {
   listProvisioningRuns,
   provisionCustomer,
   readBootstrapSecret,
-  recordOperatorBackup,
-  recordOperatorHealth,
+  pauseOperatorRelease,
+  provisionDevelopmentGate,
+  resumeOperatorRelease,
+  retryDevelopmentRelease,
   retryProvisioningRun,
   revokeAccountServiceKey,
   startOperatorRollout,
-  updateOperatorRollout,
+  uploadProductionSignature,
+  yankOperatorRelease,
 } from "@/lib/onebrain-client";
 import type {
   BrandTheme,
   BrandThemeInput,
+  DevelopmentGate,
   OperatorBackup,
   OperatorCustomer,
   OperatorDeployment,
@@ -51,12 +57,10 @@ type DeploymentRow = {
 type BusyAction =
   | "load"
   | "provision"
-  | "release"
+  | "promotion"
+  | "gate"
   | "plan"
   | "rollout"
-  | "backup"
-  | "health"
-  | "status"
   | "revoke"
   | "retry"
   | "secret"
@@ -73,12 +77,6 @@ const RELEASE_RINGS = [
   { label: "Pilot", value: "pilot" },
   { label: "Early", value: "early" },
   { label: "Stable", value: "stable" },
-];
-
-const RELEASE_STATUSES = [
-  { label: "Draft", value: "draft" },
-  { label: "Active", value: "active" },
-  { label: "Deprecated", value: "deprecated" },
 ];
 
 const DEFAULT_BRAND_THEME: BrandThemeInput = {
@@ -168,11 +166,19 @@ function releaseOptionLabel(release: OperatorRelease): string {
   return timestamp ? `${release.version} - ${RELEASE_DATE_FORMATTER.format(timestamp)}` : release.version;
 }
 
+function customerApprovedReleases(releases: OperatorRelease[]): OperatorRelease[] {
+  const promotionAware = releases.some((release) => release.promotion);
+  return releases.filter((release) => promotionAware
+    ? release.promotion?.state === "customer_approved"
+    : release.status === "active");
+}
+
 export function OperatorPanel() {
   const [bundles, setBundles] = useState<ProvisioningBundle[]>([]);
   const [customers, setCustomers] = useState<OperatorCustomer[]>([]);
   const [deployments, setDeployments] = useState<DeploymentRow[]>([]);
   const [releases, setReleases] = useState<OperatorRelease[]>([]);
+  const [developmentGate, setDevelopmentGate] = useState<DevelopmentGate | null>(null);
   const [provisioningRuns, setProvisioningRuns] = useState<ProvisioningRun[]>([]);
   const [credentials, setCredentials] = useState<ProvisionedCredential[]>([]);
   const [bootstrapSecrets, setBootstrapSecrets] = useState<Record<string, string>>({});
@@ -184,7 +190,10 @@ export function OperatorPanel() {
   const [notice, setNotice] = useState("");
   const [activeTab, setActiveTab] = useState<OperatorTab>("customers");
   const [showProvisionForm, setShowProvisionForm] = useState(false);
-  const [showReleaseForm, setShowReleaseForm] = useState(false);
+  const [signatureByRelease, setSignatureByRelease] = useState<Record<string, string>>({});
+  const [signatureKeyByRelease, setSignatureKeyByRelease] = useState<Record<string, string>>({});
+  const [promotionNoteByRelease, setPromotionNoteByRelease] = useState<Record<string, string>>({});
+  const [developmentOwnerEmail, setDevelopmentOwnerEmail] = useState("");
 
   const [provisionName, setProvisionName] = useState("");
   const [provisionOwnerEmail, setProvisionOwnerEmail] = useState("");
@@ -197,15 +206,6 @@ export function OperatorPanel() {
   );
   const [provisionBrandTheme, setProvisionBrandTheme] = useState<BrandThemeInput>(DEFAULT_BRAND_THEME);
 
-  const [releaseSourceId, setReleaseSourceId] = useState("");
-  const [releaseVersion, setReleaseVersion] = useState("");
-  const [releaseModuleVersion, setReleaseModuleVersion] = useState("");
-  const [releaseGitSha, setReleaseGitSha] = useState("");
-  const [releaseStatus, setReleaseStatus] = useState("draft");
-  const [migrationFrom, setMigrationFrom] = useState("");
-  const [migrationTo, setMigrationTo] = useState("");
-  const [securityNotes, setSecurityNotes] = useState("");
-  const [rollbackPlan, setRollbackPlan] = useState("");
 
   const customerStats = useMemo(() => {
     const deployed = customers.filter((row) => row.deployment).length;
@@ -214,11 +214,6 @@ export function OperatorPanel() {
     const activeKeys = customers.reduce((total, row) => total + activeCount(row.service_keys), 0);
     return { activeKeys, attention, deployed, healthy };
   }, [customers]);
-
-  const releaseSource = useMemo(
-    () => deployments.find((row) => row.deployment.id === releaseSourceId) ?? null,
-    [deployments, releaseSourceId],
-  );
 
   const selectedProvisionBundle = useMemo(
     () => bundles.find((bundle) => bundle.id === provisionBundle) ?? null,
@@ -229,14 +224,18 @@ export function OperatorPanel() {
     if (!selectedProvisionBundle) {
       return [];
     }
-    return releases
-      .filter((release) => release.status === "active"
-        && selectedProvisionBundle.modules.every((moduleId) => Boolean(release.images?.[moduleId])))
+    return customerApprovedReleases(releases)
+      .filter((release) => selectedProvisionBundle.modules.every((moduleId) => Boolean(release.images?.[moduleId])))
       .sort((left, right) => {
         const timestampDifference = releaseTimestamp(right) - releaseTimestamp(left);
         return timestampDifference || right.version.localeCompare(left.version, undefined, { numeric: true });
       });
   }, [releases, selectedProvisionBundle]);
+
+  const approvedCustomerReleases = useMemo(
+    () => customerApprovedReleases(releases),
+    [releases],
+  );
 
   const hasSelectedProvisionVersion = eligibleProvisionReleases.some(
     (release) => release.version === selectedProvisionVersion,
@@ -251,12 +250,13 @@ export function OperatorPanel() {
     setBusyId("");
     setError("");
     try {
-      const [nextBundles, nextCustomers, nextDeployments, nextReleases, nextProvisioningRuns] = await Promise.all([
+      const [nextBundles, nextCustomers, nextDeployments, nextReleases, nextProvisioningRuns, nextGate] = await Promise.all([
         listProvisioningBundles(),
         listOperatorCustomers(),
         listOperatorDeployments(),
         listOperatorReleases(),
         listProvisioningRuns(),
+        getDevelopmentGate().catch(() => null),
       ]);
       const nextRows = await Promise.all(nextDeployments.map(async (deployment) => {
         const [modules, rollouts, backup, health] = await Promise.all([
@@ -273,17 +273,16 @@ export function OperatorPanel() {
       setDeployments(nextRows);
       setReleases(nextReleases);
       setProvisioningRuns(nextProvisioningRuns);
+      setDevelopmentGate(nextGate);
       setProvisionBundle((current) => nextBundles.some((bundle) => bundle.id === current) ? current : nextBundles[0]?.id ?? "");
-      setReleaseSourceId((current) => current && nextRows.some((row) => row.deployment.id === current)
-        ? current
-        : nextRows[0]?.deployment.id ?? "");
       setTargetReleaseByDeployment((current) => {
+        const approved = customerApprovedReleases(nextReleases);
         const next: Record<string, string> = {};
         for (const row of nextRows) {
           const selected = current[row.deployment.id];
-          next[row.deployment.id] = selected && nextReleases.some((release) => release.version === selected)
+          next[row.deployment.id] = selected && approved.some((release) => release.version === selected)
             ? selected
-            : nextReleases[nextReleases.length - 1]?.version ?? "";
+            : approved[approved.length - 1]?.version ?? "";
         }
         return next;
       });
@@ -301,12 +300,13 @@ export function OperatorPanel() {
       setBusyAction("load");
       setError("");
       try {
-        const [nextBundles, nextCustomers, nextDeployments, nextReleases, nextProvisioningRuns] = await Promise.all([
+        const [nextBundles, nextCustomers, nextDeployments, nextReleases, nextProvisioningRuns, nextGate] = await Promise.all([
           listProvisioningBundles(),
           listOperatorCustomers(),
           listOperatorDeployments(),
           listOperatorReleases(),
           listProvisioningRuns(),
+        getDevelopmentGate().catch(() => null),
         ]);
         const nextRows = await Promise.all(nextDeployments.map(async (deployment) => {
           const [modules, rollouts, backup, health] = await Promise.all([
@@ -325,13 +325,14 @@ export function OperatorPanel() {
         setDeployments(nextRows);
         setReleases(nextReleases);
         setProvisioningRuns(nextProvisioningRuns);
+        setDevelopmentGate(nextGate);
         setProvisionBundle((current) => nextBundles.some((bundle) => bundle.id === current)
           ? current
           : nextBundles[0]?.id ?? "");
-        setReleaseSourceId(nextRows[0]?.deployment.id ?? "");
+        const approved = customerApprovedReleases(nextReleases);
         setTargetReleaseByDeployment(Object.fromEntries(nextRows.map((row) => [
           row.deployment.id,
-          nextReleases[nextReleases.length - 1]?.version ?? "",
+          approved[approved.length - 1]?.version ?? "",
         ])));
       } catch (err) {
         if (active) {
@@ -401,44 +402,6 @@ export function OperatorPanel() {
     }
   }
 
-  async function onCreateRelease(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!releaseSource || !releaseVersion.trim() || !releaseGitSha.trim() || busyAction) {
-      return;
-    }
-    const moduleVersion = releaseModuleVersion.trim() || releaseVersion.trim();
-    setBusyAction("release");
-    setError("");
-    setNotice("");
-    try {
-      const modules = Object.fromEntries(releaseSource.modules.map((module) => [module.module_id, moduleVersion]));
-      const release = await createOperatorRelease({
-        git_sha: releaseGitSha,
-        migration_from: migrationFrom,
-        migration_to: migrationTo,
-        modules,
-        rollback_plan: rollbackPlan,
-        security_notes: securityNotes,
-        status: releaseStatus,
-        version: releaseVersion,
-      });
-      setNotice(`Release ${release.version} created.`);
-      setReleaseVersion("");
-      setReleaseModuleVersion("");
-      setReleaseGitSha("");
-      setMigrationFrom("");
-      setMigrationTo("");
-      setSecurityNotes("");
-      setRollbackPlan("");
-      setShowReleaseForm(false);
-      await loadOperator();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Release creation failed.");
-    } finally {
-      setBusyAction("");
-    }
-  }
-
   async function onPlan(row: DeploymentRow) {
     const targetVersion = targetReleaseByDeployment[row.deployment.id] || releases[releases.length - 1]?.version || "";
     if (!targetVersion || busyAction) {
@@ -481,45 +444,81 @@ export function OperatorPanel() {
     }
   }
 
-  async function onRecordRun(row: DeploymentRow, kind: "backup" | "health") {
+  async function onDesignateGate(deploymentId: string) {
     if (busyAction) {
       return;
     }
-    setBusyAction(kind);
-    setBusyId(row.deployment.id);
+    setBusyAction("gate");
+    setBusyId(deploymentId);
     setError("");
     setNotice("");
     try {
-      if (kind === "backup") {
-        await recordOperatorBackup(row.deployment.id, { detail: "Operator recorded pre-update backup.", status: "success" });
-        setNotice(`Backup recorded for ${row.deployment.customer_name}.`);
-      } else {
-        await recordOperatorHealth(row.deployment.id, { detail: "Operator recorded health check.", status: "success" });
-        setNotice(`Health recorded for ${row.deployment.customer_name}.`);
-      }
+      const gate = await designateDevelopmentGate(deploymentId);
+      setDevelopmentGate(gate);
+      setNotice(`${gate.deployment?.customer_name || deploymentId} is the development gate.`);
       await loadOperator();
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Could not record ${kind}.`);
+      setError(err instanceof Error ? err.message : "Could not designate the development gate.");
     } finally {
       setBusyAction("");
       setBusyId("");
     }
   }
 
-  async function onUpdateRollout(rollout: OperatorRollout, status: string) {
-    if (busyAction) {
+  async function onPrepareDevelopmentGate() {
+    if (busyAction || !developmentOwnerEmail.trim()) {
       return;
     }
-    setBusyAction("status");
-    setBusyId(rollout.id);
+    setBusyAction("gate");
+    setBusyId("provision");
     setError("");
     setNotice("");
     try {
-      await updateOperatorRollout(rollout.id, { notes: `Marked ${status} from Next.js operator dashboard.`, status });
-      setNotice(`Rollout marked ${status}.`);
+      const result = await provisionDevelopmentGate(developmentOwnerEmail.trim(), true);
+      setNotice(`Development server dry run created for ${result.deployment.id}. Review it before live provisioning.`);
       await loadOperator();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update rollout.");
+      setError(err instanceof Error ? err.message : "Could not prepare development provisioning.");
+    } finally {
+      setBusyAction("");
+      setBusyId("");
+    }
+  }
+
+  async function onPromotionAction(
+    release: OperatorRelease,
+    action: "retry" | "signature" | "approve" | "pause" | "resume" | "yank",
+  ) {
+    if (busyAction) {
+      return;
+    }
+    setBusyAction("promotion");
+    setBusyId(release.version);
+    setError("");
+    setNotice("");
+    const note = promotionNoteByRelease[release.version] || "";
+    try {
+      if (action === "retry") {
+        await retryDevelopmentRelease(release.version, note);
+      } else if (action === "signature") {
+        await uploadProductionSignature(
+          release.version,
+          signatureByRelease[release.version] || "",
+          signatureKeyByRelease[release.version] || "",
+        );
+      } else if (action === "approve") {
+        await approveOperatorRelease(release.version, note);
+      } else if (action === "pause") {
+        await pauseOperatorRelease(release.version, note);
+      } else if (action === "resume") {
+        await resumeOperatorRelease(release.version, note);
+      } else {
+        await yankOperatorRelease(release.version, note);
+      }
+      setNotice(`${release.version}: ${labelFor(action)} completed.`);
+      await loadOperator();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Could not ${action} release.`);
     } finally {
       setBusyAction("");
       setBusyId("");
@@ -738,51 +737,34 @@ export function OperatorPanel() {
       ) : null}
 
       {activeTab === "releases" ? (
-        <Panel
-          actions={<button className="secondaryButton" type="button" onClick={() => setShowReleaseForm((current) => !current)}>{showReleaseForm ? "Close" : "Create release"}</button>}
-          eyebrow="Releases"
-          title="Manifest"
-          count={releases.length}
-        >
-          <ReleaseRail releases={releases} />
-          {showReleaseForm ? (
-            <form className="operatorForm compactWorkflow" onSubmit={(event) => void onCreateRelease(event)}>
-              <SelectField
-                label="Source deployment"
-                options={deployments.map((row) => ({
-                  label: `${row.deployment.customer_name} / ${row.deployment.id}`,
-                  value: row.deployment.id,
-                }))}
-                value={releaseSourceId}
-                onChange={(value) => {
-                  setReleaseSourceId(value);
-                  const row = deployments.find((item) => item.deployment.id === value);
-                  setMigrationFrom(row?.deployment.current_migration || "");
-                }}
-              />
-              <ModulePreview row={releaseSource} targetVersion={releaseModuleVersion || releaseVersion || "target"} />
-              <div className="operatorFormGrid">
-                <TextField label="Release version" value={releaseVersion} onChange={setReleaseVersion} />
-                <TextField label="Module version" value={releaseModuleVersion} onChange={setReleaseModuleVersion} />
-                <TextField label="Git SHA" value={releaseGitSha} onChange={setReleaseGitSha} />
-                <SelectField label="Status" options={RELEASE_STATUSES} value={releaseStatus} onChange={setReleaseStatus} />
-              </div>
-              <div className="operatorFormGrid">
-                <TextField label="Migration from" value={migrationFrom} onChange={setMigrationFrom} />
-                <TextField label="Migration to" value={migrationTo} onChange={setMigrationTo} />
-              </div>
-              <TextareaField label="Security notes" value={securityNotes} onChange={setSecurityNotes} />
-              <TextareaField label="Rollback plan" value={rollbackPlan} onChange={setRollbackPlan} />
-              <button
-                className="primaryButton"
-                disabled={!releaseSource || !releaseVersion.trim() || !releaseGitSha.trim() || Boolean(busyAction)}
-                type="submit"
-              >
-                {busyAction === "release" ? "Creating" : "Create release"}
-              </button>
-            </form>
-          ) : null}
-        </Panel>
+        <div className="operatorGrid wide">
+          <Panel eyebrow="Development" title="Release gate">
+            <DevelopmentGateCard
+              busyAction={busyAction}
+              busyId={busyId}
+              deployments={deployments.map((row) => row.deployment)}
+              ownerEmail={developmentOwnerEmail}
+              gate={developmentGate}
+              onDesignate={onDesignateGate}
+              onOwnerEmailChange={setDevelopmentOwnerEmail}
+              onPrepare={onPrepareDevelopmentGate}
+            />
+          </Panel>
+          <Panel eyebrow="Promotion ledger" title="Releases" count={releases.length}>
+            <ReleasePromotionLedger
+              busyAction={busyAction}
+              busyId={busyId}
+              notes={promotionNoteByRelease}
+              onAction={onPromotionAction}
+              onNoteChange={(version, value) => setPromotionNoteByRelease((current) => ({ ...current, [version]: value }))}
+              onSignatureChange={(version, value) => setSignatureByRelease((current) => ({ ...current, [version]: value }))}
+              onSignatureKeyChange={(version, value) => setSignatureKeyByRelease((current) => ({ ...current, [version]: value }))}
+              releases={releases}
+              signatureKeys={signatureKeyByRelease}
+              signatures={signatureByRelease}
+            />
+          </Panel>
+        </div>
       ) : null}
 
       {activeTab === "rollouts" ? (
@@ -795,7 +777,6 @@ export function OperatorPanel() {
                 busyId={busyId}
                 key={row.deployment.id}
                 onPlan={onPlan}
-                onRecordRun={onRecordRun}
                 onStartRollout={onStartRollout}
                 onTargetReleaseChange={(deploymentId, version) => {
                   setTargetReleaseByDeployment((current) => ({ ...current, [deploymentId]: version }));
@@ -805,9 +786,8 @@ export function OperatorPanel() {
                     return next;
                   });
                 }}
-                onUpdateRollout={onUpdateRollout}
                 plan={plans[row.deployment.id]}
-                releases={releases}
+                releases={approvedCustomerReleases}
                 row={row}
                 targetRelease={targetReleaseByDeployment[row.deployment.id] || ""}
               />
@@ -1034,32 +1014,186 @@ function CustomerRow({
   );
 }
 
-function ReleaseRail({ releases }: { releases: OperatorRelease[] }) {
-  if (!releases.length) {
-    return <p className="mutedLine">No release manifests registered.</p>;
-  }
+function formattedDate(value: string): string {
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? "not recorded" : RELEASE_DATE_FORMATTER.format(timestamp);
+}
+
+function DevelopmentGateCard({
+  busyAction,
+  busyId,
+  deployments,
+  gate,
+  onDesignate,
+  onOwnerEmailChange,
+  onPrepare,
+  ownerEmail,
+}: {
+  busyAction: BusyAction;
+  busyId: string;
+  deployments: OperatorDeployment[];
+  gate: DevelopmentGate | null;
+  onDesignate: (deploymentId: string) => Promise<void>;
+  onOwnerEmailChange: (value: string) => void;
+  onPrepare: () => Promise<void>;
+  ownerEmail: string;
+}) {
+  const candidates = deployments.filter((deployment) => deployment.environment === "development"
+    && deployment.deployment_type === "dedicated_server" && !deployment.is_release_gate);
+  const deployment = gate?.deployment;
   return (
-    <div className="releaseRail">
-      {releases.map((release) => (
-        <span className="releaseToken" key={release.version} title={release.git_sha}>
-          <strong>{release.version}</strong>
-          <small>{release.status} / {Object.keys(release.modules).length} modules</small>
-        </span>
+    <div className="gateCard">
+      <div className="promotionPath" aria-label="Release promotion path">
+        <span className="complete">Green build</span>
+        <i aria-hidden="true" />
+        <span className={deployment ? "complete" : ""}>Dev server</span>
+        <i aria-hidden="true" />
+        <span className={gate?.ready ? "complete" : ""}>Healthy proof</span>
+        <i aria-hidden="true" />
+        <span>Customer approval</span>
+      </div>
+      {deployment ? (
+        <article className="gateIdentity">
+          <div className="operatorRowTitle">
+            <strong>{deployment.customer_name}</strong>
+            <span className={`statusPill ${gate?.ready ? "success" : "failed"}`}>{gate?.ready ? "ready" : "blocked"}</span>
+          </div>
+          <code>{deployment.id}</code>
+          <dl className="gateFacts">
+            <div><dt>Installed</dt><dd>{deployment.current_version || "none"}</dd></div>
+            <div><dt>Installed on</dt><dd>{formattedDate(deployment.current_version_deployed_at)}</dd></div>
+            <div><dt>Last seen</dt><dd>{formattedDate(deployment.last_heartbeat_at)}</dd></div>
+            <div><dt>Health</dt><dd>{deployment.last_heartbeat_healthy ? "healthy" : "not healthy"}</dd></div>
+          </dl>
+          {gate?.blockers.length ? (
+            <div className="pillRail">{gate.blockers.map((blocker) => <span key={blocker}>{labelFor(blocker)}</span>)}</div>
+          ) : null}
+        </article>
+      ) : (
+        <div className="signatureForm">
+          <p className="mutedLine">No development gate is designated. Prepare the dedicated onebrain-only server, enroll it, and wait for a healthy heartbeat.</p>
+          <TextField label="Development owner email" required type="email" value={ownerEmail} onChange={onOwnerEmailChange} />
+          <button
+            className="secondaryButton"
+            disabled={Boolean(busyAction) || !ownerEmail.trim()}
+            type="button"
+            onClick={() => void onPrepare()}
+          >
+            {busyAction === "gate" && busyId === "provision" ? "Preparing" : "Prepare dry run"}
+          </button>
+          <small className="operatorMuted">Live Hetzner creation remains an activation step requiring separate confirmation.</small>
+        </div>
+      )}
+      {candidates.map((candidate) => (
+        <div className="gateCandidate" key={candidate.id}>
+          <span><strong>{candidate.customer_name}</strong><small>{candidate.id}</small></span>
+          <button
+            className="secondaryButton"
+            disabled={Boolean(busyAction) || candidate.last_heartbeat_healthy !== true}
+            type="button"
+            onClick={() => void onDesignate(candidate.id)}
+          >
+            {busyAction === "gate" && busyId === candidate.id ? "Designating" : "Use as gate"}
+          </button>
+        </div>
       ))}
     </div>
   );
 }
 
-function ModulePreview({ row, targetVersion }: { row: DeploymentRow | null; targetVersion: string }) {
-  if (!row) {
-    return <p className="mutedLine">Provision a deployment before creating a release.</p>;
+type PromotionAction = "retry" | "signature" | "approve" | "pause" | "resume" | "yank";
+
+function ReleasePromotionLedger({
+  busyAction,
+  busyId,
+  notes,
+  onAction,
+  onNoteChange,
+  onSignatureChange,
+  onSignatureKeyChange,
+  releases,
+  signatureKeys,
+  signatures,
+}: {
+  busyAction: BusyAction;
+  busyId: string;
+  notes: Record<string, string>;
+  onAction: (release: OperatorRelease, action: PromotionAction) => Promise<void>;
+  onNoteChange: (version: string, value: string) => void;
+  onSignatureChange: (version: string, value: string) => void;
+  onSignatureKeyChange: (version: string, value: string) => void;
+  releases: OperatorRelease[];
+  signatureKeys: Record<string, string>;
+  signatures: Record<string, string>;
+}) {
+  if (!releases.length) {
+    return <p className="mutedLine">CI has not registered a release candidate yet.</p>;
   }
   return (
-    <div className="pillRail">
-      {row.modules.length === 0 ? <span>No modules on source deployment</span> : null}
-      {row.modules.map((module) => (
-        <span key={module.module_id}>{module.module_id} {"->"} {targetVersion}</span>
-      ))}
+    <div className="promotionLedger">
+      {releases.map((release) => {
+        const promotion = release.promotion;
+        const state = promotion?.state || "legacy";
+        const busy = busyAction === "promotion" && busyId === release.version;
+        const canSign = state === "dev_verified" && !promotion?.production_signature_attached;
+        return (
+          <article className={`promotionCard state-${state}`} key={release.version}>
+            <div className="promotionHeader">
+              <div>
+                <p className="eyebrow">{formattedDate(release.created_at)}</p>
+                <h3>{release.version}</h3>
+              </div>
+              <span className={`statusPill ${state === "customer_approved" ? "success" : state.includes("failed") || state === "yanked" ? "failed" : "running"}`}>
+                {labelFor(state)}
+              </span>
+            </div>
+            <div className="promotionStages" aria-label={`Promotion status for ${release.version}`}>
+              <span className={promotion ? "complete" : ""}>Candidate</span>
+              <span className={promotion?.dev_verified_at ? "complete" : ""}>Dev verified</span>
+              <span className={promotion?.production_signature_attached ? "complete" : ""}>Offline signed</span>
+              <span className={state === "customer_approved" ? "complete" : ""}>Customer ready</span>
+            </div>
+            <div className="operatorMeta">
+              <span>{Object.keys(release.modules).length} modules</span>
+              <span>{release.rollback_kind || "rollback not classified"}</span>
+              <span>{release.git_sha.slice(0, 10)}</span>
+            </div>
+            {promotion?.failure_reason ? <p className="promotionFailure">{labelFor(promotion.failure_reason)}</p> : null}
+            {canSign ? (
+              <div className="signatureForm">
+                <TextField label="Production key id" value={signatureKeys[release.version] || ""} onChange={(value) => onSignatureKeyChange(release.version, value)} />
+                <TextareaField label="Offline signature" value={signatures[release.version] || ""} onChange={(value) => onSignatureChange(release.version, value)} />
+                <button
+                  className="secondaryButton"
+                  disabled={busy || !signatureKeys[release.version]?.trim() || !signatures[release.version]?.trim()}
+                  type="button"
+                  onClick={() => void onAction(release, "signature")}
+                >
+                  Verify signature
+                </button>
+              </div>
+            ) : null}
+            {promotion && state !== "yanked" ? (
+              <TextField label="Review note" value={notes[release.version] || ""} onChange={(value) => onNoteChange(release.version, value)} />
+            ) : null}
+            <div className="promotionActions">
+              {state === "dev_failed" ? <button className="secondaryButton" disabled={busy} type="button" onClick={() => void onAction(release, "retry")}>Retry dev</button> : null}
+              {state === "dev_verified" && promotion?.production_signature_attached ? <button className="primaryButton" disabled={busy} type="button" onClick={() => void onAction(release, "approve")}>Approve customers</button> : null}
+              {state === "customer_approved" ? <button className="secondaryButton" disabled={busy} type="button" onClick={() => void onAction(release, "pause")}>Pause</button> : null}
+              {state === "customer_paused" ? <button className="primaryButton" disabled={busy || !notes[release.version]?.trim()} type="button" onClick={() => void onAction(release, "resume")}>Resume after review</button> : null}
+              {promotion && state !== "yanked" ? <button className="textButton dangerLink" disabled={busy} type="button" onClick={() => void onAction(release, "yank")}>Yank</button> : null}
+            </div>
+            {promotion?.events.length ? (
+              <details className="promotionHistory">
+                <summary>{promotion.events.length} audit events</summary>
+                {promotion.events.slice(-4).reverse().map((event) => (
+                  <p key={event.id}><span>{labelFor(event.action)}</span><time>{formattedDate(event.created_at)}</time></p>
+                ))}
+              </details>
+            ) : null}
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -1147,10 +1281,8 @@ function DeploymentCard({
   busyAction,
   busyId,
   onPlan,
-  onRecordRun,
   onStartRollout,
   onTargetReleaseChange,
-  onUpdateRollout,
   plan,
   releases,
   row,
@@ -1159,10 +1291,8 @@ function DeploymentCard({
   busyAction: BusyAction;
   busyId: string;
   onPlan: (row: DeploymentRow) => Promise<void>;
-  onRecordRun: (row: DeploymentRow, kind: "backup" | "health") => Promise<void>;
   onStartRollout: (row: DeploymentRow) => Promise<void>;
   onTargetReleaseChange: (deploymentId: string, version: string) => void;
-  onUpdateRollout: (rollout: OperatorRollout, status: string) => Promise<void>;
   plan?: OperatorUpdatePlan;
   releases: OperatorRelease[];
   row: DeploymentRow;
@@ -1180,6 +1310,14 @@ function DeploymentCard({
       <span className="operatorMuted">
         {row.deployment.deployment_type} / {row.deployment.release_ring} / {row.deployment.current_version || "no version"}
       </span>
+      <dl className="deploymentDates">
+        <div><dt>Server created</dt><dd>{formattedDate(row.deployment.created_at)}</dd></div>
+        <div><dt>Version installed</dt><dd>{formattedDate(row.deployment.current_version_deployed_at)}</dd></div>
+        <div><dt>Last seen</dt><dd>{formattedDate(row.deployment.last_heartbeat_at)}</dd></div>
+      </dl>
+      {row.deployment.last_reported_version && row.deployment.last_reported_version !== row.deployment.current_version ? (
+        <p className="promotionFailure">Version drift: reports {row.deployment.last_reported_version}, expected {row.deployment.current_version}</p>
+      ) : null}
       <div className="pillRail">
         {row.modules.map((module) => (
           <span key={module.module_id}>{module.module_id} {module.version}</span>
@@ -1203,12 +1341,6 @@ function DeploymentCard({
           <button className="primaryButton" disabled={!canStart || activeBusy} type="button" onClick={() => void onStartRollout(row)}>
             {busyAction === "rollout" && busyId === row.deployment.id ? "Starting" : "Start rollout"}
           </button>
-          <button className="secondaryButton" disabled={activeBusy} type="button" onClick={() => void onRecordRun(row, "backup")}>
-            Backup ok
-          </button>
-          <button className="secondaryButton" disabled={activeBusy} type="button" onClick={() => void onRecordRun(row, "health")}>
-            Health ok
-          </button>
         </div>
       </div>
       {plan ? <PlanResult plan={plan} /> : null}
@@ -1217,21 +1349,7 @@ function DeploymentCard({
         {latestRollouts.map((rollout) => (
           <div className="rolloutLine" key={rollout.id}>
             <span>{rollout.target_version} / {rollout.status}</span>
-            {!["success", "failed"].includes(rollout.status) ? (
-              <div className="rolloutActions">
-                {["running", "success", "failed"].map((status) => (
-                  <button
-                    className={status === "failed" ? "textButton dangerLink" : "textButton"}
-                    disabled={busyAction === "status" && busyId === rollout.id}
-                    key={status}
-                    type="button"
-                    onClick={() => void onUpdateRollout(rollout, status)}
-                  >
-                    {labelFor(status)}
-                  </button>
-                ))}
-              </div>
-            ) : null}
+            <small>Authenticated workflow or box reports control this status.</small>
           </div>
         ))}
       </div>
@@ -1244,6 +1362,7 @@ function PlanResult({ plan }: { plan: OperatorUpdatePlan }) {
     <div className={plan.allowed ? "planResult allowed" : "planResult denied"}>
       <strong>{plan.allowed ? "Allowed" : "Blocked"}</strong>
       <span>{labelFor(plan.reason)}</span>
+      {plan.warnings?.map((warning) => <span key={warning}>Warning: {labelFor(warning)}</span>)}
       <div className="pillRail">
         {Object.entries(plan.modules_to_update).map(([moduleId, version]) => (
           <span key={moduleId}>{moduleId} {"->"} {version}</span>

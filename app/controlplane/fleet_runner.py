@@ -96,6 +96,9 @@ def plan_and_start_fleet_rollout(
         ring_order=plan.ring_order, current_ring=plan.ring_order[0],
         failure_tolerance=failure_tolerance, started_by=started_by, created_at=created_at,
         callback_url=callback_url, dry_run=dry_run,
+        ring_batch_size=ring_batch_size,
+        only_deployment_ids=tuple(sorted(only_deployment_ids)),
+        include_manual_pinned=include_manual_pinned,
     ))
     # Dispatch the first ring under the batch cap (threading the SAME override as the
     # plan, A16). inflight=0 — no children exist yet.
@@ -176,6 +179,11 @@ def reconcile_fleet_rollout(control_store, fleet_store, fleet_id: str, *, dispat
         fleet_run = fleet_store.get_fleet_rollout(fleet_id)
         if not fleet_run or fleet_run.status != "running":
             return fleet_run  # only a running fleet rollout auto-advances
+        # The safety policy lives on the parent record so callbacks and restart
+        # reconciliation cannot widen a batch or forget an explicit target set.
+        ring_batch_size = fleet_run.ring_batch_size
+        only_deployment_ids = frozenset(fleet_run.only_deployment_ids)
+        include_manual_pinned = fleet_run.include_manual_pinned
         children = _current_ring_children(control_store, fleet_run)
         if _open_next_ring_batch(control_store, fleet_run, children, ring_batch_size=ring_batch_size,
                                  dispatch_child=dispatch_child, only_deployment_ids=only_deployment_ids,

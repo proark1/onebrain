@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Protocol
 
 
@@ -24,6 +25,15 @@ MODULE_IDS = frozenset({
 ROLL_OUT_RINGS = frozenset({"internal", "pilot", "early", "stable", "manual"})
 DEPLOYMENT_TYPES = frozenset({"dedicated_railway", "shared_railway", "dedicated_server", "customer_owned"})
 RUN_STATUSES = frozenset({"pending", "running", "success", "failed", "paused"})
+PROMOTION_STATES = frozenset({
+    "dev_pending",
+    "dev_deploying",
+    "dev_verified",
+    "dev_failed",
+    "customer_approved",
+    "customer_paused",
+    "yanked",
+})
 
 ROLLBACK_KINDS = frozenset({"", "code_only", "restore_required"})
 UPDATE_POLICIES = frozenset({"", "auto", "manual", "pinned"})
@@ -68,6 +78,12 @@ class CustomerDeployment:
     current_migration: str = ""
     created_at: str = ""
     update_policy: str = ""       # ''(legacy: derive from ring) | auto | manual | pinned
+    is_release_gate: bool = False
+    current_version_deployed_at: str = ""
+    last_heartbeat_at: str = ""
+    last_heartbeat_healthy: Optional[bool] = None
+    last_reported_version: str = ""
+    last_reported_migration: str = ""
 
 
 @dataclass(frozen=True)
@@ -93,6 +109,41 @@ class ReleaseManifest:
     rollback_kind: str = ""       # '' legacy | code_only | restore_required
     signature: str = ""           # base64 Ed25519 over canonical_release_payload (app/trust/release.py)
     signing_key_id: str = ""      # operator-chosen key identifier (rotation metadata; not signed)
+
+
+@dataclass(frozen=True)
+class ReleasePromotion:
+    release_version: str
+    state: str = "dev_pending"
+    gate_deployment_id: str = ""
+    dev_signature: str = ""
+    dev_signing_key_id: str = ""
+    dev_rollout_id: str = ""
+    dev_attempt_id: str = ""
+    dev_started_at: str = ""
+    dev_completed_at: str = ""
+    dev_verified_at: str = ""
+    customer_approved_at: str = ""
+    customer_approved_by: str = ""
+    customer_paused_at: str = ""
+    customer_paused_reason: str = ""
+    yanked_at: str = ""
+    failure_reason: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass(frozen=True)
+class ReleasePromotionEvent:
+    id: str
+    release_version: str
+    action: str
+    to_state: str
+    actor: str = ""
+    from_state: str = ""
+    note: str = ""
+    metadata: Dict = field(default_factory=dict)
+    created_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -157,6 +208,7 @@ class UpdatePlan:
     target_modules: Dict[str, str] = field(default_factory=dict)
     modules_to_update: Dict[str, str] = field(default_factory=dict)
     rollback_kind: str = ""       # copied from the release when found (operator UI/plan visibility)
+    warnings: List[str] = field(default_factory=list)
 
 
 class ControlPlaneStore(Protocol):
@@ -176,6 +228,73 @@ class ControlPlaneStore(Protocol):
 
     def list_releases(self) -> List[ReleaseManifest]: ...
 
+    def create_release_candidate(
+        self,
+        release: ReleaseManifest,
+        promotion: ReleasePromotion,
+        event: ReleasePromotionEvent,
+    ) -> ReleasePromotion: ...
+
+    def get_release_promotion(self, version: str) -> Optional[ReleasePromotion]: ...
+
+    def list_release_promotions(self) -> List[ReleasePromotion]: ...
+
+    def transition_release_promotion(
+        self,
+        version: str,
+        from_states: frozenset[str],
+        to_state: str,
+        *,
+        actor: str,
+        action: str,
+        note: str = "",
+        fields: Optional[Dict] = None,
+    ) -> ReleasePromotion: ...
+
+    def list_release_promotion_events(self, version: str) -> List[ReleasePromotionEvent]: ...
+
+    def set_release_production_signature(
+        self,
+        version: str,
+        *,
+        signature: str,
+        signing_key_id: str,
+        actor: str,
+    ) -> ReleaseManifest: ...
+
+    def approve_release_for_customers(
+        self,
+        version: str,
+        *,
+        signature: str,
+        signing_key_id: str,
+        actor: str,
+        note: str = "",
+    ) -> ReleasePromotion: ...
+
+    def get_release_gate(self) -> Optional[CustomerDeployment]: ...
+
+    def designate_release_gate(self, deployment_id: str) -> CustomerDeployment: ...
+
+    def update_deployment_telemetry(
+        self,
+        deployment_id: str,
+        *,
+        heartbeat_at: str,
+        healthy: bool,
+        reported_version: str = "",
+        reported_migration: str = "",
+    ) -> CustomerDeployment: ...
+
+    def mark_deployment_provisioned(
+        self,
+        deployment_id: str,
+        *,
+        installed_at: str,
+        version: str,
+        migration: str = "",
+    ) -> CustomerDeployment: ...
+
     def record_backup(self, backup: BackupRun) -> BackupRun: ...
 
     def latest_backup(self, deployment_id: str) -> Optional[BackupRun]: ...
@@ -184,7 +303,14 @@ class ControlPlaneStore(Protocol):
 
     def latest_health(self, deployment_id: str) -> Optional[HealthCheckRun]: ...
 
-    def plan_update(self, deployment_id: str, target_version: str, *, ack_restore_required: bool = False) -> UpdatePlan: ...
+    def plan_update(
+        self,
+        deployment_id: str,
+        target_version: str,
+        *,
+        ack_restore_required: bool = False,
+        ignore_rollout_id: str = "",
+    ) -> UpdatePlan: ...
 
     def set_update_policy(self, deployment_id: str, update_policy: str) -> CustomerDeployment: ...
 
@@ -250,6 +376,13 @@ def validate_release(release: ReleaseManifest) -> None:
             raise ValueError("; ".join(errors))
 
 
+def validate_promotion(promotion: ReleasePromotion) -> None:
+    if not promotion.release_version.strip():
+        raise ValueError("Release promotion version is required.")
+    if promotion.state not in PROMOTION_STATES:
+        raise ValueError(f"Unknown release promotion state: {promotion.state}")
+
+
 def validate_run_status(status: str) -> None:
     if status not in RUN_STATUSES:
         raise ValueError(f"Unknown run status: {status}")
@@ -267,6 +400,15 @@ def compute_update_plan(
                            # here would add one eager SELECT to every plan_update on the hot fleet path)
     ack_restore_required: bool = False,
     require_signed_release: bool = False,
+    promotion=None,          # ReleasePromotion | None
+    promotion_required: bool = False,
+    promotion_warning_only: bool = False,
+    gate_deployment_id: str = "",
+    production_signature_valid: Optional[bool] = None,
+    development_signature_valid: Optional[bool] = None,
+    heartbeat_max_age_seconds: int = 600,
+    now: Optional[datetime] = None,
+    active_rollout: bool = False,
 ) -> UpdatePlan:
     """The single shared plan gate: both stores delegate here (never patch a
     store copy separately). Gate order is contract — see the Hetzner P0 spec."""
@@ -277,8 +419,65 @@ def compute_update_plan(
     kind = release.rollback_kind
     if release.status == "yanked":
         return UpdatePlan(deployment_id, target_version, False, "release_yanked", rollback_kind=kind)
+
+    warnings: List[str] = []
+
+    def promotion_denial() -> str:
+        is_gate = bool(getattr(deployment, "is_release_gate", False))
+        if is_gate:
+            if not gate_deployment_id:
+                return "development_gate_missing"
+            if deployment.id != gate_deployment_id:
+                return "development_gate_mismatch"
+            if not promotion or promotion.gate_deployment_id not in {"", deployment.id}:
+                return "development_gate_mismatch"
+            if promotion.state not in {"dev_pending", "dev_deploying"}:
+                return "release_not_dev_verified"
+            if development_signature_valid is not True:
+                return "release_signature_invalid"
+        else:
+            if not promotion:
+                return "release_not_customer_approved"
+            if promotion.state == "customer_paused":
+                return "release_customer_paused"
+            if promotion.state == "yanked":
+                return "release_yanked"
+            if promotion.state != "customer_approved":
+                return "release_not_customer_approved"
+            if not release.signature:
+                return "release_unsigned"
+            if production_signature_valid is not True:
+                return "release_signature_invalid"
+        if active_rollout:
+            return "deployment_rollout_active"
+        heartbeat_at = getattr(deployment, "last_heartbeat_at", "") or ""
+        if not heartbeat_at:
+            return "deployment_heartbeat_stale"
+        try:
+            received = datetime.fromisoformat(heartbeat_at)
+            if received.tzinfo is None:
+                received = received.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            return "deployment_heartbeat_stale"
+        clock = now or datetime.now(timezone.utc)
+        if clock.tzinfo is None:
+            clock = clock.replace(tzinfo=timezone.utc)
+        if (clock - received).total_seconds() > max(0, heartbeat_max_age_seconds):
+            return "deployment_heartbeat_stale"
+        if getattr(deployment, "last_heartbeat_healthy", None) is not True:
+            return "deployment_unhealthy"
+        return ""
+
+    promotion_reason = promotion_denial()
+    if promotion_reason:
+        if promotion_required and not promotion_warning_only:
+            return UpdatePlan(deployment_id, target_version, False, promotion_reason, rollback_kind=kind)
+        warnings.append(promotion_reason)
     if require_signed_release and not release.signature:
-        return UpdatePlan(deployment_id, target_version, False, "release_unsigned", rollback_kind=kind)
+        return UpdatePlan(
+            deployment_id, target_version, False, "release_unsigned",
+            rollback_kind=kind, warnings=warnings,
+        )
     if effective_update_policy(deployment) == "pinned" and release.version != deployment.current_version:
         return UpdatePlan(deployment_id, target_version, False, "update_policy_pinned", rollback_kind=kind)
     current = {m.module_id: m.version for m in modules if m.status == "active"}
@@ -312,7 +511,43 @@ def compute_update_plan(
         "update_available" if updates else "already_current",
         current_modules=current,
         target_modules={m: release.modules[m] for m in current},
-        modules_to_update=updates, rollback_kind=kind)
+        modules_to_update=updates, rollback_kind=kind, warnings=warnings)
+
+
+def release_promotion_plan_context(release, promotion) -> Dict:
+    """Settings and trust inputs for the shared planner, loaded identically by both stores."""
+    try:
+        from app.config import get_settings
+        from app.trust.release import release_signature_fields, verify_release_signature
+    except ImportError:
+        return {
+            "promotion_required": False,
+            "promotion_warning_only": True,
+            "heartbeat_max_age_seconds": 600,
+        }
+    settings = get_settings()
+    production_valid = None
+    development_valid = None
+    production_key = getattr(settings, "release_verify_public_key", "")
+    development_key = getattr(settings, "dev_release_verify_public_key", "")
+    required = bool(getattr(settings, "release_promotion_required", False))
+    if release and release.signature and production_key:
+        production_valid = verify_release_signature(
+            release_signature_fields(release), release.signature, production_key
+        )
+    if promotion and promotion.dev_signature and development_key and release:
+        development_valid = verify_release_signature(
+            release_signature_fields(release),
+            promotion.dev_signature,
+            development_key,
+        )
+    return {
+        "promotion_required": required,
+        "promotion_warning_only": not required,
+        "production_signature_valid": production_valid,
+        "development_signature_valid": development_valid,
+        "heartbeat_max_age_seconds": max(600, int(getattr(settings, "fleet_report_seconds", 60)) * 2),
+    }
 
 
 def require_signed_releases() -> bool:
