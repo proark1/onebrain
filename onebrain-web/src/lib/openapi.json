@@ -3982,9 +3982,21 @@
       },
       "ReleaseOut": {
         "properties": {
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
           "git_sha": {
             "title": "Git Sha",
             "type": "string"
+          },
+          "images": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Images",
+            "type": "object"
           },
           "migration_from": {
             "default": "",

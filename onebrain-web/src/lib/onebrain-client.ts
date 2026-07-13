@@ -215,6 +215,7 @@ export function provisionCustomer(input: ProvisionCustomerInput): Promise<Provis
       initial_version: input.initial_version.trim(),
       mint_integration_keys: input.mint_integration_keys ?? true,
       module_versions: input.module_versions || {},
+      owner_email: input.owner_email.trim(),
       region: input.region?.trim() || "",
       release_ring: input.release_ring,
       brand_theme: input.brand_theme,

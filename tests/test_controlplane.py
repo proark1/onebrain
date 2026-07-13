@@ -589,6 +589,22 @@ def test_operator_admin_refused_when_not_operator_surface(monkeypatch):
     assert ei.value.status_code == 404  # surface must not serve on a customer stack
 
 
+def test_operator_release_response_includes_creation_date_and_images():
+    release = ReleaseManifest(
+        version="2026.07.13",
+        git_sha="abc123",
+        modules={"onebrain-api": "2026.07.13"},
+        status="active",
+        created_at="2026-07-13T10:30:00+00:00",
+        images={"onebrain-api": "ghcr.io/proark1/onebrain-api@sha256:" + "a" * 64},
+    )
+
+    response = operator_router._release_out(release)
+
+    assert response.created_at == "2026-07-13T10:30:00+00:00"
+    assert response.images == release.images
+
+
 # --- per-deployment cross-account scoping ------------------------------------
 
 def _scoping_stores(owner="owner@acme"):

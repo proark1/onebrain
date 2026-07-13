@@ -216,6 +216,7 @@ export type ProvisionCustomerInput = {
   initial_version: string;
   mint_integration_keys?: boolean;
   module_versions?: Record<string, string>;
+  owner_email: string;
   region?: string;
   release_ring: string;
   brand_theme?: BrandThemeInput;
@@ -327,6 +328,8 @@ export type OperatorRelease = {
   security_notes: string;
   rollback_plan: string;
   status: string;
+  created_at: string;
+  images: Record<string, string>;
 };
 
 export type OperatorBackup = {

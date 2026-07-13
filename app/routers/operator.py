@@ -130,6 +130,7 @@ class ReleaseOut(BaseModel):
     security_notes: str = ""
     rollback_plan: str = ""
     status: str = "draft"
+    created_at: str = ""
     images: dict[str, str] = Field(default_factory=dict)
     rollback_kind: str = ""
     signature: str = ""
@@ -416,7 +417,7 @@ def _release_out(r: ReleaseManifest) -> ReleaseOut:
     return ReleaseOut(
         version=r.version, git_sha=r.git_sha, modules=r.modules, migration_from=r.migration_from,
         migration_to=r.migration_to, security_notes=r.security_notes, rollback_plan=r.rollback_plan,
-        status=r.status, images=r.images, rollback_kind=r.rollback_kind, signature=r.signature,
+        status=r.status, created_at=r.created_at, images=r.images, rollback_kind=r.rollback_kind, signature=r.signature,
         signing_key_id=r.signing_key_id,
     )
 

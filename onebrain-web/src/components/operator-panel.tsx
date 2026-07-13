@@ -64,12 +64,8 @@ type BusyAction =
 
 type OperatorTab = "customers" | "provisioning" | "releases" | "rollouts" | "credentials";
 
-const DEPLOYMENT_TYPES = [
-  { label: "Dedicated Railway", value: "dedicated_railway" },
-  { label: "Shared Railway", value: "shared_railway" },
-  { label: "Dedicated server", value: "dedicated_server" },
-  { label: "Customer owned", value: "customer_owned" },
-];
+const HETZNER_DEPLOYMENT_TYPE = "dedicated_server";
+const HETZNER_REGION = "nbg1";
 
 const RELEASE_RINGS = [
   { label: "Manual", value: "manual" },
@@ -113,6 +109,13 @@ const BRAND_COLOR_FIELDS: Array<{ key: keyof BrandThemeInput; label: string }> =
   { key: "danger_color", label: "Danger" },
 ];
 
+const RELEASE_DATE_FORMATTER = new Intl.DateTimeFormat("en-GB", {
+  day: "2-digit",
+  month: "short",
+  timeZone: "UTC",
+  year: "numeric",
+});
+
 function labelFor(value: string): string {
   return (value || "none").replace(/_/g, " ");
 }
@@ -155,6 +158,16 @@ function stringListPayload(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
 }
 
+function releaseTimestamp(release: OperatorRelease): number {
+  const timestamp = Date.parse(release.created_at);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function releaseOptionLabel(release: OperatorRelease): string {
+  const timestamp = releaseTimestamp(release);
+  return timestamp ? `${release.version} - ${RELEASE_DATE_FORMATTER.format(timestamp)}` : release.version;
+}
+
 export function OperatorPanel() {
   const [bundles, setBundles] = useState<ProvisioningBundle[]>([]);
   const [customers, setCustomers] = useState<OperatorCustomer[]>([]);
@@ -174,15 +187,12 @@ export function OperatorPanel() {
   const [showReleaseForm, setShowReleaseForm] = useState(false);
 
   const [provisionName, setProvisionName] = useState("");
+  const [provisionOwnerEmail, setProvisionOwnerEmail] = useState("");
   const [provisionBundle, setProvisionBundle] = useState("full_stack");
-  const [provisionVersion, setProvisionVersion] = useState("0.1.0");
+  const [selectedProvisionVersion, setSelectedProvisionVersion] = useState("");
   const [provisionRing, setProvisionRing] = useState("manual");
-  const [provisionType, setProvisionType] = useState("dedicated_railway");
-  const [provisionRegion, setProvisionRegion] = useState("");
   const [provisionAccountId, setProvisionAccountId] = useState("");
-  const [provisionExternal, setProvisionExternal] = useState(false);
-  const [provisionDryRun, setProvisionDryRun] = useState(true);
-  const [provisionCallbackUrl, setProvisionCallbackUrl] = useState(() =>
+  const [provisionCallbackUrl] = useState(() =>
     typeof window === "undefined" ? "" : `${window.location.origin}/api/onebrain/provisioning/runs/{run_id}/callback`,
   );
   const [provisionBrandTheme, setProvisionBrandTheme] = useState<BrandThemeInput>(DEFAULT_BRAND_THEME);
@@ -209,6 +219,32 @@ export function OperatorPanel() {
     () => deployments.find((row) => row.deployment.id === releaseSourceId) ?? null,
     [deployments, releaseSourceId],
   );
+
+  const selectedProvisionBundle = useMemo(
+    () => bundles.find((bundle) => bundle.id === provisionBundle) ?? null,
+    [bundles, provisionBundle],
+  );
+
+  const eligibleProvisionReleases = useMemo(() => {
+    if (!selectedProvisionBundle) {
+      return [];
+    }
+    return releases
+      .filter((release) => release.status === "active"
+        && selectedProvisionBundle.modules.every((moduleId) => Boolean(release.images?.[moduleId])))
+      .sort((left, right) => {
+        const timestampDifference = releaseTimestamp(right) - releaseTimestamp(left);
+        return timestampDifference || right.version.localeCompare(left.version, undefined, { numeric: true });
+      });
+  }, [releases, selectedProvisionBundle]);
+
+  const hasSelectedProvisionVersion = eligibleProvisionReleases.some(
+    (release) => release.version === selectedProvisionVersion,
+  );
+  const provisionVersion = hasSelectedProvisionVersion
+    ? selectedProvisionVersion
+    : eligibleProvisionReleases[0]?.version ?? "";
+  const hasDeployableProvisionVersion = Boolean(provisionVersion);
 
   const loadOperator = useCallback(async () => {
     setBusyAction("load");
@@ -289,7 +325,9 @@ export function OperatorPanel() {
         setDeployments(nextRows);
         setReleases(nextReleases);
         setProvisioningRuns(nextProvisioningRuns);
-        setProvisionBundle(nextBundles[0]?.id ?? "full_stack");
+        setProvisionBundle((current) => nextBundles.some((bundle) => bundle.id === current)
+          ? current
+          : nextBundles[0]?.id ?? "");
         setReleaseSourceId(nextRows[0]?.deployment.id ?? "");
         setTargetReleaseByDeployment(Object.fromEntries(nextRows.map((row) => [
           row.deployment.id,
@@ -313,7 +351,8 @@ export function OperatorPanel() {
 
   async function onProvision(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!provisionName.trim() || !provisionBundle || busyAction) {
+    if (!provisionName.trim() || !provisionOwnerEmail.trim() || !provisionBundle
+      || !hasDeployableProvisionVersion || !provisionCallbackUrl.trim() || busyAction) {
       return;
     }
     setBusyAction("provision");
@@ -328,25 +367,33 @@ export function OperatorPanel() {
         },
         bundle_id: provisionBundle,
         customer_name: provisionName,
-        deployment_type: provisionType,
+        deployment_type: HETZNER_DEPLOYMENT_TYPE,
         initial_version: provisionVersion,
-        external_provisioning: provisionExternal,
-        dry_run: provisionDryRun,
-        callback_url: provisionExternal ? provisionCallbackUrl : "",
-        region: provisionRegion,
+        owner_email: provisionOwnerEmail,
+        external_provisioning: true,
+        dry_run: false,
+        callback_url: provisionCallbackUrl,
+        region: HETZNER_REGION,
         release_ring: provisionRing,
       });
       setCredentials(result.credentials || []);
       if (result.provisioning_run) {
         setProvisioningRuns((current) => [result.provisioning_run as ProvisioningRun, ...current]);
       }
+      const dispatchFailed = result.provisioning_run?.status === "dispatch_failed";
       setProvisionName("");
+      setProvisionOwnerEmail("");
       setProvisionAccountId("");
       setShowProvisionForm(false);
-      setNotice(result.provisioning_run
-        ? `${result.account.name} provisioned; external run ${labelFor(result.provisioning_run.status)}.`
-        : `${result.account.name} provisioned.`);
+      if (!dispatchFailed) {
+        setNotice(result.provisioning_run
+          ? `${result.account.name} provisioned; Hetzner run ${labelFor(result.provisioning_run.status)}.`
+          : `${result.account.name} provisioned.`);
+      }
       await loadOperator();
+      if (dispatchFailed) {
+        setError(`${result.account.name} was created, but the Hetzner dispatch failed. Review and retry the provisioning run.`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Provisioning failed.");
     } finally {
@@ -635,7 +682,8 @@ export function OperatorPanel() {
             <BundleList bundles={bundles} />
             {showProvisionForm ? (
               <form className="operatorForm compactWorkflow" onSubmit={(event) => void onProvision(event)}>
-                <TextField label="Customer name" value={provisionName} onChange={setProvisionName} />
+                <TextField label="Customer name" required value={provisionName} onChange={setProvisionName} />
+                <TextField label="Owner email" required type="email" value={provisionOwnerEmail} onChange={setProvisionOwnerEmail} />
                 <SelectField
                   label="Bundle"
                   options={bundles.map((bundle) => ({ label: bundle.label, value: bundle.id }))}
@@ -643,38 +691,28 @@ export function OperatorPanel() {
                   onChange={setProvisionBundle}
                 />
                 <div className="operatorFormGrid">
-                  <TextField label="Initial version" value={provisionVersion} onChange={setProvisionVersion} />
+                  <SelectField
+                    label="Initial version"
+                    options={eligibleProvisionReleases.map((release) => ({
+                      label: releaseOptionLabel(release),
+                      value: release.version,
+                    }))}
+                    value={provisionVersion}
+                    onChange={setSelectedProvisionVersion}
+                  />
                   <SelectField label="Release ring" options={RELEASE_RINGS} value={provisionRing} onChange={setProvisionRing} />
-                  <SelectField label="Deployment type" options={DEPLOYMENT_TYPES} value={provisionType} onChange={setProvisionType} />
-                  <TextField label="Region" value={provisionRegion} onChange={setProvisionRegion} />
+                  <ReadOnlyField label="Deployment type" value="Dedicated Hetzner server" />
+                  <ReadOnlyField label="Region" value="Nuremberg (nbg1)" />
                 </div>
-                <TextField label="Optional account id" value={provisionAccountId} onChange={setProvisionAccountId} />
-                <div className="operatorChecks" aria-label="External provisioning options">
-                  <label>
-                    <input
-                      checked={provisionExternal}
-                      onChange={(event) => setProvisionExternal(event.target.checked)}
-                      type="checkbox"
-                    />
-                    Dispatch external workflow
-                  </label>
-                  <label>
-                    <input
-                      checked={provisionDryRun}
-                      disabled={!provisionExternal}
-                      onChange={(event) => setProvisionDryRun(event.target.checked)}
-                      type="checkbox"
-                    />
-                    Dry run
-                  </label>
-                </div>
-                {provisionExternal ? (
-                  <TextField label="Callback URL" value={provisionCallbackUrl} onChange={setProvisionCallbackUrl} />
+                {eligibleProvisionReleases.length === 0 ? (
+                  <p className="mutedLine">No deployable release. Activate a release with images for every module in this bundle.</p>
                 ) : null}
+                <TextField label="Optional account id" value={provisionAccountId} onChange={setProvisionAccountId} />
                 <BrandThemeEditor value={provisionBrandTheme} onChange={setProvisionBrandTheme} />
                 <button
                   className="primaryButton"
-                  disabled={!provisionName.trim() || !provisionBundle || (provisionExternal && !provisionCallbackUrl.trim()) || Boolean(busyAction)}
+                  disabled={!provisionName.trim() || !provisionOwnerEmail.trim() || !provisionBundle
+                    || !hasDeployableProvisionVersion || !provisionCallbackUrl.trim() || Boolean(busyAction)}
                   type="submit"
                 >
                   {busyAction === "provision" ? "Provisioning" : "Provision customer"}
@@ -1239,19 +1277,39 @@ function SelectField({
   );
 }
 
+function ReadOnlyField({ label, value }: { label: string; value: string }) {
+  return (
+    <label className="field">
+      <span className="fieldLabel">{label}</span>
+      <input aria-readonly="true" className="input" readOnly value={value} />
+    </label>
+  );
+}
+
 function TextField({
   label,
   onChange,
+  required = false,
+  type = "text",
   value,
 }: {
   label: string;
   onChange: (value: string) => void;
+  required?: boolean;
+  type?: "email" | "text";
   value: string;
 }) {
   return (
     <label className="field">
       <span className="fieldLabel">{label}</span>
-      <input className="input" value={value} onChange={(event) => onChange(event.target.value)} />
+      <input
+        autoComplete={type === "email" ? "email" : undefined}
+        className="input"
+        required={required}
+        type={type}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
     </label>
   );
 }
