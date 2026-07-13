@@ -5,6 +5,8 @@ build_hetzner_broker. (P4-04 appends the owner-OTP minting test.)"""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import app.routers.provisioning as provisioning_router
@@ -229,6 +231,30 @@ def test_dispatch_maps_api_error_to_dispatch_failed(monkeypatch):
                                             owner_email="owner@example.com")   # must NOT raise
     assert out.status == STATUS_DISPATCH_FAILED
     assert "Hetzner API error" in out.failure_reason
+
+
+def test_dispatch_maps_missing_runtime_asset_to_dispatch_failed(monkeypatch):
+    control = _control()
+    prov = MemoryProvisioningRunStore()
+    fake = FakeHetznerClient()
+    _wire_router(monkeypatch, _settings(), prov, control, fake)
+    monkeypatch.setattr(
+        HetznerProvisioner,
+        "dispatch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("missing template")),
+    )
+
+    out = provisioning_router._dispatch_run(_run(prov))
+
+    assert out.status == STATUS_DISPATCH_FAILED
+    assert out.failure_reason == "missing template"
+    assert fake.servers == []
+
+
+def test_api_image_packages_cloud_init_assets():
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "COPY deploy ./deploy" in dockerfile
 
 
 def test_dispatch_run_router_switch_selects_backend(monkeypatch):

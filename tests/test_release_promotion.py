@@ -526,6 +526,40 @@ def test_gate_replacement_is_validated_before_atomic_marker_swap(monkeypatch):
     assert store.get_release_gate().id == replacement.id
 
 
+def test_development_provision_rejects_existing_normalized_deployment(monkeypatch):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    store = MemoryControlPlaneStore()
+    store.create_deployment(CustomerDeployment(
+        id=operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID,
+        customer_name="Development gate",
+        environment="development",
+        deployment_type="dedicated_server",
+    ))
+    settings = SimpleNamespace(
+        is_operator_surface=True,
+        operator_mode=True,
+        provisioner_backend="hetzner",
+    )
+    principal = SimpleNamespace(role_id="admin", user_id="operator")
+    monkeypatch.setattr(operator_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+
+    with pytest.raises(HTTPException) as exc:
+        operator_router.provision_development_gate(
+            operator_router.DevelopmentGateProvisionIn(
+                owner_email="owner@example.com",
+                dry_run=True,
+            ),
+            principal,
+        )
+
+    assert exc.value.status_code == 409
+    assert "already exists" in exc.value.detail
+
+
 def test_dev_signature_is_served_only_to_the_designated_gate():
     from types import SimpleNamespace
 

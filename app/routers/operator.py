@@ -227,6 +227,9 @@ class DevelopmentGateProvisionIn(BaseModel):
     dry_run: bool = True
 
 
+DEVELOPMENT_GATE_DEPLOYMENT_ID = "onebrain_development_gate"
+
+
 class BackupCreate(BaseModel):
     status: str
     detail: str = ""
@@ -1377,7 +1380,7 @@ def provision_development_gate(
     if settings.provisioner_backend != "hetzner":
         raise HTTPException(status_code=409, detail="Development gate provisioning requires the Hetzner backend.")
     store = get_control_plane_store()
-    if store.get_release_gate() or store.get_deployment("onebrain-development-gate"):
+    if store.get_release_gate() or store.get_deployment(DEVELOPMENT_GATE_DEPLOYMENT_ID):
         raise HTTPException(status_code=409, detail="A development gate deployment already exists.")
     baseline = _latest_approved_release(store)
     if not baseline:
@@ -1407,7 +1410,7 @@ def provision_development_gate(
     if body.dry_run:
         return {
             "dry_run": True,
-            "deployment": {"id": "onebrain-development-gate"},
+            "deployment": {"id": DEVELOPMENT_GATE_DEPLOYMENT_ID},
             "account_id": "onebrain-development",
             "bundle_id": "onebrain_only",
             "environment": "development",
@@ -1433,7 +1436,7 @@ def provision_development_gate(
         bundle_id="onebrain_only",
         account_kind="project",
         account_id="onebrain-development",
-        deployment_id="onebrain-development-gate",
+        deployment_id=DEVELOPMENT_GATE_DEPLOYMENT_ID,
         owner_email=body.owner_email.strip(),
         deployment_type="dedicated_server",
         environment="development",

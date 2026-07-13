@@ -414,7 +414,7 @@ def _dispatch_run(run: ProvisioningRun, *, owner_otp: str = "",
             dispatched = GitHubWorkflowDispatcher(settings).dispatch(run)
         else:
             return mark_dispatch_failed(store, run, f"unknown provisioner_backend: {backend}")
-    except RuntimeError as exc:
+    except (RuntimeError, OSError) as exc:
         return mark_dispatch_failed(store, run, str(exc))
     return store.update_run(dispatched)
 
