@@ -46,7 +46,7 @@ from app.provisioning.hetzner.client import (
     ServerCreateRequest,
     VolumeCreateRequest,
 )
-from app.provisioning.hetzner.render import BoxRenderInputs, render_cloud_init
+from app.provisioning.hetzner.render import BoxRenderInputs, enabled_product_dbs, render_cloud_init
 from app.provisioning.runs import (
     STATUS_DISPATCHED,
     BoxBootstrapToken,
@@ -208,6 +208,14 @@ class HetznerProvisioner:
                 registry_allowlist=settings.release_registry_allowlist,
                 bootstrap_token=bootstrap_token,
                 callback_token=callback_token,
+                # BK3: non-secret offsite-backup config baked into box.env (the two S3 creds ride
+                # the sealed bundle as ${VAR} refs). backup_dbs = the enabled products' DB names.
+                backup_enabled=bool(getattr(settings, "backup_enabled", False)),
+                backup_s3_endpoint=getattr(settings, "backup_object_store_endpoint", "") or "",
+                backup_s3_bucket=getattr(settings, "backup_object_store_bucket", "") or "",
+                backup_s3_region=getattr(settings, "backup_object_store_region", "") or "",
+                backup_retention_days=int(getattr(settings, "backup_retention_days", 30) or 30),
+                backup_dbs=enabled_product_dbs(tuple(modules)),
             ))
         except ValueError as exc:
             raise RuntimeError(f"cloud-init render failed: {exc}") from exc
@@ -347,6 +355,13 @@ class HetznerProvisioner:
                     settings.fleet_desired_state_public_keys
                     or settings.fleet_desired_state_public_key),
                 "ONEBRAIN_DNS_TOKEN": "",   # empty for a customer box (only the MC box sets it, P5-06)
+                # BK3: the ONE shared fleet S3 credential delivered to every box (empty when
+                # backups off). It MUST be a PUT/GET/LIST-only key (NO DELETE) — a shared delete
+                # key would let any compromised box wipe every other tenant's DR history; retention
+                # DELETE is the S3 lifecycle rule, not the box. Cross-tenant isolation is by the
+                # <deployment_id>/ object prefix (derived on the box from ONEBRAIN_DEPLOYMENT_ID).
+                "ONEBRAIN_BACKUP_S3_ACCESS_KEY": getattr(settings, "backup_object_store_access_key", "") or "",
+                "ONEBRAIN_BACKUP_S3_SECRET_KEY": getattr(settings, "backup_object_store_secret_key", "") or "",
             }
             errors = validate_bundle(bundle)
             if errors:

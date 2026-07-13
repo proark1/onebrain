@@ -16,6 +16,16 @@ from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Approved EU object-storage endpoint HOSTS for offsite backups (host / proper-subdomain
+# match, NOT a loose suffix — "evil-fsn1.your-objectstorage.com" must NOT pass). A region
+# label is not residency; assert_backup_endpoint_eu fails closed against this list. Operators
+# add rows here (or extend via a future config key) when a new EU region is approved.
+_EU_BACKUP_ENDPOINT_SUFFIXES = (
+    "fsn1.your-objectstorage.com",   # Hetzner Falkenstein (DE)
+    "nbg1.your-objectstorage.com",   # Hetzner Nuremberg (DE)
+    "hel1.your-objectstorage.com",   # Hetzner Helsinki (FI)
+)
+
 
 def _under_pytest() -> bool:
     """True when running inside pytest. `pytest` is always imported by the time
@@ -284,6 +294,21 @@ class Settings(BaseSettings):
     # --- Phase 5: network boundary (P5-05) ---
     hetzner_firewall_allow_ssh: bool = False    # break-glass ONLY; default false = NO inbound 22 rule emitted
 
+    # --- Fleet offsite backups (P4-G / Part 2). OFF by default -> the whole feature is INERT
+    #     until a bucket is configured; the box agent (onebrain_backup.sh) exits 0 immediately
+    #     when backup_enabled is false. Hetzner server Backups (above) cover the ROOT DISK; THIS
+    #     is the authoritative DATABASE DR (offsite encrypted pg_dump to EU Object Storage). ---
+    backup_enabled: bool = False                 # ONEBRAIN_BACKUP_ENABLED — master gate
+    backup_object_store_endpoint: str = ""       # ONEBRAIN_BACKUP_S3_ENDPOINT e.g. https://fsn1.your-objectstorage.com
+    backup_object_store_bucket: str = ""         # ONEBRAIN_BACKUP_S3_BUCKET (EU-region bucket)
+    backup_object_store_region: str = ""         # ONEBRAIN_BACKUP_S3_REGION SigV4 region label e.g. "fsn1"
+    backup_object_store_access_key: str = ""     # ONEBRAIN_BACKUP_S3_ACCESS_KEY (SECRET — delivered via sealed bundle)
+    backup_object_store_secret_key: str = ""     # ONEBRAIN_BACKUP_S3_SECRET_KEY (SECRET — delivered via sealed bundle)
+    backup_schedule: str = "daily"               # ONEBRAIN_BACKUP_SCHEDULE — systemd OnCalendar baked into the timer
+    backup_retention_days: int = 30              # ONEBRAIN_BACKUP_RETENTION_DAYS — the S3 lifecycle-expiration rule
+                                                 # (OPERATOR SETUP) is the AUTHORITATIVE retention backstop; the box
+                                                 # prune is only an optimization. Boxes are PUT/GET/LIST only (no DELETE).
+
     # Service surface — per-key rate limit (metered LLM/embedding endpoints) and a
     # cap on how many active keys one tenant may hold.
     service_rate_limit: int = 60
@@ -330,6 +355,25 @@ class Settings(BaseSettings):
     @property
     def is_production_like(self) -> bool:
         return self.environment.strip().lower() in {"prod", "production", "staging"}
+
+    @property
+    def backup_object_store_configured(self) -> bool:
+        """True when an offsite backup target is FULLY specified (endpoint + bucket + both creds)."""
+        return bool(self.backup_object_store_endpoint and self.backup_object_store_bucket
+                    and self.backup_object_store_access_key and self.backup_object_store_secret_key)
+
+    def assert_backup_endpoint_eu(self) -> None:
+        """Fail closed if backups are ENABLED but the endpoint host is not an approved EU host.
+        A region LABEL is not residency; this ASSERTS storage-residency (GDPR) before any offsite
+        write. build_object_store (BK4) calls it before constructing the real store, so a typo or a
+        copy-pasted non-EU endpoint refuses rather than silently exfiltrating EU personal data."""
+        if not self.backup_enabled:
+            return
+        host = (urlsplit(self.backup_object_store_endpoint).hostname or "").lower()
+        if not any(host == s or host.endswith("." + s) for s in _EU_BACKUP_ENDPOINT_SUFFIXES):
+            raise ValueError(
+                f"ONEBRAIN_BACKUP_S3_ENDPOINT host {host!r} is not an approved EU endpoint; "
+                "refusing to back up EU personal data offshore")
 
     @property
     def pg_database_url(self) -> str:

@@ -86,8 +86,8 @@ def _images(modules) -> dict:
 
 
 def _inputs(modules, *, fqdn="dep_a.fleet.example", role="customer", run_id="prun_fixture",
-            bootstrap_token="", callback_token="") -> BoxRenderInputs:
-    return BoxRenderInputs(
+            bootstrap_token="", callback_token="", **over) -> BoxRenderInputs:
+    base = dict(
         deployment_id="dep_a",
         account_id="acct_1",
         compose_project="onebrain-dep_a",
@@ -103,6 +103,8 @@ def _inputs(modules, *, fqdn="dep_a.fleet.example", role="customer", run_id="pru
         bootstrap_token=bootstrap_token,
         callback_token=callback_token,
     )
+    base.update(over)                        # allow tests to override any field (e.g. backup_* for BK3)
+    return BoxRenderInputs(**base)
 
 
 def _assert_golden(name: str, actual: str) -> None:
@@ -268,6 +270,68 @@ def test_render_operator_overlay():
     assert "ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY" not in cust
     assert "ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS" not in cust
     assert "ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS" not in cust
+
+
+# --- BK3: offsite-backup config delivery -------------------------------------
+def test_box_env_bakes_backup_config_off_by_default():
+    from app.provisioning.hetzner.render import _box_env
+    be = _box_env(_inputs(_ONEBRAIN))
+    assert "ONEBRAIN_BACKUP_ENABLED=false" in be                    # the gate is ALWAYS baked
+    # an INERT box (backups off, the default) carries NO other backup config -> zero box.env bloat
+    assert "ONEBRAIN_BACKUP_S3_ENDPOINT" not in be
+    assert "ONEBRAIN_BACKUP_S3_ACCESS_KEY" not in be
+    assert "ONEBRAIN_BACKUP_DBS" not in be
+
+
+def test_box_env_bakes_backup_config_when_enabled():
+    from app.provisioning.hetzner.render import _box_env
+    be = _box_env(_inputs(
+        _ALL, backup_enabled=True, backup_s3_endpoint="https://fsn1.your-objectstorage.com",
+        backup_s3_bucket="ob-backups", backup_s3_region="fsn1",
+        backup_dbs=("onebrain", "assistant", "communication")))
+    assert "ONEBRAIN_BACKUP_ENABLED=true" in be
+    assert "ONEBRAIN_BACKUP_S3_ENDPOINT=https://fsn1.your-objectstorage.com" in be
+    assert "ONEBRAIN_BACKUP_S3_BUCKET=ob-backups" in be
+    assert "ONEBRAIN_BACKUP_S3_REGION=fsn1" in be
+    assert "ONEBRAIN_BACKUP_DBS=onebrain assistant communication" in be
+    # the two S3 credentials are ${VAR} refs — NEVER literal secrets baked into box.env
+    assert "ONEBRAIN_BACKUP_S3_ACCESS_KEY=${ONEBRAIN_BACKUP_S3_ACCESS_KEY}" in be
+    assert "ONEBRAIN_BACKUP_S3_SECRET_KEY=${ONEBRAIN_BACKUP_S3_SECRET_KEY}" in be
+
+
+def test_enabled_product_dbs_tracks_products():
+    from app.provisioning.hetzner.render import enabled_product_dbs
+    assert enabled_product_dbs(_ONEBRAIN) == ("onebrain",)
+    assert enabled_product_dbs(_ALL) == ("onebrain", "assistant", "communication")
+
+
+def test_backup_endpoint_eu_allowlist_fails_closed():
+    from app.config import Settings
+    # disabled -> no check at all
+    Settings(backup_enabled=False,
+             backup_object_store_endpoint="https://s3.amazonaws.com").assert_backup_endpoint_eu()
+    # enabled + approved EU host (bare host AND a bucket subdomain) -> OK
+    Settings(backup_enabled=True,
+             backup_object_store_endpoint="https://fsn1.your-objectstorage.com").assert_backup_endpoint_eu()
+    Settings(backup_enabled=True,
+             backup_object_store_endpoint="https://ob.fsn1.your-objectstorage.com").assert_backup_endpoint_eu()
+    # enabled + non-EU host -> fail closed (never exfiltrate EU personal data offshore)
+    with pytest.raises(ValueError, match="not an approved EU endpoint"):
+        Settings(backup_enabled=True,
+                 backup_object_store_endpoint="https://s3.us-east-1.amazonaws.com").assert_backup_endpoint_eu()
+    # a look-alike that only loosely SUFFIX-matches (no dot boundary) must NOT pass
+    with pytest.raises(ValueError):
+        Settings(backup_enabled=True,
+                 backup_object_store_endpoint="https://evil-fsn1.your-objectstorage.com").assert_backup_endpoint_eu()
+
+
+def test_backup_object_store_configured_property():
+    from app.config import Settings
+    assert Settings().backup_object_store_configured is False
+    full = Settings(backup_object_store_endpoint="https://fsn1.your-objectstorage.com",
+                    backup_object_store_bucket="b", backup_object_store_access_key="AK",
+                    backup_object_store_secret_key="SK")
+    assert full.backup_object_store_configured is True
 
 
 # --- Caddyfile ---------------------------------------------------------------

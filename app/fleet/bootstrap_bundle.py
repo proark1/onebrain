@@ -36,6 +36,10 @@ BUNDLE_KEYS = (
     "UPDATE_BACKUP_KEY",
     "UPDATE_DESIRED_STATE_PUBLIC_KEYS",   # P5-02: the accepted wrapper-key SET (csv)
     "ONEBRAIN_DNS_TOKEN",                 # §5 lists it; empty for a normal customer box
+    # BK3: the offsite-backup S3 credentials (Part 2). SECRETS -> they ride the sealed bundle,
+    # never user-data (the box metadata endpoint would otherwise serve them). OPTIONAL: empty
+    # when backups are off (backup_enabled=false), so a box with no bucket configured stays valid.
+    "ONEBRAIN_BACKUP_S3_ACCESS_KEY", "ONEBRAIN_BACKUP_S3_SECRET_KEY",
 )
 # NOTE (G1-7): ONEBRAIN_PROVISIONING_CALLBACK_TOKEN is deliberately NOT in the bundle.
 # It stays baked in user-data (box.env) so the cloud-init metadata-egress-block FAILURE

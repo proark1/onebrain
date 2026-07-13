@@ -76,6 +76,9 @@ class SecretRefs:
     service_key_env: str = "ONEBRAIN_SERVICE_KEY"
     space_id_env: str = "ONEBRAIN_SPACE_ID"
     backup_key_env: str = "UPDATE_BACKUP_KEY"   # A5: per-box client-side backup key; lives in box.env.
+    # BK3: offsite-backup S3 credentials — SECRETS, so ${VAR} refs filled from the exchanged .env.
+    backup_s3_access_key_env: str = "ONEBRAIN_BACKUP_S3_ACCESS_KEY"
+    backup_s3_secret_key_env: str = "ONEBRAIN_BACKUP_S3_SECRET_KEY"
 
 
 @dataclass(frozen=True)
@@ -109,6 +112,15 @@ class BoxRenderInputs:
                                                 # values). Empty for a CUSTOMER box, which FETCHES /opt/onebrain/.env
                                                 # via the exchange (onebrain_bootstrap.sh) instead.
     secret_refs: SecretRefs = field(default_factory=SecretRefs)
+    # BK3: non-secret offsite-backup config, baked into box.env at render time (the two S3
+    # credentials are secrets and ride the exchanged .env as ${VAR} refs, not these). All
+    # default to the OFF/empty state so a box renders inert until a bucket is configured.
+    backup_enabled: bool = False
+    backup_s3_endpoint: str = ""
+    backup_s3_bucket: str = ""
+    backup_s3_region: str = ""
+    backup_retention_days: int = 30
+    backup_dbs: tuple = ()                       # the enabled products' Postgres DB names (pg_dump targets)
 
 
 # --- validation --------------------------------------------------------------
@@ -146,6 +158,13 @@ def _ordered(enabled) -> list:
 def _enabled_products(enabled) -> list:
     present = {_PRODUCT_OF[m] for m in _ordered(enabled)}
     return [p for p in PRODUCTS if p in present]
+
+
+def enabled_product_dbs(enabled_modules) -> tuple:
+    """The Postgres DB names for the enabled products — the pg_dump targets the offsite backup
+    agent iterates (BK3/BK5). Derived from the same product set the compose + Caddy use, so the
+    backup set can never drift from what is actually deployed on the box."""
+    return tuple(_DB_OF[p] for p in _enabled_products(enabled_modules))
 
 
 def _migrate_included(inp: BoxRenderInputs, product: str) -> bool:
@@ -580,11 +599,28 @@ def _box_env(inp: BoxRenderInputs) -> str:
         # these re-expand to the delivered real values.
         ("UPDATE_BACKUP_KEY", "${" + inp.secret_refs.backup_key_env + "}"),
         ("ONEBRAIN_ADMIN_PASSWORD", "${" + inp.secret_refs.owner_bootstrap_env + "}"),
+        # BK3: the offsite-backup master gate is ALWAYS baked (the agent reads it to no-op).
+        ("ONEBRAIN_BACKUP_ENABLED", "true" if inp.backup_enabled else "false"),
         # G1-7: the callback token is BAKED (a real value, not a ${VAR} ref) so the
         # metadata-egress-block FAILURE callback authenticates before the exchange has
         # run. It stays OUT of the exchange bundle (never a BUNDLE_KEY).
         ("ONEBRAIN_PROVISIONING_CALLBACK_TOKEN", inp.callback_token),
     ]
+    # BK3: the rest of the offsite-backup config is emitted ONLY when enabled, so an INERT box
+    # (backups off — the default until a bucket is set) carries zero backup bloat in its plain
+    # box.env. Non-secret settings are BAKED; the two S3 credentials are secrets delivered as
+    # ${VAR} refs from the exchanged .env (same mechanism as UPDATE_BACKUP_KEY). The box derives
+    # its per-deployment object prefix from ONEBRAIN_DEPLOYMENT_ID, so the prefix isn't delivered.
+    if inp.backup_enabled:
+        pairs += [
+            ("ONEBRAIN_BACKUP_S3_ENDPOINT", inp.backup_s3_endpoint),
+            ("ONEBRAIN_BACKUP_S3_BUCKET", inp.backup_s3_bucket),
+            ("ONEBRAIN_BACKUP_S3_REGION", inp.backup_s3_region),
+            ("ONEBRAIN_BACKUP_RETENTION_DAYS", str(inp.backup_retention_days)),
+            ("ONEBRAIN_BACKUP_DBS", " ".join(inp.backup_dbs)),
+            ("ONEBRAIN_BACKUP_S3_ACCESS_KEY", "${" + inp.secret_refs.backup_s3_access_key_env + "}"),
+            ("ONEBRAIN_BACKUP_S3_SECRET_KEY", "${" + inp.secret_refs.backup_s3_secret_key_env + "}"),
+        ]
     # P5-03: the single-use first-boot bootstrap token is baked ONLY for a customer box
     # (which exchanges it for /opt/onebrain/.env). The MC box (role=operator, G3-1) bakes
     # its .env directly and is never minted a token, so no exchange runs for it.

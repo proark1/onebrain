@@ -25,6 +25,8 @@ def _full_bundle(**overrides) -> dict:
         "UPDATE_BACKUP_KEY": "backup-secret",
         "UPDATE_DESIRED_STATE_PUBLIC_KEYS": "pub1,pub2",
         "ONEBRAIN_DNS_TOKEN": "",
+        "ONEBRAIN_BACKUP_S3_ACCESS_KEY": "",
+        "ONEBRAIN_BACKUP_S3_SECRET_KEY": "",
     }
     bundle.update(overrides)
     return bundle
@@ -128,3 +130,17 @@ def test_validate_bundle_flags_weak_auth_secret_below_floor():
     assert any("ONEBRAIN_AUTH_SECRET" in e and "at least 32" in e for e in errors)
     # Exactly 32 chars clears the floor.
     assert validate_bundle(_full_bundle(ONEBRAIN_AUTH_SECRET="x" * 32)) == []
+
+
+def test_backup_s3_keys_are_optional_and_dotenv_ordered():
+    # BK3: the two offsite-backup S3 credentials are OPTIONAL bundle keys (empty when backups
+    # off), never REQUIRED, and render_dotenv emits them in canonical order when present.
+    for k in ("ONEBRAIN_BACKUP_S3_ACCESS_KEY", "ONEBRAIN_BACKUP_S3_SECRET_KEY"):
+        assert k in BUNDLE_KEYS and k in OPTIONAL_KEYS and k not in REQUIRED_KEYS
+    # a valid bundle WITHOUT them stays valid (backups off)
+    assert validate_bundle(_full_bundle()) == []
+    # present -> emitted, access before secret (canonical order)
+    body = render_dotenv(_full_bundle(
+        ONEBRAIN_BACKUP_S3_ACCESS_KEY="AK", ONEBRAIN_BACKUP_S3_SECRET_KEY="SK"))
+    assert "ONEBRAIN_BACKUP_S3_ACCESS_KEY=AK" in body and "ONEBRAIN_BACKUP_S3_SECRET_KEY=SK" in body
+    assert body.index("ONEBRAIN_BACKUP_S3_ACCESS_KEY") < body.index("ONEBRAIN_BACKUP_S3_SECRET_KEY")

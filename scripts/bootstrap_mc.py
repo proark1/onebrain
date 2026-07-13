@@ -55,7 +55,11 @@ from app.provisioning.hetzner.client import (  # noqa: E402
     VolumeCreateRequest,
 )
 from app.provisioning.hetzner.provisioner import _default_deny_rules, _ssh_key_ids  # noqa: E402
-from app.provisioning.hetzner.render import BoxRenderInputs, render_cloud_init  # noqa: E402
+from app.provisioning.hetzner.render import (  # noqa: E402
+    BoxRenderInputs,
+    enabled_product_dbs,
+    render_cloud_init,
+)
 
 # The MC box's operator surface: the OneBrain API + admin UI + workers. No comm/assistant
 # module (so ONEBRAIN_SERVICE_KEY / ONEBRAIN_SPACE_ID stay empty in the bundle).
@@ -111,6 +115,11 @@ def build_mc_bundle(settings, *, dns_token: str, fleet_token: str,
         "UPDATE_DESIRED_STATE_PUBLIC_KEYS": (
             settings.fleet_desired_state_public_keys or settings.fleet_desired_state_public_key),
         "ONEBRAIN_DNS_TOKEN": dns_token,
+        # BK3: MC's own offsite-backup S3 credentials (empty when backups off). MC's DB holds every
+        # customer's sealed bundle, so MC's offsite backup is the fleet's last-resort DR — same
+        # PUT/GET/LIST-only shared credential as customer boxes.
+        "ONEBRAIN_BACKUP_S3_ACCESS_KEY": getattr(settings, "backup_object_store_access_key", "") or "",
+        "ONEBRAIN_BACKUP_S3_SECRET_KEY": getattr(settings, "backup_object_store_secret_key", "") or "",
     }
 
 
@@ -227,6 +236,14 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
         bootstrap_token="",       # G3-1: the MC box is NEVER minted a first-boot token
         callback_token=callback_token,
         dotenv=dotenv,            # G3-1: the baked /opt/onebrain/.env body
+        # BK3: MC's own non-secret offsite-backup config, baked into box.env so MC's agent runs
+        # (the two S3 creds ride the baked .env as bundle keys). backup_dbs = MC's product DBs.
+        backup_enabled=bool(getattr(settings, "backup_enabled", False)),
+        backup_s3_endpoint=getattr(settings, "backup_object_store_endpoint", "") or "",
+        backup_s3_bucket=getattr(settings, "backup_object_store_bucket", "") or "",
+        backup_s3_region=getattr(settings, "backup_object_store_region", "") or "",
+        backup_retention_days=int(getattr(settings, "backup_retention_days", 30) or 30),
+        backup_dbs=enabled_product_dbs(_MC_MODULES),
     ))
 
     firewall = None

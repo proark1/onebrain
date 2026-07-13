@@ -545,6 +545,24 @@ def test_provision_records_hetzner_backups_in_manifest():
     assert out_off.result_payload["erasure_manifest"]["hetzner_backups"] is False
 
 
+def test_bundle_carries_backup_s3_credentials_from_settings():
+    # BK3: the shared fleet S3 credential (from settings) is SEALED into the box bundle (never
+    # user-data). Empty when unset (optional key, backups off).
+    def _dispatch(**over):
+        fake, prov = FakeHetznerClient(), MemoryProvisioningRunStore()
+        settings = _p5_settings(**over)
+        HetznerProvisioner(settings, InProcessHetznerBroker(fake), _control(),
+                           prov_store=prov, fleet_store=MemoryFleetStore()).dispatch(
+                               _run(prov), owner_otp="owner-otp", owner_email="owner@example.com")
+        return _open_bundle(prov, settings)
+
+    b = _dispatch(backup_object_store_access_key="AKIA-fleet", backup_object_store_secret_key="s3cr3t")
+    assert b["ONEBRAIN_BACKUP_S3_ACCESS_KEY"] == "AKIA-fleet"
+    assert b["ONEBRAIN_BACKUP_S3_SECRET_KEY"] == "s3cr3t"
+    off = _dispatch()
+    assert off["ONEBRAIN_BACKUP_S3_ACCESS_KEY"] == "" and off["ONEBRAIN_BACKUP_S3_SECRET_KEY"] == ""
+
+
 # --- G1-7: customer-box provisioning callback authenticates via the per-run token -----
 
 def test_customer_box_callback_authenticates_with_per_run_token(monkeypatch):
