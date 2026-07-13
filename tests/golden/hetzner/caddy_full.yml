@@ -1,6 +1,30 @@
 dep_a.fleet.example {
     encode gzip
     header -Server
+    handle /api/fleet {
+        respond "Not Found" 404
+    }
+    handle /api/fleet/* {
+        respond "Not Found" 404
+    }
+    handle /api/operator {
+        respond "Not Found" 404
+    }
+    handle /api/operator/* {
+        respond "Not Found" 404
+    }
+    handle /api/provisioning {
+        respond "Not Found" 404
+    }
+    handle /api/provisioning/* {
+        respond "Not Found" 404
+    }
+    handle /api/rollouts {
+        respond "Not Found" 404
+    }
+    handle /api/rollouts/* {
+        respond "Not Found" 404
+    }
     handle /api/onebrain/* {
         reverse_proxy onebrain-admin-ui:3000
     }

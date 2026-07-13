@@ -24,7 +24,7 @@ from app.fleet.heartbeat import (
 )
 from app.fleet.keys import generate_fleet_key, hash_secret, parse_fleet_key, verify_secret
 from app.fleet.memory import MemoryFleetStore
-from app.fleet.reporter import report_once, send_heartbeat
+from app.fleet.reporter import report_once, send_heartbeat, start_reporter
 from app.fleet.watchdog import desired_alerts, run_watchdog
 
 
@@ -429,6 +429,20 @@ def test_report_once_skips_when_unconfigured():
 
     settings = Settings(fleet_url="", fleet_key="", deployment_id="")
     assert report_once(settings) is False
+
+
+def test_reporter_is_disabled_by_explicit_customer_flag(monkeypatch):
+    """A customer-shaped box must not report even if a test/leaked env supplied
+    otherwise valid fleet coordinates. Its host-only gate agent owns reporting."""
+    from app.config import Settings
+
+    settings = Settings(
+        fleet_url="https://mc", fleet_key="fk_a_b", deployment_id="dep_a",
+        fleet_reporter_enabled=False,
+    )
+    monkeypatch.setattr("app.fleet.reporter.collect_heartbeat", lambda s: pytest.fail("must not collect"))
+    assert report_once(settings) is False
+    assert start_reporter(settings) is False
 
 
 def test_report_once_swallows_send_errors(monkeypatch):

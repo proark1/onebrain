@@ -228,6 +228,8 @@ class DevelopmentGateProvisionIn(BaseModel):
 
 
 DEVELOPMENT_GATE_DEPLOYMENT_ID = "onebrain_development_gate"
+DEVELOPMENT_GATE_BUNDLE_ID = "full_stack"
+DEVELOPMENT_GATE_ACCOUNT_ID = "onebrain-development"
 
 
 class BackupCreate(BaseModel):
@@ -1309,6 +1311,16 @@ def _development_gate_blockers(store, gate: CustomerDeployment) -> list[str]:
         blockers.append("deployment_heartbeat_stale")
     if gate.last_heartbeat_healthy is not True:
         blockers.append("deployment_unhealthy")
+    from app.provisioning.bundles import BUNDLES
+
+    required_modules = set(BUNDLES[DEVELOPMENT_GATE_BUNDLE_ID].modules)
+    installed_modules = {
+        module.module_id: module.version
+        for module in store.list_modules(gate.id)
+        if module.status == "active"
+    }
+    if set(installed_modules) != required_modules:
+        blockers.append("development_gate_module_set_invalid")
     release = store.get_release(gate.current_version) if gate.current_version else None
     production_key = getattr(get_settings(), "release_verify_public_key", "")
     if (
@@ -1321,7 +1333,35 @@ def _development_gate_blockers(store, gate: CustomerDeployment) -> list[str]:
         or (release.migration_to and gate.last_reported_migration != release.migration_to)
     ):
         blockers.append("development_baseline_untrusted")
+    elif any(installed_modules.get(module_id) != release.modules.get(module_id)
+             for module_id in required_modules):
+        blockers.append("development_gate_module_version_invalid")
     return list(dict.fromkeys(blockers))
+
+
+def _development_gate_identity(store) -> tuple[str, str]:
+    """Return a fixed first gate identity or a server-generated replacement one.
+
+    A second undesignated gate is refused rather than creating another billed
+    server on retries. Replacements use a unique deployment ID, which gives the
+    Hetzner renderer a distinct compose project and DNS label beside the old gate.
+    """
+    current = store.get_release_gate()
+    existing = [
+        deployment for deployment in store.list_deployments()
+        if deployment.id == DEVELOPMENT_GATE_DEPLOYMENT_ID
+        or deployment.id.startswith(DEVELOPMENT_GATE_DEPLOYMENT_ID + "-")
+    ]
+    if any(not current or deployment.id != current.id for deployment in existing):
+        raise ValueError("A development gate replacement already exists.")
+    if not current:
+        return DEVELOPMENT_GATE_DEPLOYMENT_ID, DEVELOPMENT_GATE_ACCOUNT_ID
+    for _ in range(3):
+        suffix = uuid4().hex[:12]
+        deployment_id = f"{DEVELOPMENT_GATE_DEPLOYMENT_ID}-{suffix}"
+        if not store.get_deployment(deployment_id):
+            return deployment_id, f"{DEVELOPMENT_GATE_ACCOUNT_ID}-{suffix}"
+    raise ValueError("Could not allocate a unique development gate replacement identity.")
 
 
 def _development_gate_out(store) -> DevelopmentGateOut:
@@ -1373,27 +1413,29 @@ def provision_development_gate(
     body: DevelopmentGateProvisionIn,
     principal: Principal = Depends(resolve_principal),
 ):
-    """Create the dedicated onebrain-only dev server; designation waits for heartbeat readiness."""
+    """Create a full-stack customer-shaped dev gate; designation waits for verification."""
     _require_admin(principal)
     _require_operator_mode()
     settings = get_settings()
     if settings.provisioner_backend != "hetzner":
         raise HTTPException(status_code=409, detail="Development gate provisioning requires the Hetzner backend.")
     store = get_control_plane_store()
-    if store.get_release_gate() or store.get_deployment(DEVELOPMENT_GATE_DEPLOYMENT_ID):
-        raise HTTPException(status_code=409, detail="A development gate deployment already exists.")
+    try:
+        deployment_id, account_id = _development_gate_identity(store)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     baseline = _latest_approved_release(store)
     if not baseline:
         raise HTTPException(status_code=409, detail="A trusted approved baseline release is required first.")
     from app.provisioning.bundles import BUNDLES
     from app.routers.provisioning import CustomerProvisionCreate, _provision_customer_impl
 
-    module_ids = BUNDLES["onebrain_only"].modules
+    module_ids = BUNDLES[DEVELOPMENT_GATE_BUNDLE_ID].modules
     missing = sorted(module_id for module_id in module_ids if module_id not in baseline.modules)
     if missing:
         raise HTTPException(
             status_code=409,
-            detail=f"Baseline release does not cover the onebrain-only bundle: {','.join(missing)}",
+            detail=f"Baseline release does not cover the full-stack bundle: {','.join(missing)}",
         )
     missing_images = sorted(module_id for module_id in module_ids if module_id not in baseline.images)
     image_errors = verify_images(
@@ -1410,9 +1452,9 @@ def provision_development_gate(
     if body.dry_run:
         return {
             "dry_run": True,
-            "deployment": {"id": DEVELOPMENT_GATE_DEPLOYMENT_ID},
-            "account_id": "onebrain-development",
-            "bundle_id": "onebrain_only",
+            "deployment": {"id": deployment_id},
+            "account_id": account_id,
+            "bundle_id": DEVELOPMENT_GATE_BUNDLE_ID,
             "environment": "development",
             "deployment_type": "dedicated_server",
             "region": body.region.strip(),
@@ -1433,10 +1475,10 @@ def provision_development_gate(
         raise HTTPException(status_code=409, detail="Mission Control fleet_public_url is required.")
     return _provision_customer_impl(CustomerProvisionCreate(
         customer_name="One Brain Development Gate",
-        bundle_id="onebrain_only",
+        bundle_id=DEVELOPMENT_GATE_BUNDLE_ID,
         account_kind="project",
-        account_id="onebrain-development",
-        deployment_id=DEVELOPMENT_GATE_DEPLOYMENT_ID,
+        account_id=account_id,
+        deployment_id=deployment_id,
         owner_email=body.owner_email.strip(),
         deployment_type="dedicated_server",
         environment="development",
@@ -1445,7 +1487,7 @@ def provision_development_gate(
         initial_version=baseline.version,
         current_migration=baseline.migration_to,
         module_versions={module_id: baseline.modules[module_id] for module_id in module_ids},
-        mint_integration_keys=False,
+        mint_integration_keys=True,
         external_provisioning=True,
         dry_run=body.dry_run,
         callback_url=callback_url,

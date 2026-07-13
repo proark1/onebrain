@@ -164,7 +164,7 @@ def create_app() -> FastAPI:
     try:
         from app.fleet.reporter import start_reporter
 
-        if start_reporter(settings):
+        if settings.fleet_reporter_enabled and start_reporter(settings):
             logging.getLogger("onebrain").info("Fleet reporter enabled.")
     except Exception as exc:
         logging.getLogger("onebrain").warning("Fleet reporter not started: %s", exc)

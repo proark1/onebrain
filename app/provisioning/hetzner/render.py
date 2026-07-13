@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import base64
 import gzip
+import io
+import json
 import re
+import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -95,6 +98,9 @@ class BoxRenderInputs:
                                          # bootstrap_password to /api/provisioning/runs/<run_id>/callback)
     fleet_public_desired_state_key: str = ""   # baked so the box verifies the wrapper (H-7)
     release_public_key: str = ""               # baked so the box verifies the offline release sig
+    release_version: str = ""                  # provision-time metadata for the root-only reporter
+    release_migration: str = ""                # expected initial migration (metadata only)
+    module_versions: dict = field(default_factory=dict)
     registry_allowlist: str = ""               # baked box-local allowlist (B2) — never envelope-supplied
     trust_proxy: int = 1                        # TRUST_PROXY hop count for the box's real proxy (Caddy = 1)
     role: str = "customer"                      # A14: "customer" | "operator" (operator overlay is dormant in P4)
@@ -148,6 +154,15 @@ def _validate(inp: BoxRenderInputs) -> None:
         err = validate_image_ref(ref)
         if err:
             raise ValueError(err)
+        if inp.role == "customer":
+            version = str(inp.module_versions.get(module_id, "")).strip()
+            if not version or "\n" in version or "\r" in version or len(version) > 64:
+                raise ValueError(f"module_versions is missing a safe version for enabled module: {module_id}")
+    if inp.role == "customer":
+        if not inp.release_version or "\n" in inp.release_version or "\r" in inp.release_version or len(inp.release_version) > 64:
+            raise ValueError("release_version is required and must be a safe metadata value")
+        if "\n" in inp.release_migration or "\r" in inp.release_migration or len(inp.release_migration) > 64:
+            raise ValueError("release_migration must be a safe metadata value")
 
 
 def _ordered(enabled) -> list:
@@ -364,8 +379,6 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
     if module_id == "onebrain-api":
         pairs += [
             ("ONEBRAIN_DEPLOYMENT_ID", inp.deployment_id),
-            ("ONEBRAIN_FLEET_URL", inp.fleet_url),
-            (f"{refs.fleet_key_env}", "${" + refs.fleet_key_env + "}"),
             (f"{refs.llm_key_env}", "${" + refs.llm_key_env + "}"),
             # The session-cookie signing secret. app/main.py FAILS CLOSED (RuntimeError,
             # refuses to boot) unless this is a strong (>=32-char) non-default value, so it is
@@ -385,6 +398,16 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             ("ONEBRAIN_MODULE_PROBES_ENABLED", "true"),
             ("ONEBRAIN_LOCAL_MODULES", ",".join(_ordered(inp.enabled_modules))),
         ]
+        if inp.role == "customer":
+            # A customer-shaped box must not be able to turn into a control plane
+            # merely because the framework defaults change. The root-only host
+            # agent (not this Compose service) owns the fleet credential and
+            # reports the release-gate heartbeat.
+            pairs += [
+                ("ONEBRAIN_OPERATOR_MODE", "false"),
+                ("ONEBRAIN_OPERATOR_CONSOLE", "false"),
+                ("ONEBRAIN_FLEET_REPORTER_ENABLED", "false"),
+            ]
     if module_id == "onebrain-admin-ui":
         pairs += [("ONEBRAIN_API_BASE_URL", "http://onebrain-api:8000")]
     if module_id == "assistant-service":
@@ -420,7 +443,11 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             # bake it true (and its own public URL) so the single go-live command yields a
             # live, self-enrolled, heartbeating MC.
             ("ONEBRAIN_OPERATOR_MODE", "true"),
+            ("ONEBRAIN_OPERATOR_CONSOLE", "true"),
             ("ONEBRAIN_IS_OPERATOR_SURFACE", "true"),
+            ("ONEBRAIN_FLEET_REPORTER_ENABLED", "true"),
+            ("ONEBRAIN_FLEET_URL", inp.fleet_url),
+            (f"{refs.fleet_key_env}", "${" + refs.fleet_key_env + "}"),
             ("ONEBRAIN_FLEET_PUBLIC_URL", inp.fleet_url),
             ("ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS",
              "${ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS}"),
@@ -488,12 +515,32 @@ _CADDY_ROUTES = (
     ("communication-voice", 4100, "/comm/voice/*"),
 )
 
+# A customer deployment never serves the Mission Control control plane. These
+# explicit early denials remain useful even though the app does not mount the
+# routers: they prevent a future routing/default change from proxying a control
+# path through the generic API handler.
+_CADDY_DENY_PATHS = (
+    "/api/fleet",
+    "/api/fleet/*",
+    "/api/operator",
+    "/api/operator/*",
+    "/api/provisioning",
+    "/api/provisioning/*",
+    "/api/rollouts",
+    "/api/rollouts/*",
+)
+
 
 def render_caddyfile(inp: BoxRenderInputs) -> str:
     _validate(inp)
     present = set(inp.enabled_modules)
     site = inp.fqdn if inp.fqdn else ":80"
     blocks = []
+    if inp.role == "customer":
+        blocks.extend(
+            f'    handle {path} {{\n        respond "Not Found" 404\n    }}'
+            for path in _CADDY_DENY_PATHS
+        )
     for module_id, port, path in _CADDY_ROUTES:
         if module_id in present:
             blocks.append(f"    handle {path} {{\n        reverse_proxy {module_id}:{port}\n    }}")
@@ -574,6 +621,41 @@ def _write_file_entry(path: str, content: str, permissions: str = "0644",
     return gzb64 if len(gzb64) < len(plain) else plain
 
 
+def _asset_archive(entries: list[tuple[str, str, str]]) -> bytes:
+    """Build a deterministic tar containing non-secret box assets.
+
+    A full stack otherwise crosses Hetzner's 32 KiB cloud-init limit once the
+    root-only release agent is added. The archive contains only scripts, rendered
+    configuration, metadata, and `${VAR}` placeholders; root-owned `box.env` and
+    the optional real-secret `.env` remain separate plain 0600 files.
+    """
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.GNU_FORMAT) as archive:
+        for path, content, permissions in entries:
+            data = content.encode("utf-8")
+            info = tarfile.TarInfo(path.lstrip("/"))
+            info.size = len(data)
+            info.mode = int(permissions, 8)
+            info.mtime = 0
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            archive.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def _write_asset_archive(path: str, contents: bytes, permissions: str = "0600") -> str:
+    """Write a binary tar through cloud-init's gz+b64 decoder (which leaves the
+    decompressed tar on disk). This is always smaller than one encoded entry per
+    asset and is deterministic because the gzip mtime is fixed."""
+    blob = base64.b64encode(gzip.compress(contents, mtime=0)).decode("ascii")
+    return (
+        f"  - path: {path}\n"
+        f"    permissions: '{permissions}'\n"
+        "    encoding: gz+b64\n"
+        f"    content: {blob}\n"
+    )
+
+
 def _yaml_sq(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
@@ -594,6 +676,10 @@ def _box_env(inp: BoxRenderInputs) -> str:
         ("UPDATE_PROFILES", products),
         ("UPDATE_LOCAL_MODULES", ",".join(_ordered(inp.enabled_modules))),
         ("UPDATE_HEALTH_URL", "http://127.0.0.1/health"),
+        ("UPDATE_INITIAL_RELEASE_FILE", "/opt/onebrain/installed-release.json"),
+        # Customer stacks report from the root-owned companion after the update
+        # tick. Mission Control continues to use its in-app reporter.
+        ("ONEBRAIN_GATE_AGENT_ENABLED", "true" if inp.role == "customer" else "false"),
         # A5: the per-box backup-encryption key + the owner OTP are ${VAR} refs filled
         # by the bootstrap exchange (/opt/onebrain/.env), sourced BEFORE box.env so
         # these re-expand to the delivered real values.
@@ -629,6 +715,16 @@ def _box_env(inp: BoxRenderInputs) -> str:
     return _kv(pairs)
 
 
+def _initial_release_descriptor(inp: BoxRenderInputs) -> str:
+    """Provision-time metadata for the root-only reporter before any desired-state
+    apply. It intentionally excludes images, credentials, customer data, and callbacks."""
+    return json.dumps({
+        "version": inp.release_version,
+        "migration_to": inp.release_migration,
+        "modules": {module_id: inp.module_versions.get(module_id, "") for module_id in _ordered(inp.enabled_modules)},
+    }, sort_keys=True) + "\n"
+
+
 _META = "169.254.169.254"
 
 
@@ -659,13 +755,39 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
     caddy = render_caddyfile(inp)
     env_files = render_env_files(inp)
 
-    entries = [_write_file_entry("/opt/onebrain/docker-compose.yml", compose)]
-    # env/*.env carry the box's secret ${VAR} refs -> FORCE plain so bootstrap_mc._redact
-    # can mask them and the boot-config tests can resolve them (compressible=False).
-    for rel_path, content in env_files.items():
-        entries.append(_write_file_entry(f"/opt/onebrain/{rel_path}", content, compressible=False))
-    entries.append(_write_file_entry("/opt/onebrain/Caddyfile", caddy))
+    assets: list[tuple[str, str, str]] = [
+        ("/opt/onebrain/docker-compose.yml", compose, "0644"),
+        ("/opt/onebrain/Caddyfile", caddy, "0644"),
+        ("/opt/onebrain/installed-release.json", _initial_release_descriptor(inp), "0644"),
+        ("/opt/onebrain/postgres-init.sh", _read_box_file("postgres-init.sh"), "0755"),
+        ("/opt/onebrain/update.sh", _read_box_file("update.sh"), "0755"),
+        ("/opt/onebrain/onebrain-gate-agent.sh", _read_box_file("onebrain-gate-agent.sh"), "0755"),
+        ("/opt/onebrain/onebrain_gate_report.py", _read_box_file("onebrain_gate_report.py"), "0755"),
+        ("/opt/onebrain/onebrain_bootstrap.sh", _read_box_file("onebrain_bootstrap.sh"), "0755"),
+        ("/opt/onebrain/onebrain_box_verify.py", _read_box_file("onebrain_box_verify.py"), "0644"),
+        ("/etc/systemd/system/onebrain-update.service", _read_box_file("onebrain-update.service"), "0644"),
+        ("/etc/systemd/system/onebrain-update.timer", _read_box_file("onebrain-update.timer"), "0644"),
+        ("/etc/systemd/system/onebrain-metadata-drop.service", _read_box_file("onebrain-metadata-drop.service"), "0644"),
+    ]
+    # Rendered env files contain `${VAR}` references rather than secret values;
+    # package them with the other non-secret assets. The real exchanged/baked .env
+    # remains a separate 0600 write below.
+    assets.extend(
+        (f"/opt/onebrain/{rel_path}", content, "0600")
+        for rel_path, content in env_files.items()
+        if not (inp.role == "operator" and rel_path == "env/onebrain-api.env")
+    )
+    entries = [_write_asset_archive("/opt/onebrain/onebrain-assets.tar", _asset_archive(assets))]
     entries.append(_write_file_entry("/opt/onebrain/box.env", _box_env(inp), "0600", compressible=False))
+    # Keep the operator API environment visible in the dry-run artifact. It
+    # contains only `${VAR}` references, while retaining the Mission Control
+    # bootstrap diagnostics operators already rely on.
+    if inp.role == "operator":
+        entries.append(_write_file_entry(
+            "/opt/onebrain/env/onebrain-api.env", env_files["env/onebrain-api.env"],
+            "0600", compressible=False))
+    entries.append(_write_file_entry(
+        "/opt/onebrain/installed-release.json", _initial_release_descriptor(inp)))
     # P5-06 (G3-1): the MC box (role=operator) bakes its full /opt/onebrain/.env (0600 —
     # it carries every foundational secret) directly, because it cannot exchange for it
     # (empty DB at boot). A customer box leaves dotenv empty and fetches .env via the
@@ -673,25 +795,6 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
     if inp.dotenv:
         # The MC-baked .env holds every foundational secret -> FORCE plain (redaction + tests).
         entries.append(_write_file_entry("/opt/onebrain/.env", inp.dotenv, "0600", compressible=False))
-    entries.append(_write_file_entry(
-        "/opt/onebrain/postgres-init.sh", _read_box_file("postgres-init.sh"), "0755"))
-    entries.append(_write_file_entry(
-        "/opt/onebrain/update.sh", _read_box_file("update.sh"), "0755"))
-    # P5-03: the first-boot/rotation secret-exchange helper (fetches /opt/onebrain/.env).
-    entries.append(_write_file_entry(
-        "/opt/onebrain/onebrain_bootstrap.sh", _read_box_file("onebrain_bootstrap.sh"), "0755"))
-    entries.append(_write_file_entry(
-        "/opt/onebrain/onebrain_box_verify.py", _read_box_file("onebrain_box_verify.py"), "0644"))
-    entries.append(_write_file_entry(
-        "/etc/systemd/system/onebrain-update.service", _read_box_file("onebrain-update.service")))
-    entries.append(_write_file_entry(
-        "/etc/systemd/system/onebrain-update.timer", _read_box_file("onebrain-update.timer")))
-    # G1-6: persist the metadata-egress DROP across reboots (the runcmd iptables -I
-    # rules below are in-memory and vanish on the first reboot; this oneshot re-applies
-    # BOTH on every boot).
-    entries.append(_write_file_entry(
-        "/etc/systemd/system/onebrain-metadata-drop.service",
-        _read_box_file("onebrain-metadata-drop.service")))
     write_files = "".join(entries).rstrip("\n")
 
     profile_flags = " ".join(f"--profile {p}" for p in _enabled_products(inp.enabled_modules))
@@ -711,6 +814,7 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
     )
     runcmd_items = [
         "mkdir -p /opt/onebrain/env /opt/onebrain/caddy-data /opt/onebrain/caddy-config /data /mnt/onebrain-data",
+        "tar -xf /opt/onebrain/onebrain-assets.tar -C / && rm -f /opt/onebrain/onebrain-assets.tar",
         # Mount the attached data volume so Postgres survives a rebuild (device id
         # is assigned by Hetzner; the real mount executes on the live box, P5).
         'for dev in /dev/disk/by-id/scsi-0HC_Volume_*; do [ -b "$dev" ] || continue; '

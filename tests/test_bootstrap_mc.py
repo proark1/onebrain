@@ -9,8 +9,12 @@ call, ever.
 from __future__ import annotations
 
 import importlib.util
+import base64
+import gzip
+import io
 import json
 import re
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -30,6 +34,22 @@ _spec.loader.exec_module(mc)
 
 _D = "sha256:" + "a" * 64
 _IMAGES = json.dumps({m: f"ghcr.io/proark1/{m}@{_D}" for m in mc._MC_MODULES})
+
+
+def _asset_text(cloud_init: str, path: str) -> str:
+    match = re.search(
+        r"  - path: /opt/onebrain/onebrain-assets\.tar\n"
+        r"    permissions: '[0-7]+'\n"
+        r"    encoding: gz\+b64\n"
+        r"    content: (?P<blob>\S+)\n",
+        cloud_init,
+    )
+    assert match
+    archive = gzip.decompress(base64.b64decode(match.group("blob")))
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+        handle = tar.extractfile(path.lstrip("/"))
+        assert handle is not None
+        return handle.read().decode("utf-8")
 
 
 def _args(argv):
@@ -233,7 +253,7 @@ def test_dns_record_uses_zone_relative_label_not_fqdn():
     assert art.dns.name == "mc"                       # zone-relative label, NOT the fqdn
     assert art.dns.zone_id == "zone_ob"
     # ...but the box hostname / Caddy TLS site is still the full fqdn.
-    assert "mc.onlyonebrain.com {" in art.cloud_init
+    assert "mc.onlyonebrain.com {" in _asset_text(art.cloud_init, "/opt/onebrain/Caddyfile")
     assert art.dns.name != "mc.onlyonebrain.com"
 
 

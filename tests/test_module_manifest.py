@@ -92,6 +92,13 @@ def test_comm_requires_service_key_and_space_id():
     assert validate_module_env("communication-api", populated) == []
 
 
+def test_customer_onebrain_api_contract_excludes_fleet_credentials():
+    required = MODULE_ENV_REQUIREMENTS["onebrain-api"]
+    assert "ONEBRAIN_DEPLOYMENT_ID" in required
+    assert "ONEBRAIN_FLEET_URL" not in required
+    assert "ONEBRAIN_FLEET_KEY" not in required
+
+
 def test_unknown_module_raises():
     with pytest.raises(KeyError):
         validate_module_env("not-a-module", {})

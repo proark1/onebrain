@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/onebrain/update.sh
+ExecStart=/opt/onebrain/onebrain-gate-agent.sh
 Nice=10
 IOSchedulingClass=idle
 # The agent must run as root (host-level docker + iptables + host Postgres backup).

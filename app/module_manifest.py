@@ -53,8 +53,10 @@ MODULE_HEALTH_PROBES: Dict[str, HealthProbe] = {
 # never set, letting comm silently run in local-brain fallback; PA reads
 # ONEBRAIN_API_BASE_URL + ONEBRAIN_SERVICE_KEY). Aggregate counts of names only.
 MODULE_ENV_REQUIREMENTS: Dict[str, Tuple[str, ...]] = {
+    # Fleet credentials are host-agent inputs, never application-container
+    # requirements. The deployment id remains customer-visible metadata.
     "onebrain-api":          ("ONEBRAIN_VECTOR_STORE", "ONEBRAIN_DATABASE_URL", "ONEBRAIN_DATA_DIR",
-                              "ONEBRAIN_DEPLOYMENT_ID", "ONEBRAIN_FLEET_URL", "ONEBRAIN_FLEET_KEY"),
+                              "ONEBRAIN_DEPLOYMENT_ID"),
     "onebrain-workers":      ("ONEBRAIN_VECTOR_STORE", "ONEBRAIN_DATABASE_URL", "ONEBRAIN_DATA_DIR"),
     "onebrain-admin-ui":     (),
     "assistant-service":     ("ONEBRAIN_API_BASE_URL", "ONEBRAIN_SERVICE_KEY", "DATABASE_URL", "REDIS_URL"),

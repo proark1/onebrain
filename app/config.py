@@ -208,6 +208,10 @@ class Settings(BaseSettings):
     deployment_id: str = ""              # this deployment's control-plane id (for its heartbeat)
     fleet_url: str = ""                  # Mission Control base URL the reporter POSTs to
     fleet_key: str = ""                  # this deployment's fleet heartbeat key (fk_...)
+    # Customer-facing Compose stacks set this false. Their root-only host agent
+    # reports release-gate metadata without exposing fleet configuration inside
+    # the application container.
+    fleet_reporter_enabled: bool = True
     fleet_public_url: str = ""           # (Mission Control) its own public URL handed to enrolling deployments
     fleet_heartbeat_retention_days: int = 30   # prune fleet_heartbeats older than this
     fleet_report_seconds: int = 60       # how often the reporter posts a heartbeat

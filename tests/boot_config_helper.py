@@ -19,7 +19,11 @@ Not collected by pytest (no ``test_`` prefix); imported as ``tests.boot_config_h
 
 from __future__ import annotations
 
+import base64
+import gzip
+import io
 import re
+import tarfile
 from typing import Dict, List, Tuple
 
 from app.config import Settings
@@ -48,6 +52,25 @@ def extract_cloud_init_file(cloud_init: str, path: str) -> str:
     (blank body lines rendered as truly empty). Collection stops at the next entry
     (``  - path:`` at two-space indent) or any other dedent."""
     marker = f"  - path: {path}\n"
+    if marker not in cloud_init:
+        # Full customer stacks place non-secret assets in the deterministic
+        # gz+b64 tar to stay below Hetzner's cloud-init size limit. box.env and
+        # a baked MC .env remain direct 0600 entries, so this is a fallback only.
+        archive_match = re.search(
+            r"  - path: /opt/onebrain/onebrain-assets\.tar\n"
+            r"    permissions: '[0-7]+'\n"
+            r"    encoding: gz\+b64\n"
+            r"    content: (?P<blob>\S+)\n",
+            cloud_init,
+        )
+        if not archive_match:
+            raise ValueError(f"cloud-init file not found: {path}")
+        archive = gzip.decompress(base64.b64decode(archive_match.group("blob")))
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+            handle = tar.extractfile(path.lstrip("/"))
+            if handle is None:
+                raise ValueError(f"cloud-init asset not found: {path}")
+            return handle.read().decode("utf-8")
     start = cloud_init.index(marker)
     lines = cloud_init[start + len(marker):].split("\n")
     body: List[str] = []

@@ -126,7 +126,12 @@ def send_heartbeat(fleet_url: str, fleet_key: str, heartbeat: FleetHeartbeat | F
 
 def report_once(settings: Settings, *, opener=None) -> bool:
     """Collect and send one heartbeat. Never raises; returns whether it posted."""
-    if not settings.fleet_url or not settings.fleet_key or not settings.deployment_id:
+    if (
+        not settings.fleet_reporter_enabled
+        or not settings.fleet_url
+        or not settings.fleet_key
+        or not settings.deployment_id
+    ):
         return False
     try:
         heartbeat = collect_heartbeat(settings)
@@ -143,7 +148,12 @@ def report_once(settings: Settings, *, opener=None) -> bool:
 def start_reporter(settings: Settings) -> bool:
     """Spawn a daemon thread that reports every fleet_report_seconds. Returns
     whether it started (only when this deployment is configured to report)."""
-    if not settings.fleet_url or not settings.fleet_key or not settings.deployment_id:
+    if (
+        not settings.fleet_reporter_enabled
+        or not settings.fleet_url
+        or not settings.fleet_key
+        or not settings.deployment_id
+    ):
         return False
 
     interval = max(10, int(settings.fleet_report_seconds))

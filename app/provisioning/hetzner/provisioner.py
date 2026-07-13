@@ -233,6 +233,9 @@ class HetznerProvisioner:
                 run_id=run.id,   # baked into the box callback URL so the box can report back (not {run_id})
                 fleet_public_desired_state_key=settings.fleet_desired_state_public_key,
                 release_public_key=release_public_key,
+                release_version=release.version,
+                release_migration=release.migration_to,
+                module_versions=dict(release.modules),
                 registry_allowlist=settings.release_registry_allowlist,
                 bootstrap_token=bootstrap_token,
                 callback_token=callback_token,

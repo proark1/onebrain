@@ -27,6 +27,7 @@ from app.fleet.heartbeat import ModuleReport, UpdateReport, build_heartbeat_v2
 from app.fleet.base import FleetKey
 from app.fleet.keys import hash_secret
 from app.fleet.memory import MemoryFleetStore
+from app.provisioning.bundles import BUNDLES
 from app.routers import operator as operator_router
 from app.trust.release import release_signature_fields, sign_release
 from app.trust.signing import generate_keypair
@@ -34,6 +35,7 @@ from app.trust.signing import generate_keypair
 
 DIGEST = "sha256:" + "a" * 64
 IMAGE = f"ghcr.io/proark1/onebrain-api@{DIGEST}"
+FULL_STACK_MODULES = BUNDLES["full_stack"].modules
 
 
 def _release(version: str = "2026.07.13.1") -> ReleaseManifest:
@@ -42,6 +44,19 @@ def _release(version: str = "2026.07.13.1") -> ReleaseManifest:
         git_sha="a" * 40,
         modules={"onebrain-api": version},
         images={"onebrain-api": IMAGE},
+        rollback_kind="code_only",
+    )
+
+
+def _full_stack_release(version: str = "2026.07.13.1") -> ReleaseManifest:
+    return ReleaseManifest(
+        version=version,
+        git_sha="a" * 40,
+        modules={module_id: f"{version}-{module_id}" for module_id in FULL_STACK_MODULES},
+        images={
+            module_id: f"ghcr.io/proark1/{module_id}@sha256:{format(index + 1, '064x')}"
+            for index, module_id in enumerate(FULL_STACK_MODULES)
+        },
         rollback_kind="code_only",
     )
 
@@ -473,7 +488,7 @@ def test_gate_replacement_is_validated_before_atomic_marker_swap(monkeypatch):
     store = MemoryControlPlaneStore()
     fleet = MemoryFleetStore()
     production_private, production_public = generate_keypair()
-    baseline = replace(_release("2026.07.12.1"), status="active")
+    baseline = replace(_full_stack_release("2026.07.12.1"), status="active")
     baseline = replace(
         baseline,
         signature=sign_release(release_signature_fields(baseline), production_private),
@@ -498,6 +513,9 @@ def test_gate_replacement_is_validated_before_atomic_marker_swap(monkeypatch):
     )
     store.create_deployment(old_gate)
     store.create_deployment(replacement)
+    for module_id in FULL_STACK_MODULES:
+        store.upsert_module(DeploymentModule(
+            replacement.id, module_id, baseline.modules[module_id], status="active"))
     store.designate_release_gate(old_gate.id)
     fleet.create_key(FleetKey(id="replacement-key", key_hash="hash", deployment_id=replacement.id))
     settings = SimpleNamespace(
@@ -558,6 +576,91 @@ def test_development_provision_rejects_existing_normalized_deployment(monkeypatc
 
     assert exc.value.status_code == 409
     assert "already exists" in exc.value.detail
+
+
+def test_development_gate_replacement_requires_full_stack_baseline_and_uses_generated_identity(monkeypatch):
+    from types import SimpleNamespace
+
+    import app.routers.provisioning as provisioning_router
+
+    store = MemoryControlPlaneStore()
+    production_private, production_public = generate_keypair()
+    baseline = replace(_full_stack_release(), status="active")
+    baseline = replace(
+        baseline,
+        signature=sign_release(release_signature_fields(baseline), production_private),
+        signing_key_id="production-1",
+    )
+    store.create_release(baseline)
+    old_gate = CustomerDeployment(
+        id=operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID,
+        customer_name="Current gate",
+        environment="development",
+        deployment_type="dedicated_server",
+    )
+    store.create_deployment(old_gate)
+    store.designate_release_gate(old_gate.id)
+    settings = SimpleNamespace(
+        is_operator_surface=True,
+        operator_mode=True,
+        provisioner_backend="hetzner",
+        release_verify_public_key=production_public,
+        release_registry_allowlist="ghcr.io/proark1",
+        dev_release_verify_public_key="dev-public",
+        fleet_public_url="https://mc.example.com",
+    )
+    principal = SimpleNamespace(role_id="admin", user_id="operator")
+    captured = {}
+    monkeypatch.setattr(operator_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(provisioning_router, "_provision_customer_impl",
+                        lambda body, _principal: captured.setdefault("body", body))
+
+    result = operator_router.provision_development_gate(
+        operator_router.DevelopmentGateProvisionIn(owner_email="owner@example.com", dry_run=False),
+        principal,
+    )
+
+    assert result is captured["body"]
+    assert result.bundle_id == "full_stack"
+    assert tuple(result.module_versions) == FULL_STACK_MODULES
+    assert result.mint_integration_keys is True
+    assert result.deployment_id.startswith(operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID + "-")
+    assert result.deployment_id != old_gate.id
+    assert result.account_id.startswith("onebrain-development-")
+    assert result.environment == "development"
+    assert result.release_ring == "internal"
+    assert result.external_provisioning is True
+
+
+def test_development_gate_full_stack_preflight_names_missing_modules(monkeypatch):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+
+    store = MemoryControlPlaneStore()
+    production_private, production_public = generate_keypair()
+    baseline = replace(_release(), status="active")
+    baseline = replace(baseline, signature=sign_release(release_signature_fields(baseline), production_private))
+    store.create_release(baseline)
+    settings = SimpleNamespace(
+        is_operator_surface=True,
+        operator_mode=True,
+        provisioner_backend="hetzner",
+        release_verify_public_key=production_public,
+        release_registry_allowlist="ghcr.io/proark1",
+    )
+    principal = SimpleNamespace(role_id="admin", user_id="operator")
+    monkeypatch.setattr(operator_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+
+    with pytest.raises(HTTPException, match="full-stack bundle") as exc:
+        operator_router.provision_development_gate(
+            operator_router.DevelopmentGateProvisionIn(owner_email="owner@example.com", dry_run=True),
+            principal,
+        )
+
+    assert exc.value.status_code == 409
+    assert "assistant-service" in exc.value.detail
 
 
 def test_dev_signature_is_served_only_to_the_designated_gate():

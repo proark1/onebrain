@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import base64
 import gzip
+import io
 import os
 import re
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -60,14 +62,36 @@ _GZB64_ENTRY = re.compile(
 )
 
 
-def _gz_b64_entries(cloud_init: str) -> dict:
-    """{path: (permissions, decoded_text)} for every gz+b64 write_files entry, with each
-    entry base64-decoded then gunzipped back to the bytes cloud-init writes to disk."""
+def _gz_b64_raw_entries(cloud_init: str) -> dict:
+    """{path: (permissions, decompressed_bytes)} for gz+b64 write_files entries."""
     out = {}
     for m in _GZB64_ENTRY.finditer(_write_files_section(cloud_init)):
-        decoded = gzip.decompress(base64.b64decode(m.group("blob"))).decode("utf-8")
-        out[m.group("path")] = (m.group("perm"), decoded)
+        out[m.group("path")] = (m.group("perm"), gzip.decompress(base64.b64decode(m.group("blob"))))
     return out
+
+
+def _asset_entries(cloud_init: str) -> dict:
+    """Decode the deterministic non-secret asset tar written by cloud-init."""
+    raw = _gz_b64_raw_entries(cloud_init)
+    perm, archive = raw["/opt/onebrain/onebrain-assets.tar"]
+    assert perm == "0600"
+    out = {}
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+        for member in tar.getmembers():
+            handle = tar.extractfile(member)
+            assert handle is not None
+            out["/" + member.name] = (format(member.mode, "04o"), handle.read().decode("utf-8"))
+    return out
+
+
+def _gz_b64_entries(cloud_init: str) -> dict:
+    """Compatibility view of archive members that would individually benefit
+    from gzip. Tests use this for the large-script round-trip assertions."""
+    return {
+        path: item
+        for path, item in _asset_entries(cloud_init).items()
+        if len(item[1].encode("utf-8")) >= 1024
+    }
 
 
 _GOLDEN = Path(__file__).parent / "golden" / "hetzner"
@@ -98,6 +122,9 @@ def _inputs(modules, *, fqdn="dep_a.fleet.example", role="customer", run_id="pru
         run_id=run_id,
         fleet_public_desired_state_key="DSPUBKEY",
         release_public_key="RELPUBKEY",
+        release_version="2026.07.13.1",
+        release_migration="0022_release_promotion_gate",
+        module_versions={module_id: f"{module_id}-v1" for module_id in modules},
         registry_allowlist="ghcr.io/proark1",
         role=role,
         bootstrap_token=bootstrap_token,
@@ -175,7 +202,7 @@ def test_compose_full_stack():
 
 # --- env files ---------------------------------------------------------------
 _SECRET_KEYS = (
-    "POSTGRES_PASSWORD", "REDIS_PASSWORD", "ONEBRAIN_FLEET_KEY",
+    "POSTGRES_PASSWORD", "REDIS_PASSWORD",
     "ONEBRAIN_LLM_API_KEY", "ONEBRAIN_SERVICE_KEY", "ONEBRAIN_ADMIN_PASSWORD",
     "ONEBRAIN_AUTH_SECRET",
 )
@@ -199,6 +226,10 @@ def test_env_files_are_per_service_and_cover_requirements():
     # no admin and — SSH closed — is unreachable.
     assert "ONEBRAIN_ADMIN_EMAIL=${ONEBRAIN_ADMIN_EMAIL}" in api
     assert "ONEBRAIN_ADMIN_PASSWORD=${ONEBRAIN_ADMIN_PASSWORD}" in api
+    # The customer-facing application never receives the fleet credential. The
+    # root-only host update/reporter agent reads it from box.env instead.
+    assert "ONEBRAIN_FLEET_KEY" not in api
+    assert "ONEBRAIN_FLEET_URL" not in api
     # Inert for modules that do NOT seed (only onebrain-api runs seed_admin_from_env).
     for non_seeding in ("env/onebrain-workers.env", "env/communication-api.env",
                         "env/assistant-service.env", "env/onebrain-admin-ui.env"):
@@ -265,8 +296,14 @@ def test_render_operator_overlay():
     # G1-1: the box's OWN accepted wrapper-key set, or its startup assertion bricks it.
     assert "ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS=${ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS}" in op
     cust = render_env_files(_inputs(_ALL, role="customer"))["env/onebrain-api.env"]
-    assert "ONEBRAIN_OPERATOR_MODE" not in cust                     # a customer box is NEVER Mission Control
+    # Customer application containers explicitly fail closed: they do not merely
+    # rely on framework defaults to hide the control plane.
+    assert "ONEBRAIN_OPERATOR_MODE=false" in cust
+    assert "ONEBRAIN_OPERATOR_CONSOLE=false" in cust
+    assert "ONEBRAIN_FLEET_REPORTER_ENABLED=false" in cust
     assert "ONEBRAIN_IS_OPERATOR_SURFACE" not in cust
+    assert "ONEBRAIN_FLEET_URL" not in cust
+    assert "ONEBRAIN_FLEET_KEY" not in cust
     assert "ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY" not in cust
     assert "ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS" not in cust
     assert "ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS" not in cust
@@ -277,6 +314,8 @@ def test_box_env_bakes_backup_config_off_by_default():
     from app.provisioning.hetzner.render import _box_env
     be = _box_env(_inputs(_ONEBRAIN))
     assert "ONEBRAIN_BACKUP_ENABLED=false" in be                    # the gate is ALWAYS baked
+    assert "ONEBRAIN_GATE_AGENT_ENABLED=true" in be                 # customer host only
+    assert "UPDATE_INITIAL_RELEASE_FILE=/opt/onebrain/installed-release.json" in be
     # an INERT box (backups off, the default) carries NO other backup config -> zero box.env bloat
     assert "ONEBRAIN_BACKUP_S3_ENDPOINT" not in be
     assert "ONEBRAIN_BACKUP_S3_ACCESS_KEY" not in be
@@ -344,6 +383,27 @@ def test_caddyfile_routes_only_enabled_and_tls():
     assert full.startswith("dep_a.fleet.example {")      # a domain implies Caddy auto-HTTPS (80/443)
     assert "reverse_proxy communication-api:4000" in full
     assert "reverse_proxy onebrain-api:8000" in full
+    # Denials come before generic /api/* routing so a customer browser cannot
+    # even reach an unmounted control-plane route through the API proxy.
+    deny = 'handle /api/fleet/* {\n        respond "Not Found" 404\n    }'
+    assert deny in full
+    assert full.index(deny) < full.index("handle /api/*")
+    for path in ("/api/operator/*", "/api/provisioning/*", "/api/rollouts/*"):
+        assert f'handle {path} {{\n        respond "Not Found" 404\n    }}' in full
+    for path in ("/api/fleet", "/api/operator", "/api/provisioning", "/api/rollouts"):
+        assert f'handle {path} {{\n        respond "Not Found" 404\n    }}' in full
+
+
+def test_initial_release_descriptor_is_metadata_only_and_complete():
+    import json
+    from app.provisioning.hetzner.render import _initial_release_descriptor
+
+    descriptor = json.loads(_initial_release_descriptor(_inputs(_ALL)))
+    assert descriptor == {
+        "version": "2026.07.13.1",
+        "migration_to": "0022_release_promotion_gate",
+        "modules": {module_id: f"{module_id}-v1" for module_id in _ALL},
+    }
 
 
 # --- cloud-init --------------------------------------------------------------
@@ -351,21 +411,24 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
     ci = render_cloud_init(_inputs(_ALL))
     assert "- python3-cryptography" in ci
     wf = _write_files_section(ci)
+    assert "- path: /opt/onebrain/onebrain-assets.tar" in wf
+    assets = _asset_entries(ci)
     for required in (
         "/opt/onebrain/docker-compose.yml", "/opt/onebrain/Caddyfile", "/opt/onebrain/box.env",
         "/opt/onebrain/postgres-init.sh", "/opt/onebrain/update.sh",
-        "/opt/onebrain/onebrain_box_verify.py",
+        "/opt/onebrain/onebrain_box_verify.py", "/opt/onebrain/onebrain-gate-agent.sh",
+        "/opt/onebrain/onebrain_gate_report.py", "/opt/onebrain/installed-release.json",
         "/etc/systemd/system/onebrain-update.service", "/etc/systemd/system/onebrain-update.timer",
     ):
-        assert f"- path: {required}" in wf
-    assert "- path: /opt/onebrain/env/" in wf                        # per-service env files
-    # update.sh + the verifier are LARGE, so they embed gz+b64 (not plaintext); their DECODED
-    # content still carries the expected markers (a round-trip test below proves byte-identity).
-    gz = _gz_b64_entries(ci)
-    assert "set -euo pipefail" in gz["/opt/onebrain/update.sh"][1]           # update.sh embedded (gz+b64)
-    assert "verify_desired_state" in gz["/opt/onebrain/onebrain_box_verify.py"][1]  # verifier embedded (gz+b64)
+        if required == "/opt/onebrain/box.env":
+            assert f"- path: {required}" in wf
+        else:
+            assert required in assets
+    assert "/opt/onebrain/env/onebrain-api.env" in assets
+    assert "set -euo pipefail" in assets["/opt/onebrain/update.sh"][1]
+    assert "verify_desired_state" in assets["/opt/onebrain/onebrain_box_verify.py"][1]
     assert "set -euo pipefail" not in wf                             # NOT present as plaintext (compressed)
-    assert "ExecStart=/opt/onebrain/update.sh" in wf                 # systemd unit embedded (small, plain)
+    assert "ExecStart=/opt/onebrain/onebrain-gate-agent.sh" in assets["/etc/systemd/system/onebrain-update.service"][1]
     # both metadata DROP rules (A5, in runcmd) + the run-id-substituted callback
     rc = _runcmd_section(ci)
     assert "iptables -w -I DOCKER-USER -d 169.254.169.254 -j DROP" in rc
@@ -375,6 +438,8 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
     assert "/api/provisioning/runs/prun_fixture/callback" in ci
     assert "ONEBRAIN_RUN_ID=prun_fixture" in ci
     assert "{run_id}" not in ci
+    assert assets["/opt/onebrain/onebrain_gate_report.py"][0] == "0755"
+    assert "tar -xf /opt/onebrain/onebrain-assets.tar -C /" in rc
 
 
 def test_cloud_init_requires_run_id():
@@ -473,7 +538,7 @@ def test_cloud_init_large_entries_are_gz_b64_and_roundtrip_byte_identical():
     # values and the boot-config tests can resolve them. env/*.env + box.env for a customer box
     # (a full-stack box has no baked .env; the MC .env plain-ness is covered in the MC test).
     wf = _write_files_section(ci)
-    secret_plain = ["/opt/onebrain/box.env"] + [f"/opt/onebrain/{p}" for p in render_env_files(inp)]
+    secret_plain = ["/opt/onebrain/box.env"]
     for plain_path in secret_plain:
         assert plain_path not in gz, f"{plain_path} was unexpectedly gz+b64 (a secret must stay plain)"
         body = wf.split(f"  - path: {plain_path}\n", 1)[1].split("  - path:", 1)[0]
@@ -542,10 +607,11 @@ def test_operator_box_env_omits_bootstrap_token():
 
 
 def test_cloud_init_embeds_bootstrap_helper_and_metadata_drop_unit():
-    wf = _write_files_section(render_cloud_init(_inputs(_ALL, bootstrap_token="bt_x_y", callback_token="cb")))
-    assert "- path: /opt/onebrain/onebrain_bootstrap.sh" in wf
+    ci = render_cloud_init(_inputs(_ALL, bootstrap_token="bt_x_y", callback_token="cb"))
+    assets = _asset_entries(ci)
+    assert "/opt/onebrain/onebrain_bootstrap.sh" in assets
     # G1-6: the boot-persistent metadata-egress DROP oneshot is embedded.
-    assert "- path: /etc/systemd/system/onebrain-metadata-drop.service" in wf
+    assert "/etc/systemd/system/onebrain-metadata-drop.service" in assets
 
 
 def test_cloud_init_bootstrap_runcmd_order_and_env_first_source():
