@@ -115,8 +115,18 @@ def build_mc_bundle(settings, *, dns_token: str, fleet_token: str,
 
 
 def _parse_images(raw: str) -> dict:
+    raw = raw or "{}"
+    # Convenience: `--images-json @path` reads the JSON from a file. An inline JSON object is
+    # painful to pass through PowerShell (5.1 strips the embedded double quotes when handing a
+    # string to a native exe -> "Expecting property name ... char 1"); a single-quoted '@file'
+    # has no inner quotes to mangle, so this is the robust cross-shell way to pass the map.
+    if raw.startswith("@"):
+        try:
+            raw = Path(raw[1:]).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"--images-json @file could not be read: {exc}") from exc
     try:
-        images = json.loads(raw or "{}")
+        images = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ValueError(f"--images-json is not valid JSON: {exc}") from exc
     if not isinstance(images, dict) or not all(isinstance(v, str) for v in images.values()):
@@ -328,7 +338,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fleet-public-url", required=True,
                         help="the MC box's own public URL (the reporter heartbeats to it)")
     parser.add_argument("--images-json", required=True,
-                        help="JSON map module_id -> digest-pinned image ref (must cover the MC modules)")
+                        help="JSON map module_id -> digest-pinned image ref (must cover the MC modules). "
+                             "Accepts inline JSON or @path to read it from a file (use @file on PowerShell, "
+                             "which mangles inline double quotes).")
     parser.add_argument("--server-type", default="", help="Hetzner server type (default: settings.hetzner_server_type)")
     parser.add_argument("--location", default="", help="Hetzner location (default: settings.hetzner_location)")
     parser.add_argument("--image", default="", help="Hetzner OS image (default: settings.hetzner_image)")

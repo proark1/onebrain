@@ -12,3 +12,4 @@ node_modules/
 out/
 *.tsbuildinfo
 onebrain-web/next-env.d.ts
+mc-images.json

@@ -258,6 +258,19 @@ def test_images_json_must_cover_mc_modules():
     assert rc == 2
 
 
+def test_images_json_accepts_at_file(tmp_path):
+    # `--images-json @path` reads the map from a file (the robust way to pass it through
+    # PowerShell, which strips inline double quotes when calling a native exe). Parsed
+    # identically to the inline form; a missing file fails closed with a clear ValueError.
+    imgs = {m: f"ghcr.io/proark1/{m}@{_D}" for m in mc._MC_MODULES}
+    p = tmp_path / "imgs.json"
+    p.write_text(json.dumps(imgs), encoding="utf-8")
+    assert mc._parse_images("@" + str(p)) == imgs                 # @file == inline
+    assert mc._parse_images(json.dumps(imgs)) == imgs
+    with pytest.raises(ValueError, match="@file could not be read"):
+        mc._parse_images("@" + str(tmp_path / "does-not-exist.json"))
+
+
 def test_g1_1_preflight_refuses_excluding_pubkey_set():
     # A configured active signer whose derived pub is NOT in the served set would brick the
     # MC box on its own G1-1 startup assertion — refuse to bake it (fail closed).
