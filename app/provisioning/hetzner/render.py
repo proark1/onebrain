@@ -240,7 +240,10 @@ def render_compose(inp: BoxRenderInputs) -> str:
     # cannot bypass the host firewall.
     blocks.append(_compose_service(
         "postgres",
-        image="postgres:16",
+        # pgvector-enabled Postgres 16 (drop-in superset of postgres:16): migration 0001 runs
+        # `CREATE EXTENSION vector`, which the stock postgres:16 image lacks (initdb has no
+        # vector.control) -> migrate would exit 1 and the whole app never starts.
+        image="pgvector/pgvector:pg16",
         env_file="env/postgres.env",
         expose="5432",
         volumes=[
@@ -432,6 +435,10 @@ def render_env_files(inp: BoxRenderInputs) -> dict:
         ("POSTGRES_USER", _PG_USER),
         ("POSTGRES_PASSWORD", "${" + inp.secret_refs.db_password_env + "}"),
         ("POSTGRES_INITDB_ARGS", "--auth-host=scram-sha-256"),
+        # The data volume is a fresh ext4 mount whose root holds a `lost+found`, so pointing
+        # PGDATA at the mount root makes initdb refuse ("directory exists but is not empty").
+        # Initialize into a SUBDIRECTORY of the mount instead (the image's documented fix).
+        ("PGDATA", "/var/lib/postgresql/data/pgdata"),
     ])
     out["env/redis.env"] = _kv([("REDIS_PASSWORD", "${" + inp.secret_refs.redis_password_env + "}")])
     for product in _enabled_products(inp.enabled_modules):
@@ -446,6 +453,14 @@ def render_env_files(inp: BoxRenderInputs) -> dict:
 # publicly reverse-proxied HTTP modules -> (port, path matcher). Order matters
 # (specific before the catch-all). Workers are internal (never public).
 _CADDY_ROUTES = (
+    # The admin-ui (Next.js) owns the BROWSER API namespace `/api/onebrain/*`: its
+    # app/api/onebrain/[...path] route proxies each call to onebrain-api at `/api/<path>`
+    # (forwarding the session cookie). This MUST be matched before the bare `/api/*` rule
+    # below, or the browser's `/api/onebrain/auth/login` reaches onebrain-api verbatim and
+    # 404s (onebrain-api serves `/api/auth/login`, not `/api/onebrain/...`).
+    ("onebrain-admin-ui", 3000, "/api/onebrain/*"),
+    # Bare `/api/*` is the SERVER-TO-SERVER surface (box reporters heartbeating to
+    # `/api/fleet/heartbeat`, provisioning callbacks) — straight to onebrain-api, no proxy.
     ("onebrain-api", 8000, "/api/*"),
     ("onebrain-api", 8000, "/health*"),
     ("assistant-service", 8000, "/assistant/*"),

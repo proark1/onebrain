@@ -10,7 +10,7 @@ services:
       - /opt/onebrain/caddy-data:/data
       - /opt/onebrain/caddy-config:/config
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     env_file:
       - env/postgres.env

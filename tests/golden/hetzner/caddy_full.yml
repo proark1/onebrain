@@ -1,6 +1,9 @@
 dep_a.fleet.example {
     encode gzip
     header -Server
+    handle /api/onebrain/* {
+        reverse_proxy onebrain-admin-ui:3000
+    }
     handle /api/* {
         reverse_proxy onebrain-api:8000
     }
