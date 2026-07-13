@@ -409,6 +409,28 @@ def test_bootstrap_first_boot_writes_env_then_records_epoch(box):
     assert "up -d" not in box.stub_log()
 
 
+def test_bootstrap_first_boot_accepts_unresolved_secret_placeholders(box):
+    # The rendered first-boot box.env carries ${VAR} references until /bootstrap
+    # returns the real secret bundle. Strict nounset must not abort while sourcing
+    # those intentional placeholders.
+    box_env = box.root / "box.env"
+    content = box_env.read_text(encoding="utf-8").replace(
+        "ONEBRAIN_FLEET_KEY=fk_test",
+        "ONEBRAIN_FLEET_KEY=${ONEBRAIN_FLEET_KEY}",
+    )
+    box_env.write_text(content, encoding="utf-8")
+    box.set_bootstrap_resp({
+        "secrets_epoch": 0,
+        "dotenv": "POSTGRES_PASSWORD=pg\nONEBRAIN_FLEET_KEY=fk_real\n",
+    })
+
+    result = box.run_bootstrap()
+
+    assert result.returncode == 0, result.stderr
+    assert "ONEBRAIN_FLEET_KEY=fk_real" in (box.env_content() or "")
+    assert box.applied_epoch() == "0"
+
+
 def test_bootstrap_holds_on_unreachable_without_writing_env(box):
     # Non-2xx / unreachable -> HOLD: no .env, no epoch advance (non-destructive).
     box.touch("bootstrap_fail")

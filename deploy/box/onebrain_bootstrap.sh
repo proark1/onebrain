@@ -14,7 +14,14 @@ set -euo pipefail
 
 BOX_ENV="${BOX_ENV:-/opt/onebrain/box.env}"
 # shellcheck disable=SC1090
-if [ -f "$BOX_ENV" ]; then set -a; . "$BOX_ENV"; set +a; fi
+if [ -f "$BOX_ENV" ]; then
+  # First boot still has unresolved ${VAR} placeholders until the exchange.
+  set +u
+  set -a
+  . "$BOX_ENV"
+  set +a
+  set -u
+fi
 
 # Command indirections: bare defaults for the dry-run harness; a real box may point
 # these at wrappers via box.env (same discipline as update.sh).
