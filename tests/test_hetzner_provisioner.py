@@ -104,7 +104,7 @@ def test_dispatch_creates_server_with_firewall_and_writes_d6_slots():
     assert server.user_data.startswith("#cloud-config") or server.user_data  # non-empty rendered cloud-init
     assert out.external_provider == "hetzner"
     assert out.railway_project_id == "hetzner:server_1"
-    assert out.railway_environment_id == "onebrain-dep_a"
+    assert out.railway_environment_id == "onebrain-dep-a"
     assert out.result_payload["service_ids"] == {m: m for m in _MODULES}
     assert out.status == STATUS_DISPATCHED
 
@@ -199,10 +199,26 @@ def test_dispatch_sets_dns_with_provider():
     ).dispatch(_plain_run())
 
     assert fake.calls[-1] == "upsert_dns_record"        # DNS last
-    assert fake.dns[0].name == "dep_a"                   # zone-relative LABEL, not the full fqdn
+    assert fake.dns[0].name == "dep-a"                   # zone-relative LABEL, not the full fqdn
     assert fake.dns[0].ipv4 == "203.0.113.1"            # broker filled the empty ipv4 from the server IP
-    assert out.external_run_url == "dep_a.fleet.example"   # ...but the box hostname is still the full fqdn
+    assert out.external_run_url == "dep-a.fleet.example"   # ...but the box hostname is still the full fqdn
     assert out.result_payload["erasure_manifest"]["dns_record_id"] == "dns_1"
+
+
+def test_provider_names_are_hostname_safe_and_length_bounded():
+    deployment_id = "customer_" + "long_name_" * 12
+    control = _control(dep=deployment_id)
+    fake = FakeHetznerClient()
+    out = HetznerProvisioner(
+        _settings(fleet_dns_provider="hetzner", fleet_base_domain="fleet.example", fleet_dns_zone_id="z1"),
+        InProcessHetznerBroker(fake), control,
+    ).dispatch(_plain_run(dep=deployment_id))
+
+    assert len(fake.servers[0].name) <= 63
+    assert "_" not in fake.servers[0].name
+    assert len(fake.dns[0].name) <= 63
+    assert "_" not in fake.dns[0].name
+    assert out.external_run_url == f"{fake.dns[0].name}.fleet.example"
 
 
 # --- fail-closed paths (through the router helper) ----------------------------
@@ -318,7 +334,7 @@ def test_resolve_target_classifies_hetzner_run():
 
     target = resolve_railway_target(prov, "dep_a")
     assert target["railway_project_id"] == "hetzner:server_1"
-    assert target["railway_environment_id"] == "onebrain-dep_a"
+    assert target["railway_environment_id"] == "onebrain-dep-a"
     assert target["service_ids"] == {m: m for m in _MODULES}
     assert target_provider(target) == "hetzner"
 
@@ -350,13 +366,13 @@ def test_resolve_target_survives_box_callback_that_omits_d6_coordinates():
     # The persisted run kept the dispatch-written coordinates AND the erasure manifest
     # (the teardown ids), not just the piece resolve_railway_target happens to read.
     assert applied.railway_project_id == "hetzner:server_1"
-    assert applied.railway_environment_id == "onebrain-dep_a"
+    assert applied.railway_environment_id == "onebrain-dep-a"
     assert applied.result_payload["service_ids"] == {m: m for m in _MODULES}
     assert applied.result_payload["erasure_manifest"]["server_id"] == "server_1"
 
     target = resolve_railway_target(prov, "dep_a")
     assert target["railway_project_id"] == "hetzner:server_1"
-    assert target["railway_environment_id"] == "onebrain-dep_a"
+    assert target["railway_environment_id"] == "onebrain-dep-a"
     assert target["service_ids"] == {m: m for m in _MODULES}
     assert target_provider(target) == "hetzner"
 
@@ -579,9 +595,9 @@ def test_provision_dns_upserted_for_hetzner_provider():
     out = _p5_dispatch(_p5_settings(fleet_dns_provider="hetzner", fleet_base_domain="fleet.example",
                                     fleet_dns_zone_id="z1"), fake)
     # The A record posts the zone-relative LABEL (Hetzner appends the zone) — NOT the full
-    # fqdn, which would resolve as "dep_a.fleet.example.fleet.example".
-    assert len(fake.dns) == 1 and fake.dns[0].name == "dep_a"
-    assert out.external_run_url == "dep_a.fleet.example"   # the box hostname stays the full fqdn
+    # fqdn, which would resolve as "dep-a.fleet.example.fleet.example".
+    assert len(fake.dns) == 1 and fake.dns[0].name == "dep-a"
+    assert out.external_run_url == "dep-a.fleet.example"   # the box hostname stays the full fqdn
 
 
 def test_provision_records_hetzner_backups_in_manifest():

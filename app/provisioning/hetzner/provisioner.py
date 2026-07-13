@@ -27,6 +27,7 @@ bootstrap-token exchange), so it is not exercised end-to-end here (dormant).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 from dataclasses import replace
@@ -97,6 +98,15 @@ def _ssh_key_ids(csv: str) -> tuple:
             continue
         out.append(int(part) if part.isdigit() else part)
     return tuple(out)
+
+
+def _provider_hostname_label(value: str) -> str:
+    """Map a normalized deployment id to one stable RFC 1123 label."""
+    label = value.strip().lower().replace("_", "-").strip("-")
+    if len(label) <= 63:
+        return label
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+    return f"{label[:54].rstrip('-')}-{digest}"
 
 
 def _default_deny_rules(allow_ssh: bool) -> tuple[FirewallRule, ...]:
@@ -190,10 +200,11 @@ class HetznerProvisioner:
         #    Hetzner provider (P5-05) — a "cloudflare"/unknown provider skips DNS (serve
         #    on the raw IP) rather than mis-calling the Hetzner DNS client; a zone id is
         #    required (the A record needs one).
-        compose_project = f"onebrain-{run.deployment_id}"
+        provider_label = _provider_hostname_label(run.deployment_id)
+        compose_project = _provider_hostname_label(f"onebrain-{run.deployment_id}")
         dns_enabled = (settings.fleet_dns_provider == "hetzner"
                        and bool(settings.fleet_base_domain and settings.fleet_dns_zone_id))
-        fqdn = f"{run.deployment_id}.{settings.fleet_base_domain}" if dns_enabled else ""
+        fqdn = f"{provider_label}.{settings.fleet_base_domain}" if dns_enabled else ""
 
         # 4a. Mint + persist the box secret bundle and a single-use bootstrap token
         #     (P5-03). Fail closed: an invalid bundle or a G1-1 interlock violation
@@ -280,7 +291,7 @@ class HetznerProvisioner:
             # RRSet in zone fleet.example would resolve as "dep_a.fleet.example.fleet.example"
             # (and the upsert's name-keyed RRSet probe would never match -> a fresh RRSet on
             # every re-provision). fqdn is kept below for the box hostname / external_run_url.
-            dns = DnsRecordRequest(zone_id=settings.fleet_dns_zone_id, name=run.deployment_id, ipv4="", ttl=300)
+            dns = DnsRecordRequest(zone_id=settings.fleet_dns_zone_id, name=provider_label, ipv4="", ttl=300)
 
         # A HetznerApiError IS a RuntimeError; it propagates to _dispatch_run,
         # which maps it to dispatch_failed (mirroring dispatch_workflow's shape).
