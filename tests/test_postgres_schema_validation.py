@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 from app.db.schema import (
     BASELINE_ALEMBIC_REVISION,
@@ -459,6 +461,10 @@ def _phase5_fleet_secrets_module():
     return _load_migration_module("0021_phase5_fleet_secrets.py", "phase5_fleet_secrets_migration")
 
 
+def _release_promotion_module():
+    return _load_migration_module("0022_release_promotion_gate.py", "release_promotion_migration")
+
+
 def test_trust_primitives_migration_structure_and_chain():
     migration = _trust_primitives_module()
 
@@ -493,13 +499,14 @@ def test_must_change_password_migration_structure_and_chain():
     assert "must_change_password" in src
 
 
-def test_phase5_fleet_secrets_migration_is_head():
+def test_phase5_fleet_secrets_migration_precedes_release_promotion():
     migration = _phase5_fleet_secrets_module()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
     assert migration.revision == "0021_phase5_fleet_secrets"
+    assert migration.revision != REQUIRED_ALEMBIC_REVISION
     assert len(migration.revision) <= 32
     assert migration.down_revision == "0020_must_change_password"
+    assert _release_promotion_module().down_revision == migration.revision
     # Three NEW tables only (additive/expand-only).
     assert {
         "control_served_floor_bumps",
@@ -515,6 +522,18 @@ def test_phase5_fleet_secrets_migration_is_head():
     # Expand-only: no column dropped/altered on any existing table.
     assert "ALTER TABLE" not in src
     assert "DROP TABLE" not in src.split("def downgrade")[0]
+
+
+def test_required_revision_matches_single_alembic_head():
+    config = Config()
+    config.set_main_option(
+        "script_location",
+        str(Path(__file__).resolve().parents[1] / "migrations"),
+    )
+    heads = ScriptDirectory.from_config(config).get_heads()
+
+    assert heads == [REQUIRED_ALEMBIC_REVISION]
+    assert REQUIRED_ALEMBIC_REVISION == "0022_release_promotion_gate"
 
 
 # --- positional row mappers (C4) ----------------------------------------------
