@@ -200,6 +200,19 @@ def test_compose_full_stack():
     assert "caddy" in services
 
 
+def test_full_stack_accepts_one_digest_pinned_communication_image_for_all_modules():
+    """The communication release intentionally uses a single multi-service image."""
+    images = _images(_ALL)
+    shared = f"ghcr.io/proark1/communication@{_digest(42)}"
+    for module_id in ("communication-api", "communication-widget",
+                      "communication-voice", "communication-workers"):
+        images[module_id] = shared
+    compose = render_compose(_inputs(_ALL, images=images))
+    # Four long-running services plus the communication migration job use the
+    # same immutable image; SERVICE in each env file selects the process.
+    assert compose.count(f"image: {shared}") == 5
+
+
 # --- env files ---------------------------------------------------------------
 _SECRET_KEYS = (
     "POSTGRES_PASSWORD", "REDIS_PASSWORD",
@@ -244,6 +257,25 @@ def test_env_files_are_per_service_and_cover_requirements():
                 assert "${POSTGRES_PASSWORD}" in value    # password is a ref, never plaintext
             if key == "REDIS_URL":
                 assert "${REDIS_PASSWORD}" in value
+
+
+def test_shared_communication_image_services_receive_explicit_selectors():
+    """The communication repository dispatches its one image from SERVICE.
+
+    A full-stack manifest can pin the same immutable image under four module
+    IDs, but each Compose service must still start the matching process.
+    """
+    env = render_env_files(_inputs(_ALL))
+    expected = {
+        "communication-api": "api",
+        "communication-widget": "widget",
+        "communication-voice": "voice",
+        "communication-workers": "workers",
+    }
+    for module_id, selector in expected.items():
+        assert f"SERVICE={selector}" in env[f"env/{module_id}.env"]
+    for module_id in _ONEBRAIN + ("assistant-service",):
+        assert "SERVICE=" not in env[f"env/{module_id}.env"]
 
 
 def test_env_bakes_production_boot_essentials():

@@ -61,6 +61,16 @@ _MIGRATE = {
 }
 _DB_OF = {"onebrain": "onebrain", "assistant": "assistant", "communication": "communication"}
 _PG_USER = "onebrain"
+# Assad Dar AI Communication deliberately ships one immutable image that starts a
+# particular service according to SERVICE. Keep the release manifest module IDs
+# separate for health, version, and rollout accounting, while selecting the
+# correct process inside the shared image on a customer host.
+_COMMUNICATION_SERVICE_SELECTORS = {
+    "communication-api": "api",
+    "communication-widget": "widget",
+    "communication-voice": "voice",
+    "communication-workers": "workers",
+}
 
 
 @dataclass(frozen=True)
@@ -430,6 +440,9 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
         pairs += [("DATABASE_URL", _db_url("communication")), ("REDIS_URL", _redis_url())]
     if module_id == "communication-widget":
         pairs += [("ONEBRAIN_API_BASE_URL", "http://onebrain-api:8000")]
+    selector = _COMMUNICATION_SERVICE_SELECTORS.get(module_id)
+    if selector:
+        pairs.append(("SERVICE", selector))
     if _is_http(module_id):
         pairs += [("TRUST_PROXY", str(inp.trust_proxy))]
     # A14 operator overlay (dormant in P4; only onebrain-api carries it).
