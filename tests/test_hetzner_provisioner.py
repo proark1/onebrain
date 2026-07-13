@@ -527,6 +527,24 @@ def test_provision_dns_upserted_for_hetzner_provider():
     assert out.external_run_url == "dep_a.fleet.example"   # the box hostname stays the full fqdn
 
 
+def test_provision_records_hetzner_backups_in_manifest():
+    # BK2: the broker's Hetzner-Backups state (root-disk only) lands in the erasure manifest.
+    def _dispatch(enable):
+        fake = FakeHetznerClient()
+        prov = MemoryProvisioningRunStore()
+        p = HetznerProvisioner(_p5_settings(), InProcessHetznerBroker(fake, enable_backups=enable),
+                               _control(), prov_store=prov, fleet_store=MemoryFleetStore())
+        return fake, p.dispatch(_run(prov), owner_otp="owner-otp", owner_email="owner@example.com")
+
+    fake_on, out_on = _dispatch(True)
+    assert "enable_backup" in fake_on.calls
+    assert out_on.result_payload["erasure_manifest"]["hetzner_backups"] is True
+
+    fake_off, out_off = _dispatch(False)
+    assert "enable_backup" not in fake_off.calls
+    assert out_off.result_payload["erasure_manifest"]["hetzner_backups"] is False
+
+
 # --- G1-7: customer-box provisioning callback authenticates via the per-run token -----
 
 def test_customer_box_callback_authenticates_with_per_run_token(monkeypatch):

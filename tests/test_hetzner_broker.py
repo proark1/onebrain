@@ -129,6 +129,40 @@ def test_urllib_client_token_never_read_from_global(monkeypatch):
     assert captured["auth"] == "Bearer ctor-only"
 
 
+def test_urllib_client_enable_backup_shape_and_idempotency():
+    captured = {}
+
+    def opener(request, timeout):
+        captured["url"] = request.full_url
+        captured["method"] = request.get_method()
+        captured["auth"] = request.headers.get("Authorization")
+        captured["body"] = json.loads(request.data)
+        return _FakeResponse(json.dumps({"action": {"id": 99, "status": "running"}}).encode("utf-8"))
+
+    result = UrllibHetznerClient("bk-token", opener=opener).enable_backup("150330048")
+    assert captured["url"] == "https://api.hetzner.cloud/v1/servers/150330048/actions/enable_backup"
+    assert captured["method"] == "POST"
+    assert captured["auth"] == "Bearer bk-token"
+    assert captured["body"] == {}                     # empty body — Hetzner auto-selects the window
+    assert result.action_id == "99" and result.status == "running"
+
+    # Already-enabled (409 carrying the code) is an idempotent no-op, never a raise.
+    def opener_already(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url, 409, "conflict", None,
+            io.BytesIO(b'{"error":{"code":"server_backup_already_enabled"}}'))
+
+    r2 = UrllibHetznerClient("t", opener=opener_already).enable_backup("s1")
+    assert r2.status == "already_enabled" and r2.action_id == ""
+
+    # A genuine failure (500) still raises — never mistaken for idempotency.
+    def opener_500(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 500, "err", None, io.BytesIO(b"boom"))
+
+    with pytest.raises(HetznerApiError):
+        UrllibHetznerClient("t", opener=opener_500).enable_backup("s1")
+
+
 # --- in-process broker (fake client) -----------------------------------------
 
 def test_inprocess_broker_orders_calls():
@@ -167,6 +201,61 @@ def test_broker_provision_skips_dns_when_no_provider():
     assert result.fqdn == ""
     assert result.dns_record_id == ""
     assert result.volume_ids == ()
+
+
+# --- BK2: Hetzner server Backups auto-enable (root-disk-only convenience DR) --
+
+def test_broker_enables_backups_after_create_before_dns():
+    fake = FakeHetznerClient()
+    result = InProcessHetznerBroker(fake, enable_backups=True).provision_box(
+        server=_server_req(),
+        volume=VolumeCreateRequest(name="v", size_gb=10, location="nbg1"),
+        dns=DnsRecordRequest(zone_id="z1", name="dep_a.fleet.example", ipv4="", ttl=300),
+        firewall=FirewallCreateRequest(
+            name="fw", rules=(FirewallRule(direction="in", protocol="tcp", port="443"),)),
+    )
+    # enable_backup sits immediately AFTER create_server and BEFORE the DNS upsert (pinned).
+    assert fake.calls == [
+        "create_firewall", "create_volume", "create_server", "enable_backup", "upsert_dns_record"]
+    assert fake.backup_enabled_calls == ["server_1"]       # the just-created id
+    assert result.backups_enabled is True
+
+
+def test_broker_skips_backups_when_disabled():
+    fake = FakeHetznerClient()
+    result = InProcessHetznerBroker(fake, enable_backups=False).provision_box(
+        server=_server_req(), volume=None, dns=None)
+    assert "enable_backup" not in fake.calls
+    assert fake.backup_enabled_calls == []
+    assert result.backups_enabled is False
+
+
+def test_broker_enable_backup_failure_is_nonfatal():
+    fake = FakeHetznerClient(fail_on={"enable_backup"})
+    result = InProcessHetznerBroker(fake, enable_backups=True).provision_box(
+        server=_server_req(), volume=None, dns=None)
+    # the box still provisions (server returned) despite the backup action failing.
+    assert result.server_id == "server_1"
+    assert "enable_backup" in fake.calls                   # attempted, logged, not fatal
+
+
+def test_broker_reuse_converges_backups():
+    fake = FakeHetznerClient()
+    fake.create_server(_server_req())                      # seed the idempotency hit (deployment_id=dep_a)
+    result = InProcessHetznerBroker(fake, enable_backups=True).provision_box(
+        server=_server_req(), volume=None, dns=None)
+    assert result.reused is True
+    assert fake.calls.count("create_server") == 1          # no NEW server minted
+    assert fake.backup_enabled_calls == ["server_1"]       # converged the reused box
+    assert result.backups_enabled is True
+
+
+def test_factory_threads_enable_backups_default_true():
+    on = build_hetzner_broker(Settings(provisioner_backend="github"), client=FakeHetznerClient())
+    assert on._enable_backups is True                      # default true, threaded by the factory
+    off = build_hetzner_broker(
+        Settings(provisioner_backend="github", hetzner_enable_backups=False), client=FakeHetznerClient())
+    assert off._enable_backups is False
 
 
 def test_broker_destroy_requires_confirm_and_is_unimplemented_in_p4():
@@ -211,6 +300,21 @@ def test_fake_client_error_injection():
         fake.create_server(_server_req())
     # other methods still work
     assert fake.create_volume(VolumeCreateRequest(name="v", size_gb=10, location="nbg1")).volume_id == "vol_1"
+
+
+def test_fake_client_enable_backup_idempotent():
+    fake = FakeHetznerClient()
+    sid = fake.create_server(_server_req()).server_id
+    first = fake.enable_backup(sid)
+    assert first.status == "running" and fake.backup_enabled_calls == [sid]
+    second = fake.enable_backup(sid)                  # already enabled -> no-op
+    assert second.status == "already_enabled"
+    assert fake.calls.count("enable_backup") == 2
+    # injected failure path (broker treats it as non-fatal — see BK2 test)
+    boom = FakeHetznerClient(fail_on={"enable_backup"})
+    boom.create_server(_server_req())
+    with pytest.raises(HetznerApiError):
+        boom.enable_backup("server_1")
 
 
 # --- P5-05 → unified Cloud API DNS RRSet upsert (opener-injected; no network) ---

@@ -332,9 +332,12 @@ On Railway these were managed; on Hetzner the provisioner bakes them in:
   **escrow of the Hetzner token and the encryption key** (a DB restore is useless for
   decrypting envelopes without the key). On MC-unreachable, boxes **fail-safe to hold**
   (short TTL on the cached desired-state; MC re-asserts `apply:true` each ack).
-- **Per-box backups:** client-side **encrypted** (keys escrowed to MC/KMS), pinned to a
-  named EU region, **WAL/PITR** (not nightly-dump-only) with a stated RPO/RTO; report
-  backup *freshness* in the heartbeat and degrade readiness on stale backups. Restores
+- **Per-box backups:** two layers. Hetzner server Backups (auto-enabled at provision,
+  `ONEBRAIN_HETZNER_ENABLE_BACKUPS`) cover the **root disk only** and exist for fast whole-box
+  rebuild; the **data volume (Postgres) is protected exclusively by the offsite encrypted
+  `pg_dump` backups** — client-side **encrypted** (the box's `UPDATE_BACKUP_KEY`, recoverable
+  from the MC-escrowed sealed bundle), pinned to a named EU region, with a stated RPO/RTO;
+  report backup *freshness* in the heartbeat and degrade readiness on stale backups. Restores
   are drilled periodically — unproven backups aren't backups.
 - **TLS**: Caddy auto-provisions + renews. **OS patching**: `unattended-upgrades`.
 - **Monitoring**: MC's missed-heartbeat watchdog covers app liveness; add an external

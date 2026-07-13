@@ -28,6 +28,7 @@ from app.provisioning.hetzner.client import (
     FLEET_LABEL_VALUE,
     DnsRecordRequest,
     FirewallCreateRequest,
+    HetznerApiError,
     HetznerClient,
     ServerCreateRequest,
     VolumeCreateRequest,
@@ -45,6 +46,7 @@ class BrokerProvisionResult:
     fqdn: str
     firewall_id: str = ""     # id of a firewall CREATED in this flow ("" when a pre-existing one was attached)
     reused: bool = False      # True when the idempotency gate returned a PRE-EXISTING server (nothing was created)
+    backups_enabled: bool = False   # whether the broker requested Hetzner server Backups (root-disk only) for this box
 
 
 class HetznerBroker(Protocol):
@@ -75,13 +77,32 @@ class InProcessHetznerBroker:
     collapsed for P4). P5 replaces this with RemoteHetznerBroker (its own host, its
     own token, reached via hetzner_broker_url) behind the SAME Protocol."""
 
-    def __init__(self, client: HetznerClient, *, max_fleet_servers: int = 0):
+    def __init__(self, client: HetznerClient, *, max_fleet_servers: int = 0, enable_backups: bool = False):
         self._client = client
         # The fleet-size COST CIRCUIT BREAKER cap (settings.hetzner_max_fleet_servers,
         # threaded by build_hetzner_broker). <=0 DISABLES the breaker — used only by the
         # direct-construction unit tests that are not exercising the cap; every production
         # path goes through the factory, which always threads the real (default 5) cap.
         self._max_fleet_servers = int(max_fleet_servers or 0)
+        # Whether to enable Hetzner server Backups after create (settings.hetzner_enable_backups,
+        # threaded by build_hetzner_broker; default False on direct construction like the cap).
+        # NOTE: Hetzner server Backups image the ROOT DISK ONLY — never the attached data volume
+        # that holds Postgres (/mnt/onebrain-data). This is whole-box convenience DR (fast OS/root
+        # rebuild); the authoritative DATABASE DR is the offsite encrypted pg_dump path
+        # (Part 2 / onebrain_backup.sh), NOT this.
+        self._enable_backups = bool(enable_backups)
+
+    def _maybe_enable_backups(self, server_id: str) -> bool:
+        """Enable Hetzner Backups when configured; NON-FATAL on failure (a box that boots but
+        lacks root-disk backups beats a failed provision, and Part 2 is the real data DR).
+        Idempotent on the client side (already_enabled). Returns whether it was requested."""
+        if not self._enable_backups:
+            return False
+        try:
+            self._client.enable_backup(server_id)
+        except HetznerApiError as exc:
+            logger.warning("enable_backup failed for %s (continuing): %s", server_id, exc)
+        return True
 
     def provision_box(
         self,
@@ -111,6 +132,9 @@ class InProcessHetznerBroker:
                     "reusing existing server %s for deployment %s (idempotent)",
                     found.id, deployment_id,
                 )
+                # Converge a reused box (or one created before this feature) to backups-enabled;
+                # already_enabled makes it a safe no-op.
+                reused_backups = self._maybe_enable_backups(found.id)
                 # firewall_id / dns_record_id / volume_ids are left empty exactly like a
                 # pre-existing-firewall attach: nothing was created in THIS flow. fqdn is
                 # reconstructed from the DNS request name so an idempotent reuse still
@@ -123,6 +147,7 @@ class InProcessHetznerBroker:
                     fqdn=(dns.name if dns is not None else ""),
                     firewall_id="",
                     reused=True,
+                    backups_enabled=reused_backups,
                 )
         # GATE 2 — FLEET-SIZE CIRCUIT BREAKER. Runs AFTER the idempotency check (so a
         #   reuse never trips it) and BEFORE any create. Count only fleet-labelled servers
@@ -152,6 +177,11 @@ class InProcessHetznerBroker:
             server = replace(server, volume_ids=tuple(server.volume_ids) + (vol.volume_id,))
         # 2. Server WITH firewall + volume attached in the one create call.
         server_result = self._client.create_server(server)
+        # 2b. Enable Hetzner server Backups (root-disk only) right after create, BEFORE DNS.
+        #     The server is transiently locked while the action runs, but DNS is a separate
+        #     resource and we issue no dependent call on the server here, so the interleave is
+        #     safe. Non-fatal (see _maybe_enable_backups).
+        backups_enabled = self._maybe_enable_backups(server_result.server_id)
         # 3. DNS last (if a provider was configured) — fill the A record's target
         #    from the freshly-minted server IP unless the caller pinned one.
         dns_record_id, fqdn = "", ""
@@ -166,6 +196,7 @@ class InProcessHetznerBroker:
             dns_record_id=dns_record_id,
             fqdn=fqdn,
             firewall_id=firewall_id,
+            backups_enabled=backups_enabled,
         )
 
     def destroy_box(
@@ -208,5 +239,7 @@ def build_hetzner_broker(settings, *, client: Optional[HetznerClient] = None) ->
     # Thread the fleet-size cost cap so the circuit breaker is enforced inside
     # provision_box for EVERY factory-built broker — the provisioner AND bootstrap_mc.
     return InProcessHetznerBroker(
-        client, max_fleet_servers=getattr(settings, "hetzner_max_fleet_servers", 0)
+        client,
+        max_fleet_servers=getattr(settings, "hetzner_max_fleet_servers", 0),
+        enable_backups=getattr(settings, "hetzner_enable_backups", True),
     )

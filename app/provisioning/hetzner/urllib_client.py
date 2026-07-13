@@ -22,12 +22,17 @@ from app.provisioning.hetzner.client import (
     FirewallCreateRequest,
     FirewallCreateResult,
     HetznerApiError,
+    ServerActionResult,
     ServerCreateRequest,
     ServerCreateResult,
     ServerInfo,
     VolumeCreateRequest,
     VolumeCreateResult,
 )
+
+# Hetzner error code (and HTTP statuses) that mean "backups are already on" — an
+# idempotent no-op, not a failure.
+_BACKUP_ALREADY = "server_backup_already_enabled"
 
 _TIMEOUT_SECONDS = 20
 
@@ -137,6 +142,23 @@ class UrllibHetznerClient:
             public_ipv4=ipv4,
             status=server.get("status", "initializing"),
         )
+
+    def enable_backup(self, server_id: str) -> ServerActionResult:
+        """POST /servers/{id}/actions/enable_backup (empty body — Hetzner auto-selects the
+        backup window; the deprecated `backup_window` is not sent). Returns the async Action
+        WITHOUT polling it to completion (mirrors create_server). Idempotent: a server that
+        already has backups on returns status="already_enabled" instead of raising."""
+        try:
+            data = self._post(f"/servers/{quote(str(server_id), safe='')}/actions/enable_backup", {})
+        except HetznerApiError as exc:
+            # Already-enabled is a no-op, not a failure. Hetzner signals it with the
+            # `server_backup_already_enabled` code (HTTP 409/422/423). Match on the body code
+            # so we never mistake a genuine failure (500, auth, not-found) for idempotency.
+            if _BACKUP_ALREADY in (exc.body or "") and exc.status in (409, 422, 423):
+                return ServerActionResult(action_id="", status="already_enabled")
+            raise
+        action = data.get("action", {}) or {}
+        return ServerActionResult(action_id=str(action.get("id", "")), status=action.get("status", "running"))
 
     def list_servers(self, label_selector: str) -> list[ServerInfo]:
         """GET /servers?label_selector=<selector> (the cost-safety read seam). Bearer auth,

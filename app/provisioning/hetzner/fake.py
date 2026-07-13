@@ -14,6 +14,7 @@ from app.provisioning.hetzner.client import (
     FirewallCreateRequest,
     FirewallCreateResult,
     HetznerApiError,
+    ServerActionResult,
     ServerCreateRequest,
     ServerCreateResult,
     ServerInfo,
@@ -46,6 +47,8 @@ class FakeHetznerClient:
         # (zone_id, name) -> record_id, so a second upsert of the same A record returns
         # the SAME id (models the true upsert without a network round-trip).
         self._dns_by_name: dict = {}
+        # Ordered log of server ids passed to enable_backup (easy assertions).
+        self.backup_enabled_calls: List[str] = []
 
     def _maybe_fail(self, method: str) -> None:
         if method in self.fail_on:
@@ -70,8 +73,21 @@ class FakeHetznerClient:
         self._server_records.append({
             "id": server_id, "name": req.name, "labels": dict(req.labels or {}),
             "public_ipv4": ipv4, "status": "initializing", "deleted": False,
+            "backups_enabled": False,
         })
         return ServerCreateResult(server_id=server_id, public_ipv4=ipv4, status="initializing")
+
+    def enable_backup(self, server_id: str) -> ServerActionResult:
+        self.calls.append("enable_backup")
+        self._maybe_fail("enable_backup")
+        self.backup_enabled_calls.append(server_id)
+        for r in self._server_records:
+            if r["id"] == server_id:
+                if r.get("backups_enabled"):
+                    return ServerActionResult(action_id="", status="already_enabled")
+                r["backups_enabled"] = True
+                break
+        return ServerActionResult(action_id=f"action_{len(self.backup_enabled_calls)}", status="running")
 
     def list_servers(self, label_selector: str) -> List[ServerInfo]:
         # Read-only: DELIBERATELY not appended to self.calls, so existing exact `calls == [...]`

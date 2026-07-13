@@ -59,6 +59,15 @@ class ServerCreateResult:
 
 
 @dataclass(frozen=True)
+class ServerActionResult:
+    """The result of an async Hetzner server Action (e.g. enable_backup). We do NOT poll it
+    to completion (mirrors create_server's no-readiness-poll contract); the Action finishes
+    async and the box's later heartbeat is the real signal."""
+    action_id: str                          # numeric Hetzner Action id as string ("" when the API returned none)
+    status: str                             # "running" | "success" | "error" | "already_enabled"
+
+
+@dataclass(frozen=True)
 class ServerInfo:
     """A server as returned by `list_servers` (the cost-safety read seam). Carries the
     fields the broker's idempotency + fleet-cap gates need: the id/ip to reuse, the labels
@@ -125,6 +134,12 @@ class HetznerClient(Protocol):
     def create_volume(self, req: VolumeCreateRequest) -> VolumeCreateResult: ...
 
     def create_server(self, req: ServerCreateRequest) -> ServerCreateResult: ...
+
+    def enable_backup(self, server_id: str) -> ServerActionResult: ...
+    # Enable Hetzner's automated server Backups. ROOT-DISK IMAGE ONLY — never the attached
+    # data volume that holds Postgres (/mnt/onebrain-data); this is whole-box convenience DR,
+    # not the data-DR path (that is the offsite encrypted pg_dump, Part 2). Idempotent: a
+    # server that already has backups enabled returns status="already_enabled", never raises.
 
     def list_servers(self, label_selector: str) -> list[ServerInfo]: ...
     # The cost-safety READ seam (no create). `label_selector` is a single Hetzner Cloud

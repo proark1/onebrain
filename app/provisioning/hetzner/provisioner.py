@@ -271,6 +271,9 @@ class HetznerProvisioner:
             "firewall_id": result.firewall_id,
             "user_data": "rendered",
             "secret_ids": [],
+            # Root-disk Hetzner Backups state (observability; makes the extra backup image
+            # discoverable at teardown — the offsite pg_dump prefix is added by BK8).
+            "hetzner_backups": bool(result.backups_enabled),
         }
         result_payload = {
             **run.result_payload,

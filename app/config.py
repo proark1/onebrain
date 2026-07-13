@@ -244,6 +244,11 @@ class Settings(BaseSettings):
     # the fleet caps server creation, so a retry/loop/replay bug could otherwise mint many
     # billable boxes. Raise it to grow the fleet; <=0 disables the breaker.
     hetzner_max_fleet_servers: int = 5
+    hetzner_enable_backups: bool = True   # ONEBRAIN_HETZNER_ENABLE_BACKUPS: after create_server the broker
+                                          # calls POST /servers/{id}/actions/enable_backup. NOTE: Hetzner
+                                          # Backups image the ROOT DISK ONLY (not the /mnt/onebrain-data
+                                          # volume holding Postgres) — convenience whole-box DR, NOT data DR.
+                                          # The authoritative DB DR is the offsite pg_dump path (ONEBRAIN_BACKUP_*).
     # --- DNS (P1) ---
     # DNS rides the UNIFIED Hetzner Cloud API (GA 2025-11-10): the SAME hetzner_api_token
     # (Bearer) authenticates DNS — there is NO separate DNS token. The legacy
