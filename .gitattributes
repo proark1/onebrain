@@ -8,3 +8,4 @@ deploy/box/*.py text eol=lf
 deploy/box/*.service text eol=lf
 deploy/box/*.timer text eol=lf
 deploy/templates/* text eol=lf
+tests/golden/hetzner/*.yml text eol=lf

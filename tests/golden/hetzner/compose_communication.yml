@@ -1,4 +1,14 @@
 services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /opt/onebrain/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /opt/onebrain/caddy-data:/data
+      - /opt/onebrain/caddy-config:/config
   postgres:
     image: postgres:16
     restart: unless-stopped

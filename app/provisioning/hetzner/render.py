@@ -171,8 +171,8 @@ def _is_http(module_id: str) -> bool:
 
 
 # --- compose -----------------------------------------------------------------
-def _compose_service(name, *, image, profiles=None, command=None, env_file, expose=None,
-                     volumes=None, depends=None, restart="unless-stopped", healthcheck=None) -> str:
+def _compose_service(name, *, image, profiles=None, command=None, env_file=None, expose=None,
+                     ports=None, volumes=None, depends=None, restart="unless-stopped", healthcheck=None) -> str:
     lines = [f"  {name}:", f"    image: {image}"]
     if profiles:
         lines.append(f"    profiles: [{', '.join(profiles)}]")
@@ -181,8 +181,15 @@ def _compose_service(name, *, image, profiles=None, command=None, env_file, expo
         # JSON-array form; escape embedded double quotes so a shell -c argument that
         # itself quotes an env ref (redis) renders as valid YAML/JSON.
         lines.append("    command: [" + ", ".join('"' + c.replace('"', '\\"') + '"' for c in command) + "]")
-    lines.append("    env_file:")
-    lines.append(f"      - {env_file}")
+    if env_file is not None:
+        lines.append("    env_file:")
+        lines.append(f"      - {env_file}")
+    if ports:
+        # PUBLISHED host ports (the ingress ONLY). Every other service uses `expose` so the
+        # Hetzner Cloud Firewall is the sole inbound path; Caddy is the deliberate exception.
+        lines.append("    ports:")
+        for pub in ports:
+            lines.append(f'      - "{pub}"')
     if expose:
         lines.append("    expose:")
         lines.append(f'      - "{expose}"')
@@ -207,6 +214,26 @@ def render_compose(inp: BoxRenderInputs) -> str:
     ordered = _ordered(inp.enabled_modules)
     products = _enabled_products(inp.enabled_modules)
     blocks = ["services:"]
+
+    # Ingress: Caddy is the ONE public entrypoint. It PUBLISHES 80/443 (the only service
+    # that does — everything else is `expose`-only), terminates TLS (auto-HTTPS via Let's
+    # Encrypt when a fqdn is set; plain :80 otherwise), and reverse-proxies to the internal
+    # services per the rendered Caddyfile. NO profile: the ingress runs regardless of which
+    # product profiles are enabled, so 80/443 are bound the moment the box boots. Without
+    # this service nothing listens on 80/443 and every box reports CONNECTION REFUSED even
+    # though the app containers are healthy. Certs/keys persist on host paths so a restart
+    # never re-hits ACME rate limits. No env_file, no depends_on: Caddy retries upstreams
+    # until they resolve, so it never blocks on (profiled) app services being up first.
+    blocks.append(_compose_service(
+        "caddy",
+        image="caddy:2",
+        ports=["80:80", "443:443"],
+        volumes=[
+            "/opt/onebrain/Caddyfile:/etc/caddy/Caddyfile:ro",
+            "/opt/onebrain/caddy-data:/data",
+            "/opt/onebrain/caddy-config:/config",
+        ],
+    ))
 
     # Infra: one postgres (no profile, one data volume, three product DBs via
     # the init script), one redis. expose only (never ports) so Docker's iptables
@@ -464,43 +491,53 @@ def _yaml_block(content: str, indent: str = "      ") -> str:
 # VERBATIM, so the WHOLE document cannot be gzip-compressed (cloud-init would receive
 # undecodable base64). Instead, cloud-init's write_files module natively decompresses any
 # entry carrying `encoding: gz+b64` (gzip then base64) back to its ORIGINAL bytes on write.
-# Emitting the LARGE entries (the box scripts + the full compose) that way — while the
-# document itself stays a plain `#cloud-config` — shrinks the payload well under the limit.
-# Entries at or above this many UTF-8 bytes are gz+b64-encoded; smaller ones (env files,
-# Caddyfile, box.env, .env, systemd units) stay plain text for readability. The threshold
-# sits below the smallest box script (onebrain_bootstrap.sh, ~4.7KB) and above every env /
-# config entry (all <2KB), and gz+b64 only helps past ~1KB anyway (tiny files compress to
-# MORE than their plain form once the gzip header is added).
-_GZB64_THRESHOLD = 2048
+# Emitting the large/repetitive entries (the box scripts, the compose, the metadata-drop
+# systemd unit) that way — while the document itself stays a plain `#cloud-config` — shrinks
+# the payload well under the limit. Only entries at/above this many UTF-8 bytes are eligible
+# (below it gzip's header + base64's 33% inflation swamp the savings, AND small config —
+# Caddyfile, per-service env, the small units — stays plain so it's greppable in the rendered
+# user_data); eligible entries still fall back to plain if gz+b64 somehow isn't smaller, and
+# SECRET-bearing entries are forced plain regardless (compressible=False). The gate sits above
+# the largest small-config entry (~900B) and below the metadata-drop unit (~1.8KB).
+_GZB64_THRESHOLD = 1024
 
 
-def _write_file_entry(path: str, content: str, permissions: str = "0644") -> str:
+def _write_file_entry(path: str, content: str, permissions: str = "0644",
+                      *, compressible: bool = True) -> str:
     """A cloud-init write_files entry for ``path`` with ``content`` and ``permissions``.
 
-    Large content (>= ``_GZB64_THRESHOLD`` UTF-8 bytes) is emitted with ``encoding: gz+b64``
-    so the overall cloud-init stays under Hetzner's 32768-byte user_data limit; cloud-init
-    writes the DECOMPRESSED (original) bytes to disk, so the on-box file — content AND
-    permissions — is byte-identical to the plain form. gzip mtime is pinned to 0 so the
-    render is byte-for-byte reproducible (the gzip OS byte is 0xff regardless of platform,
-    so the output is stable across dev/CI too). Small content stays plain for readability."""
-    raw = content.encode("utf-8")
-    if len(raw) >= _GZB64_THRESHOLD:
-        # b64encode over gzip(mtime=0) -> a single-line ASCII scalar of the base64 alphabet
-        # (A-Za-z0-9+/=), which is safe as an unquoted YAML plain scalar: no space, colon,
-        # '#', '|', or newline, and gzip's base64 always starts "H4sI" (never a YAML indicator).
-        blob = base64.b64encode(gzip.compress(raw, mtime=0)).decode("ascii")
-        return (
-            f"  - path: {path}\n"
-            f"    permissions: '{permissions}'\n"
-            f"    encoding: gz+b64\n"
-            f"    content: {blob}\n"
-        )
-    return (
+    When ``compressible`` (the default) AND the content is at/above ``_GZB64_THRESHOLD`` bytes,
+    the entry is emitted with cloud-init's ``encoding: gz+b64`` IFF that is strictly smaller
+    than the plain form — true for the large/repetitive entries (box scripts, compose, the
+    metadata-drop unit). Small entries stay plain (below the threshold, gzip's header + base64's
+    33% inflation would swamp the savings, and small config stays greppable). cloud-init writes
+    the DECOMPRESSED (original) bytes to disk either way, so the on-box file — content AND
+    permissions — is byte-identical to the plain form. gzip mtime is pinned to 0 (+ a
+    platform-independent OS byte) so the render is byte-for-byte reproducible across dev/CI.
+
+    ``compressible=False`` FORCES plain text for the SECRET-bearing entries (env/*.env,
+    box.env, the MC-baked .env): bootstrap_mc._redact greps their plaintext ${VAR} refs /
+    baked values to mask them before printing the runbook, and the boot-config tests resolve
+    them — both need the values readable in the rendered user_data, not inside a gz+b64 blob."""
+    plain = (
         f"  - path: {path}\n"
         f"    permissions: '{permissions}'\n"
         f"    content: |\n"
         f"{_yaml_block(content)}\n"
     )
+    if not compressible or len(content.encode("utf-8")) < _GZB64_THRESHOLD:
+        return plain
+    # b64encode over gzip(mtime=0) -> a single-line ASCII scalar of the base64 alphabet
+    # (A-Za-z0-9+/=), which is safe as an unquoted YAML plain scalar: no space, colon,
+    # '#', '|', or newline, and gzip's base64 always starts "H4sI" (never a YAML indicator).
+    blob = base64.b64encode(gzip.compress(content.encode("utf-8"), mtime=0)).decode("ascii")
+    gzb64 = (
+        f"  - path: {path}\n"
+        f"    permissions: '{permissions}'\n"
+        f"    encoding: gz+b64\n"
+        f"    content: {blob}\n"
+    )
+    return gzb64 if len(gzb64) < len(plain) else plain
 
 
 def _yaml_sq(value: str) -> str:
@@ -572,16 +609,19 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
     env_files = render_env_files(inp)
 
     entries = [_write_file_entry("/opt/onebrain/docker-compose.yml", compose)]
+    # env/*.env carry the box's secret ${VAR} refs -> FORCE plain so bootstrap_mc._redact
+    # can mask them and the boot-config tests can resolve them (compressible=False).
     for rel_path, content in env_files.items():
-        entries.append(_write_file_entry(f"/opt/onebrain/{rel_path}", content))
+        entries.append(_write_file_entry(f"/opt/onebrain/{rel_path}", content, compressible=False))
     entries.append(_write_file_entry("/opt/onebrain/Caddyfile", caddy))
-    entries.append(_write_file_entry("/opt/onebrain/box.env", _box_env(inp), "0600"))
+    entries.append(_write_file_entry("/opt/onebrain/box.env", _box_env(inp), "0600", compressible=False))
     # P5-06 (G3-1): the MC box (role=operator) bakes its full /opt/onebrain/.env (0600 —
     # it carries every foundational secret) directly, because it cannot exchange for it
     # (empty DB at boot). A customer box leaves dotenv empty and fetches .env via the
     # bootstrap exchange, so nothing is baked here for it.
     if inp.dotenv:
-        entries.append(_write_file_entry("/opt/onebrain/.env", inp.dotenv, "0600"))
+        # The MC-baked .env holds every foundational secret -> FORCE plain (redaction + tests).
+        entries.append(_write_file_entry("/opt/onebrain/.env", inp.dotenv, "0600", compressible=False))
     entries.append(_write_file_entry(
         "/opt/onebrain/postgres-init.sh", _read_box_file("postgres-init.sh"), "0755"))
     entries.append(_write_file_entry(
@@ -619,7 +659,7 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
               ',\\"external_run_url\\":\\"$(cat /opt/onebrain/box.instance 2>/dev/null)\\"',
     )
     runcmd_items = [
-        "mkdir -p /opt/onebrain/env /data /mnt/onebrain-data",
+        "mkdir -p /opt/onebrain/env /opt/onebrain/caddy-data /opt/onebrain/caddy-config /data /mnt/onebrain-data",
         # Mount the attached data volume so Postgres survives a rebuild (device id
         # is assigned by Hetzner; the real mount executes on the live box, P5).
         'for dev in /dev/disk/by-id/scsi-0HC_Volume_*; do [ -b "$dev" ] || continue; '

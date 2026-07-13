@@ -133,9 +133,12 @@ def test_compose_onebrain_only():
     assert "8000" in compose and "3000" in compose     # onebrain ports
     for absent in ("4000", "5174", "4100", "4200"):
         assert absent not in compose                   # comm ports absent
-    # postgres/redis expose only (never ports:)
+    # postgres/redis/app services expose only; Caddy is the ONE ingress that publishes
+    # host ports, and only 80/443 (the sole inbound path the Hetzner firewall allows).
     assert "expose:" in compose
-    assert "ports:" not in compose
+    assert compose.count("ports:") == 1
+    assert '"80:80"' in compose and '"443:443"' in compose
+    assert "  caddy:\n    image: caddy:2" in compose   # ingress present, no profile
 
 
 def test_compose_with_communication():
@@ -161,9 +164,11 @@ def test_compose_full_stack():
     compose = render_compose(_inputs(_ALL))
     _assert_golden("compose_full.yml", compose)
     services = _service_names(compose)
-    # images map covers exactly the enabled modules (+ infra + migrates)
-    module_services = {s for s in services if s not in ("postgres", "redis") and not s.endswith("-migrate")}
+    # images map covers exactly the enabled modules (+ ingress + infra + migrates)
+    module_services = {s for s in services if s not in ("caddy", "postgres", "redis") and not s.endswith("-migrate")}
     assert module_services == set(_ALL)
+    # Caddy has NO profile, so the ingress is present on every stack regardless of products
+    assert "caddy" in services
 
 
 # --- env files ---------------------------------------------------------------
@@ -367,26 +372,31 @@ def test_customer_cloud_init_under_hetzner_user_data_limit():
 
 
 def test_cloud_init_large_entries_are_gz_b64_and_roundtrip_byte_identical():
-    """Every LARGE write_files entry (the box scripts + the full compose) is embedded with
-    cloud-init's `encoding: gz+b64`, and base64-decode + gunzip reproduces the ORIGINAL
-    bytes EXACTLY (cloud-init writes those decompressed bytes to disk), with permissions
-    preserved. Small entries (env files, Caddyfile, box.env, systemd units, postgres-init)
-    stay plain text."""
+    """Compressible write_files entries (the box scripts, the full compose, the non-secret
+    systemd units) are embedded with cloud-init's `encoding: gz+b64` WHEN that is smaller than
+    the plain form, and base64-decode + gunzip reproduces the ORIGINAL bytes EXACTLY (cloud-init
+    writes those decompressed bytes to disk), with permissions preserved. The SECRET-bearing
+    entries (env/*.env, box.env, the MC-baked .env) are FORCED plain so bootstrap_mc._redact can
+    mask their ${VAR}s / baked values and the boot-config tests can resolve them."""
     from app.provisioning.hetzner import render as R
 
     inp = _inputs(_ALL)
     ci = render_cloud_init(inp)
     gz = _gz_b64_entries(ci)
 
-    # Exactly the large entries are gz+b64: the three box scripts + the (full-stack) compose.
+    # The large box scripts + the full compose are always gz+b64 and round-trip byte-identical.
+    # The ~1.8KB metadata-drop systemd unit now compresses too — the main user_data reclaim that
+    # keeps a FULL-STACK box comfortably under Hetzner's 32768-byte limit (was ~700B of headroom).
     expected = {
         "/opt/onebrain/docker-compose.yml": (render_compose(inp), "0644"),
         "/opt/onebrain/update.sh": (R._read_box_file("update.sh"), "0755"),
         "/opt/onebrain/onebrain_bootstrap.sh": (R._read_box_file("onebrain_bootstrap.sh"), "0755"),
         "/opt/onebrain/onebrain_box_verify.py": (R._read_box_file("onebrain_box_verify.py"), "0644"),
+        "/etc/systemd/system/onebrain-metadata-drop.service":
+            (R._read_box_file("onebrain-metadata-drop.service"), "0644"),
     }
-    assert set(gz) == set(expected), f"unexpected gz+b64 entry set: {sorted(gz)}"
     for path, (original, want_perm) in expected.items():
+        assert path in gz, f"{path} should be gz+b64 (it is strictly smaller than plain)"
         got_perm, decoded = gz[path]
         assert decoded == original, f"{path}: gz+b64 round-trip is not byte-identical to the original"
         assert got_perm == want_perm, f"{path}: permission {got_perm!r} not preserved (want {want_perm!r})"
@@ -395,17 +405,23 @@ def test_cloud_init_large_entries_are_gz_b64_and_roundtrip_byte_identical():
     assert gz["/opt/onebrain/update.sh"][0] == "0755"
     assert gz["/opt/onebrain/onebrain_bootstrap.sh"][0] == "0755"
 
-    # Small entries are NOT compressed — they remain plain `content: |` blocks for readability
-    # (and, for env/.env, so their secret ${VAR}s / baked values stay greppable + redactable).
+    # SECURITY: every SECRET-bearing entry stays plain (never gz+b64) so _redact can mask its
+    # values and the boot-config tests can resolve them. env/*.env + box.env for a customer box
+    # (a full-stack box has no baked .env; the MC .env plain-ness is covered in the MC test).
     wf = _write_files_section(ci)
-    for plain_path in (
-        "/opt/onebrain/env/onebrain-api.env", "/opt/onebrain/box.env", "/opt/onebrain/Caddyfile",
-        "/opt/onebrain/postgres-init.sh", "/etc/systemd/system/onebrain-update.service",
-        "/etc/systemd/system/onebrain-metadata-drop.service",
-    ):
-        assert plain_path not in gz, f"{plain_path} was unexpectedly gz+b64 encoded"
+    secret_plain = ["/opt/onebrain/box.env"] + [f"/opt/onebrain/{p}" for p in render_env_files(inp)]
+    for plain_path in secret_plain:
+        assert plain_path not in gz, f"{plain_path} was unexpectedly gz+b64 (a secret must stay plain)"
         body = wf.split(f"  - path: {plain_path}\n", 1)[1].split("  - path:", 1)[0]
         assert "content: |" in body and "encoding:" not in body, f"{plain_path} is not a plain entry"
+
+    # Every gz+b64 entry is a genuine WIN: re-emitting its decoded content as forced-plain is
+    # LONGER than the chosen gz+b64 entry (pick-smaller is never a pessimization).
+    for path, (perm, decoded) in gz.items():
+        plain_entry = R._write_file_entry(path, decoded, perm, compressible=False)
+        gz_entry = R._write_file_entry(path, decoded, perm, compressible=True)
+        assert "encoding: gz+b64" in gz_entry and len(gz_entry) < len(plain_entry), \
+            f"{path}: gz+b64 is not smaller than plain"
 
     # Deterministic/reproducible: gzip mtime=0 (+ platform-independent OS byte) -> identical render.
     assert render_cloud_init(inp) == ci
