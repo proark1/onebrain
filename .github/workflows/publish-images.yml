@@ -188,8 +188,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install classifier dependency
-        run: pip install cryptography
+      - name: Install classifier dependencies
+        run: python -m pip install cryptography pydantic
 
       - name: Classify the migration delta
         run: |
