@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { ApiUnavailableState, SignedOutState } from "@/components/app-state";
 import { ConsoleShell } from "@/components/console-shell";
 import { SpacesPanel } from "@/components/spaces-panel";
@@ -16,6 +17,11 @@ export default async function SpacesPage() {
 
   if (!sessionResult.session) {
     return <SignedOutState loginHref={loginHref("/spaces")} />;
+  }
+
+  // Mission Control manages no customer apps/spaces — redirect to the fleet overview.
+  if (sessionResult.session.operator_mode) {
+    redirect("/fleet");
   }
 
   if (sessionResult.session.role_id !== "admin") {

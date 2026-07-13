@@ -88,6 +88,11 @@ class SessionInfo(BaseModel):
     tenant_id: str = ""
     display_name: str = ""
     email: str = ""
+    # Mission Control signals: operator_mode => this deployment IS MC (hide the
+    # customer surface in the console); is_operator_surface => the operator/fleet
+    # control plane is mounted here at all.
+    operator_mode: bool = False
+    is_operator_surface: bool = False
 
 
 class LoginRequest(BaseModel):

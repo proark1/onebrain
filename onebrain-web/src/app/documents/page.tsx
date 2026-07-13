@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { ApiUnavailableState, SignedOutState } from "@/components/app-state";
 import { ConsoleShell } from "@/components/console-shell";
 import { DocumentsPanel } from "@/components/documents-panel";
@@ -22,6 +23,11 @@ export default async function DocumentsPage() {
 
   if (!sessionResult.session) {
     return <SignedOutState loginHref={loginHref("/documents")} />;
+  }
+
+  // Mission Control holds no customer documents — send the operator to the fleet.
+  if (sessionResult.session.operator_mode) {
+    redirect("/fleet");
   }
 
   const [documentsResult, pendingResult] = await Promise.all([

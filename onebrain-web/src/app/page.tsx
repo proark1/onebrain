@@ -17,5 +17,10 @@ export default async function Home() {
     return <SignedOutState loginHref={loginHref("/chat")} />;
   }
 
+  // Mission Control has no customer surface — land the operator on the fleet overview.
+  if (sessionResult.session.operator_mode) {
+    redirect("/fleet");
+  }
+
   redirect(sessionResult.session.role_id === "admin" ? "/cockpit" : "/chat");
 }

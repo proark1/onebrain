@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 
 from app.auth.principal import Principal, resolve_principal
 from app.auth.roles import LOCATIONS, ROLES
+from app.config import get_settings
 from app.schemas import RoleInfo, SessionInfo
 
 router = APIRouter(prefix="/api/session", tags=["session"])
@@ -26,6 +27,7 @@ def list_locations():
 
 @router.get("/me", response_model=SessionInfo)
 def me(principal: Principal = Depends(resolve_principal)):
+    settings = get_settings()
     return SessionInfo(
         role_id=principal.role_id,
         role_label=principal.role_label,
@@ -34,4 +36,6 @@ def me(principal: Principal = Depends(resolve_principal)):
         tenant_id=principal.tenant_id,
         display_name=principal.display_name,
         email=principal.email,
+        operator_mode=settings.operator_mode,
+        is_operator_surface=settings.is_operator_surface,
     )
