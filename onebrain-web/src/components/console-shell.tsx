@@ -12,26 +12,38 @@ type ConsoleShellProps = {
   session: SessionInfo;
 };
 
-const PRIMARY_NAV: Array<{ id: ConsoleSection; href: string; label: string }> = [
-  { id: "cockpit", href: "/cockpit", label: "Status" },
+type NavItem = { id: ConsoleSection; href: string; label: string };
+
+const STATUS_NAV: NavItem = { id: "cockpit", href: "/cockpit", label: "Status" };
+// Customer surface — hidden on Mission Control (operator_mode), where there is no
+// customer content to ask about, manage, or govern.
+const CUSTOMER_NAV: NavItem[] = [
   { id: "chat", href: "/chat", label: "Ask" },
   { id: "documents", href: "/documents", label: "Knowledge" },
   { id: "spaces", href: "/spaces", label: "Apps" },
   { id: "privacy", href: "/privacy", label: "Privacy" },
+];
+const ADMIN_NAV: NavItem[] = [
   { id: "operator", href: "/operator", label: "Control" },
   { id: "fleet", href: "/fleet", label: "Fleet" },
 ];
+// Canonical full order (customer boxes) + label lookup for the command bar.
+const ALL_NAV: NavItem[] = [STATUS_NAV, ...CUSTOMER_NAV, ...ADMIN_NAV];
 
 export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
   const identity = session.display_name || session.email;
-  const activeLabel = PRIMARY_NAV.find((item) => item.id === active)?.label || "Console";
+  // Mission Control: admin-only layout (Status / Control / Fleet). Customer boxes
+  // keep the full nav in its canonical order.
+  const nav = session.operator_mode ? [STATUS_NAV, ...ADMIN_NAV] : ALL_NAV;
+  const homeHref = session.operator_mode ? "/fleet" : "/chat";
+  const activeLabel = ALL_NAV.find((item) => item.id === active)?.label || "Console";
 
   return (
     <WorkspaceProvider session={session}>
       <main className="consoleShell">
         <aside className="consoleSidebar" aria-label="OneBrain console">
           <div className="brandBlock">
-            <Link className="brand" href="/chat">
+            <Link className="brand" href={homeHref}>
               <span className="brandMark">AD</span>
               <span>OneBrain</span>
             </Link>
@@ -39,7 +51,7 @@ export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
           </div>
 
           <nav className="consoleNav" aria-label="Primary sections">
-            {PRIMARY_NAV.map((item) => (
+            {nav.map((item) => (
               <Link
                 aria-current={active === item.id ? "page" : undefined}
                 className={active === item.id ? "active" : ""}

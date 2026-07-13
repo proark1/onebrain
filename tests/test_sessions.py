@@ -199,6 +199,28 @@ def test_resolve_principal_rejects_expired_session_even_with_live_token(monkeypa
     assert exc.value.status_code == 401
 
 
+def test_me_surfaces_operator_flags(monkeypatch):
+    # /api/session/me carries the Mission Control signals so the console can render
+    # admin-only (operator_mode) and gate the Control/Fleet tabs (is_operator_surface).
+    import app.routers.session as session_router
+
+    users = MemoryUserStore()
+    users.create(_user())
+    principal = principal_mod.principal_from_user(users.get("u1"))
+
+    monkeypatch.setattr(session_router, "get_settings",
+                        lambda: SimpleNamespace(operator_mode=True, is_operator_surface=True))
+    mc = session_router.me(principal=principal)
+    assert mc.operator_mode is True and mc.is_operator_surface is True
+
+    monkeypatch.setattr(session_router, "get_settings",
+                        lambda: SimpleNamespace(operator_mode=False, is_operator_surface=False))
+    customer = session_router.me(principal=principal)
+    assert customer.operator_mode is False and customer.is_operator_surface is False
+    # Identity fields still flow through unchanged.
+    assert customer.email == "alice@nftgym.de" and customer.role_id == "admin"
+
+
 def test_session_is_expired_helper():
     live = Session(id="s", user_id="u", expires_at="2999-01-01T00:00:00+00:00")
     dead = Session(id="s", user_id="u", expires_at="2000-01-01T00:00:00+00:00")

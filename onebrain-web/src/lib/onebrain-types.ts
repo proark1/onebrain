@@ -6,6 +6,10 @@ export type SessionInfo = {
   tenant_id: string;
   display_name: string;
   email: string;
+  // Mission Control: operator_mode hides the customer surface (Ask/Knowledge/Apps/
+  // Privacy) so the console reads as an admin-only overview.
+  operator_mode: boolean;
+  is_operator_surface: boolean;
 };
 
 export type ConversationSummary = {

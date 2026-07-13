@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { ApiUnavailableState, SignedOutState } from "@/components/app-state";
 import { ChatPanel } from "@/components/chat-panel";
 import { ConsoleShell } from "@/components/console-shell";
@@ -16,6 +17,11 @@ export default async function ChatPage() {
 
   if (!sessionResult.session) {
     return <SignedOutState loginHref={loginHref("/chat")} />;
+  }
+
+  // Mission Control has no customer content — the Ask surface does not apply here.
+  if (sessionResult.session.operator_mode) {
+    redirect("/fleet");
   }
 
   const conversations = await listServerConversations().catch(() => []);

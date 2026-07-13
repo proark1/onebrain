@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { ApiUnavailableState, SignedOutState } from "@/components/app-state";
 import { ConsoleShell } from "@/components/console-shell";
 import { PrivacyPanel } from "@/components/privacy-panel";
@@ -16,6 +17,11 @@ export default async function PrivacyPage() {
 
   if (!sessionResult.session) {
     return <SignedOutState loginHref={loginHref("/privacy")} />;
+  }
+
+  // Mission Control governs no customer data — the privacy center does not apply here.
+  if (sessionResult.session.operator_mode) {
+    redirect("/fleet");
   }
 
   if (sessionResult.session.role_id !== "admin") {
