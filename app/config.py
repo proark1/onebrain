@@ -246,8 +246,13 @@ class Settings(BaseSettings):
 
     # --- Hetzner provisioner (P1; dormant until provisioner_backend="hetzner") ---
     provisioner_backend: str = "github"        # github | hetzner  (default keeps the Railway/GitHub path)
-    hetzner_api_token: str = ""                # the broker's ONLY secret; injected, never hardcoded
-    hetzner_broker_url: str = ""               # "" -> in-process broker (P4). Set -> remote broker host (P5)
+    hetzner_api_token: str = ""                # broker-only secret; MC must leave this empty for remote provisioning
+    hetzner_broker_url: str = ""               # HTTPS origin of the dedicated remote broker
+    hetzner_broker_credential: str = ""        # MC-only broker bearer credential; never the Hetzner token
+    hetzner_broker_client_certificate_file: str = ""  # MC mTLS client certificate path
+    hetzner_broker_client_key_file: str = ""          # MC mTLS private-key path
+    hetzner_broker_ca_file: str = ""                  # optional private CA bundle for broker TLS
+    hetzner_broker_timeout_seconds: float = 10.0
     hetzner_allow_inprocess_broker: bool = False  # A6: dogfood/test escape hatch. Production Hetzner MUST use the
                                                # out-of-process broker (hetzner_broker_url). See build_hetzner_broker.
     hetzner_location: str = "nbg1"             # EU region (nbg1/fsn1/hel1)

@@ -52,6 +52,7 @@ recorded verified state, not guessing a tag.
 
 ## Current activation state
 
-The architecture is the required target. The remote broker transport must be
-implemented and deployed before MC provisions customer servers. Until then, MC
+The remote broker transport and host bundle are implemented. They must be
+deployed and verified with a dedicated host, mTLS, source-restricted firewall,
+and broker-only token before MC provisions customer servers. Until then, MC
 must not gain a direct Hetzner token as a shortcut.

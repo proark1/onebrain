@@ -1,10 +1,9 @@
 """The token-isolating broker seam (P4-01, P1-D).
 
-A `HetznerBroker` owns the Hetzner + DNS tokens and a `HetznerClient`; the
-provisioner calls the broker, never the token or client directly. Phase 4 ships
-`InProcessHetznerBroker` (the seam physically collapsed into the operator process);
-Phase 5 replaces it with a `RemoteHetznerBroker` on its own host with its own token
-(reached via `hetzner_broker_url`) behind the SAME Protocol — documented, not built.
+A `HetznerBroker` owns the Hetzner + DNS token boundary; the provisioner calls
+the broker, never the token or cloud client directly. The in-process broker is
+for tests and explicit dogfood only. Production uses `RemoteHetznerBroker` on a
+dedicated host, reached through `hetzner_broker_url` over mTLS.
 
 The broker exposes CREATE primitives and a GUARDED destroy (explicit `confirm=True`,
 and Phase-4 teardown execution is unimplemented) — deliberately NO single automated
@@ -72,10 +71,8 @@ class HetznerBroker(Protocol):
 
 
 class InProcessHetznerBroker:
-    """P4: in-process. Holds a HetznerClient (constructed with the token by the
-    factory); the provisioner never sees the token (the isolation SEAM, physically
-    collapsed for P4). P5 replaces this with RemoteHetznerBroker (its own host, its
-    own token, reached via hetzner_broker_url) behind the SAME Protocol."""
+    """Test/dogfood implementation. It holds a client locally, so production
+    factory wiring rejects it unless the explicit dogfood escape hatch is set."""
 
     def __init__(self, client: HetznerClient, *, max_fleet_servers: int = 0, enable_backups: bool = False):
         self._client = client
@@ -215,16 +212,25 @@ class InProcessHetznerBroker:
 def build_hetzner_broker(settings, *, client: Optional[HetznerClient] = None) -> HetznerBroker:
     """Factory. Enforces the A6 isolation invariant in CODE:
 
-    - `hetzner_broker_url` set -> the remote (out-of-process) broker is Phase 5 and
-      its transport is not built; raise a clear error rather than silently no-op.
+    - `hetzner_broker_url` set -> use the dedicated remote broker. MC supplies
+      mTLS client material and a broker credential, never a Hetzner API token.
     - in-process path + `provisioner_backend=="hetzner"` + NOT
       `hetzner_allow_inprocess_broker` -> FORBIDDEN (production Hetzner must use the
       out-of-process broker); raise.
     - otherwise construct `InProcessHetznerBroker`. `client` lets tests inject a
       `FakeHetznerClient`; the guard still applies unless the dogfood flag is set."""
     if getattr(settings, "hetzner_broker_url", ""):
-        raise RuntimeError(
-            "remote Hetzner broker (hetzner_broker_url) is Phase 5; its transport is not built yet"
+        if getattr(settings, "hetzner_api_token", ""):
+            raise RuntimeError("Mission Control must not hold ONEBRAIN_HETZNER_API_TOKEN when using a remote broker")
+        from app.provisioning.hetzner.remote import RemoteHetznerBroker
+
+        return RemoteHetznerBroker(
+            settings.hetzner_broker_url,
+            getattr(settings, "hetzner_broker_credential", ""),
+            client_certificate_file=getattr(settings, "hetzner_broker_client_certificate_file", ""),
+            client_key_file=getattr(settings, "hetzner_broker_client_key_file", ""),
+            ca_file=getattr(settings, "hetzner_broker_ca_file", ""),
+            timeout_seconds=float(getattr(settings, "hetzner_broker_timeout_seconds", 10.0)),
         )
     if settings.provisioner_backend == "hetzner" and not settings.hetzner_allow_inprocess_broker:
         raise RuntimeError(

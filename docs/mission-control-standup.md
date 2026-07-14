@@ -40,9 +40,9 @@ Use strong session/authentication secrets, database credentials, and per-host
 encrypted backups. The MC desired-state key is distinct from the offline
 release-signing key.
 
-Do **not** set a Hetzner API token on MC. Broker authentication and the broker
-endpoint are configured only when the dedicated remote broker implementation is
-deployed and validated.
+Do **not** set a Hetzner API token on MC. Configure the broker endpoint,
+broker-scoped credential, and MC mTLS files only after the dedicated broker
+host is deployed and validated.
 
 ## Validate before enabling rollouts
 

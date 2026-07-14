@@ -71,7 +71,8 @@ customer merely because it exists.
 ## Implementation status
 
 The MC host and isolated dev-gate boundaries are in place. The remote broker
-transport remains a separate activation task; until it is complete, automated
-MC provisioning remains disabled. See the historical
-[broker design](archive/specs/2026-07-15-hetzner-broker-isolation-design.md)
-for the approved implementation record.
+transport and host bundle are implemented but not yet activated with a
+dedicated host and secrets; automated MC provisioning remains disabled until
+that verification is complete. See the [broker deployment bundle]
+(../deploy/broker/README.md) and the historical [broker design]
+(archive/specs/2026-07-15-hetzner-broker-isolation-design.md).

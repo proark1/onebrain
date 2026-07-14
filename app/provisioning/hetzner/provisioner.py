@@ -144,7 +144,11 @@ class HetznerProvisioner:
 
     @property
     def enabled(self) -> bool:
-        return bool(self.settings.hetzner_api_token) and self.settings.provisioner_backend == "hetzner"
+        if self.settings.provisioner_backend != "hetzner":
+            return False
+        if getattr(self.settings, "hetzner_broker_url", ""):
+            return True
+        return bool(self.settings.hetzner_api_token) and self.settings.hetzner_allow_inprocess_broker
 
     def dispatch(self, run: ProvisioningRun, *, owner_otp: str = "",
                  service_key: str = "", space_id: str = "", owner_email: str = "") -> ProvisioningRun:
@@ -155,7 +159,7 @@ class HetznerProvisioner:
         # ONEBRAIN_ADMIN_PASSWORD pair seed.py needs to create a loginable box admin.
         if not self.enabled:
             raise RuntimeError(
-                "Hetzner provisioning is not configured (set provisioner_backend=hetzner + token)."
+                "Hetzner provisioning is not configured: use a remote broker, or an explicit in-process dogfood token."
             )
         settings = self.settings
 

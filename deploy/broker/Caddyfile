@@ -1,0 +1,23 @@
+{
+    admin off
+    servers {
+        # Prevent TLS client-auth bypass through a mismatched Host header.
+        strict_sni_host on
+    }
+}
+
+{$HETZNER_BROKER_HOST} {
+    tls /etc/caddy/broker-tls/server.crt /etc/caddy/broker-tls/server.key {
+        client_auth {
+            mode require_and_verify
+            trust_pool file /etc/caddy/broker-tls/mc-client-ca.crt
+        }
+    }
+
+    @broker_routes path /health /v1/provision
+    handle @broker_routes {
+        reverse_proxy 127.0.0.1:8181
+    }
+
+    respond 404
+}

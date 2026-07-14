@@ -13,6 +13,8 @@ the remaining transition safeguards; it is not a Railway runbook.
   fleet credentials out of application containers.
 - Release descriptors use immutable image digests and signature verification.
 - Shared AI Communication images are configured by their explicit service role.
+- The remote broker transport and dedicated-host bundle are implemented; they
+  remain inactive until their separate host and credentials are verified.
 
 ## Required before MC-managed customer creation
 

@@ -15,6 +15,8 @@ production and customer-deployment model is Hetzner-only.
   operational safety.
 - [Mission Control standup](mission-control-standup.md) — configuration and
   access rules for the MC host.
+- [Broker host bundle](../deploy/broker/README.md) — private Hetzner token
+  custody, mutual TLS, and host activation checks.
 - [Release promotion](release-promotion-activation.md) — dev-gate validation
   and explicit customer rollout.
 

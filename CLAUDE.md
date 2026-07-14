@@ -51,11 +51,18 @@ Super admin
 - It holds the Hetzner API token so the token is never placed in Mission
   Control, development servers, or customer servers.
 - MC requests bounded provisioning operations through an authenticated private
-  broker API. The broker enforces the approved EU regions, instance sizes,
+  broker API using mutual TLS and a broker-scoped credential. The broker
+  implementation lives in `app/provisioning/hetzner/remote.py` and
+  `app/provisioning/hetzner/broker_service.py`; its host bundle is in
+  `deploy/broker/`.
+- The broker enforces the approved EU regions, instance sizes,
   images, network/firewall shape, DNS zone, fleet labels, and server-count cap.
 - The broker exposes no automatic destructive operation. Do not reintroduce an
   in-process MC broker or loosen the production broker guard merely to make
   provisioning easier.
+- Activating the broker still requires a separate Hetzner host, source-restricted
+  firewall, mTLS certificates, a broker credential, and the Hetzner API token
+  installed only in the broker's root-owned environment.
 
 ## Release and secret rules
 

@@ -40,9 +40,11 @@ server, attach allowed networking and storage, set approved DNS records, and
 return sanitized provisioning results. It does not expose a customer-facing UI
 or customer data endpoint.
 
-The remote broker transport is an activation dependency. Until it is deployed
-and trusted, do not enable MC-managed infrastructure creation or bypass the
-boundary by placing a Hetzner token on MC.
+The remote broker implementation and host bundle are available. It remains an
+activation dependency until a dedicated host, mTLS trust, broker credential,
+firewall restriction, and token custody have been verified. Until then, do not
+enable MC-managed infrastructure creation or bypass the boundary by placing a
+Hetzner token on MC.
 
 ## Safe release and rollout
 

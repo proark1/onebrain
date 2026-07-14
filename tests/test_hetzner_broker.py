@@ -268,12 +268,6 @@ def test_broker_destroy_requires_confirm_and_is_unimplemented_in_p4():
 
 # --- factory / A6 invariant --------------------------------------------------
 
-def test_build_broker_rejects_remote_url_in_p4():
-    settings = Settings(hetzner_broker_url="https://broker.internal", provisioner_backend="hetzner")
-    with pytest.raises(RuntimeError, match="Phase 5"):
-        build_hetzner_broker(settings, client=FakeHetznerClient())
-
-
 def test_build_broker_forbids_live_inprocess_for_hetzner():
     # A6: production Hetzner in-process is forbidden without the dogfood flag.
     forbidden = Settings(
