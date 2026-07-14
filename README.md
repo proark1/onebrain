@@ -1,164 +1,72 @@
-# onebrain
+# OneBrain
 
-An access-gated, GDPR-minded internal AI brain for **NFT Gym**. Employees upload
-company documents; the brain answers questions **only from what the asker's role
-is allowed to see**. The language model never sees a chunk the caller isn't
-entitled to — access is enforced in code and the datastore, not in a prompt.
+OneBrain is a general, GDPR-conscious AI platform for organizations. A customer
+deployment provides an isolated workspace for knowledge, AI communication, and
+personal-assistant capabilities across industries and customer brands.
 
-By default the local stack still runs cheaply with local providers and the memory
-store. Production-like deployments are expected to run with Postgres/pgvector,
-enforced RLS, real auth secrets, service keys, and the Next.js admin console.
-Every moving part sits behind an interface, so changing providers remains a
-config change rather than a rewrite.
+## Deployment model
 
-> Do not load real member or employee PII into local/demo stacks. Controlled
-> real-data testing belongs only on a production-like stack where
-> `ONEBRAIN_VECTOR_STORE=pgvector`, `ONEBRAIN_RLS_ENFORCED=true`, HTTPS cookies,
-> service keys, retention/privacy controls, and `ONEBRAIN_PII_PHASE=dpia_signed`
-> are intentionally configured.
+Production is hosted on dedicated Hetzner infrastructure.
 
-## Run it
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
-uvicorn app.main:app --reload
-# API root: http://127.0.0.1:8000
-# Next.js UI: see onebrain-web/README.md
+```text
+Mission Control (private super-admin)
+        |
+        | authenticated, metadata-only control requests
+        v
+Hetzner broker (private infrastructure authority)
+        |
+        | bounded server, DNS, firewall, and volume actions
+        v
+Development gate / isolated customer deployments
 ```
 
-Run the tests (they prove the access boundary holds):
+- **Mission Control** is used only by global super-admins. It tracks deployment
+  metadata, release versions, health, and explicit rollout decisions. It does
+  not handle customer content.
+- **Hetzner broker** is a private service that holds the Hetzner API token. It
+  accepts only authenticated, validated requests from Mission Control and has
+  no customer UI or data access.
+- **Development gate** is a full, dummy-data customer-shaped instance used for
+  developing and testing the OneBrain core, AI Communication, and Personal
+  Assistant before any release can be selected for customers.
+- **Customer deployments** are isolated. They have no fleet/control-plane
+  interface and cannot access data from any other customer or project.
 
-```bash
+Customer updates are always explicit: validate a signed release on the dev
+gate, choose the customer in Mission Control, create a recoverable rollout,
+and verify health before marking it complete. Nothing advances customers
+automatically.
+
+The current detailed guidance lives in [docs/README.md](docs/README.md).
+
+## Local development
+
+Prerequisites: Python 3.11+, Docker, and Node.js 20+ for `onebrain-web`.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
+copy .env.example .env
 pytest -q
 ```
 
-## Try the gating
+The default `.env` values are for local, synthetic development only. Use
+Postgres with pgvector, RLS, strong secrets, and HTTPS for any real deployment.
 
-Switch roles in the sidebar and watch the document list — and the answers —
-change:
+## Repository layout
 
-| Ask this | public | front-desk | HR | finance |
-|---|:--:|:--:|:--:|:--:|
-| "What are the opening hours?" | ✅ | ✅ | ✅ | ✅ |
-| "How do I handle a refund?" | — | ✅ | — | — |
-| "What are the trainer salary bands?" | — | — | ✅ | — |
-| "What was Q1 revenue by location?" | — | — | — | ✅ |
+- `app/` — OneBrain API, worker, storage, and deployment control-plane code.
+- `onebrain-web/` — optional web client.
+- `deploy/box/` — customer-shaped Hetzner deployment assets and gate reporter.
+- `docs/` — current documentation, technical contracts, and the historical
+  archive.
 
-A "—" means the brain replies that you don't have access — because the chunks
-were filtered out before retrieval, not because the model was asked to be coy.
+## Safety boundaries
 
-## Bulk-import documents
-
-Upload a whole folder at once with `scripts/bulk_import.py`. Every file gets the
-same label, so sort files into folders and run once per label:
-
-```bash
-pip install requests   # if not already installed
-export ONEBRAIN_URL=https://onebrain-production-0a16.up.railway.app
-
-python scripts/bulk_import.py ./public_docs --classification public     --category general
-python scripts/bulk_import.py ./hr_docs     --classification restricted --category hr
-python scripts/bulk_import.py ./munich_ops  --classification internal --location munich --category ops --recursive
-```
-
-Use `--dry-run` to preview. Reports per-file success and a summary.
-
-## Supported file types
-
-PDF (`.pdf`, with OCR fallback for scanned pages), Word (`.docx`), Excel
-(`.xlsx`/`.xlsm`), PowerPoint (`.pptx`), RTF, images via OCR
-(`.png`/`.jpg`/`.tiff`/…), and any text format (`.txt`/`.md`/`.csv`/`.json`/
-`.html`/…). OCR uses the `tesseract-ocr` system package (installed in the
-Docker image).
-
-## How it works
-
-```
-upload ─▶ extract ─▶ chunk ─▶ label + embed ─▶ vector store   (once per file)
-ask ─▶ resolve role ─▶ permission filter ─▶ top-k search ─▶ LLM ─▶ answer  (per question)
-```
-
-Only the top-k relevant chunks reach the model, so per-question token cost stays
-flat no matter how big the corpus grows.
-
-## Architecture (modular by design)
-
-| Concern | Interface | Local (default) | Production swap |
-|---|---|---|---|
-| Identity | `auth/principal.py` | role via header | OIDC / JWT |
-| Access rule | `security/policy.py` | ABAC filter | + OpenFGA/OPA |
-| Embeddings | `embeddings/base.py` | hashing (no key) | LiteLLM |
-| Vector store | `store/base.py` | in-memory + pickle | pgvector / Qdrant |
-| LLM | `llm/base.py` | extractive (no key) | LiteLLM (EU-sovereign) |
-
-## Go to production
-
-Set these in `.env` (see `.env.example`) — no code changes:
-
-```bash
-ONEBRAIN_EMBEDDINGS_PROVIDER=litellm
-ONEBRAIN_LLM_PROVIDER=litellm
-ONEBRAIN_VECTOR_STORE=pgvector
-ONEBRAIN_DATABASE_URL=postgresql://…
-# plus: pip install litellm "psycopg[binary]" pgvector  and the provider API key
-```
-
-## Deploy to Railway
-
-The production deployment shape is three Railway services plus Postgres:
-
-- `onebrain` from the root `Dockerfile`
-- `onebrain-workers` from the root `Dockerfile` with `ONEBRAIN_PROCESS=worker`
-- `onebrain-admin-ui` from `onebrain-web/Dockerfile`
-- a Postgres service with pgvector
-
-See `docs/deployment.md` for exact service settings, variables, and smoke
-checks.
-
-Railway builds the API `Dockerfile` automatically (config in `railway.json`).
-
-1. **New Project → Deploy from GitHub repo** → pick this repo. It builds and
-   boots straight away in **local mode** (no keys) with the seeded demo data.
-2. **Use Gemini** — in the service's **Variables**, add:
-   ```
-   ONEBRAIN_LLM_PROVIDER=litellm
-   ONEBRAIN_EMBEDDINGS_PROVIDER=litellm
-   GEMINI_API_KEY=your-google-ai-studio-key
-   ```
-   (Model names default to `gemini/gemini-2.5-flash` and
-   `gemini/text-embedding-004` — override with `ONEBRAIN_LITELLM_MODEL` /
-   `ONEBRAIN_LITELLM_EMBEDDING_MODEL` if you like.)
-3. **Persist uploads** (optional) — add a **Volume** mounted at `/data`.
-   Without it, uploaded docs reset on each redeploy (the seed data always
-   reloads). The container already points `ONEBRAIN_DATA_DIR` at `/data`.
-4. Pick an **EU region**. Use `ONEBRAIN_PII_PHASE=dpia_signed` only for a
-   controlled real-data environment; keep `synthetic` for local demos and public
-   test stacks.
-
-Railway injects `$PORT`; the container binds to it. Health check: `/health`.
-
-When you outgrow the single-instance memory store (multiple replicas, real
-persistence), switch to Postgres: add a Postgres plugin and set
-`ONEBRAIN_VECTOR_STORE=pgvector` + `ONEBRAIN_DATABASE_URL` — no code change.
-
-Production Postgres deployments run `python -m alembic upgrade head` through
-the API startup launcher before serving traffic. In Postgres mode, ingestion
-uses durable background jobs by default, so run at least one worker process with
-`ONEBRAIN_PROCESS=worker`.
-
-## Layout
-
-```
-app/
-  auth/         identity + roles
-  security/     the access-control policy (the boundary)
-  embeddings/   pluggable embedder
-  store/        pluggable vector store
-  llm/          pluggable model + RAG prompt
-  ingest/       extract → chunk → label → embed
-  retrieval/    the gateway: filter → top-k → generate
-  routers/      HTTP endpoints
-  static/       legacy UI, mounted only with ONEBRAIN_LEGACY_STATIC_UI_ENABLED=true
-tests/          access-boundary + retrieval tests
-```
+- Keep the Hetzner API token only on the private broker host.
+- Keep release-signing private keys offline; deployment hosts receive public
+  verification keys only.
+- Use dummy data on the development gate.
+- Do not expose Mission Control or fleet APIs to customer deployments.
+- Do not treat archived documentation as operational instructions.

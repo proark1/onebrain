@@ -1,256 +1,76 @@
 # OneBrain Deployment
 
-OneBrain deploys as three services plus Postgres:
+This guide describes the active Hetzner deployment model. Railway is not a
+production or customer-deployment path.
 
-- `onebrain`: Python/FastAPI API.
-- `onebrain-admin-ui`: Next.js UI.
-- `onebrain-workers`: Python background workers.
-- `Postgres`: Postgres with pgvector.
+## Deployment shapes
 
-The backend stays Python. Next.js renders the product UI and proxies browser
-actions to the Python API.
+| Shape | Purpose | Data | Control-plane access |
+| --- | --- | --- | --- |
+| Mission Control | Global super-admin and release control | Deployment metadata only | Private admin and authenticated machine endpoints |
+| Development gate | Full customer-shaped test environment | Dummy data only | Reports sanitized metadata; no MC UI |
+| Customer deployment | Dedicated customer workspace | That customer's data only | None |
+| Hetzner broker | Bounded infrastructure authority | No customer data | Private requests from MC only |
 
-## Railway Services
+Each deployment has its own database, application secrets, service keys, and
+network boundary. No customer deployment may share a database, service key, or
+fleet endpoint with another customer.
 
-### `onebrain`
+## Customer suite
 
-- Root directory: repository root.
-- Builder: Dockerfile.
-- Dockerfile path: `Dockerfile`.
-- Health check path: `/health`.
-- Public domain: yes.
+The development gate validates the complete supported suite:
 
-The container starts with:
+- OneBrain API, worker, admin UI, and Postgres/pgvector;
+- AI Communication services, including the shared image's API, widget, voice,
+  and worker roles; and
+- Personal Assistant services.
 
-```bash
-python -m app.deploy.start
-```
+The same isolation rules apply to customer stacks. Modules are enabled
+deliberately for a customer; a module must not create a route into Mission
+Control or another customer deployment.
 
-In API mode the launcher runs:
+## Provisioning boundary
 
-```bash
-python -m alembic upgrade head
-```
+Mission Control records intent and deployment state. It never stores the
+Hetzner API token and must not call Hetzner directly.
 
-before starting `uvicorn`.
+The private Hetzner broker holds that token and accepts a small set of
+authenticated, validated operations from MC: create or replace a bounded
+server, attach allowed networking and storage, set approved DNS records, and
+return sanitized provisioning results. It does not expose a customer-facing UI
+or customer data endpoint.
 
-The baseline migration can adopt a compatible database created before Alembic
-was introduced. It refuses an existing `chunks.embedding` vector dimension
-mismatch instead of rewriting customer data.
+The remote broker transport is an activation dependency. Until it is deployed
+and trusted, do not enable MC-managed infrastructure creation or bypass the
+boundary by placing a Hetzner token on MC.
 
-### `onebrain-workers`
+## Safe release and rollout
 
-- Root directory: repository root.
-- Builder: Dockerfile.
-- Dockerfile path: `Dockerfile`.
-- Health check path: `/health`.
-- Public domain: no.
+1. Build immutable container images and publish a signed release descriptor.
+2. Deploy the candidate to the dummy-data, full-stack development gate.
+3. Verify service health, schema compatibility, and the product flow.
+4. In Mission Control, record the approved release and select an individual
+   customer deliberately.
+5. Create a recoverable rollout: preserve the prior image digests and database
+   backup/restore point before a schema-changing change.
+6. Verify the customer's health and version report; mark the rollout complete
+   only after checks pass.
 
-The container starts with:
+Any failed verification leaves the previous customer release in place or
+returns it to the preserved known-good release. Do not auto-advance a customer
+because a newer dev build exists.
 
-```bash
-ONEBRAIN_PROCESS=worker python -m app.deploy.start
-```
+## Required production safeguards
 
-In Postgres mode the launcher waits for the expected Alembic schema before it
-starts processing jobs. Railway injects `PORT`; the worker exposes a lightweight
-`/health` endpoint on that port when health checks are enabled.
+- Use immutable image digests, never mutable tags as a release identity.
+- Enforce TLS, strong per-deployment secrets, and Postgres RLS.
+- Limit SSH to deliberate break-glass access.
+- Restrict MC administration through VPN or an IP allowlist.
+- Deny fleet, operator, provisioning, and rollout routes on every customer
+  ingress.
+- Keep customer application containers free of Hetzner credentials and MC
+  control-plane keys.
 
-### `onebrain-admin-ui`
-
-- Root directory: `onebrain-web`.
-- Builder: Dockerfile.
-- Dockerfile path: `Dockerfile`.
-- Public domain: yes.
-
-The container builds with `npm ci` and `npm run build`, then starts with:
-
-```bash
-npm run start
-```
-
-Next.js reads Railway's injected `PORT`.
-
-## Required Variables
-
-Set these on both `onebrain` and `onebrain-workers`:
-
-```text
-ONEBRAIN_VECTOR_STORE=pgvector
-ONEBRAIN_ENVIRONMENT=production
-ONEBRAIN_DATABASE_URL=${{Postgres.DATABASE_URL}}
-ONEBRAIN_MIGRATION_DATABASE_URL=${{Postgres.OWNER_DATABASE_URL}}
-ONEBRAIN_MIGRATION_EMBEDDING_DIM=256
-ONEBRAIN_AUTH_SECRET=<strong random secret, at least 32 chars>
-ONEBRAIN_COOKIE_SECURE=true
-ONEBRAIN_LLM_PROVIDER=litellm
-ONEBRAIN_EMBEDDINGS_PROVIDER=litellm
-GEMINI_API_KEY=<provider key>
-ONEBRAIN_ADMIN_EMAIL=<admin email>
-ONEBRAIN_ADMIN_PASSWORD=<strong admin password>
-ONEBRAIN_PII_PHASE=dpia_signed
-ONEBRAIN_REQUIRE_APPROVAL=false
-ONEBRAIN_BLOCK_PUBLIC_ON_PII=true
-ONEBRAIN_RETRIEVAL_MIN_SCORE=0.05
-ONEBRAIN_RLS_ENFORCED=true
-```
-
-`ONEBRAIN_MIGRATION_EMBEDDING_DIM` must match the embedding provider or the
-existing `chunks.embedding` column. The current Railway database uses
-`3072`; a fresh local-hashing database can use the default `256`.
-
-`ONEBRAIN_RETRIEVAL_MIN_SCORE` filters weak vector matches before they reach the
-LLM. Tune it for the active embedding model after checking answer quality on
-representative customer questions.
-
-`ONEBRAIN_DATABASE_URL` should be the low-privilege app-role URL used by the
-API and workers. `ONEBRAIN_MIGRATION_DATABASE_URL` is optional, but recommended:
-set it to an owner/service-role URL so Alembic can migrate schema without making
-the runtime process a table owner or superuser.
-
-Production-like environments (`ONEBRAIN_ENVIRONMENT=staging` or `production`)
-refuse to start unless `ONEBRAIN_VECTOR_STORE=pgvector`,
-`ONEBRAIN_DATABASE_URL` is set, and `ONEBRAIN_RLS_ENFORCED=true`.
-
-Worker tuning variables:
-
-```text
-ONEBRAIN_PROCESS=worker
-ONEBRAIN_WORKER_POLL_SECONDS=2
-ONEBRAIN_WORKER_BATCH_SIZE=1
-ONEBRAIN_JOB_MAX_ATTEMPTS=3
-ONEBRAIN_SCHEMA_WAIT_SECONDS=60
-ONEBRAIN_SCHEMA_WAIT_POLL_SECONDS=2
-ONEBRAIN_WORKER_HEALTH_SERVER=true
-```
-
-Use `ONEBRAIN_PII_PHASE=dpia_signed` only on controlled environments where real
-customer or personal data testing is intended. Keep `synthetic` for local demos,
-public demos, and isolated test stacks that must reject personal data.
-
-Set this on `onebrain-admin-ui`:
-
-```text
-ONEBRAIN_API_BASE_URL=http://${{onebrain.RAILWAY_PRIVATE_DOMAIN}}:8080
-```
-
-Railway injects `PORT=8080` in the Python API container. Use the private
-Railway hostname plus that port for `ONEBRAIN_API_BASE_URL`. The browser still
-talks to same-origin Next.js routes, including `/login`; the Next.js server
-forwards those calls to FastAPI.
-
-External customer provisioning variables for `onebrain`:
-
-```text
-ONEBRAIN_GITHUB_OWNER=<github owner>
-ONEBRAIN_GITHUB_REPO=<repo>
-ONEBRAIN_GITHUB_WORKFLOW=provision-customer.yml
-ONEBRAIN_GITHUB_REF=main
-ONEBRAIN_GITHUB_DISPATCH_TOKEN=<token allowed to dispatch the workflow>
-ONEBRAIN_PROVISIONING_CALLBACK_KEY_ID=callback-v1
-ONEBRAIN_PROVISIONING_CALLBACK_KEY_HASH=<sha256 hash from app.provisioning.runs.hash_callback_secret>
-ONEBRAIN_SECRET_ENCRYPTION_KEY=<Fernet key or 32-byte hex>
-ONEBRAIN_SECRET_ENCRYPTION_KEY_VERSION=v1
-ONEBRAIN_BOOTSTRAP_SECRET_TTL_SECONDS=3600
-```
-
-Set these as GitHub Actions repository secrets:
-
-```text
-ONEBRAIN_PROVISIONING_CALLBACK_KEY=<plaintext callback key matching the hash>
-RAILWAY_API_TOKEN=<Railway account/workspace token that can create projects>
-RAILWAY_TOKEN=<fallback Railway token if RAILWAY_API_TOKEN is not used>
-RAILWAY_WORKSPACE=<optional Railway workspace id or name>
-GEMINI_API_KEY=<optional provider key for provisioned stacks>
-ONEBRAIN_MIGRATION_EMBEDDING_DIM=<optional override, defaults to 3072 with Gemini>
-ASSISTANT_SERVICE_IMAGE=<optional Docker image for assistant-service>
-COMMUNICATION_API_IMAGE=<optional Docker image for communication-api>
-COMMUNICATION_WIDGET_IMAGE=<optional Docker image for communication-widget>
-COMMUNICATION_VOICE_IMAGE=<optional Docker image for communication-voice>
-COMMUNICATION_WORKERS_IMAGE=<optional Docker image for communication-workers>
-```
-
-Use workflow dry-run mode for the first contract test. Real Railway provisioning
-runs only when `dry_run=false` and the required GitHub secrets are present. The
-workflow creates the OneBrain API, worker, admin UI, and Postgres services from
-this repo. Bundle module services are created too; when an optional image secret
-is absent, the service is recorded as pending deployable code in the
-provisioning run result payload.
-
-Optional API root handoff:
-
-```text
-ONEBRAIN_ADMIN_UI_URL=https://<onebrain-admin-ui domain>
-ONEBRAIN_LEGACY_STATIC_UI_ENABLED=false
-```
-
-When `ONEBRAIN_ADMIN_UI_URL` is set, the API service root redirects to the
-Next.js console. The old FastAPI static UI is disabled unless
-`ONEBRAIN_LEGACY_STATIC_UI_ENABLED=true`.
-
-## Smoke Checks
-
-After deploy:
-
-1. Open `https://<onebrain-api domain>/health`.
-2. Open the Python API root and confirm it returns API JSON or redirects to the
-   configured Next.js console.
-3. Open the Next.js domain and confirm it shows the signed-out state or chat
-   depending on session state.
-4. Sign in with `ONEBRAIN_ADMIN_EMAIL` and `ONEBRAIN_ADMIN_PASSWORD`.
-5. Upload a synthetic test document in Postgres mode.
-6. Confirm the upload returns a job id or appears in the documents list after
-   the worker processes it.
-7. As an admin, call `GET /api/operator/observability` and confirm it returns
-   runtime, retrieval, storage, service-key, and job queue sections without
-   customer content.
-8. Provision a test customer with brand colors and confirm the operator
-   customer row shows the expected swatches.
-9. Mint a temporary service key, call `/api/service/capabilities` and
-   `/api/service/brand-theme`, rotate the
-   key, and confirm the old key receives `401` while the new key works.
-10. Check worker logs for `worker started` and `job succeeded`.
-11. Open the Next.js `/cockpit` route as an admin and confirm there are no
-    critical alerts. Warnings should be reviewed before real traffic.
-
-## Local Docker Checks
-
-Build the API image:
-
-```bash
-docker build -t onebrain-api .
-```
-
-Build the worker image:
-
-```bash
-docker build -t onebrain-workers .
-```
-
-Build the Next.js image:
-
-```bash
-docker build -t onebrain-admin-ui ./onebrain-web
-```
-
-Run API locally in memory mode:
-
-```bash
-docker run --rm -p 8000:8000 -e ONEBRAIN_AUTH_SECRET=local-secret-local-secret-local-secret onebrain-api
-```
-
-Run the worker image locally:
-
-```bash
-docker run --rm -p 8001:8001 \
-  -e PORT=8001 \
-  -e ONEBRAIN_PROCESS=worker \
-  -e ONEBRAIN_AUTH_SECRET=local-secret-local-secret-local-secret \
-  onebrain-workers
-```
-
-For local HTTP login, also set:
-
-```bash
-ONEBRAIN_COOKIE_SECURE=false
-```
+See [release promotion](release-promotion-activation.md) for the release
+workflow and [target architecture](target-architecture.md) for the isolation
+model.

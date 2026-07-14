@@ -1,53 +1,28 @@
-# onebrain-web
+# OneBrain Web
 
-Next.js shell for the OneBrain product UI.
+This directory contains the optional OneBrain web client.
 
-The Python/FastAPI service remains the source of truth for auth, access control, retrieval, ingestion, privacy operations, and service keys. This app calls that API through a typed boundary in `src/lib/onebrain-api.ts`.
+## Local development
 
-## Routes
-
-- `/cockpit` - admin-first status cockpit for alerts, connected apps, storage, jobs, auth/API signals, and privacy/security posture.
-- `/chat` - streaming assistant chat backed by the FastAPI retrieval and conversation APIs.
-- `/documents` - document library, upload, and pending-review workflow backed by the FastAPI document APIs.
-- `/spaces` - admin account, space, app-installation, access-check, and audit workflows backed by the FastAPI platform APIs.
-- `/privacy` - admin privacy center for account/space export and erase operations backed by the FastAPI privacy APIs.
-- `/operator` - admin provisioning, customer readiness, release planning, service-key revoke, and rollout workflows backed by the FastAPI operator/provisioning APIs.
-- `/` - entry point that checks the API/session and redirects admins to `/cockpit` and other signed-in users to `/chat`.
-
-Admins see a compact workspace selector when the Python platform store contains an account matching their session tenant. The selected account/space scope is sent to chat, conversations, documents, upload, and review calls.
-
-The privacy center intentionally loads all platform accounts for admins because export and erasure are account-level operations. The Python backend still performs authorization, scope validation, audit writes, export assembly, and deletion.
-
-The spaces admin route uses the same backend ownership boundary: Next.js renders the controls, while FastAPI validates account/space/app records, records audit events, and decides access checks.
-
-The operator route keeps provisioning and rollout authority in FastAPI. Next.js renders the control plane and forwards actions through the local proxy.
-
-## Run
-
-```bash
+```powershell
+cd onebrain-web
 npm install
+copy .env.example .env.local
 npm run dev
 ```
 
-By default the app calls `http://127.0.0.1:8000`. Override with:
+Set `ONEBRAIN_API_BASE_URL` to the local OneBrain API for development. The
+browser-facing API URL must be HTTPS in a deployed environment.
 
-```bash
-ONEBRAIN_API_BASE_URL=http://127.0.0.1:8000 npm run dev
-```
+## Deployment
 
-For local HTTP login, run the FastAPI API with `ONEBRAIN_COOKIE_SECURE=false` so the browser can send the session cookie to the Next.js dev server.
+Deploy the web client only as part of an isolated Hetzner customer environment
+or the dummy-data development gate. It must communicate only with the API in
+that same environment.
 
-## Deploy
+Do not configure it with Mission Control URLs, fleet keys, broker credentials,
+or another customer's service URL. Customer deployments do not expose fleet,
+operator, provisioning, or rollout features through this client.
 
-Build this directory as its own Railway service with `onebrain-web/Dockerfile`.
-Set `ONEBRAIN_API_BASE_URL` to the deployed FastAPI API URL, preferably the
-private Railway service URL when available. On Railway this is typically
-`http://${{onebrain.RAILWAY_PRIVATE_DOMAIN}}:8080`.
-
-## API Schema
-
-Export the FastAPI OpenAPI schema into the web app with:
-
-```bash
-npm run openapi
-```
+Use immutable image digests and the same release descriptor as the rest of the
+customer suite. See the repository [deployment guide](../docs/deployment.md).

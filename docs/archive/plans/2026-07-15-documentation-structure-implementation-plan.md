@@ -6,7 +6,7 @@
 ## Scope
 
 Implement the approved documentation structure in
-`docs/superpowers/specs/2026-07-15-documentation-structure-design.md` without
+`docs/archive/specs/2026-07-15-documentation-structure-design.md` without
 changing historical spec or plan content.
 
 ## 1. Establish the documentation map
