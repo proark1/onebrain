@@ -16,7 +16,7 @@ from app.assistant.contracts import ASSISTANT_PURPOSES
 
 ACCOUNT_KINDS = frozenset({"person", "organization", "family", "project"})
 SPACE_KINDS = frozenset({"personal", "business", "customer_service", "shared", "family", "project"})
-APP_IDS = frozenset({"onebrain_core", "assistant", "communication", "admin_console", "workers"})
+APP_IDS = frozenset({"onebrain_core", "assistant", "communication", "kpi_dashboard", "admin_console", "workers"})
 # Assistant purposes come from the assistant contract so the platform registry
 # cannot drift behind it (drift here rejects valid assistant writes as 422s).
 PURPOSES = ASSISTANT_PURPOSES | frozenset({
@@ -28,6 +28,9 @@ PURPOSES = ASSISTANT_PURPOSES | frozenset({
     "gdpr_delete",
     "analytics",
     "billing",
+    "kpi_read",
+    "kpi_configure",
+    "kpi_snapshot_write",
 })
 CUSTOMER_SERVICE_PURPOSES = frozenset({"customer_service_answer", "customer_service_inbox"})
 PRIVATE_SPACE_KINDS = frozenset({"personal", "family"})
