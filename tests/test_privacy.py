@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException
@@ -16,6 +17,8 @@ from app.embeddings.local import LocalEmbedder
 from app.ingest.pipeline import IngestPipeline
 from app.intake.memory import MemoryIntakeStore
 from app.intake.pipeline import IntakeInput, IntakePipeline
+from app.kpis.base import KpiDefinition, KpiSnapshot
+from app.kpis.memory import MemoryKpiStore
 from app.platform.base import (
     Account,
     ConsentRecord,
@@ -148,11 +151,14 @@ def _fixtures():
     )
 
 
-def _patch(monkeypatch, platform, store, conversations, intake):
+def _patch(monkeypatch, platform, store, conversations, intake, kpis=None):
+    kpis = kpis or MemoryKpiStore()
     monkeypatch.setattr(privacy_router, "get_platform_store", lambda: platform)
     monkeypatch.setattr(privacy_router, "get_store", lambda: store)
     monkeypatch.setattr(privacy_router, "get_conversation_store", lambda: conversations)
     monkeypatch.setattr(privacy_router, "get_intake_store", lambda: intake)
+    monkeypatch.setattr(privacy_router, "get_kpi_store", lambda: kpis)
+    return kpis
 
 
 def test_privacy_export_is_space_scoped_and_audited(monkeypatch):
@@ -226,6 +232,57 @@ def test_privacy_erase_requires_confirmation_and_deletes_only_scope(monkeypatch)
     assert audit.action == "privacy.erased"
     assert audit.meta["reason"] == "customer requested deletion"
     assert audit.meta["intake_records_deleted"] == 1
+
+
+def test_privacy_export_and_erase_include_only_matching_kpi_scope(monkeypatch):
+    platform, store, conversations, intake, *_ = _fixtures()
+    kpis = MemoryKpiStore()
+    _patch(monkeypatch, platform, store, conversations, intake, kpis)
+    service_definition = kpis.create_definition(KpiDefinition(
+        id="kpi_service",
+        account_id="acme",
+        space_id="sp_acme_service",
+        key="sla_health",
+        name="SLA health",
+    ))
+    kpis.create_definition(KpiDefinition(
+        id="kpi_personal",
+        account_id="acme",
+        space_id="sp_acme_personal",
+        key="private_metric",
+        name="Private metric",
+    ))
+    kpis.ingest_snapshots([KpiSnapshot(
+        id="snap_service",
+        account_id="acme",
+        space_id="sp_acme_service",
+        kpi_id=service_definition.id,
+        value=Decimal("97"),
+        observed_at="2026-07-15T09:00:00+00:00",
+        received_at="2026-07-15T09:01:00+00:00",
+        source_ref="support-summary",
+        idempotency_key="sla-health-1",
+        created_by="svc:kpi",
+    )])
+
+    exported = privacy_router.export_account_data(
+        "acme", space_id="sp_acme_service", principal=_principal("admin"),
+    )
+    assert [row["id"] for row in exported.kpis["definitions"]] == ["kpi_service"]
+    assert [row["id"] for row in exported.kpis["snapshots"]] == ["snap_service"]
+
+    erased = privacy_router.erase_account_data(
+        "acme",
+        privacy_router.PrivacyEraseRequest(
+            confirm_account_id="acme", space_id="sp_acme_service", reason="scope erasure",
+        ),
+        principal=_principal("admin"),
+    )
+    assert erased.kpis_deleted == {"definitions": 1, "snapshots": 1}
+    assert kpis.export_scope("acme", "sp_acme_service")["definitions"] == []
+    assert [row["id"] for row in kpis.export_scope("acme", "sp_acme_personal")["definitions"]] == [
+        "kpi_personal",
+    ]
 
 
 def test_privacy_operations_require_admin_and_valid_scope(monkeypatch):
@@ -440,3 +497,73 @@ def test_retention_deletes_only_records_older_than_duration(monkeypatch):
     run_retention(account_id="acme", space_id="sp_acme_service", dry_run=False)
     assert intake.get(service_record.id) is None
     assert intake.get(recent.id) is not None
+
+
+def test_kpi_retention_uses_received_time_and_preserves_definitions(monkeypatch):
+    import app.deps as deps
+    from app.retention.service import run_retention
+
+    platform, store, conversations, intake, *_ = _fixtures()
+    kpis = MemoryKpiStore()
+    monkeypatch.setattr(deps, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(deps, "get_store", lambda: store)
+    monkeypatch.setattr(deps, "get_conversation_store", lambda: conversations)
+    monkeypatch.setattr(deps, "get_intake_store", lambda: intake)
+    monkeypatch.setattr(deps, "get_kpi_store", lambda: kpis)
+    platform.upsert_retention_policy(RetentionPolicy(
+        id="ret_kpis",
+        account_id="acme",
+        space_id="sp_acme_service",
+        domain="kpis",
+        record_type="snapshot",
+        action="delete",
+        duration_days=30,
+        legal_basis="business retention policy",
+    ))
+    definition = kpis.create_definition(KpiDefinition(
+        id="kpi_retention",
+        account_id="acme",
+        space_id="sp_acme_service",
+        key="sla_health",
+        name="SLA health",
+    ))
+    kpis.ingest_snapshots([
+        KpiSnapshot(
+            id="snap_old",
+            account_id="acme",
+            space_id="sp_acme_service",
+            kpi_id=definition.id,
+            value=Decimal("90"),
+            observed_at="2026-07-15T09:00:00+00:00",
+            received_at="2020-01-01T00:00:00+00:00",
+            source_ref="",
+            idempotency_key="old",
+            created_by="svc:kpi",
+        ),
+        KpiSnapshot(
+            id="snap_recent",
+            account_id="acme",
+            space_id="sp_acme_service",
+            kpi_id=definition.id,
+            value=Decimal("97"),
+            # An old observation must not age out a recently received snapshot.
+            observed_at="2020-01-01T00:00:00+00:00",
+            received_at="2026-07-15T09:01:00+00:00",
+            source_ref="",
+            idempotency_key="recent",
+            created_by="svc:kpi",
+        ),
+    ])
+
+    preview = run_retention(
+        account_id="acme", space_id="sp_acme_service", domain="kpis", dry_run=True,
+    )
+    assert preview["counts"]["kpis"]["snapshots"] == 1
+    completed = run_retention(
+        account_id="acme", space_id="sp_acme_service", domain="kpis", dry_run=False,
+    )
+    assert completed["counts"]["kpis"]["snapshots_deleted"] == 1
+    assert [row.id for row in kpis.list_definitions("acme", "sp_acme_service")] == [definition.id]
+    assert [row.id for row in kpis.list_snapshots(
+        definition.id, account_id="acme", space_id="sp_acme_service", limit=30,
+    )] == ["snap_recent"]

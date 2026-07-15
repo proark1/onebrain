@@ -173,6 +173,7 @@ SERVICE_USAGE_ENDPOINTS = {
     "update_service_brand_theme": "service.brand_theme.update",
     "service_ask": "service.ask",
     "create_assistant_record": "service.assistant.records.create",
+    "write_kpi_snapshots": "service.kpis.snapshots.write",
     "list_assistant_records": "service.assistant.records.list",
     "get_assistant_record": "service.assistant.records.read",
     "record_assistant_audit_event": "service.assistant.audit",

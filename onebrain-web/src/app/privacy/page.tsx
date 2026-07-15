@@ -32,7 +32,7 @@ export default async function PrivacyPage() {
           <h1 id="privacyBlockedTitle">Admin access required</h1>
           <p>
             Privacy exports and erasure are restricted to administrators because they can expose or remove account
-            data across documents, conversations, intake records, and audit logs.
+            data across documents, conversations, intake records, KPIs, governance records, and audit logs.
           </p>
         </section>
       </ConsoleShell>

@@ -14,20 +14,25 @@ Key management (/api/service-keys) is human-admin-only.
 from __future__ import annotations
 
 from dataclasses import replace
+from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.auth.principal import Principal, resolve_principal, resolve_service_principal
 from app.config import get_settings
 from app.deps import (
-    get_intake_pipeline, get_intake_store, get_job_store, get_pipeline, get_platform_store,
+    get_intake_pipeline, get_intake_store, get_job_store, get_kpi_store, get_pipeline, get_platform_store,
     get_retrieval_service, get_service_key_store, get_service_rate_limiter,
 )
 from app.intake.base import IntakeRecord
 from app.intake.pipeline import IntakeInput
 from app.jobs.base import JOB_SERVICE_CAPTURE, JOB_SERVICE_INTAKE
+from app.kpis.base import (
+    KPI_APP_ID, KPI_SNAPSHOT_WRITE_PURPOSE, KpiConflictError, KpiLimitError,
+    KpiSnapshot, normalize_decimal, normalize_timestamp, now_iso,
+)
 from app.platform.base import AuditEvent, BrandTheme, normalize_unique, scope_is_held
 from app.routers.jobs import job_status_out
 from app.schemas import (
@@ -57,6 +62,45 @@ class ServiceBrandThemeUpdate(BaseModel):
     warning_color: str | None = Field(default=None, max_length=7)
     danger_color: str | None = Field(default=None, max_length=7)
     logo_url: str | None = Field(default=None, max_length=500)
+
+
+class ServiceKpiSnapshotItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kpi_id: str | None = Field(default=None, min_length=1, max_length=120)
+    kpi_key: str | None = Field(default=None, min_length=2, max_length=64)
+    value: Decimal
+    observed_at: str = Field(min_length=1, max_length=80)
+    source_ref: str = Field(default="", max_length=200)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def one_reference(self):
+        if bool(self.kpi_id) == bool(self.kpi_key):
+            raise ValueError("Provide exactly one of kpi_id or kpi_key.")
+        return self
+
+
+class ServiceKpiSnapshotBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    space_id: str = Field(min_length=1, max_length=120)
+    snapshots: list[ServiceKpiSnapshotItem] = Field(min_length=1, max_length=100)
+
+
+class ServiceKpiSnapshotOut(BaseModel):
+    id: str
+    kpi_id: str
+    value: str
+    observed_at: str
+    received_at: str
+    source_ref: str
+
+
+class ServiceKpiIngestOut(BaseModel):
+    accepted_count: int
+    duplicate_count: int
+    snapshots: list[ServiceKpiSnapshotOut]
 
 
 def _platform_scope(body, principal: Principal, default_purpose: str):
@@ -660,6 +704,138 @@ def capture(
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"captured": result.doc_id, "chunks": result.chunks}
+
+
+@service_router.post("/kpis/snapshots", response_model=ServiceKpiIngestOut)
+def write_kpi_snapshots(
+    body: ServiceKpiSnapshotBatch,
+    principal: Principal = Depends(resolve_service_principal),
+):
+    _require_scope(principal, SCOPE_WRITE)
+    _rate_limit(principal)
+    account_id = principal.account_id
+    space_id = body.space_id.strip()
+    if not account_id or account_id != principal.tenant_id:
+        raise HTTPException(status_code=403, detail="This service key is not pinned to an account.")
+    if principal.app_id != KPI_APP_ID:
+        raise HTTPException(status_code=403, detail="This service key cannot ingest KPI snapshots.")
+    if principal.space_ids is None or space_id not in principal.space_ids:
+        raise HTTPException(status_code=403, detail="This service key cannot use that space.")
+    if principal.purposes is None or KPI_SNAPSHOT_WRITE_PURPOSE not in principal.purposes:
+        raise HTTPException(status_code=403, detail="This service key cannot write KPI snapshots.")
+
+    platform = get_platform_store()
+    decision = platform.check_app_access(
+        account_id, KPI_APP_ID, space_id, KPI_SNAPSHOT_WRITE_PURPOSE,
+    )
+    if not decision.allowed:
+        _record_kpi_batch_audit(
+            principal,
+            account_id=account_id,
+            space_id=space_id,
+            decision="denied",
+            meta={"reason": decision.reason, "item_count": len(body.snapshots)},
+        )
+        raise HTTPException(status_code=403, detail="KPI Dashboard is not enabled for this workspace.")
+
+    store = get_kpi_store()
+    received_at = now_iso()
+    snapshots: list[KpiSnapshot] = []
+    kpi_ids: list[str] = []
+    try:
+        for item in body.snapshots:
+            definition = (
+                store.get_definition(
+                    item.kpi_id or "", account_id=account_id, space_id=space_id,
+                )
+                if item.kpi_id
+                else store.get_definition_by_key(
+                    item.kpi_key or "", account_id=account_id, space_id=space_id,
+                )
+            )
+            if not definition or definition.status != "active":
+                raise ValueError("KPI definition not found in the authorized workspace.")
+            kpi_ids.append(definition.id)
+            snapshots.append(KpiSnapshot(
+                id=f"kpisnap_{uuid4().hex}",
+                account_id=account_id,
+                space_id=space_id,
+                kpi_id=definition.id,
+                value=normalize_decimal(item.value),
+                observed_at=normalize_timestamp(item.observed_at),
+                received_at=received_at,
+                source_ref=item.source_ref.strip(),
+                idempotency_key=item.idempotency_key.strip(),
+                created_by=principal.user_id,
+            ))
+        result = store.ingest_snapshots(snapshots)
+    except (KpiConflictError, KpiLimitError) as exc:
+        _record_kpi_batch_audit(
+            principal,
+            account_id=account_id,
+            space_id=space_id,
+            decision="rejected",
+            meta={"reason": type(exc).__name__, "item_count": len(body.snapshots)},
+        )
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        _record_kpi_batch_audit(
+            principal,
+            account_id=account_id,
+            space_id=space_id,
+            decision="rejected",
+            meta={"reason": "validation_failed", "item_count": len(body.snapshots)},
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _record_kpi_batch_audit(
+        principal,
+        account_id=account_id,
+        space_id=space_id,
+        decision="recorded",
+        meta={
+            "kpi_ids": sorted(set(kpi_ids)),
+            "snapshot_ids": [row.id for row in result.snapshots],
+            "accepted_count": result.accepted_count,
+            "duplicate_count": result.duplicate_count,
+        },
+    )
+    return ServiceKpiIngestOut(
+        accepted_count=result.accepted_count,
+        duplicate_count=result.duplicate_count,
+        snapshots=[ServiceKpiSnapshotOut(
+            id=row.id,
+            kpi_id=row.kpi_id,
+            value=str(row.value),
+            observed_at=row.observed_at,
+            received_at=row.received_at,
+            source_ref=row.source_ref,
+        ) for row in result.snapshots],
+    )
+
+
+def _record_kpi_batch_audit(
+    principal: Principal,
+    *,
+    account_id: str,
+    space_id: str,
+    decision: str,
+    meta: dict,
+) -> None:
+    get_platform_store().record_audit(AuditEvent(
+        id=f"aud_kpi_batch_{uuid4().hex}",
+        account_id=account_id,
+        actor_id=principal.user_id,
+        actor_type=principal.principal_type,
+        action="kpi_snapshots.ingested",
+        target_type="kpi_snapshot_batch",
+        target_id=space_id,
+        space_id=space_id,
+        app_id=KPI_APP_ID,
+        purpose=KPI_SNAPSHOT_WRITE_PURPOSE,
+        decision=decision,
+        meta=meta,
+    ))
 
 
 @service_router.post("/ask", response_model=ServiceAskResponse)

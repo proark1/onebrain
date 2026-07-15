@@ -62,3 +62,31 @@ def authorized_account_ids(principal: Principal, store) -> set[str]:
     if not _is_admin_principal(principal):
         return set()
     return {a.id for a in store.list_accounts() if is_account_admin(principal, a, store)}
+
+
+def is_account_member(principal: Principal, account: Account | None, space_id: str, store) -> bool:
+    """Whether a tenant-pinned human may read an account or one of its spaces."""
+    if (
+        account is None
+        or principal.principal_type != "human"
+        or principal.tenant_id != account.id
+    ):
+        return False
+    if account.owner_user_id and account.owner_user_id == principal.user_id:
+        return True
+    return any(
+        membership.user_id == principal.user_id
+        and membership.status == "active"
+        and membership.space_id in {"", space_id}
+        for membership in store.list_memberships(account.id)
+    )
+
+
+def authorize_account_member(principal: Principal, account_id: str, space_id: str, store) -> Account:
+    """Authorize a tenant-pinned human reader without leaking account existence."""
+    if principal.principal_type != "human":
+        raise HTTPException(status_code=403, detail="Human session required.")
+    account = store.get_account((account_id or "").strip())
+    if not is_account_member(principal, account, (space_id or "").strip(), store):
+        raise HTTPException(status_code=404, detail="Account not found.")
+    return account

@@ -123,7 +123,7 @@
             "type": "array"
           },
           "app_id": {
-            "pattern": "^(onebrain_core|assistant|communication|admin_console|workers)$",
+            "pattern": "^(onebrain_core|assistant|communication|kpi_dashboard|admin_console|workers)$",
             "title": "App Id",
             "type": "string"
           },
@@ -2393,6 +2393,785 @@
         "title": "JobStatusOut",
         "type": "object"
       },
+      "KpiDashboardItemOut": {
+        "additionalProperties": false,
+        "properties": {
+          "absolute_delta": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Absolute Delta"
+          },
+          "definition": {
+            "$ref": "#/components/schemas/KpiDefinitionOut"
+          },
+          "freshness_state": {
+            "enum": [
+              "fresh",
+              "stale",
+              "awaiting_data"
+            ],
+            "title": "Freshness State",
+            "type": "string"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/KpiSnapshotOut"
+            },
+            "title": "History",
+            "type": "array"
+          },
+          "latest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KpiSnapshotOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "percentage_delta": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Percentage Delta"
+          },
+          "previous": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KpiSnapshotOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "threshold_state": {
+            "enum": [
+              "healthy",
+              "warning",
+              "critical",
+              "awaiting_data"
+            ],
+            "title": "Threshold State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "definition",
+          "latest",
+          "previous",
+          "history",
+          "absolute_delta",
+          "percentage_delta",
+          "threshold_state",
+          "freshness_state"
+        ],
+        "title": "KpiDashboardItemOut",
+        "type": "object"
+      },
+      "KpiDashboardOut": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "can_configure": {
+            "title": "Can Configure",
+            "type": "boolean"
+          },
+          "can_write_manual": {
+            "title": "Can Write Manual",
+            "type": "boolean"
+          },
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/KpiDashboardItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "space_id": {
+            "title": "Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "generated_at",
+          "can_configure",
+          "can_write_manual",
+          "items"
+        ],
+        "title": "KpiDashboardOut",
+        "type": "object"
+      },
+      "KpiDefinitionCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "category": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Category",
+            "type": "string"
+          },
+          "critical_max": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Critical Max"
+          },
+          "critical_min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Critical Min"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Description",
+            "type": "string"
+          },
+          "display_order": {
+            "default": 0,
+            "maximum": 1000000.0,
+            "minimum": -1000000.0,
+            "title": "Display Order",
+            "type": "integer"
+          },
+          "freshness_minutes": {
+            "default": 1440,
+            "maximum": 525600.0,
+            "minimum": 1.0,
+            "title": "Freshness Minutes",
+            "type": "integer"
+          },
+          "key": {
+            "maxLength": 64,
+            "minLength": 2,
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "owner_label": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Owner Label",
+            "type": "string"
+          },
+          "source_label": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Source Label",
+            "type": "string"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "unit": {
+            "default": "",
+            "maxLength": 32,
+            "title": "Unit",
+            "type": "string"
+          },
+          "warning_max": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning Max"
+          },
+          "warning_min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning Min"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "key",
+          "name"
+        ],
+        "title": "KpiDefinitionCreate",
+        "type": "object"
+      },
+      "KpiDefinitionOut": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "critical_max": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Critical Max"
+          },
+          "critical_min": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Critical Min"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "display_order": {
+            "title": "Display Order",
+            "type": "integer"
+          },
+          "freshness_minutes": {
+            "title": "Freshness Minutes",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner_label": {
+            "title": "Owner Label",
+            "type": "string"
+          },
+          "source_label": {
+            "title": "Source Label",
+            "type": "string"
+          },
+          "space_id": {
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "warning_max": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning Max"
+          },
+          "warning_min": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning Min"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "space_id",
+          "key",
+          "name",
+          "description",
+          "category",
+          "unit",
+          "source_label",
+          "owner_label",
+          "freshness_minutes",
+          "warning_min",
+          "warning_max",
+          "critical_min",
+          "critical_max",
+          "display_order",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "KpiDefinitionOut",
+        "type": "object"
+      },
+      "KpiDefinitionUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "critical_max": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Critical Max"
+          },
+          "critical_min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Critical Min"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "display_order": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": -1000000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Order"
+          },
+          "freshness_minutes": {
+            "anyOf": [
+              {
+                "maximum": 525600.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freshness Minutes"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "owner_label": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Label"
+          },
+          "source_label": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Label"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "active",
+                  "archived"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "warning_max": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning Max"
+          },
+          "warning_min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning Min"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id"
+        ],
+        "title": "KpiDefinitionUpdate",
+        "type": "object"
+      },
+      "KpiIngestOut": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_count": {
+            "title": "Accepted Count",
+            "type": "integer"
+          },
+          "duplicate_count": {
+            "title": "Duplicate Count",
+            "type": "integer"
+          },
+          "snapshots": {
+            "items": {
+              "$ref": "#/components/schemas/KpiSnapshotOut"
+            },
+            "title": "Snapshots",
+            "type": "array"
+          }
+        },
+        "required": [
+          "accepted_count",
+          "duplicate_count",
+          "snapshots"
+        ],
+        "title": "KpiIngestOut",
+        "type": "object"
+      },
+      "KpiSnapshotCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "observed_at": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Observed At",
+            "type": "string"
+          },
+          "source_ref": {
+            "default": "manual",
+            "maxLength": 200,
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "value",
+          "observed_at",
+          "idempotency_key"
+        ],
+        "title": "KpiSnapshotCreate",
+        "type": "object"
+      },
+      "KpiSnapshotOut": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kpi_id": {
+            "title": "Kpi Id",
+            "type": "string"
+          },
+          "observed_at": {
+            "title": "Observed At",
+            "type": "string"
+          },
+          "received_at": {
+            "title": "Received At",
+            "type": "string"
+          },
+          "source_ref": {
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kpi_id",
+          "value",
+          "observed_at",
+          "received_at",
+          "source_ref"
+        ],
+        "title": "KpiSnapshotOut",
+        "type": "object"
+      },
+      "KpiWorkspaceOut": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "account_name": {
+            "title": "Account Name",
+            "type": "string"
+          },
+          "can_configure": {
+            "title": "Can Configure",
+            "type": "boolean"
+          },
+          "can_write_manual": {
+            "title": "Can Write Manual",
+            "type": "boolean"
+          },
+          "space_id": {
+            "title": "Space Id",
+            "type": "string"
+          },
+          "space_kind": {
+            "title": "Space Kind",
+            "type": "string"
+          },
+          "space_name": {
+            "title": "Space Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "account_name",
+          "space_id",
+          "space_name",
+          "space_kind",
+          "can_configure",
+          "can_write_manual"
+        ],
+        "title": "KpiWorkspaceOut",
+        "type": "object"
+      },
       "LegalHoldCreate": {
         "properties": {
           "legal_basis": {
@@ -3488,6 +4267,11 @@
             "title": "Intake Records Deleted",
             "type": "integer"
           },
+          "kpis_deleted": {
+            "additionalProperties": true,
+            "title": "Kpis Deleted",
+            "type": "object"
+          },
           "space_id": {
             "default": "",
             "title": "Space Id",
@@ -3576,6 +4360,11 @@
             },
             "title": "Intake Records",
             "type": "array"
+          },
+          "kpis": {
+            "additionalProperties": true,
+            "title": "Kpis",
+            "type": "object"
           },
           "space_id": {
             "default": "",
@@ -5723,6 +6512,164 @@
         "title": "ServiceKeyInfo",
         "type": "object"
       },
+      "ServiceKpiIngestOut": {
+        "properties": {
+          "accepted_count": {
+            "title": "Accepted Count",
+            "type": "integer"
+          },
+          "duplicate_count": {
+            "title": "Duplicate Count",
+            "type": "integer"
+          },
+          "snapshots": {
+            "items": {
+              "$ref": "#/components/schemas/ServiceKpiSnapshotOut"
+            },
+            "title": "Snapshots",
+            "type": "array"
+          }
+        },
+        "required": [
+          "accepted_count",
+          "duplicate_count",
+          "snapshots"
+        ],
+        "title": "ServiceKpiIngestOut",
+        "type": "object"
+      },
+      "ServiceKpiSnapshotBatch": {
+        "additionalProperties": false,
+        "properties": {
+          "snapshots": {
+            "items": {
+              "$ref": "#/components/schemas/ServiceKpiSnapshotItem"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Snapshots",
+            "type": "array"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "space_id",
+          "snapshots"
+        ],
+        "title": "ServiceKpiSnapshotBatch",
+        "type": "object"
+      },
+      "ServiceKpiSnapshotItem": {
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "kpi_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kpi Id"
+          },
+          "kpi_key": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kpi Key"
+          },
+          "observed_at": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Observed At",
+            "type": "string"
+          },
+          "source_ref": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "value",
+          "observed_at",
+          "idempotency_key"
+        ],
+        "title": "ServiceKpiSnapshotItem",
+        "type": "object"
+      },
+      "ServiceKpiSnapshotOut": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kpi_id": {
+            "title": "Kpi Id",
+            "type": "string"
+          },
+          "observed_at": {
+            "title": "Observed At",
+            "type": "string"
+          },
+          "received_at": {
+            "title": "Received At",
+            "type": "string"
+          },
+          "source_ref": {
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kpi_id",
+          "value",
+          "observed_at",
+          "received_at",
+          "source_ref"
+        ],
+        "title": "ServiceKpiSnapshotOut",
+        "type": "object"
+      },
       "ServiceRecordDeleteRequest": {
         "properties": {
           "account_id": {
@@ -7048,6 +7995,403 @@
         ]
       }
     },
+    "/api/kpis": {
+      "get": {
+        "operationId": "get_kpi_dashboard_api_kpis_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "history_limit",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 366,
+              "minimum": 1,
+              "title": "History Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_archived",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Archived",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KpiDashboardOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Kpi Dashboard",
+        "tags": [
+          "kpis"
+        ]
+      },
+      "post": {
+        "operationId": "create_kpi_definition_api_kpis_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KpiDefinitionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KpiDefinitionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Kpi Definition",
+        "tags": [
+          "kpis"
+        ]
+      }
+    },
+    "/api/kpis/workspaces": {
+      "get": {
+        "operationId": "list_kpi_workspaces_api_kpis_workspaces_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/KpiWorkspaceOut"
+                  },
+                  "title": "Response List Kpi Workspaces Api Kpis Workspaces Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Kpi Workspaces",
+        "tags": [
+          "kpis"
+        ]
+      }
+    },
+    "/api/kpis/{kpi_id}": {
+      "patch": {
+        "operationId": "update_kpi_definition_api_kpis__kpi_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kpi_id",
+            "required": true,
+            "schema": {
+              "title": "Kpi Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KpiDefinitionUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KpiDefinitionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Kpi Definition",
+        "tags": [
+          "kpis"
+        ]
+      }
+    },
+    "/api/kpis/{kpi_id}/snapshots": {
+      "get": {
+        "operationId": "list_kpi_snapshots_api_kpis__kpi_id__snapshots_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kpi_id",
+            "required": true,
+            "schema": {
+              "title": "Kpi Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 366,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/KpiSnapshotOut"
+                  },
+                  "title": "Response List Kpi Snapshots Api Kpis  Kpi Id  Snapshots Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Kpi Snapshots",
+        "tags": [
+          "kpis"
+        ]
+      },
+      "post": {
+        "operationId": "create_manual_kpi_snapshot_api_kpis__kpi_id__snapshots_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kpi_id",
+            "required": true,
+            "schema": {
+              "title": "Kpi Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KpiSnapshotCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KpiIngestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Manual Kpi Snapshot",
+        "tags": [
+          "kpis"
+        ]
+      }
+    },
     "/api/operator/accounts/{account_id}/service-keys": {
       "get": {
         "operationId": "list_account_service_keys_api_operator_accounts__account_id__service_keys_get",
@@ -7910,7 +9254,7 @@
     },
     "/api/operator/development-gate/provision": {
       "post": {
-        "description": "Create the dedicated onebrain-only dev server; designation waits for heartbeat readiness.",
+        "description": "Create a full-stack customer-shaped dev gate; designation waits for verification.",
         "operationId": "provision_development_gate_api_operator_development_gate_provision_post",
         "parameters": [
           {
@@ -12106,6 +13450,59 @@
           }
         },
         "summary": "Intake",
+        "tags": [
+          "service"
+        ]
+      }
+    },
+    "/api/service/kpis/snapshots": {
+      "post": {
+        "operationId": "write_kpi_snapshots_api_service_kpis_snapshots_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceKpiSnapshotBatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceKpiIngestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Write Kpi Snapshots",
         "tags": [
           "service"
         ]

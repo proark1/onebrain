@@ -27,6 +27,8 @@ RLS_REQUIRED_TABLES = (
     "retention_runs",
     "provisioning_runs",
     "one_time_secret_envelopes",
+    "kpi_definitions",
+    "kpi_snapshots",
 )
 
 

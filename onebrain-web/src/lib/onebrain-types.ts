@@ -538,6 +538,106 @@ export type OperatorRolloutStatusInput = {
   notes?: string;
 };
 
+export type KpiWorkspace = {
+  account_id: string;
+  account_name: string;
+  space_id: string;
+  space_name: string;
+  space_kind: string;
+  can_configure: boolean;
+  can_write_manual: boolean;
+};
+
+export type KpiDefinition = {
+  id: string;
+  account_id: string;
+  space_id: string;
+  key: string;
+  name: string;
+  description: string;
+  category: string;
+  unit: string;
+  source_label: string;
+  owner_label: string;
+  freshness_minutes: number;
+  warning_min: string | null;
+  warning_max: string | null;
+  critical_min: string | null;
+  critical_max: string | null;
+  display_order: number;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type KpiSnapshot = {
+  id: string;
+  kpi_id: string;
+  value: string;
+  observed_at: string;
+  received_at: string;
+  source_ref: string;
+};
+
+export type KpiDashboardItem = {
+  definition: KpiDefinition;
+  latest: KpiSnapshot | null;
+  previous: KpiSnapshot | null;
+  history: KpiSnapshot[];
+  absolute_delta: string | null;
+  percentage_delta: string | null;
+  threshold_state: "healthy" | "warning" | "critical" | "awaiting_data";
+  freshness_state: "fresh" | "stale" | "awaiting_data";
+};
+
+export type KpiDashboard = {
+  account_id: string;
+  space_id: string;
+  generated_at: string;
+  can_configure: boolean;
+  can_write_manual: boolean;
+  items: KpiDashboardItem[];
+};
+
+export type CreateKpiDefinitionInput = {
+  account_id: string;
+  space_id: string;
+  key: string;
+  name: string;
+  description?: string;
+  category?: string;
+  unit?: string;
+  source_label?: string;
+  owner_label?: string;
+  freshness_minutes?: number;
+  warning_min?: string | null;
+  warning_max?: string | null;
+  critical_min?: string | null;
+  critical_max?: string | null;
+  display_order?: number;
+};
+
+export type UpdateKpiDefinitionInput = Partial<Omit<CreateKpiDefinitionInput, "account_id" | "space_id">> & {
+  account_id: string;
+  space_id: string;
+  status?: "active" | "archived";
+};
+
+export type CreateKpiSnapshotInput = {
+  account_id: string;
+  space_id: string;
+  value: string;
+  observed_at: string;
+  source_ref?: string;
+  idempotency_key: string;
+};
+
+export type KpiIngestResult = {
+  accepted_count: number;
+  duplicate_count: number;
+  snapshots: KpiSnapshot[];
+};
+
 export type PrivacyAuditEvent = {
   id: string;
   account_id: string;
@@ -561,6 +661,7 @@ export type PrivacyExport = {
   conversations: Array<Record<string, unknown>>;
   intake_records: Array<Record<string, unknown>>;
   governance: Record<string, Array<Record<string, unknown>>>;
+  kpis: Record<string, Array<Record<string, unknown>>>;
   audit_events: PrivacyAuditEvent[];
 };
 
@@ -578,6 +679,7 @@ export type PrivacyEraseResult = {
   conversations_deleted: number;
   intake_records_deleted: number;
   governance_deleted: Record<string, number>;
+  kpis_deleted: Record<string, number>;
   audit_event_id: string;
 };
 

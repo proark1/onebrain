@@ -338,8 +338,8 @@ export function PrivacyPanel() {
               </label>
 
               <p className="privacyNote">
-                This removes the selected scope from documents, chunks, conversations, and intake records, then records
-                the action in the Python audit store.
+                This removes the selected scope from documents, chunks, conversations, intake records, KPI records,
+                and governance data, then records the action in the audit store.
               </p>
 
               <button className="dangerButton" disabled={!eraseReady} type="submit">
@@ -379,6 +379,7 @@ function PrivacyResultPanel({ result }: { result: PrivacyResult }) {
   if (result.kind === "erase") {
     const eraseData = result.eraseData;
     const governanceDeleted = Object.values(eraseData.governance_deleted || {}).reduce((total, value) => total + value, 0);
+    const kpisDeleted = Object.values(eraseData.kpis_deleted || {}).reduce((total, value) => total + value, 0);
     return (
       <section className="privacyPanel resultPanel" aria-labelledby="privacyResultTitle">
         <div className="panelHead">
@@ -393,6 +394,7 @@ function PrivacyResultPanel({ result }: { result: PrivacyResult }) {
           <SummaryStat label="chunks" value={eraseData.chunks_deleted} />
           <SummaryStat label="conversations" value={eraseData.conversations_deleted} />
           <SummaryStat label="intake" value={eraseData.intake_records_deleted} />
+          <SummaryStat label="KPI records" value={kpisDeleted} />
           <SummaryStat label="governance" value={governanceDeleted} />
         </div>
         <p className="auditLine">Audit event: {eraseData.audit_event_id}</p>
@@ -402,6 +404,10 @@ function PrivacyResultPanel({ result }: { result: PrivacyResult }) {
 
   const exportData = result.exportData;
   const governanceRecords = Object.values(exportData.governance || {}).reduce(
+    (total, records) => total + records.length,
+    0,
+  );
+  const kpiRecords = Object.values(exportData.kpis || {}).reduce(
     (total, records) => total + records.length,
     0,
   );
@@ -419,6 +425,7 @@ function PrivacyResultPanel({ result }: { result: PrivacyResult }) {
         <SummaryStat label="chunks" value={result.chunks} />
         <SummaryStat label="conversations" value={exportData.conversations.length} />
         <SummaryStat label="intake" value={exportData.intake_records.length} />
+        <SummaryStat label="KPI records" value={kpiRecords} />
         <SummaryStat label="governance" value={governanceRecords} />
         <SummaryStat label="audit events" value={exportData.audit_events.length} />
       </div>

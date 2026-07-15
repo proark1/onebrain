@@ -123,6 +123,13 @@ def get_platform_store():
 
 
 @lru_cache
+def get_kpi_store():
+    from app.kpis.factory import build_kpi_store
+
+    return build_kpi_store(get_settings())
+
+
+@lru_cache
 def get_control_plane_store():
     from app.controlplane.factory import build_control_plane_store
 

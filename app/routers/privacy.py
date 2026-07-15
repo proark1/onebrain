@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.auth.account_access import authorize_account_admin
 from app.auth.principal import Principal, resolve_principal
-from app.deps import get_conversation_store, get_intake_store, get_platform_store, get_store
+from app.deps import get_conversation_store, get_intake_store, get_kpi_store, get_platform_store, get_store
 from app.platform.base import AuditEvent, LegalHold, Tombstone, scope_is_held
 
 router = APIRouter(prefix="/api/privacy", tags=["privacy"])
@@ -38,6 +38,7 @@ class PrivacyExportOut(BaseModel):
     documents: list[dict]
     conversations: list[dict]
     intake_records: list[dict] = Field(default_factory=list)
+    kpis: dict = Field(default_factory=dict)
     governance: dict = Field(default_factory=dict)
     audit_events: list[PrivacyAuditOut]
 
@@ -55,6 +56,7 @@ class PrivacyEraseOut(BaseModel):
     chunks_deleted: int
     conversations_deleted: int
     intake_records_deleted: int = 0
+    kpis_deleted: dict = Field(default_factory=dict)
     governance_deleted: dict = Field(default_factory=dict)
     audit_event_id: str
 
@@ -131,6 +133,7 @@ def export_account_data(
     documents = get_store().export_documents(account_id, account_id=account_id, space_id=space_id)
     conversations = get_conversation_store().export_scope(account_id, account_id=account_id, space_id=space_id)
     intake_records = get_intake_store().export_records(account_id, account_id=account_id, space_id=space_id)
+    kpis = get_kpi_store().export_scope(account_id, space_id)
     platform = get_platform_store()
     governance = {
         "organizations": [row.__dict__ for row in ([] if space_id else platform.list_organizations(account_id))],
@@ -157,6 +160,7 @@ def export_account_data(
             "chunks": sum(len(doc.get("chunks", [])) for doc in documents),
             "conversations": len(conversations),
             "intake_records": len(intake_records),
+            "kpis": {key: len(value) for key, value in kpis.items()},
             "governance": {key: len(value) for key, value in governance.items()},
         },
     )
@@ -167,6 +171,7 @@ def export_account_data(
         documents=documents,
         conversations=conversations,
         intake_records=intake_records,
+        kpis=kpis,
         governance=governance,
         audit_events=audit_events,
     )
@@ -203,6 +208,7 @@ def erase_account_data(
     deleted_docs = get_store().delete_documents_by_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_conversations = get_conversation_store().delete_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_records = get_intake_store().delete_records_by_scope(account_id, account_id=account_id, space_id=space_id)
+    deleted_kpis = get_kpi_store().delete_scope(account_id, space_id=space_id)
     deleted_governance = get_platform_store().delete_governance_by_scope(account_id, space_id=space_id)
     audit = _record_privacy_audit(
         principal,
@@ -215,6 +221,7 @@ def erase_account_data(
             "chunks_deleted": deleted_docs["chunks"],
             "conversations_deleted": deleted_conversations,
             "intake_records_deleted": deleted_records,
+            "kpis_deleted": deleted_kpis,
             "governance_deleted": deleted_governance,
             "reason": body.reason.strip(),
         },
@@ -236,6 +243,7 @@ def erase_account_data(
         chunks_deleted=deleted_docs["chunks"],
         conversations_deleted=deleted_conversations,
         intake_records_deleted=deleted_records,
+        kpis_deleted=deleted_kpis,
         governance_deleted=deleted_governance,
         audit_event_id=audit.id,
     )

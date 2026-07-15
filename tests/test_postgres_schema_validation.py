@@ -465,6 +465,10 @@ def _release_promotion_module():
     return _load_migration_module("0022_release_promotion_gate.py", "release_promotion_migration")
 
 
+def _kpi_dashboard_module():
+    return _load_migration_module("0023_kpi_dashboard_data.py", "kpi_dashboard_migration")
+
+
 def test_trust_primitives_migration_structure_and_chain():
     migration = _trust_primitives_module()
 
@@ -533,7 +537,26 @@ def test_required_revision_matches_single_alembic_head():
     heads = ScriptDirectory.from_config(config).get_heads()
 
     assert heads == [REQUIRED_ALEMBIC_REVISION]
-    assert REQUIRED_ALEMBIC_REVISION == "0022_release_promotion_gate"
+    assert REQUIRED_ALEMBIC_REVISION == "0023_kpi_dashboard_data"
+
+
+def test_kpi_dashboard_migration_is_scoped_and_forced_rls():
+    migration = _kpi_dashboard_module()
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "migrations" / "versions" / "0023_kpi_dashboard_data.py"
+    ).read_text()
+
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.down_revision == "0022_release_promotion_gate"
+    assert set(migration.KPI_TABLES) == {"kpi_definitions", "kpi_snapshots"}
+    assert "NUMERIC(38,10)" in source
+    assert "kpi_snapshots_account_idempotency_unique" in source
+    assert "kpi_snapshots_definition_scope_fk" in source
+    assert source.count("ENABLE ROW LEVEL SECURITY") >= 1
+    assert source.count("FORCE ROW LEVEL SECURITY") >= 1
+    assert "current_setting('app.account_id', true)" in source
+    assert "current_setting('app.space_id', true)" in source
 
 
 # --- positional row mappers (C4) ----------------------------------------------

@@ -88,7 +88,12 @@ class CustomerProvisioner:
         for installation in installations:
             if installation.app_id not in EXTERNAL_CREDENTIAL_APPS:
                 continue
-            scopes = self._scopes_for(installation.allowed_purposes)
+            credential_purposes = (
+                ("kpi_snapshot_write",)
+                if installation.app_id == "kpi_dashboard"
+                else installation.allowed_purposes
+            )
+            scopes = self._scopes_for(credential_purposes)
             if not scopes:
                 continue
 
@@ -103,7 +108,7 @@ class CustomerProvisioner:
                 account_id=account_id,
                 app_id=installation.app_id,
                 space_ids=installation.enabled_space_ids,
-                purposes=installation.allowed_purposes,
+                purposes=credential_purposes,
             ))
             credentials.append(ProvisionedCredential(
                 id=key_id,
@@ -114,7 +119,7 @@ class CustomerProvisioner:
                 label=label,
                 scopes=list(scopes),
                 space_ids=list(installation.enabled_space_ids),
-                purposes=list(installation.allowed_purposes),
+                purposes=list(credential_purposes),
             ))
         return credentials
 

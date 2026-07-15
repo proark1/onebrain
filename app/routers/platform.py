@@ -61,7 +61,7 @@ class SpaceOut(BaseModel):
 
 
 class AppInstallCreate(BaseModel):
-    app_id: str = Field(pattern="^(onebrain_core|assistant|communication|admin_console|workers)$")
+    app_id: str = Field(pattern="^(onebrain_core|assistant|communication|kpi_dashboard|admin_console|workers)$")
     enabled_space_ids: list[str] = Field(default_factory=list)
     allowed_purposes: list[str] = Field(default_factory=list)
     display_name: str = Field(default="", max_length=200)

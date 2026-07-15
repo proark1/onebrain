@@ -12,6 +12,12 @@ import type {
   CreateOperatorReleaseInput,
   DocumentSummary,
   InstallPlatformAppInput,
+  CreateKpiDefinitionInput,
+  CreateKpiSnapshotInput,
+  KpiDashboard,
+  KpiDefinition,
+  KpiIngestResult,
+  KpiWorkspace,
   OperatorBackup,
   OperatorCustomer,
   OperatorDeployment,
@@ -40,6 +46,7 @@ import type {
   BootstrapSecretResult,
   ServiceKeyInfo,
   UploadDocumentInput,
+  UpdateKpiDefinitionInput,
   FleetOverview,
   FleetRollout,
   FleetRolloutCreateResult,
@@ -414,6 +421,49 @@ export async function revokeAccountServiceKey(accountId: string, keyId: string):
     `/operator/accounts/${encodeURIComponent(accountId)}/service-keys/${encodeURIComponent(keyId)}`,
     { method: "DELETE" },
   );
+}
+
+export function listKpiWorkspaces(): Promise<KpiWorkspace[]> {
+  return requestJson<KpiWorkspace[]>("/kpis/workspaces");
+}
+
+export function getKpiDashboard(
+  accountId: string,
+  spaceId: string,
+  historyLimit = 30,
+  includeArchived = false,
+): Promise<KpiDashboard> {
+  const params = new URLSearchParams({
+    account_id: accountId,
+    space_id: spaceId,
+    history_limit: String(historyLimit),
+    include_archived: String(includeArchived),
+  });
+  return requestJson<KpiDashboard>(`/kpis?${params.toString()}`);
+}
+
+export function createKpiDefinition(input: CreateKpiDefinitionInput): Promise<KpiDefinition> {
+  return requestJson<KpiDefinition>("/kpis", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateKpiDefinition(id: string, input: UpdateKpiDefinitionInput): Promise<KpiDefinition> {
+  return requestJson<KpiDefinition>(`/kpis/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export function createManualKpiSnapshot(id: string, input: CreateKpiSnapshotInput): Promise<KpiIngestResult> {
+  return requestJson<KpiIngestResult>(`/kpis/${encodeURIComponent(id)}/snapshots`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
 }
 
 export function exportPrivacyData(accountId: string, spaceId = ""): Promise<PrivacyExport> {

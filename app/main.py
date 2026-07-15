@@ -13,7 +13,7 @@ from app.config import get_settings
 from app.deps import get_pipeline, get_store, get_user_store
 from app.deploy.runtime import validate_runtime_safety
 from app.monitoring import record_api_error
-from app.routers import assistant, auth, chat, conversations, documents, fleet, jobs, operator, platform, privacy, provisioning, rollouts, service, session
+from app.routers import assistant, auth, chat, conversations, documents, fleet, jobs, kpis, operator, platform, privacy, provisioning, rollouts, service, session
 from app.seed import seed_if_empty
 from app.users.seed import seed_admin_from_env, seed_users_if_empty
 
@@ -66,6 +66,7 @@ def create_app() -> FastAPI:
     app.include_router(conversations.router)
     app.include_router(chat.router)
     app.include_router(platform.router)
+    app.include_router(kpis.router)
     # The operator + provisioning control plane exposes cross-account state and can
     # spend money / create infrastructure. A pure customer-serving deployment sets
     # operator_console=false (and operator_mode=false) so neither surface is even

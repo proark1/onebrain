@@ -182,8 +182,8 @@ def test_full_stack_provisioning_mints_constrained_integration_keys():
     stored_kpi = service_keys.get(kpi.id)
     assert stored_kpi.account_id == "acme"
     assert stored_kpi.app_id == "kpi_dashboard"
-    assert set(stored_kpi.scopes) == {SCOPE_READ, SCOPE_WRITE}
-    assert set(stored_kpi.purposes) == {"kpi_read", "kpi_configure", "kpi_snapshot_write"}
+    assert set(stored_kpi.scopes) == {SCOPE_WRITE}
+    assert set(stored_kpi.purposes) == {"kpi_snapshot_write"}
     assert {platform.get_space(space_id).kind for space_id in stored_kpi.space_ids} == {"business", "shared"}
 
 
@@ -217,8 +217,8 @@ def test_kpi_dashboard_bundle_is_selectable_for_new_customers():
     assert credential.app_id == "kpi_dashboard"
     stored = service_keys.get(credential.id)
     assert stored.app_id == "kpi_dashboard"
-    assert set(stored.scopes) == {SCOPE_READ, SCOPE_WRITE}
-    assert set(stored.purposes) == {"kpi_read", "kpi_configure", "kpi_snapshot_write"}
+    assert set(stored.scopes) == {SCOPE_WRITE}
+    assert set(stored.purposes) == {"kpi_snapshot_write"}
 
 
 def test_provisioning_stores_account_brand_and_app_overrides():

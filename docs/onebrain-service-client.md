@@ -47,6 +47,7 @@ answer = client.ask(
 - `POST /api/service/intake`
 - `POST /api/service/capture`
 - `POST /api/service/ask`
+- `POST /api/service/kpis/snapshots`
 
 All calls require `Authorization: Bearer <service-key>`.
 
@@ -55,6 +56,12 @@ incoming data into a structured OneBrain record with record type, intent,
 classification, confidence, status, summary, safe extracted facts, account,
 space, app, and purpose. `/api/service/capture` remains available for raw legacy
 capture.
+
+`/api/service/kpis/snapshots` accepts bounded, transactional batches of
+aggregate KPI observations for the key's pinned account and spaces. It requires
+a KPI Dashboard key with write scope and the `kpi_snapshot_write` purpose. See
+the [KPI Dashboard runbook](kpi-dashboard.md) for the payload, idempotency, and
+privacy contract.
 
 The service API is intentionally narrow. It stores data in the scoped OneBrain
 account/space and returns public-ceiled answers without sources. The operator

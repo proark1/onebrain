@@ -76,7 +76,7 @@ export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
               <span>Assad Dar</span>
               <strong>{activeLabel}</strong>
             </div>
-            <WorkspaceSelector />
+            {active === "kpis" ? <span /> : <WorkspaceSelector />}
             <div className="commandIdentity">
               <span>{session.role_label}</span>
               <small>{identity}</small>

@@ -8,7 +8,8 @@ retention: a held scope is counted but never deleted. Every non-dry sweep is
 recorded in `retention_runs`.
 
 Age is read from a per-record timestamp: conversations and intake records carry
-`created_at`; document chunks carry it in meta from ingest. A record with no
+`created_at`, document chunks carry it in meta from ingest, and KPI observations
+use the server-controlled `received_at`. A record with no
 timestamp is never aged out — retention can only delete what it can prove is old
 enough. The `governance` domain is not age-filtered (its records are membership /
 consent / policy metadata, not time-series data); a governance policy still tears
@@ -21,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 
-SUPPORTED_DOMAINS = ("documents", "conversations", "intake", "governance")
+SUPPORTED_DOMAINS = ("documents", "conversations", "intake", "kpis", "governance")
 
 
 def _now() -> str:
@@ -38,7 +39,7 @@ def _older(created_at: str, cutoff: str) -> bool:
 
 
 def run_retention(*, account_id: str, space_id: str = "", domain: str = "", dry_run: bool = True) -> dict:
-    from app.deps import get_conversation_store, get_intake_store, get_platform_store, get_store
+    from app.deps import get_conversation_store, get_intake_store, get_kpi_store, get_platform_store, get_store
     from app.platform.base import RetentionRun, scope_is_held
 
     platform = get_platform_store()
@@ -107,6 +108,13 @@ def run_retention(*, account_id: str, space_id: str = "", domain: str = "", dry_
             result["counts"]["intake_records_deleted"] = get_intake_store().delete_records_by_scope(
                 account_id, account_id=account_id, space_id=space_id, older_than=cutoff,
             )
+
+    if "kpis" in active_domains:
+        cutoff = cutoff_for("kpis")
+        result["cutoffs"]["kpis"] = cutoff
+        result["counts"]["kpis"] = get_kpi_store().retention_scope(
+            account_id, space_id, older_than=cutoff, delete=delete_ok,
+        )
 
     if "governance" in active_domains:
         # Governance records are metadata, not time-series; a governance policy
