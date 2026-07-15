@@ -40,6 +40,7 @@ const APP_IDS = [
   "onebrain_core",
   "assistant",
   "communication",
+  "kpi_dashboard",
   "admin_console",
   "workers",
 ];
@@ -55,6 +56,9 @@ const PURPOSES = [
   "gdpr_delete",
   "analytics",
   "billing",
+  "kpi_read",
+  "kpi_configure",
+  "kpi_snapshot_write",
 ];
 
 type BusyAction = "accounts" | "details" | "createAccount" | "createSpace" | "installApp" | "accessCheck" | "";

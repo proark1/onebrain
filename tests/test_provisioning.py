@@ -154,7 +154,7 @@ def test_full_stack_provisioning_mints_constrained_integration_keys():
         mint_integration_keys=True,
     )
 
-    assert {credential.app_id for credential in result.credentials} == {"assistant", "communication"}
+    assert {credential.app_id for credential in result.credentials} == {"assistant", "communication", "kpi_dashboard"}
 
     assistant = next(credential for credential in result.credentials if credential.app_id == "assistant")
     stored_assistant = service_keys.get(assistant.id)
@@ -177,6 +177,48 @@ def test_full_stack_provisioning_mints_constrained_integration_keys():
     assert {platform.get_space(space_id).kind for space_id in stored.space_ids} == {"customer_service", "shared"}
     assert communication.key not in str(platform.list_audit("acme")[-1].meta)
     assert communication.id in platform.list_audit("acme")[-1].meta["service_key_ids"]
+
+    kpi = next(credential for credential in result.credentials if credential.app_id == "kpi_dashboard")
+    stored_kpi = service_keys.get(kpi.id)
+    assert stored_kpi.account_id == "acme"
+    assert stored_kpi.app_id == "kpi_dashboard"
+    assert set(stored_kpi.scopes) == {SCOPE_READ, SCOPE_WRITE}
+    assert set(stored_kpi.purposes) == {"kpi_read", "kpi_configure", "kpi_snapshot_write"}
+    assert {platform.get_space(space_id).kind for space_id in stored_kpi.space_ids} == {"business", "shared"}
+
+
+def test_kpi_dashboard_bundle_is_selectable_for_new_customers():
+    platform, control = _stores()
+    service_keys = MemoryServiceKeyStore()
+
+    result = CustomerProvisioner(platform, control, service_keys).provision(
+        account_id="metricsco",
+        account_kind="organization",
+        customer_name="MetricsCo",
+        owner_user_id="admin@onebrain",
+        bundle_id="onebrain_kpi_dashboard",
+        deployment_id="dep_metricsco",
+        deployment_type="dedicated_railway",
+        region="eu-central",
+        release_ring="pilot",
+        initial_version="2026.07.0",
+        mint_integration_keys=True,
+    )
+
+    assert [app.app_id for app in result.installations] == ["onebrain_core", "kpi_dashboard"]
+    assert {m.module_id for m in result.modules} == {"onebrain-api", "onebrain-admin-ui", "onebrain-workers"}
+
+    kpi_app = next(app for app in result.installations if app.app_id == "kpi_dashboard")
+    assert set(kpi_app.allowed_purposes) == {"kpi_read", "kpi_configure", "kpi_snapshot_write"}
+    assert {platform.get_space(space_id).kind for space_id in kpi_app.enabled_space_ids} == {"business", "shared"}
+
+    assert len(result.credentials) == 1
+    credential = result.credentials[0]
+    assert credential.app_id == "kpi_dashboard"
+    stored = service_keys.get(credential.id)
+    assert stored.app_id == "kpi_dashboard"
+    assert set(stored.scopes) == {SCOPE_READ, SCOPE_WRITE}
+    assert set(stored.purposes) == {"kpi_read", "kpi_configure", "kpi_snapshot_write"}
 
 
 def test_provisioning_stores_account_brand_and_app_overrides():

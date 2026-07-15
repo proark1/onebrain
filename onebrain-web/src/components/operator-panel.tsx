@@ -820,6 +820,7 @@ function BundleList({ bundles }: { bundles: ProvisioningBundle[] }) {
           <strong>{bundle.label}</strong>
           <span>{bundle.description}</span>
           <div className="pillRail">
+            {bundle.apps.map((app) => <span key={app}>{labelFor(app)}</span>)}
             {bundle.spaces.map((space) => <span key={space}>{labelFor(space)}</span>)}
             <span>{bundle.modules.length} modules</span>
           </div>

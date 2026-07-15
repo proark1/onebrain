@@ -330,3 +330,20 @@ def test_governance_delete_by_scope_leaves_other_spaces_and_global_registers():
     assert [row.id for row in store.list_memberships("acct_owner")] == ["mem_customer"]
     assert [row.id for row in store.list_consent_records("acct_owner")] == ["cons_customer"]
     assert store.list_processors("acct_owner")[0].id == "proc_global"
+
+
+def test_kpi_dashboard_app_can_read_configure_and_write_snapshots():
+    store = _seed_platform()
+    store.install_app(AppInstallation(
+        id="appi_kpi",
+        account_id="acct_owner",
+        app_id="kpi_dashboard",
+        enabled_space_ids=("sp_business", "sp_shared"),
+        allowed_purposes=("kpi_read", "kpi_configure", "kpi_snapshot_write"),
+    ))
+
+    assert store.check_app_access("acct_owner", "kpi_dashboard", "sp_business", "kpi_read").allowed is True
+    assert store.check_app_access("acct_owner", "kpi_dashboard", "sp_shared", "kpi_snapshot_write").allowed is True
+    private_decision = store.check_app_access("acct_owner", "kpi_dashboard", "sp_personal", "kpi_read")
+    assert private_decision.allowed is False
+    assert private_decision.reason == "purpose_or_space_not_enabled"

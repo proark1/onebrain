@@ -46,6 +46,7 @@ class ProvisioningBundle:
 CORE_PURPOSES = ("knowledge_management", "admin_management", "gdpr_export", "gdpr_delete")
 ASSISTANT_PURPOSES = tuple(sorted(ASSISTANT_CONTRACT_PURPOSES))
 COMMUNICATION_PURPOSES = ("customer_service_answer", "customer_service_inbox")
+KPI_PURPOSES = ("kpi_read", "kpi_configure", "kpi_snapshot_write")
 
 
 BUSINESS_SPACES = (
@@ -86,6 +87,12 @@ COMMUNICATION_APP = AppTemplate(
     COMMUNICATION_PURPOSES,
     "AI Communication",
 )
+KPI_APP = AppTemplate(
+    "kpi_dashboard",
+    ("business", "shared"),
+    KPI_PURPOSES,
+    "KPI Dashboard",
+)
 
 
 BUNDLES: Dict[str, ProvisioningBundle] = {
@@ -108,6 +115,17 @@ BUNDLES: Dict[str, ProvisioningBundle] = {
         ),
         modules=CORE_MODULES + ASSISTANT_MODULES,
     ),
+    "onebrain_kpi_dashboard": ProvisioningBundle(
+        id="onebrain_kpi_dashboard",
+        label="OneBrain + KPI dashboard",
+        description="Core data layer plus governed KPI definitions and snapshot history for business dashboards.",
+        spaces=BUSINESS_SPACES,
+        apps=(
+            _core_app(tuple(s.key for s in BUSINESS_SPACES)),
+            KPI_APP,
+        ),
+        modules=CORE_MODULES,
+    ),
     "onebrain_communication": ProvisioningBundle(
         id="onebrain_communication",
         label="OneBrain + communication",
@@ -122,12 +140,13 @@ BUNDLES: Dict[str, ProvisioningBundle] = {
     "full_stack": ProvisioningBundle(
         id="full_stack",
         label="Full stack",
-        description="OneBrain, assistant and communication modules with separated private, business and service spaces.",
+        description="OneBrain, assistant, communication and KPI dashboard features with separated private, business and service spaces.",
         spaces=FULL_STACK_SPACES,
         apps=(
             _core_app(tuple(s.key for s in FULL_STACK_SPACES)),
             _assistant_app(tuple(s.key for s in FULL_STACK_SPACES)),
             COMMUNICATION_APP,
+            KPI_APP,
         ),
         modules=CORE_MODULES + ASSISTANT_MODULES + COMMUNICATION_MODULES,
     ),
