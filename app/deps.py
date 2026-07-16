@@ -130,6 +130,74 @@ def get_kpi_store():
 
 
 @lru_cache
+def get_ai_employee_store():
+    from app.ai_employees.factory import build_ai_employee_store
+
+    return build_ai_employee_store(get_settings())
+
+
+@lru_cache
+def get_ai_employee_backend_registry():
+    from app.ai_employees.backends.factory import build_ai_employee_backend_registry
+
+    return build_ai_employee_backend_registry(get_settings())
+
+
+@lru_cache
+def get_ai_employee_runtime():
+    from app.ai_employees.runtime import AiEmployeeRuntime
+
+    settings = get_settings()
+    return AiEmployeeRuntime(
+        store=get_ai_employee_store(),
+        retrieval_service=get_retrieval_service(),
+        backend_registry=get_ai_employee_backend_registry(),
+        max_output_tokens=settings.ai_employees_max_output_tokens,
+    )
+
+
+@lru_cache
+def get_ai_employee_mission_service():
+    from app.ai_employees.missions import AiMissionService, ModelMissionAgentExecutor
+
+    settings = get_settings()
+    return AiMissionService(
+        store=get_ai_employee_store(),
+        retrieval_service=get_retrieval_service(),
+        executor=ModelMissionAgentExecutor(
+            get_ai_employee_backend_registry(),
+            max_output_tokens=settings.ai_employees_max_output_tokens,
+        ),
+    )
+
+
+@lru_cache
+def get_ai_employee_action_executor_registry():
+    from app.ai_employees.actions import ActionExecutorRegistry
+
+    return ActionExecutorRegistry([get_ai_employee_google_calendar_connector()])
+
+
+@lru_cache
+def get_ai_employee_google_calendar_connector():
+    from app.ai_employees.connectors.factory import build_google_calendar_connector
+
+    return build_google_calendar_connector(get_settings(), get_ai_employee_store())
+
+
+@lru_cache
+def get_ai_employee_action_service():
+    from app.ai_employees.actions import AiEmployeeActionService
+
+    return AiEmployeeActionService(
+        store=get_ai_employee_store(),
+        intake_store=get_intake_store(),
+        session_store=get_session_store(),
+        executor_registry=get_ai_employee_action_executor_registry(),
+    )
+
+
+@lru_cache
 def get_control_plane_store():
     from app.controlplane.factory import build_control_plane_store
 

@@ -537,7 +537,7 @@ def test_required_revision_matches_single_alembic_head():
     heads = ScriptDirectory.from_config(config).get_heads()
 
     assert heads == [REQUIRED_ALEMBIC_REVISION]
-    assert REQUIRED_ALEMBIC_REVISION == "0023_kpi_dashboard_data"
+    assert REQUIRED_ALEMBIC_REVISION == "0024_ai_employees_runtime"
 
 
 def test_kpi_dashboard_migration_is_scoped_and_forced_rls():
@@ -547,7 +547,7 @@ def test_kpi_dashboard_migration_is_scoped_and_forced_rls():
         / "migrations" / "versions" / "0023_kpi_dashboard_data.py"
     ).read_text()
 
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision != REQUIRED_ALEMBIC_REVISION
     assert migration.down_revision == "0022_release_promotion_gate"
     assert set(migration.KPI_TABLES) == {"kpi_definitions", "kpi_snapshots"}
     assert "NUMERIC(38,10)" in source

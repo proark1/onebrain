@@ -124,6 +124,18 @@ class Settings(BaseSettings):
     litellm_model: str = "gemini/gemini-2.5-flash"
     litellm_embedding_model: str = "gemini/gemini-embedding-001"
 
+    # AI Employees is provider-neutral, while the first live roster is Gemini.
+    # Anthropic remains fail-closed until all three gates and its credential are present.
+    ai_employees_max_output_tokens: int = 2048
+    ai_employees_anthropic_enabled: bool = False
+    ai_employees_anthropic_processing_approved: bool = False
+    ai_employees_code_sandbox_enabled: bool = False
+    ai_employees_google_client_id: str = ""
+    ai_employees_google_client_secret: str = ""
+    ai_employees_google_redirect_uri: str = ""
+    ai_employees_google_timeout_seconds: float = 10.0
+    ai_employees_connector_secret_store_path: str = ""
+
     # pgvector — only used when vector_store = "pgvector"
     database_url: str = ""
     migration_database_url: str = ""

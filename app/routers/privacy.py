@@ -10,7 +10,15 @@ from pydantic import BaseModel, Field
 
 from app.auth.account_access import authorize_account_admin
 from app.auth.principal import Principal, resolve_principal
-from app.deps import get_conversation_store, get_intake_store, get_kpi_store, get_platform_store, get_store
+from app.deps import (
+    get_ai_employee_google_calendar_connector,
+    get_ai_employee_store,
+    get_conversation_store,
+    get_intake_store,
+    get_kpi_store,
+    get_platform_store,
+    get_store,
+)
 from app.platform.base import AuditEvent, LegalHold, Tombstone, scope_is_held
 
 router = APIRouter(prefix="/api/privacy", tags=["privacy"])
@@ -39,6 +47,7 @@ class PrivacyExportOut(BaseModel):
     conversations: list[dict]
     intake_records: list[dict] = Field(default_factory=list)
     kpis: dict = Field(default_factory=dict)
+    ai_employees: dict = Field(default_factory=dict)
     governance: dict = Field(default_factory=dict)
     audit_events: list[PrivacyAuditOut]
 
@@ -57,6 +66,8 @@ class PrivacyEraseOut(BaseModel):
     conversations_deleted: int
     intake_records_deleted: int = 0
     kpis_deleted: dict = Field(default_factory=dict)
+    ai_employees_deleted: dict = Field(default_factory=dict)
+    connector_credentials_deleted: int = 0
     governance_deleted: dict = Field(default_factory=dict)
     audit_event_id: str
 
@@ -80,6 +91,13 @@ def _audit_out(event: AuditEvent) -> PrivacyAuditOut:
         meta=event.meta,
         created_at=event.created_at,
     )
+
+
+def _redact_ai_employee_export(value: dict) -> dict:
+    """Keep connector metadata exportable without exposing secret-store locators."""
+    for row in value.get("connector_bindings", []):
+        row["credential_ref"] = "secret://redacted"
+    return value
 
 
 def _resolve_scope(account_id: str, space_id: str = ""):
@@ -134,6 +152,11 @@ def export_account_data(
     conversations = get_conversation_store().export_scope(account_id, account_id=account_id, space_id=space_id)
     intake_records = get_intake_store().export_records(account_id, account_id=account_id, space_id=space_id)
     kpis = get_kpi_store().export_scope(account_id, space_id)
+    ai_employees = _redact_ai_employee_export(get_ai_employee_store().export_scope(
+        tenant_id=account_id,
+        account_id=account_id,
+        space_id=space_id,
+    ))
     platform = get_platform_store()
     governance = {
         "organizations": [row.__dict__ for row in ([] if space_id else platform.list_organizations(account_id))],
@@ -161,6 +184,7 @@ def export_account_data(
             "conversations": len(conversations),
             "intake_records": len(intake_records),
             "kpis": {key: len(value) for key, value in kpis.items()},
+            "ai_employees": {key: len(value) for key, value in ai_employees.items()},
             "governance": {key: len(value) for key, value in governance.items()},
         },
     )
@@ -172,6 +196,7 @@ def export_account_data(
         conversations=conversations,
         intake_records=intake_records,
         kpis=kpis,
+        ai_employees=ai_employees,
         governance=governance,
         audit_events=audit_events,
     )
@@ -205,10 +230,26 @@ def erase_account_data(
             detail="This scope is under an active legal hold and cannot be erased. Release the hold first.",
         )
 
+    ai_employee_store = get_ai_employee_store()
+    connector_bindings = tuple(ai_employee_store.list_connector_bindings(
+        tenant_id=account_id,
+        account_id=account_id,
+        space_id=space_id,
+    ))
+    deleted_connector_credentials = get_ai_employee_google_calendar_connector().purge_local_credentials(
+        account_id=account_id,
+        space_id=space_id,
+        bindings=connector_bindings,
+    )
     deleted_docs = get_store().delete_documents_by_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_conversations = get_conversation_store().delete_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_records = get_intake_store().delete_records_by_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_kpis = get_kpi_store().delete_scope(account_id, space_id=space_id)
+    deleted_ai_employees = ai_employee_store.delete_scope(
+        tenant_id=account_id,
+        account_id=account_id,
+        space_id=space_id,
+    )
     deleted_governance = get_platform_store().delete_governance_by_scope(account_id, space_id=space_id)
     audit = _record_privacy_audit(
         principal,
@@ -222,6 +263,8 @@ def erase_account_data(
             "conversations_deleted": deleted_conversations,
             "intake_records_deleted": deleted_records,
             "kpis_deleted": deleted_kpis,
+            "ai_employees_deleted": deleted_ai_employees,
+            "connector_credentials_deleted": deleted_connector_credentials,
             "governance_deleted": deleted_governance,
             "reason": body.reason.strip(),
         },
@@ -244,6 +287,8 @@ def erase_account_data(
         conversations_deleted=deleted_conversations,
         intake_records_deleted=deleted_records,
         kpis_deleted=deleted_kpis,
+        ai_employees_deleted=deleted_ai_employees,
+        connector_credentials_deleted=deleted_connector_credentials,
         governance_deleted=deleted_governance,
         audit_event_id=audit.id,
     )

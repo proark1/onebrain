@@ -113,6 +113,2070 @@
         "title": "AccountOut",
         "type": "object"
       },
+      "AiConnectorBindingOut": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "employee_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Employee Ids",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "resource_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Resource Ids",
+            "type": "array"
+          },
+          "resource_type": {
+            "title": "Resource Type",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "resource_type",
+          "resource_ids",
+          "employee_ids",
+          "capabilities",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AiConnectorBindingOut",
+        "type": "object"
+      },
+      "AiConnectorHealthOut": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "provider",
+          "available",
+          "reason",
+          "scopes"
+        ],
+        "title": "AiConnectorHealthOut",
+        "type": "object"
+      },
+      "AiEmployeeActionCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "action_type": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Action Type",
+            "type": "string"
+          },
+          "actionability": {
+            "enum": [
+              "answer_only",
+              "draft_only",
+              "approval_required",
+              "automation_allowed"
+            ],
+            "title": "Actionability",
+            "type": "string"
+          },
+          "classification": {
+            "enum": [
+              "public",
+              "internal",
+              "confidential",
+              "restricted"
+            ],
+            "title": "Classification",
+            "type": "string"
+          },
+          "conversation_id": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "employee_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Expires At",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "mission_id": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Mission Id",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "payload_summary": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Payload Summary",
+            "type": "string"
+          },
+          "risk_level": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Risk Level",
+            "type": "string"
+          },
+          "run_id": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Run Id",
+            "type": "string"
+          },
+          "source_record_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Source Record Ids",
+            "type": "array"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "target_system": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Target System",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "employee_id",
+          "action_type",
+          "target_system",
+          "risk_level",
+          "classification",
+          "actionability",
+          "source_record_ids",
+          "payload_summary",
+          "payload",
+          "idempotency_key"
+        ],
+        "title": "AiEmployeeActionCreate",
+        "type": "object"
+      },
+      "AiEmployeeActionDecision": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "decision": {
+            "enum": [
+              "approved",
+              "rejected",
+              "changes_requested",
+              "duplicate"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Note",
+            "type": "string"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "decision"
+        ],
+        "title": "AiEmployeeActionDecision",
+        "type": "object"
+      },
+      "AiEmployeeActionOut": {
+        "additionalProperties": false,
+        "properties": {
+          "action_type": {
+            "title": "Action Type",
+            "type": "string"
+          },
+          "actionability": {
+            "title": "Actionability",
+            "type": "string"
+          },
+          "approved_at": {
+            "title": "Approved At",
+            "type": "string"
+          },
+          "approved_by": {
+            "title": "Approved By",
+            "type": "string"
+          },
+          "classification": {
+            "title": "Classification",
+            "type": "string"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "employee_id": {
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "execution_ref": {
+            "title": "Execution Ref",
+            "type": "string"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "mission_id": {
+            "title": "Mission Id",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "payload_hash": {
+            "title": "Payload Hash",
+            "type": "string"
+          },
+          "payload_summary": {
+            "title": "Payload Summary",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "required_approver_role": {
+            "title": "Required Approver Role",
+            "type": "string"
+          },
+          "requires_approval": {
+            "title": "Requires Approval",
+            "type": "boolean"
+          },
+          "risk_level": {
+            "title": "Risk Level",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "source_record_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Record Ids",
+            "type": "array"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "target_system": {
+            "title": "Target System",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "mission_id",
+          "conversation_id",
+          "run_id",
+          "employee_id",
+          "action_type",
+          "target_system",
+          "risk_level",
+          "classification",
+          "actionability",
+          "source_record_ids",
+          "payload_summary",
+          "payload",
+          "payload_hash",
+          "required_approver_role",
+          "expires_at",
+          "idempotency_key",
+          "status",
+          "requires_approval",
+          "reason",
+          "approved_by",
+          "approved_at",
+          "execution_ref",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AiEmployeeActionOut",
+        "type": "object"
+      },
+      "AiEmployeeActionScope": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id"
+        ],
+        "title": "AiEmployeeActionScope",
+        "type": "object"
+      },
+      "AiEmployeeCharacterPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "avatar_url": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Url"
+          },
+          "biography": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Biography"
+          },
+          "character_prompt": {
+            "anyOf": [
+              {
+                "maxLength": 12000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Character Prompt"
+          },
+          "collaboration_behavior": {
+            "anyOf": [
+              {
+                "maxLength": 3000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collaboration Behavior"
+          },
+          "communication_style": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Communication Style"
+          },
+          "country": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "examples": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Examples"
+          },
+          "fictional_age": {
+            "anyOf": [
+              {
+                "maximum": 80.0,
+                "minimum": 18.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fictional Age"
+          },
+          "personality": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Personality"
+          },
+          "pronouns": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pronouns"
+          },
+          "role_focus": {
+            "anyOf": [
+              {
+                "maxLength": 3000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Focus"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "strengths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strengths"
+          },
+          "tone": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tone"
+          },
+          "vocabulary": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vocabulary"
+          },
+          "watch_outs": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Watch Outs"
+          },
+          "working_style": {
+            "anyOf": [
+              {
+                "maxLength": 3000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Working Style"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id"
+        ],
+        "title": "AiEmployeeCharacterPatch",
+        "type": "object"
+      },
+      "AiEmployeeCharacterPublish": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "expected_profile_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Expected Profile Version Id",
+            "type": "string"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "expected_profile_version_id"
+        ],
+        "title": "AiEmployeeCharacterPublish",
+        "type": "object"
+      },
+      "AiEmployeeCharacterRollback": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "expected_profile_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Expected Profile Version Id",
+            "type": "string"
+          },
+          "source_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Source Version Id",
+            "type": "string"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "expected_profile_version_id",
+          "source_version_id"
+        ],
+        "title": "AiEmployeeCharacterRollback",
+        "type": "object"
+      },
+      "AiEmployeeCharacterVersionOut": {
+        "additionalProperties": false,
+        "properties": {
+          "author_id": {
+            "title": "Author Id",
+            "type": "string"
+          },
+          "base_version_id": {
+            "title": "Base Version Id",
+            "type": "string"
+          },
+          "checksum": {
+            "title": "Checksum",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "employee_id": {
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "preview": {
+            "title": "Preview",
+            "type": "string"
+          },
+          "published_at": {
+            "title": "Published At",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "employee_id",
+          "version",
+          "state",
+          "payload",
+          "checksum",
+          "author_id",
+          "base_version_id",
+          "created_at",
+          "published_at",
+          "preview"
+        ],
+        "title": "AiEmployeeCharacterVersionOut",
+        "type": "object"
+      },
+      "AiEmployeeConversationCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "employee_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "employee_id"
+        ],
+        "title": "AiEmployeeConversationCreate",
+        "type": "object"
+      },
+      "AiEmployeeConversationOut": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "character_version_id": {
+            "title": "Character Version Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "employee_id": {
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "human_owner_id": {
+            "title": "Human Owner Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "mission_id": {
+            "title": "Mission Id",
+            "type": "string"
+          },
+          "model_policy_id": {
+            "title": "Model Policy Id",
+            "type": "string"
+          },
+          "space_id": {
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "space_id",
+          "employee_id",
+          "human_owner_id",
+          "title",
+          "status",
+          "character_version_id",
+          "model_policy_id",
+          "mission_id",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AiEmployeeConversationOut",
+        "type": "object"
+      },
+      "AiEmployeeMemoryCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "classification": {
+            "enum": [
+              "public",
+              "internal",
+              "confidential",
+              "restricted"
+            ],
+            "title": "Classification",
+            "type": "string"
+          },
+          "content": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "employee_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "retention_until": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Retention Until",
+            "type": "string"
+          },
+          "source_refs": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Source Refs",
+            "type": "array"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "employee_id",
+          "content",
+          "source_refs",
+          "classification",
+          "retention_until"
+        ],
+        "title": "AiEmployeeMemoryCreate",
+        "type": "object"
+      },
+      "AiEmployeeMemoryDecision": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "decision": {
+            "enum": [
+              "approved",
+              "rejected"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "decision"
+        ],
+        "title": "AiEmployeeMemoryDecision",
+        "type": "object"
+      },
+      "AiEmployeeMemoryOut": {
+        "additionalProperties": false,
+        "properties": {
+          "approved_at": {
+            "title": "Approved At",
+            "type": "string"
+          },
+          "approved_by": {
+            "title": "Approved By",
+            "type": "string"
+          },
+          "author_id": {
+            "title": "Author Id",
+            "type": "string"
+          },
+          "classification": {
+            "title": "Classification",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "employee_id": {
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "retention_until": {
+            "title": "Retention Until",
+            "type": "string"
+          },
+          "source_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Refs",
+            "type": "array"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "employee_id",
+          "content",
+          "source_refs",
+          "classification",
+          "status",
+          "retention_until",
+          "author_id",
+          "approved_by",
+          "created_at",
+          "approved_at"
+        ],
+        "title": "AiEmployeeMemoryOut",
+        "type": "object"
+      },
+      "AiEmployeeMessageOut": {
+        "additionalProperties": false,
+        "properties": {
+          "citations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "speaker_id": {
+            "title": "Speaker Id",
+            "type": "string"
+          },
+          "speaker_type": {
+            "title": "Speaker Type",
+            "type": "string"
+          },
+          "visibility": {
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id",
+          "speaker_type",
+          "speaker_id",
+          "visibility",
+          "content",
+          "citations",
+          "run_id",
+          "created_at"
+        ],
+        "title": "AiEmployeeMessageOut",
+        "type": "object"
+      },
+      "AiEmployeeModelHealthOut": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "available",
+          "reason"
+        ],
+        "title": "AiEmployeeModelHealthOut",
+        "type": "object"
+      },
+      "AiEmployeeModelPostureOut": {
+        "additionalProperties": false,
+        "properties": {
+          "cost_limit_usd": {
+            "title": "Cost Limit Usd",
+            "type": "number"
+          },
+          "data_ceiling": {
+            "title": "Data Ceiling",
+            "type": "string"
+          },
+          "employee_id": {
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "employee_id",
+          "provider",
+          "model",
+          "data_ceiling",
+          "cost_limit_usd",
+          "status"
+        ],
+        "title": "AiEmployeeModelPostureOut",
+        "type": "object"
+      },
+      "AiEmployeeModelsOut": {
+        "additionalProperties": false,
+        "properties": {
+          "health": {
+            "items": {
+              "$ref": "#/components/schemas/AiEmployeeModelHealthOut"
+            },
+            "title": "Health",
+            "type": "array"
+          },
+          "policies": {
+            "items": {
+              "$ref": "#/components/schemas/AiEmployeeModelPostureOut"
+            },
+            "title": "Policies",
+            "type": "array"
+          }
+        },
+        "required": [
+          "health",
+          "policies"
+        ],
+        "title": "AiEmployeeModelsOut",
+        "type": "object"
+      },
+      "AiEmployeeOut": {
+        "additionalProperties": false,
+        "properties": {
+          "avatar_url": {
+            "title": "Avatar Url",
+            "type": "string"
+          },
+          "biography": {
+            "title": "Biography",
+            "type": "string"
+          },
+          "character_version": {
+            "title": "Character Version",
+            "type": "integer"
+          },
+          "character_version_id": {
+            "title": "Character Version Id",
+            "type": "string"
+          },
+          "country": {
+            "title": "Country",
+            "type": "string"
+          },
+          "default_mode": {
+            "title": "Default Mode",
+            "type": "string"
+          },
+          "department": {
+            "title": "Department",
+            "type": "string"
+          },
+          "employee_id": {
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "fictional_age": {
+            "title": "Fictional Age",
+            "type": "integer"
+          },
+          "leadership_council": {
+            "title": "Leadership Council",
+            "type": "boolean"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "model_policy_id": {
+            "title": "Model Policy Id",
+            "type": "string"
+          },
+          "model_provider": {
+            "title": "Model Provider",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "personality": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Personality",
+            "type": "array"
+          },
+          "pod": {
+            "title": "Pod",
+            "type": "string"
+          },
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "pronouns": {
+            "title": "Pronouns",
+            "type": "string"
+          },
+          "reports_to": {
+            "title": "Reports To",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "strengths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Strengths",
+            "type": "array"
+          },
+          "tone": {
+            "title": "Tone",
+            "type": "string"
+          },
+          "watch_outs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Watch Outs",
+            "type": "array"
+          },
+          "working_style": {
+            "title": "Working Style",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id",
+          "employee_id",
+          "name",
+          "fictional_age",
+          "country",
+          "pronouns",
+          "role",
+          "department",
+          "pod",
+          "reports_to",
+          "status",
+          "leadership_council",
+          "personality",
+          "tone",
+          "strengths",
+          "watch_outs",
+          "working_style",
+          "biography",
+          "avatar_url",
+          "character_version_id",
+          "character_version",
+          "model_policy_id",
+          "model_provider",
+          "model",
+          "default_mode"
+        ],
+        "title": "AiEmployeeOut",
+        "type": "object"
+      },
+      "AiEmployeeStatusUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "paused"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "status"
+        ],
+        "title": "AiEmployeeStatusUpdate",
+        "type": "object"
+      },
+      "AiEmployeeTeamOut": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/AiEmployeeOut"
+            },
+            "title": "Agents",
+            "type": "array"
+          },
+          "can_configure": {
+            "title": "Can Configure",
+            "type": "boolean"
+          },
+          "can_manage_connectors": {
+            "title": "Can Manage Connectors",
+            "type": "boolean"
+          },
+          "can_run_missions": {
+            "title": "Can Run Missions",
+            "type": "boolean"
+          },
+          "contract_version": {
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "installation_status": {
+            "title": "Installation Status",
+            "type": "string"
+          },
+          "leadership_council_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Leadership Council Ids",
+            "type": "array"
+          },
+          "max_mission_squad_size": {
+            "title": "Max Mission Squad Size",
+            "type": "integer"
+          },
+          "pods": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Pods",
+            "type": "object"
+          },
+          "space_id": {
+            "title": "Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "installation_status",
+          "contract_version",
+          "max_mission_squad_size",
+          "leadership_council_ids",
+          "pods",
+          "can_configure",
+          "can_run_missions",
+          "can_manage_connectors",
+          "agents"
+        ],
+        "title": "AiEmployeeTeamOut",
+        "type": "object"
+      },
+      "AiEmployeeTurnCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "question": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "question",
+          "idempotency_key"
+        ],
+        "title": "AiEmployeeTurnCreate",
+        "type": "object"
+      },
+      "AiEmployeeWorkProductCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "classification": {
+            "enum": [
+              "public",
+              "internal",
+              "confidential",
+              "restricted"
+            ],
+            "title": "Classification",
+            "type": "string"
+          },
+          "content": {
+            "maxLength": 50000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "conversation_id": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "employee_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "mission_id": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Mission Id",
+            "type": "string"
+          },
+          "record_type": {
+            "enum": [
+              "brief",
+              "task",
+              "policy",
+              "note",
+              "document",
+              "action"
+            ],
+            "title": "Record Type",
+            "type": "string"
+          },
+          "source_record_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Source Record Ids",
+            "type": "array"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "employee_id",
+          "record_type",
+          "title",
+          "content",
+          "classification",
+          "source_record_ids"
+        ],
+        "title": "AiEmployeeWorkProductCreate",
+        "type": "object"
+      },
+      "AiEmployeeWorkProductOut": {
+        "additionalProperties": false,
+        "properties": {
+          "classification": {
+            "title": "Classification",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "employee_id": {
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "mission_id": {
+            "title": "Mission Id",
+            "type": "string"
+          },
+          "record_type": {
+            "title": "Record Type",
+            "type": "string"
+          },
+          "source_record_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Record Ids",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "employee_id",
+          "record_type",
+          "title",
+          "content",
+          "classification",
+          "source_record_ids",
+          "mission_id",
+          "conversation_id",
+          "created_at"
+        ],
+        "title": "AiEmployeeWorkProductOut",
+        "type": "object"
+      },
+      "AiEmployeeWorkspaceOut": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "account_name": {
+            "title": "Account Name",
+            "type": "string"
+          },
+          "can_configure": {
+            "title": "Can Configure",
+            "type": "boolean"
+          },
+          "can_manage_connectors": {
+            "title": "Can Manage Connectors",
+            "type": "boolean"
+          },
+          "can_run_missions": {
+            "title": "Can Run Missions",
+            "type": "boolean"
+          },
+          "installation_status": {
+            "title": "Installation Status",
+            "type": "string"
+          },
+          "space_id": {
+            "title": "Space Id",
+            "type": "string"
+          },
+          "space_kind": {
+            "title": "Space Kind",
+            "type": "string"
+          },
+          "space_name": {
+            "title": "Space Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "account_name",
+          "space_id",
+          "space_name",
+          "space_kind",
+          "installation_status",
+          "can_configure",
+          "can_run_missions",
+          "can_manage_connectors"
+        ],
+        "title": "AiEmployeeWorkspaceOut",
+        "type": "object"
+      },
+      "AiMissionCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "accountable_employee_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Accountable Employee Id",
+            "type": "string"
+          },
+          "cost_budget_usd": {
+            "default": 10.0,
+            "exclusiveMinimum": 0.0,
+            "maximum": 1000.0,
+            "title": "Cost Budget Usd",
+            "type": "number"
+          },
+          "goal": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Goal",
+            "type": "string"
+          },
+          "participant_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 6,
+            "minItems": 2,
+            "title": "Participant Ids",
+            "type": "array"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "time_budget_seconds": {
+            "default": 900,
+            "maximum": 86400.0,
+            "minimum": 30.0,
+            "title": "Time Budget Seconds",
+            "type": "integer"
+          },
+          "token_budget": {
+            "default": 30000,
+            "maximum": 500000.0,
+            "minimum": 1000.0,
+            "title": "Token Budget",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "goal",
+          "accountable_employee_id",
+          "participant_ids"
+        ],
+        "title": "AiMissionCreate",
+        "type": "object"
+      },
+      "AiMissionDetailOut": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "accountable_employee_id": {
+            "title": "Accountable Employee Id",
+            "type": "string"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "cost_budget_usd": {
+            "title": "Cost Budget Usd",
+            "type": "number"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "goal": {
+            "title": "Goal",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/AiEmployeeMessageOut"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "participants": {
+            "items": {
+              "$ref": "#/components/schemas/AiMissionParticipantOut"
+            },
+            "title": "Participants",
+            "type": "array"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "space_id": {
+            "title": "Space Id",
+            "type": "string"
+          },
+          "sponsor_id": {
+            "title": "Sponsor Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "synthesis_message_id": {
+            "title": "Synthesis Message Id",
+            "type": "string"
+          },
+          "time_budget_seconds": {
+            "title": "Time Budget Seconds",
+            "type": "integer"
+          },
+          "token_budget": {
+            "title": "Token Budget",
+            "type": "integer"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/AiMissionUsageOut"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "space_id",
+          "goal",
+          "sponsor_id",
+          "accountable_employee_id",
+          "status",
+          "phase",
+          "token_budget",
+          "time_budget_seconds",
+          "cost_budget_usd",
+          "synthesis_message_id",
+          "error",
+          "created_at",
+          "updated_at",
+          "participants",
+          "usage",
+          "conversation_id",
+          "messages"
+        ],
+        "title": "AiMissionDetailOut",
+        "type": "object"
+      },
+      "AiMissionOut": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "accountable_employee_id": {
+            "title": "Accountable Employee Id",
+            "type": "string"
+          },
+          "cost_budget_usd": {
+            "title": "Cost Budget Usd",
+            "type": "number"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "goal": {
+            "title": "Goal",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "participants": {
+            "items": {
+              "$ref": "#/components/schemas/AiMissionParticipantOut"
+            },
+            "title": "Participants",
+            "type": "array"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "space_id": {
+            "title": "Space Id",
+            "type": "string"
+          },
+          "sponsor_id": {
+            "title": "Sponsor Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "synthesis_message_id": {
+            "title": "Synthesis Message Id",
+            "type": "string"
+          },
+          "time_budget_seconds": {
+            "title": "Time Budget Seconds",
+            "type": "integer"
+          },
+          "token_budget": {
+            "title": "Token Budget",
+            "type": "integer"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/AiMissionUsageOut"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "space_id",
+          "goal",
+          "sponsor_id",
+          "accountable_employee_id",
+          "status",
+          "phase",
+          "token_budget",
+          "time_budget_seconds",
+          "cost_budget_usd",
+          "synthesis_message_id",
+          "error",
+          "created_at",
+          "updated_at",
+          "participants",
+          "usage"
+        ],
+        "title": "AiMissionOut",
+        "type": "object"
+      },
+      "AiMissionParticipantOut": {
+        "additionalProperties": false,
+        "properties": {
+          "character_version_id": {
+            "title": "Character Version Id",
+            "type": "string"
+          },
+          "employee_id": {
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "mission_role": {
+            "title": "Mission Role",
+            "type": "string"
+          },
+          "model_policy_id": {
+            "title": "Model Policy Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "employee_id",
+          "mission_role",
+          "character_version_id",
+          "model_policy_id",
+          "status"
+        ],
+        "title": "AiMissionParticipantOut",
+        "type": "object"
+      },
+      "AiMissionRunRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id"
+        ],
+        "title": "AiMissionRunRequest",
+        "type": "object"
+      },
+      "AiMissionUsageOut": {
+        "additionalProperties": false,
+        "properties": {
+          "completion_tokens": {
+            "title": "Completion Tokens",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "number"
+          },
+          "prompt_tokens": {
+            "title": "Prompt Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prompt_tokens",
+          "completion_tokens",
+          "cost_usd"
+        ],
+        "title": "AiMissionUsageOut",
+        "type": "object"
+      },
       "AppInstallCreate": {
         "properties": {
           "allowed_purposes": {
@@ -123,7 +2187,7 @@
             "type": "array"
           },
           "app_id": {
-            "pattern": "^(onebrain_core|assistant|communication|kpi_dashboard|admin_console|workers)$",
+            "pattern": "^(onebrain_core|assistant|ai_employees|communication|kpi_dashboard|admin_console|workers)$",
             "title": "App Id",
             "type": "string"
           },
@@ -2177,6 +4241,196 @@
           }
         },
         "title": "FleetRolloutPlanOut",
+        "type": "object"
+      },
+      "GoogleCalendarBindingUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "employee_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "title": "Employee Ids",
+            "type": "array"
+          },
+          "resource_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Resource Ids",
+            "type": "array"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "employee_ids",
+          "capabilities",
+          "resource_ids"
+        ],
+        "title": "GoogleCalendarBindingUpdate",
+        "type": "object"
+      },
+      "GoogleCalendarOAuthCallback": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "code": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "state": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "state",
+          "code"
+        ],
+        "title": "GoogleCalendarOAuthCallback",
+        "type": "object"
+      },
+      "GoogleCalendarOAuthStart": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "employee_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "title": "Employee Ids",
+            "type": "array"
+          },
+          "resource_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Resource Ids",
+            "type": "array"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "employee_ids",
+          "capabilities"
+        ],
+        "title": "GoogleCalendarOAuthStart",
+        "type": "object"
+      },
+      "GoogleCalendarOAuthStartOut": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization_url": {
+            "title": "Authorization Url",
+            "type": "string"
+          },
+          "state_expires_at": {
+            "title": "State Expires At",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "authorization_url",
+          "state_expires_at"
+        ],
+        "title": "GoogleCalendarOAuthStartOut",
+        "type": "object"
+      },
+      "GoogleCalendarOut": {
+        "additionalProperties": false,
+        "properties": {
+          "access_role": {
+            "title": "Access Role",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "primary": {
+            "title": "Primary",
+            "type": "boolean"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "summary",
+          "primary",
+          "access_role"
+        ],
+        "title": "GoogleCalendarOut",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -4241,12 +6495,22 @@
             "title": "Account Id",
             "type": "string"
           },
+          "ai_employees_deleted": {
+            "additionalProperties": true,
+            "title": "Ai Employees Deleted",
+            "type": "object"
+          },
           "audit_event_id": {
             "title": "Audit Event Id",
             "type": "string"
           },
           "chunks_deleted": {
             "title": "Chunks Deleted",
+            "type": "integer"
+          },
+          "connector_credentials_deleted": {
+            "default": 0,
+            "title": "Connector Credentials Deleted",
             "type": "integer"
           },
           "conversations_deleted": {
@@ -4320,6 +6584,11 @@
           "account_id": {
             "title": "Account Id",
             "type": "string"
+          },
+          "ai_employees": {
+            "additionalProperties": true,
+            "title": "Ai Employees",
+            "type": "object"
           },
           "audit_events": {
             "items": {
@@ -7217,6 +9486,2428 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/ai-employees/actions": {
+      "get": {
+        "operationId": "list_ai_employee_actions_api_ai_employees_actions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "employee_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AiEmployeeActionOut"
+                  },
+                  "title": "Response List Ai Employee Actions Api Ai Employees Actions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Ai Employee Actions",
+        "tags": [
+          "ai-employees"
+        ]
+      },
+      "post": {
+        "operationId": "create_ai_employee_action_api_ai_employees_actions_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiEmployeeActionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Ai Employee Action",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/actions/{proposal_id}": {
+      "get": {
+        "operationId": "get_ai_employee_action_api_ai_employees_actions__proposal_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Ai Employee Action",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/actions/{proposal_id}/decision": {
+      "post": {
+        "operationId": "decide_ai_employee_action_api_ai_employees_actions__proposal_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiEmployeeActionDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Ai Employee Action",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/actions/{proposal_id}/execute": {
+      "post": {
+        "operationId": "execute_ai_employee_action_api_ai_employees_actions__proposal_id__execute_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiEmployeeActionScope"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Execute Ai Employee Action",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/agents/{employee_id}": {
+      "get": {
+        "operationId": "get_ai_employee_detail_api_ai_employees_agents__employee_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Ai Employee Detail",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/agents/{employee_id}/character/drafts": {
+      "post": {
+        "operationId": "create_ai_employee_character_draft_api_ai_employees_agents__employee_id__character_drafts_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiEmployeeCharacterPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeCharacterVersionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Ai Employee Character Draft",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/agents/{employee_id}/character/reset": {
+      "post": {
+        "operationId": "reset_ai_employee_character_api_ai_employees_agents__employee_id__character_reset_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiEmployeeCharacterPublish"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeCharacterVersionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Ai Employee Character",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/agents/{employee_id}/character/rollback": {
+      "post": {
+        "operationId": "rollback_ai_employee_character_api_ai_employees_agents__employee_id__character_rollback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiEmployeeCharacterRollback"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeCharacterVersionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rollback Ai Employee Character",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/agents/{employee_id}/character/versions": {
+      "get": {
+        "operationId": "list_ai_employee_character_versions_api_ai_employees_agents__employee_id__character_versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AiEmployeeCharacterVersionOut"
+                  },
+                  "title": "Response List Ai Employee Character Versions Api Ai Employees Agents  Employee Id  Character Versions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Ai Employee Character Versions",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/agents/{employee_id}/character/versions/{version_id}/publish": {
+      "post": {
+        "operationId": "publish_ai_employee_character_api_ai_employees_agents__employee_id__character_versions__version_id__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "title": "Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiEmployeeCharacterPublish"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeCharacterVersionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish Ai Employee Character",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/agents/{employee_id}/status": {
+      "patch": {
+        "operationId": "set_ai_employee_status_api_ai_employees_agents__employee_id__status_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiEmployeeStatusUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Ai Employee Status",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/connectors": {
+      "get": {
+        "operationId": "list_ai_employee_connectors_api_ai_employees_connectors_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AiConnectorBindingOut"
+                  },
+                  "title": "Response List Ai Employee Connectors Api Ai Employees Connectors Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Ai Employee Connectors",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/connectors/google-calendar/oauth/callback": {
+      "post": {
+        "operationId": "complete_google_calendar_oauth_api_ai_employees_connectors_google_calendar_oauth_callback_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoogleCalendarOAuthCallback"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiConnectorBindingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete Google Calendar Oauth",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/connectors/google-calendar/oauth/start": {
+      "post": {
+        "operationId": "start_google_calendar_oauth_api_ai_employees_connectors_google_calendar_oauth_start_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoogleCalendarOAuthStart"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoogleCalendarOAuthStartOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Google Calendar Oauth",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/connectors/google-calendar/{binding_id}": {
+      "delete": {
+        "operationId": "revoke_google_calendar_binding_api_ai_employees_connectors_google_calendar__binding_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "title": "Binding Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiConnectorBindingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Google Calendar Binding",
+        "tags": [
+          "ai-employees"
+        ]
+      },
+      "patch": {
+        "operationId": "configure_google_calendar_binding_api_ai_employees_connectors_google_calendar__binding_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "title": "Binding Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoogleCalendarBindingUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiConnectorBindingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Configure Google Calendar Binding",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/connectors/google-calendar/{binding_id}/calendars": {
+      "get": {
+        "operationId": "list_google_calendars_api_ai_employees_connectors_google_calendar__binding_id__calendars_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "title": "Binding Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/GoogleCalendarOut"
+                  },
+                  "title": "Response List Google Calendars Api Ai Employees Connectors Google Calendar  Binding Id  Calendars Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Google Calendars",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/connectors/health": {
+      "get": {
+        "operationId": "get_ai_employee_connector_health_api_ai_employees_connectors_health_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AiConnectorHealthOut"
+                  },
+                  "title": "Response Get Ai Employee Connector Health Api Ai Employees Connectors Health Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Ai Employee Connector Health",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/conversations": {
+      "get": {
+        "operationId": "list_ai_employee_conversations_api_ai_employees_conversations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AiEmployeeConversationOut"
+                  },
+                  "title": "Response List Ai Employee Conversations Api Ai Employees Conversations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Ai Employee Conversations",
+        "tags": [
+          "ai-employees"
+        ]
+      },
+      "post": {
+        "operationId": "create_ai_employee_conversation_api_ai_employees_conversations_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiEmployeeConversationCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeConversationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Ai Employee Conversation",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/conversations/{conversation_id}/messages": {
+      "get": {
+        "operationId": "list_ai_employee_messages_api_ai_employees_conversations__conversation_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AiEmployeeMessageOut"
+                  },
+                  "title": "Response List Ai Employee Messages Api Ai Employees Conversations  Conversation Id  Messages Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Ai Employee Messages",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/conversations/{conversation_id}/turns": {
+      "post": {
+        "operationId": "stream_ai_employee_turn_api_ai_employees_conversations__conversation_id__turns_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiEmployeeTurnCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Ai Employee Turn",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/memories": {
+      "get": {
+        "operationId": "list_ai_employee_memories_api_ai_employees_memories_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "employee_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AiEmployeeMemoryOut"
+                  },
+                  "title": "Response List Ai Employee Memories Api Ai Employees Memories Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Ai Employee Memories",
+        "tags": [
+          "ai-employees"
+        ]
+      },
+      "post": {
+        "operationId": "create_ai_employee_memory_api_ai_employees_memories_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiEmployeeMemoryCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeMemoryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Ai Employee Memory",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/memories/{memory_id}": {
+      "delete": {
+        "operationId": "delete_ai_employee_memory_api_ai_employees_memories__memory_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "memory_id",
+            "required": true,
+            "schema": {
+              "title": "Memory Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeMemoryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Ai Employee Memory",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/memories/{memory_id}/decision": {
+      "post": {
+        "operationId": "decide_ai_employee_memory_api_ai_employees_memories__memory_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "memory_id",
+            "required": true,
+            "schema": {
+              "title": "Memory Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiEmployeeMemoryDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeMemoryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Ai Employee Memory",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/missions": {
+      "get": {
+        "operationId": "list_ai_employee_missions_api_ai_employees_missions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AiMissionOut"
+                  },
+                  "title": "Response List Ai Employee Missions Api Ai Employees Missions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Ai Employee Missions",
+        "tags": [
+          "ai-employees"
+        ]
+      },
+      "post": {
+        "operationId": "create_ai_employee_mission_api_ai_employees_missions_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiMissionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiMissionDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Ai Employee Mission",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/missions/{mission_id}": {
+      "get": {
+        "operationId": "get_ai_employee_mission_api_ai_employees_missions__mission_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mission_id",
+            "required": true,
+            "schema": {
+              "title": "Mission Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiMissionDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Ai Employee Mission",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/missions/{mission_id}/cancel": {
+      "post": {
+        "operationId": "cancel_ai_employee_mission_api_ai_employees_missions__mission_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mission_id",
+            "required": true,
+            "schema": {
+              "title": "Mission Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiMissionRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiMissionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Ai Employee Mission",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/missions/{mission_id}/run": {
+      "post": {
+        "operationId": "stream_ai_employee_mission_api_ai_employees_missions__mission_id__run_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mission_id",
+            "required": true,
+            "schema": {
+              "title": "Mission Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiMissionRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Ai Employee Mission",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/models": {
+      "get": {
+        "operationId": "get_ai_employee_models_api_ai_employees_models_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeModelsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Ai Employee Models",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/team": {
+      "get": {
+        "operationId": "get_ai_employee_team_api_ai_employees_team_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeTeamOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Ai Employee Team",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/work-products": {
+      "get": {
+        "operationId": "list_ai_employee_work_products_api_ai_employees_work_products_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "employee_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AiEmployeeWorkProductOut"
+                  },
+                  "title": "Response List Ai Employee Work Products Api Ai Employees Work Products Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Ai Employee Work Products",
+        "tags": [
+          "ai-employees"
+        ]
+      },
+      "post": {
+        "operationId": "create_ai_employee_work_product_api_ai_employees_work_products_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiEmployeeWorkProductCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiEmployeeWorkProductOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Ai Employee Work Product",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
+    "/api/ai-employees/workspaces": {
+      "get": {
+        "operationId": "list_ai_employee_workspaces_api_ai_employees_workspaces_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AiEmployeeWorkspaceOut"
+                  },
+                  "title": "Response List Ai Employee Workspaces Api Ai Employees Workspaces Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Ai Employee Workspaces",
+        "tags": [
+          "ai-employees"
+        ]
+      }
+    },
     "/api/ask": {
       "post": {
         "operationId": "ask_api_ask_post",

@@ -55,6 +55,18 @@ import type {
   MintedFleetKey,
   DeploymentEnrollment,
   DevelopmentGate,
+  AiActionProposal,
+  AiCharacterVersion,
+  AiConnectorBinding,
+  AiConnectorHealth,
+  AiEmployeeConversation,
+  AiEmployeeMessage,
+  AiEmployeeStreamEvent,
+  AiEmployeeTeam,
+  AiEmployeeWorkspace,
+  AiMission,
+  AiModels,
+  AiWorkProduct,
 } from "@/lib/onebrain-types";
 import { cleanScope, scopeQuery } from "@/lib/onebrain-types";
 
@@ -67,6 +79,314 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(typeof body.detail === "string" ? body.detail : "Request failed");
   }
   return response.json() as Promise<T>;
+}
+
+function aiScopeQuery(accountId: string, spaceId: string, extra: Record<string, string> = {}): string {
+  return new URLSearchParams({ account_id: accountId, space_id: spaceId, ...extra }).toString();
+}
+
+async function streamSse(
+  path: string,
+  body: Record<string, unknown>,
+  onEvent: (event: AiEmployeeStreamEvent) => void,
+): Promise<void> {
+  const response = await fetch(`${PROXY_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok || !response.body) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(typeof payload.detail === "string" ? payload.detail : "Request failed");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() ?? "";
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line.startsWith("data:")) continue;
+      try {
+        onEvent(JSON.parse(line.slice(5).trim()) as AiEmployeeStreamEvent);
+      } catch {
+        // Ignore a malformed provider event while preserving the live stream.
+      }
+    }
+  }
+}
+
+export function listAiEmployeeWorkspaces(): Promise<AiEmployeeWorkspace[]> {
+  return requestJson<AiEmployeeWorkspace[]>("/ai-employees/workspaces");
+}
+
+export function getAiEmployeeTeam(accountId: string, spaceId: string): Promise<AiEmployeeTeam> {
+  return requestJson<AiEmployeeTeam>(`/ai-employees/team?${aiScopeQuery(accountId, spaceId)}`);
+}
+
+export function setAiEmployeeStatus(
+  employeeId: string,
+  accountId: string,
+  spaceId: string,
+  status: "active" | "paused",
+) {
+  return requestJson(`/ai-employees/agents/${encodeURIComponent(employeeId)}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ account_id: accountId, space_id: spaceId, status }),
+  });
+}
+
+export function listAiConversations(accountId: string, spaceId: string): Promise<AiEmployeeConversation[]> {
+  return requestJson<AiEmployeeConversation[]>(
+    `/ai-employees/conversations?${aiScopeQuery(accountId, spaceId)}`,
+  );
+}
+
+export function createAiConversation(
+  accountId: string,
+  spaceId: string,
+  employeeId: string,
+  title: string,
+): Promise<AiEmployeeConversation> {
+  return requestJson<AiEmployeeConversation>("/ai-employees/conversations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ account_id: accountId, space_id: spaceId, employee_id: employeeId, title }),
+  });
+}
+
+export function listAiMessages(
+  conversationId: string,
+  accountId: string,
+  spaceId: string,
+): Promise<AiEmployeeMessage[]> {
+  return requestJson<AiEmployeeMessage[]>(
+    `/ai-employees/conversations/${encodeURIComponent(conversationId)}/messages?${aiScopeQuery(accountId, spaceId)}`,
+  );
+}
+
+export function streamAiTurn(
+  conversationId: string,
+  accountId: string,
+  spaceId: string,
+  question: string,
+  onEvent: (event: AiEmployeeStreamEvent) => void,
+) {
+  return streamSse(
+    `/ai-employees/conversations/${encodeURIComponent(conversationId)}/turns`,
+    { account_id: accountId, space_id: spaceId, question, idempotency_key: crypto.randomUUID() },
+    onEvent,
+  );
+}
+
+export function listAiMissions(accountId: string, spaceId: string): Promise<AiMission[]> {
+  return requestJson<AiMission[]>(`/ai-employees/missions?${aiScopeQuery(accountId, spaceId)}`);
+}
+
+export function getAiMission(missionId: string, accountId: string, spaceId: string): Promise<AiMission> {
+  return requestJson<AiMission>(
+    `/ai-employees/missions/${encodeURIComponent(missionId)}?${aiScopeQuery(accountId, spaceId)}`,
+  );
+}
+
+export function createAiMission(input: {
+  account_id: string;
+  space_id: string;
+  goal: string;
+  accountable_employee_id: string;
+  participant_ids: string[];
+  token_budget?: number;
+  time_budget_seconds?: number;
+  cost_budget_usd?: number;
+}): Promise<AiMission> {
+  return requestJson<AiMission>("/ai-employees/missions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export function streamAiMission(
+  missionId: string,
+  accountId: string,
+  spaceId: string,
+  onEvent: (event: AiEmployeeStreamEvent) => void,
+) {
+  return streamSse(
+    `/ai-employees/missions/${encodeURIComponent(missionId)}/run`,
+    { account_id: accountId, space_id: spaceId },
+    onEvent,
+  );
+}
+
+export function cancelAiMission(missionId: string, accountId: string, spaceId: string): Promise<AiMission> {
+  return requestJson<AiMission>(`/ai-employees/missions/${encodeURIComponent(missionId)}/cancel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ account_id: accountId, space_id: spaceId }),
+  });
+}
+
+export function listAiWorkProducts(accountId: string, spaceId: string): Promise<AiWorkProduct[]> {
+  return requestJson<AiWorkProduct[]>(`/ai-employees/work-products?${aiScopeQuery(accountId, spaceId)}`);
+}
+
+export function listAiActions(accountId: string, spaceId: string): Promise<AiActionProposal[]> {
+  return requestJson<AiActionProposal[]>(`/ai-employees/actions?${aiScopeQuery(accountId, spaceId)}`);
+}
+
+export function decideAiAction(
+  proposalId: string,
+  accountId: string,
+  spaceId: string,
+  decision: "approved" | "rejected" | "changes_requested" | "duplicate",
+  note = "",
+): Promise<AiActionProposal> {
+  return requestJson<AiActionProposal>(`/ai-employees/actions/${encodeURIComponent(proposalId)}/decision`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ account_id: accountId, space_id: spaceId, decision, note }),
+  });
+}
+
+export function executeAiAction(
+  proposalId: string,
+  accountId: string,
+  spaceId: string,
+): Promise<AiActionProposal> {
+  return requestJson<AiActionProposal>(`/ai-employees/actions/${encodeURIComponent(proposalId)}/execute`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ account_id: accountId, space_id: spaceId }),
+  });
+}
+
+export function listAiConnectors(accountId: string, spaceId: string): Promise<AiConnectorBinding[]> {
+  return requestJson<AiConnectorBinding[]>(`/ai-employees/connectors?${aiScopeQuery(accountId, spaceId)}`);
+}
+
+export function getAiConnectorHealth(accountId: string, spaceId: string): Promise<AiConnectorHealth[]> {
+  return requestJson<AiConnectorHealth[]>(
+    `/ai-employees/connectors/health?${aiScopeQuery(accountId, spaceId)}`,
+  );
+}
+
+export function startGoogleCalendarOAuth(input: {
+  account_id: string;
+  space_id: string;
+  employee_ids: string[];
+  capabilities: string[];
+  resource_ids: string[];
+}): Promise<{ authorization_url: string; state_expires_at: number }> {
+  return requestJson("/ai-employees/connectors/google-calendar/oauth/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export function completeGoogleCalendarOAuth(input: {
+  account_id: string;
+  space_id: string;
+  state: string;
+  code: string;
+}): Promise<AiConnectorBinding> {
+  return requestJson<AiConnectorBinding>("/ai-employees/connectors/google-calendar/oauth/callback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export function revokeGoogleCalendar(
+  bindingId: string,
+  accountId: string,
+  spaceId: string,
+): Promise<AiConnectorBinding> {
+  return requestJson<AiConnectorBinding>(
+    `/ai-employees/connectors/google-calendar/${encodeURIComponent(bindingId)}?${aiScopeQuery(accountId, spaceId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export function listGoogleCalendars(
+  bindingId: string,
+  accountId: string,
+  spaceId: string,
+): Promise<{ id: string; summary: string; primary: boolean; access_role: string }[]> {
+  return requestJson(
+    `/ai-employees/connectors/google-calendar/${encodeURIComponent(bindingId)}/calendars?${aiScopeQuery(accountId, spaceId)}`,
+  );
+}
+
+export function configureGoogleCalendar(
+  bindingId: string,
+  input: {
+    account_id: string;
+    space_id: string;
+    employee_ids: string[];
+    capabilities: string[];
+    resource_ids: string[];
+  },
+): Promise<AiConnectorBinding> {
+  return requestJson<AiConnectorBinding>(
+    `/ai-employees/connectors/google-calendar/${encodeURIComponent(bindingId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export function getAiModels(accountId: string, spaceId: string): Promise<AiModels> {
+  return requestJson<AiModels>(`/ai-employees/models?${aiScopeQuery(accountId, spaceId)}`);
+}
+
+export function listAiCharacterVersions(
+  employeeId: string,
+  accountId: string,
+  spaceId: string,
+): Promise<AiCharacterVersion[]> {
+  return requestJson<AiCharacterVersion[]>(
+    `/ai-employees/agents/${encodeURIComponent(employeeId)}/character/versions?${aiScopeQuery(accountId, spaceId)}`,
+  );
+}
+
+export function createAiCharacterDraft(
+  employeeId: string,
+  input: Record<string, unknown> & { account_id: string; space_id: string },
+): Promise<AiCharacterVersion> {
+  return requestJson<AiCharacterVersion>(
+    `/ai-employees/agents/${encodeURIComponent(employeeId)}/character/drafts`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) },
+  );
+}
+
+export function publishAiCharacter(
+  employeeId: string,
+  versionId: string,
+  accountId: string,
+  spaceId: string,
+  expectedProfileVersionId: string,
+): Promise<AiCharacterVersion> {
+  return requestJson<AiCharacterVersion>(
+    `/ai-employees/agents/${encodeURIComponent(employeeId)}/character/versions/${encodeURIComponent(versionId)}/publish`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        account_id: accountId,
+        space_id: spaceId,
+        expected_profile_version_id: expectedProfileVersionId,
+      }),
+    },
+  );
 }
 
 export function listConversations(scope: ChatScope = {}): Promise<ConversationSummary[]> {

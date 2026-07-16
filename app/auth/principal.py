@@ -9,7 +9,7 @@ Unauthenticated requests fail closed with 401. Everything downstream depends on
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 from fastapi import Cookie, Header, HTTPException, Request
@@ -48,6 +48,7 @@ class Principal:
     app_id: str = ""
     purposes: Optional[frozenset] = None
     must_change_password: bool = False   # H-10: gates every non-allowlisted endpoint until rotated
+    session_id: str = ""  # server-verified login session; used for freshness-gated approvals
 
     @property
     def is_employee(self) -> bool:
@@ -141,7 +142,7 @@ def resolve_principal(ob_session: str = Cookie(default=""), request: Request = N
     if not user or user.status != "active":
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    principal = principal_from_user(user)
+    principal = replace(principal_from_user(user), session_id=session_id)
     if principal.must_change_password:
         # Single chokepoint: a must-change user is authenticated (the session is
         # real) but 403'd out of every endpoint except the (module, name)-pinned

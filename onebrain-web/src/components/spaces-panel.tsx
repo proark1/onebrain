@@ -39,6 +39,7 @@ const SPACE_KINDS = [
 const APP_IDS = [
   "onebrain_core",
   "assistant",
+  "ai_employees",
   "communication",
   "kpi_dashboard",
   "admin_console",
@@ -48,6 +49,13 @@ const APP_IDS = [
 const PURPOSES = [
   "assistant_context",
   "assistant_action",
+  "ai_employee_read",
+  "ai_employee_configure",
+  "ai_employee_mission_run",
+  "ai_employee_action_propose",
+  "ai_employee_action_approve",
+  "ai_employee_connector_manage",
+  "ai_employee_action_execute",
   "customer_service_answer",
   "customer_service_inbox",
   "knowledge_management",
@@ -60,6 +68,24 @@ const PURPOSES = [
   "kpi_configure",
   "kpi_snapshot_write",
 ];
+
+const APP_DEFAULT_PURPOSES: Record<string, string[]> = {
+  onebrain_core: ["knowledge_management", "admin_management", "gdpr_export", "gdpr_delete"],
+  assistant: ["assistant_context", "assistant_action"],
+  ai_employees: [
+    "ai_employee_read",
+    "ai_employee_configure",
+    "ai_employee_mission_run",
+    "ai_employee_action_propose",
+    "ai_employee_action_approve",
+    "ai_employee_connector_manage",
+    "ai_employee_action_execute",
+  ],
+  communication: ["customer_service_answer", "customer_service_inbox"],
+  kpi_dashboard: ["kpi_read", "kpi_configure", "kpi_snapshot_write"],
+  admin_console: ["admin_management"],
+  workers: ["analytics"],
+};
 
 type BusyAction = "accounts" | "details" | "createAccount" | "createSpace" | "installApp" | "accessCheck" | "";
 type SpaceTab = "overview" | "spaces" | "apps" | "policy" | "audit";
@@ -528,7 +554,10 @@ export function SpacesPanel() {
                     label="App"
                     options={APP_IDS.map((app) => ({ label: labelFor(app), value: app }))}
                     value={installAppId}
-                    onChange={setInstallAppId}
+                    onChange={(value) => {
+                      setInstallAppId(value);
+                      setInstallPurposes(APP_DEFAULT_PURPOSES[value] ?? []);
+                    }}
                   />
                   <TextField label="Display name" value={installDisplayName} onChange={setInstallDisplayName} />
                   <TextField label="Optional id" value={installId} onChange={setInstallId} />

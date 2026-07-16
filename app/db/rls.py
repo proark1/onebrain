@@ -29,6 +29,17 @@ RLS_REQUIRED_TABLES = (
     "one_time_secret_envelopes",
     "kpi_definitions",
     "kpi_snapshots",
+    "ai_employee_versions",
+    "ai_employee_profiles",
+    "ai_employee_model_policies",
+    "ai_employee_conversations",
+    "ai_employee_messages",
+    "ai_missions",
+    "ai_mission_participants",
+    "ai_agent_runs",
+    "ai_employee_memories",
+    "ai_connector_bindings",
+    "ai_action_proposals",
 )
 
 

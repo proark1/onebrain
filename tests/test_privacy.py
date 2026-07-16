@@ -9,6 +9,8 @@ import pytest
 from fastapi import HTTPException
 
 import app.routers.privacy as privacy_router
+from app.ai_employees.base import AiConnectorBinding
+from app.ai_employees.memory import MemoryAiEmployeeStore
 from app.auth.principal import Principal
 from app.auth.roles import ROLES
 from app.conversations.base import Scope
@@ -151,13 +153,40 @@ def _fixtures():
     )
 
 
-def _patch(monkeypatch, platform, store, conversations, intake, kpis=None):
+class _ConnectorCleanup:
+    def __init__(self, deleted: int = 0):
+        self.deleted = deleted
+        self.calls = []
+
+    def purge_local_credentials(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.deleted
+
+
+def _patch(
+    monkeypatch,
+    platform,
+    store,
+    conversations,
+    intake,
+    kpis=None,
+    ai_employees=None,
+    connector=None,
+):
     kpis = kpis or MemoryKpiStore()
+    ai_employees = ai_employees or MemoryAiEmployeeStore()
+    connector = connector or _ConnectorCleanup()
     monkeypatch.setattr(privacy_router, "get_platform_store", lambda: platform)
     monkeypatch.setattr(privacy_router, "get_store", lambda: store)
     monkeypatch.setattr(privacy_router, "get_conversation_store", lambda: conversations)
     monkeypatch.setattr(privacy_router, "get_intake_store", lambda: intake)
     monkeypatch.setattr(privacy_router, "get_kpi_store", lambda: kpis)
+    monkeypatch.setattr(privacy_router, "get_ai_employee_store", lambda: ai_employees)
+    monkeypatch.setattr(
+        privacy_router,
+        "get_ai_employee_google_calendar_connector",
+        lambda: connector,
+    )
     return kpis
 
 
@@ -185,6 +214,65 @@ def test_privacy_export_is_space_scoped_and_audited(monkeypatch):
     assert platform.list_audit("acme")[-1].action == "privacy.exported"
     assert platform.list_audit("acme")[-1].meta["documents"] == 1
     assert platform.list_audit("acme")[-1].meta["intake_records"] == 1
+
+
+def test_privacy_export_and_erase_cover_ai_employees_and_connector_secrets(monkeypatch):
+    platform, store, conversations, intake, *_ = _fixtures()
+    employees = MemoryAiEmployeeStore()
+    employees.seed_defaults(
+        tenant_id="acme",
+        account_id="acme",
+        space_id="sp_acme_service",
+        author_id="system:test",
+    )
+    binding = employees.save_connector_binding(AiConnectorBinding(
+        id="binding_service",
+        tenant_id="acme",
+        account_id="acme",
+        space_id="sp_acme_service",
+        provider="google_calendar",
+        credential_ref="secret://ai-employees/google-calendar/acme/credential",
+        resource_type="calendar",
+        resource_ids=("primary",),
+        employee_ids=("chief_of_staff",),
+        capabilities=("calendar_read",),
+        status="active",
+    ))
+    connector = _ConnectorCleanup(deleted=1)
+    _patch(
+        monkeypatch,
+        platform,
+        store,
+        conversations,
+        intake,
+        ai_employees=employees,
+        connector=connector,
+    )
+
+    exported = privacy_router.export_account_data(
+        "acme",
+        space_id="sp_acme_service",
+        principal=_principal("admin"),
+    )
+    assert len(exported.ai_employees["profiles"]) == 16
+    assert exported.ai_employees["connector_bindings"][0]["credential_ref"] == "secret://redacted"
+
+    erased = privacy_router.erase_account_data(
+        "acme",
+        privacy_router.PrivacyEraseRequest(
+            confirm_account_id="acme",
+            space_id="sp_acme_service",
+            reason="data subject request",
+        ),
+        principal=_principal("admin"),
+    )
+    assert erased.ai_employees_deleted["profiles"] == 16
+    assert erased.ai_employees_deleted["connector_bindings"] == 1
+    assert erased.connector_credentials_deleted == 1
+    assert connector.calls[0]["bindings"] == (binding,)
+    assert employees.export_scope(
+        tenant_id="acme", account_id="acme", space_id="sp_acme_service",
+    )["profiles"] == []
 
 
 def test_privacy_erase_requires_confirmation_and_deletes_only_scope(monkeypatch):

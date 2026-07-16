@@ -12,6 +12,216 @@ export type SessionInfo = {
   is_operator_surface: boolean;
 };
 
+export type AiEmployeeWorkspace = {
+  account_id: string;
+  account_name: string;
+  space_id: string;
+  space_name: string;
+  space_kind: string;
+  installation_status: string;
+  can_configure: boolean;
+  can_run_missions: boolean;
+  can_manage_connectors: boolean;
+};
+
+export type AiEmployee = {
+  profile_id: string;
+  employee_id: string;
+  name: string;
+  fictional_age: number;
+  country: string;
+  pronouns: string;
+  role: string;
+  department: string;
+  pod: string;
+  reports_to: string;
+  status: string;
+  leadership_council: boolean;
+  personality: string[];
+  tone: string;
+  strengths: string[];
+  watch_outs: string[];
+  working_style: string;
+  biography: string;
+  avatar_url: string;
+  character_version_id: string;
+  character_version: number;
+  model_policy_id: string;
+  model_provider: string;
+  model: string;
+  default_mode: string;
+};
+
+export type AiEmployeeTeam = {
+  account_id: string;
+  space_id: string;
+  installation_status: string;
+  contract_version: string;
+  max_mission_squad_size: number;
+  leadership_council_ids: string[];
+  pods: Record<string, string[]>;
+  can_configure: boolean;
+  can_run_missions: boolean;
+  can_manage_connectors: boolean;
+  agents: AiEmployee[];
+};
+
+export type AiEmployeeConversation = {
+  id: string;
+  account_id: string;
+  space_id: string;
+  employee_id: string;
+  human_owner_id: string;
+  title: string;
+  status: string;
+  character_version_id: string;
+  model_policy_id: string;
+  mission_id: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AiEmployeeMessage = {
+  id: string;
+  conversation_id: string;
+  speaker_type: string;
+  speaker_id: string;
+  visibility: string;
+  content: string;
+  citations: string[];
+  run_id: string;
+  created_at: string;
+};
+
+export type AiMissionParticipant = {
+  employee_id: string;
+  mission_role: string;
+  character_version_id: string;
+  model_policy_id: string;
+  status: string;
+};
+
+export type AiMission = {
+  id: string;
+  account_id: string;
+  space_id: string;
+  goal: string;
+  sponsor_id: string;
+  accountable_employee_id: string;
+  status: string;
+  phase: string;
+  token_budget: number;
+  time_budget_seconds: number;
+  cost_budget_usd: number;
+  synthesis_message_id: string;
+  error: string;
+  created_at: string;
+  updated_at: string;
+  participants: AiMissionParticipant[];
+  usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number };
+  conversation_id?: string;
+  messages?: AiEmployeeMessage[];
+};
+
+export type AiWorkProduct = {
+  id: string;
+  employee_id: string;
+  record_type: string;
+  title: string;
+  content: string;
+  classification: string;
+  source_record_ids: string[];
+  mission_id: string;
+  conversation_id: string;
+  created_at: string;
+};
+
+export type AiActionProposal = {
+  id: string;
+  mission_id: string;
+  conversation_id: string;
+  run_id: string;
+  employee_id: string;
+  action_type: string;
+  target_system: string;
+  risk_level: string;
+  classification: string;
+  actionability: string;
+  source_record_ids: string[];
+  payload_summary: string;
+  payload: Record<string, unknown>;
+  payload_hash: string;
+  required_approver_role: string;
+  expires_at: string;
+  idempotency_key: string;
+  status: string;
+  requires_approval: boolean;
+  reason: string;
+  approved_by: string;
+  approved_at: string;
+  execution_ref: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AiConnectorBinding = {
+  id: string;
+  provider: string;
+  resource_type: string;
+  resource_ids: string[];
+  employee_ids: string[];
+  capabilities: string[];
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AiConnectorHealth = {
+  provider: string;
+  available: boolean;
+  reason: string;
+  scopes: string[];
+};
+
+export type AiModelPosture = {
+  employee_id: string;
+  provider: string;
+  model: string;
+  data_ceiling: string;
+  cost_limit_usd: number;
+  status: string;
+};
+
+export type AiModels = {
+  health: { provider: string; available: boolean; reason: string }[];
+  policies: AiModelPosture[];
+};
+
+export type AiCharacterVersion = {
+  id: string;
+  employee_id: string;
+  version: number;
+  state: string;
+  payload: Record<string, unknown>;
+  checksum: string;
+  author_id: string;
+  base_version_id: string;
+  created_at: string;
+  published_at: string;
+  preview: string;
+};
+
+export type AiEmployeeStreamEvent = {
+  type: string;
+  phase?: string;
+  employee_id?: string;
+  content?: string;
+  message?: string;
+  status?: string;
+  mission_id?: string;
+  [key: string]: unknown;
+};
+
 export type ConversationSummary = {
   id: string;
   title: string;

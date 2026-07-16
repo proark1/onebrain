@@ -189,8 +189,11 @@ def test_full_stack_provisioning_mints_constrained_integration_keys():
     ai_employees = next(app for app in result.installations if app.app_id == "ai_employees")
     assert set(ai_employees.allowed_purposes) == {
         "ai_employee_action_approve",
+        "ai_employee_action_execute",
         "ai_employee_action_propose",
         "ai_employee_configure",
+        "ai_employee_connector_manage",
+        "ai_employee_mission_run",
         "ai_employee_read",
     }
     assert {platform.get_space(space_id).kind for space_id in ai_employees.enabled_space_ids} == {"business", "shared"}
@@ -254,8 +257,11 @@ def test_ai_employees_bundle_is_selectable_for_new_customers():
     ai_app = next(app for app in result.installations if app.app_id == "ai_employees")
     assert set(ai_app.allowed_purposes) == {
         "ai_employee_action_approve",
+        "ai_employee_action_execute",
         "ai_employee_action_propose",
         "ai_employee_configure",
+        "ai_employee_connector_manage",
+        "ai_employee_mission_run",
         "ai_employee_read",
     }
     assert {platform.get_space(space_id).kind for space_id in ai_app.enabled_space_ids} == {"business", "shared"}

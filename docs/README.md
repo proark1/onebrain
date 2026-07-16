@@ -27,6 +27,7 @@ production and customer-deployment model is Hetzner-only.
 - [Migration discipline](onebrain-migrations.md)
 - [Service client](onebrain-service-client.md)
 - [KPI Dashboard](kpi-dashboard.md)
+- [AI Employees](ai-employees.md)
 - [Deletion, retention, and tombstones](deletion-tombstone-contract.md)
 
 ## Reference and transition material
