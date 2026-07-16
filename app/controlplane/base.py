@@ -473,7 +473,20 @@ def compute_update_plan(
         if promotion_required and not promotion_warning_only:
             return UpdatePlan(deployment_id, target_version, False, promotion_reason, rollback_kind=kind)
         warnings.append(promotion_reason)
-    if require_signed_release and not release.signature:
+    # Development candidates deliberately carry their verified signature on
+    # the promotion row; the production signature is only attached after the
+    # gate verifies the release. Treat that development signature as the
+    # signed-release credential only for the designated gate and only while
+    # the candidate is in a deployable development state.
+    gate_development_signature_valid = bool(
+        getattr(deployment, "is_release_gate", False)
+        and gate_deployment_id == deployment.id
+        and promotion
+        and promotion.gate_deployment_id in {"", deployment.id}
+        and promotion.state in {"dev_pending", "dev_deploying"}
+        and development_signature_valid is True
+    )
+    if require_signed_release and not release.signature and not gate_development_signature_valid:
         return UpdatePlan(
             deployment_id, target_version, False, "release_unsigned",
             rollback_kind=kind, warnings=warnings,

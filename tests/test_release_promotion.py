@@ -519,7 +519,7 @@ def test_dev_dispatch_persists_rollout_before_promotion_foreign_key(monkeypatch)
     )
     settings = SimpleNamespace(
         release_promotion_required=True,
-        release_require_signature=False,
+        release_require_signature=True,
         release_verify_public_key="",
         dev_release_verify_public_key=dev_public,
         fleet_report_seconds=60,
@@ -542,6 +542,7 @@ def test_dev_dispatch_persists_rollout_before_promotion_foreign_key(monkeypatch)
         store, release.version, actor="candidate:ci"
     )
 
+    assert release.signature == ""
     assert promotion.state == "dev_deploying"
     assert promotion.dev_rollout_id == dispatched["rollout"].id
     assert store.get_rollout(promotion.dev_rollout_id) is not None
