@@ -188,4 +188,4 @@ jobs:
           ONEBRAIN_ONEBRAIN_API_DIGEST: ${{ needs.publish-images.outputs.api-digest }}
           ONEBRAIN_ONEBRAIN_WORKERS_DIGEST: ${{ needs.publish-images.outputs.workers-digest }}
           ONEBRAIN_ONEBRAIN_ADMIN_UI_DIGEST: ${{ needs.publish-images.outputs.admin-ui-digest }}
-        run: python scripts/register_release_candidate.py
+        run: python -m scripts.register_release_candidate
