@@ -1146,6 +1146,47 @@ def _dispatch_development_candidate(store, version: str, *, actor: str) -> Relea
         return promotion
     rollout_id = f"roll_dev_{uuid4().hex[:12]}"
     started_at = datetime.now(timezone.utc).isoformat()
+    # Candidate delivery is gated even during the report-only rollout phase. A
+    # warning here is a real dev-readiness failure, not permission to proceed.
+    plan = store.plan_update(gate.id, version)
+    if not plan.allowed or plan.warnings:
+        promotion = transition_promotion(
+            store,
+            version,
+            to_state="dev_deploying",
+            actor=actor,
+            action="dev_rollout_started" if promotion.state == "dev_pending" else "dev_rollout_retried",
+            fields={
+                "gate_deployment_id": gate.id,
+                "dev_attempt_id": rollout_id,
+                "dev_started_at": started_at,
+                "dev_completed_at": "",
+                "dev_verified_at": "",
+                "failure_reason": "",
+            },
+        )
+        return transition_promotion(
+            store,
+            version,
+            to_state="dev_failed",
+            actor="mission-control",
+            action="dev_preflight_failed",
+            note=plan.reason if not plan.allowed else ",".join(plan.warnings),
+            fields={"failure_reason": "dev_preflight_failed"},
+        )
+    # Postgres enforces promotion.dev_rollout_id -> rollouts.id. Persist the
+    # rollout before attaching it to the promotion, then let the dispatcher use
+    # that exact row instead of attempting to create it a second time.
+    try:
+        store.start_rollout(RolloutRun(
+            id=rollout_id,
+            deployment_id=gate.id,
+            target_version=version,
+            status="pending",
+            started_by=f"release-candidate:{actor}",
+        ))
+    except ValueError:
+        return promotion
     promotion = transition_promotion(
         store,
         version,
@@ -1162,19 +1203,6 @@ def _dispatch_development_candidate(store, version: str, *, actor: str) -> Relea
             "failure_reason": "",
         },
     )
-    # Candidate delivery is gated even during the report-only rollout phase. A
-    # warning here is a real dev-readiness failure, not permission to proceed.
-    plan = store.plan_update(gate.id, version)
-    if not plan.allowed or plan.warnings:
-        return transition_promotion(
-            store,
-            version,
-            to_state="dev_failed",
-            actor="mission-control",
-            action="dev_preflight_failed",
-            note=plan.reason if not plan.allowed else ",".join(plan.warnings),
-            fields={"failure_reason": "dev_preflight_failed"},
-        )
     settings = get_settings()
     callback_url = (
         f"{settings.fleet_public_url.rstrip('/')}/api/rollouts/{{rollout_id}}/callback"
@@ -1188,6 +1216,7 @@ def _dispatch_development_candidate(store, version: str, *, actor: str) -> Relea
         dry_run=False,
         child_id=rollout_id,
         started_by=f"release-candidate:{actor}",
+        child_precreated=True,
     )
     rollout = store.get_rollout(rollout_id)
     if not rollout or rollout.exec_status in {"dispatch_failed", "failed"}:
@@ -1982,20 +2011,21 @@ def _require_operator_mode() -> None:
 
 def _dispatch_child_rollout(fleet_id: str, deployment_id: str, *, target_version: str,
                             callback_url: str, dry_run: bool, child_id: str = "",
-                            started_by: str = "") -> None:
+                            started_by: str = "", child_precreated: bool = False) -> None:
     """Create and dispatch ONE child rollout for a fleet ring. A dispatch failure is
     recorded on the child (dispatch_failed, i.e. bookkeeping 'failed') so the fleet
     reducer counts it toward failure_tolerance; this never raises."""
     control = get_control_plane_store()
     settings = get_settings()
     child_id = child_id or f"roll_{uuid4().hex[:12]}"
-    try:
-        control.start_rollout(RolloutRun(
-            id=child_id, deployment_id=deployment_id, target_version=target_version,
-            status="pending", started_by=started_by or f"fleet:{fleet_id}",
-            fleet_rollout_id=fleet_id))
-    except ValueError:
-        return  # plan blocked at start — the ring proceeds without this deployment
+    if not child_precreated:
+        try:
+            control.start_rollout(RolloutRun(
+                id=child_id, deployment_id=deployment_id, target_version=target_version,
+                status="pending", started_by=started_by or f"fleet:{fleet_id}",
+                fleet_rollout_id=fleet_id))
+        except ValueError:
+            return  # plan blocked at start — the ring proceeds without this deployment
     rollout = control.get_rollout(child_id)
     if rollout is None:
         # The row vanished between start_rollout and the read-back — nothing

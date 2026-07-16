@@ -481,6 +481,72 @@ def test_second_candidate_stays_pending_while_gate_verifies_first_rollout():
     assert store.get_rollout("roll-first").status == "pending"
 
 
+def test_dev_dispatch_persists_rollout_before_promotion_foreign_key(monkeypatch):
+    from types import SimpleNamespace
+
+    import app.config as config_module
+
+    class ForeignKeyCheckingStore(MemoryControlPlaneStore):
+        def transition_release_promotion(self, version, from_states, to_state, **kwargs):
+            rollout_id = (kwargs.get("fields") or {}).get("dev_rollout_id", "")
+            if rollout_id and self.get_rollout(rollout_id) is None:
+                raise ValueError("promotion rollout foreign key missing")
+            return super().transition_release_promotion(
+                version, from_states, to_state, **kwargs
+            )
+
+    store = ForeignKeyCheckingStore()
+    gate = CustomerDeployment(
+        id="dev-gate",
+        customer_name="Development",
+        environment="development",
+        deployment_type="dedicated_server",
+        release_ring="internal",
+        last_heartbeat_at=datetime.now(timezone.utc).isoformat(),
+        last_heartbeat_healthy=True,
+    )
+    store.create_deployment(gate)
+    store.designate_release_gate(gate.id)
+    store.upsert_module(DeploymentModule(gate.id, "onebrain-api", "old"))
+    dev_private, dev_public = generate_keypair()
+    release = _release()
+    register_candidate(
+        store,
+        release,
+        dev_signature=sign_release(release_signature_fields(release), dev_private),
+        dev_signing_key_id="dev-1",
+        development_public_key=dev_public,
+    )
+    settings = SimpleNamespace(
+        release_promotion_required=True,
+        release_require_signature=False,
+        release_verify_public_key="",
+        dev_release_verify_public_key=dev_public,
+        fleet_report_seconds=60,
+        fleet_public_url="https://mc.example.com",
+    )
+    monkeypatch.setattr(config_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(operator_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    dispatched = {}
+
+    def fake_dispatch(*_args, **kwargs):
+        rollout = store.get_rollout(kwargs["child_id"])
+        assert rollout is not None
+        assert kwargs["child_precreated"] is True
+        dispatched["rollout"] = rollout
+
+    monkeypatch.setattr(operator_router, "_dispatch_child_rollout", fake_dispatch)
+
+    promotion = operator_router._dispatch_development_candidate(
+        store, release.version, actor="candidate:ci"
+    )
+
+    assert promotion.state == "dev_deploying"
+    assert promotion.dev_rollout_id == dispatched["rollout"].id
+    assert store.get_rollout(promotion.dev_rollout_id) is not None
+
+
 def test_gate_replacement_is_validated_before_atomic_marker_swap(monkeypatch):
     from types import SimpleNamespace
     from fastapi import HTTPException
