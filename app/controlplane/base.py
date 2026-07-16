@@ -431,7 +431,11 @@ def compute_update_plan(
                 return "development_gate_mismatch"
             if not promotion or promotion.gate_deployment_id not in {"", deployment.id}:
                 return "development_gate_mismatch"
-            if promotion.state not in {"dev_pending", "dev_deploying"}:
+            # ``dev_failed`` is plan-eligible so the development dispatcher can
+            # retry it. Desired-state generation still excludes that state; the
+            # dispatcher must first persist a new rollout and transition the
+            # promotion back to ``dev_deploying`` before a box can receive it.
+            if promotion.state not in {"dev_pending", "dev_deploying", "dev_failed"}:
                 return "release_not_dev_verified"
             if development_signature_valid is not True:
                 return "release_signature_invalid"
@@ -483,7 +487,7 @@ def compute_update_plan(
         and gate_deployment_id == deployment.id
         and promotion
         and promotion.gate_deployment_id in {"", deployment.id}
-        and promotion.state in {"dev_pending", "dev_deploying"}
+        and promotion.state in {"dev_pending", "dev_deploying", "dev_failed"}
         and development_signature_valid is True
     )
     if require_signed_release and not release.signature and not gate_development_signature_valid:

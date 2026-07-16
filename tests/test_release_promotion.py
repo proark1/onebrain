@@ -481,7 +481,10 @@ def test_second_candidate_stays_pending_while_gate_verifies_first_rollout():
     assert store.get_rollout("roll-first").status == "pending"
 
 
-def test_dev_dispatch_persists_rollout_before_promotion_foreign_key(monkeypatch):
+@pytest.mark.parametrize("retry_failed_candidate", [False, True])
+def test_dev_dispatch_persists_rollout_before_promotion_foreign_key(
+    monkeypatch, retry_failed_candidate
+):
     from types import SimpleNamespace
 
     import app.config as config_module
@@ -517,6 +520,23 @@ def test_dev_dispatch_persists_rollout_before_promotion_foreign_key(monkeypatch)
         dev_signing_key_id="dev-1",
         development_public_key=dev_public,
     )
+    if retry_failed_candidate:
+        store.transition_release_promotion(
+            release.version,
+            frozenset({"dev_pending"}),
+            "dev_deploying",
+            actor="mission-control",
+            action="dev_rollout_started",
+            fields={"gate_deployment_id": gate.id},
+        )
+        store.transition_release_promotion(
+            release.version,
+            frozenset({"dev_deploying"}),
+            "dev_failed",
+            actor="mission-control",
+            action="dev_preflight_failed",
+            fields={"failure_reason": "dev_preflight_failed"},
+        )
     settings = SimpleNamespace(
         release_promotion_required=True,
         release_require_signature=True,
