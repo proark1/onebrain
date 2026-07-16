@@ -46,15 +46,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute image metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/proark1/onebrain-api
-          tags: |
-            type=sha,format=long
-            type=raw,value=latest,enable={{is_default_branch}}
-
       - name: Build and push image
         id: push
         uses: docker/build-push-action@v6
@@ -62,8 +53,14 @@ jobs:
           context: .
           file: Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ghcr.io/proark1/onebrain-api:sha-${{ github.sha }}
+            ${{ github.ref_name == github.event.repository.default_branch && 'ghcr.io/proark1/onebrain-api:latest' || '' }}
+          labels: |
+            org.opencontainers.image.title=onebrain-api
+            org.opencontainers.image.version=sha-${{ github.sha }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: Report digest
         run: |
@@ -92,15 +89,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute image metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/proark1/onebrain-workers
-          tags: |
-            type=sha,format=long
-            type=raw,value=latest,enable={{is_default_branch}}
-
       - name: Build and push image
         id: push
         uses: docker/build-push-action@v6
@@ -108,8 +96,14 @@ jobs:
           context: .
           file: Dockerfile.worker
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ghcr.io/proark1/onebrain-workers:sha-${{ github.sha }}
+            ${{ github.ref_name == github.event.repository.default_branch && 'ghcr.io/proark1/onebrain-workers:latest' || '' }}
+          labels: |
+            org.opencontainers.image.title=onebrain-workers
+            org.opencontainers.image.version=sha-${{ github.sha }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: Report digest
         run: |
@@ -138,15 +132,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute image metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/proark1/onebrain-admin-ui
-          tags: |
-            type=sha,format=long
-            type=raw,value=latest,enable={{is_default_branch}}
-
       - name: Build and push image
         id: push
         uses: docker/build-push-action@v6
@@ -154,8 +139,14 @@ jobs:
           context: onebrain-web
           file: onebrain-web/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ghcr.io/proark1/onebrain-admin-ui:sha-${{ github.sha }}
+            ${{ github.ref_name == github.event.repository.default_branch && 'ghcr.io/proark1/onebrain-admin-ui:latest' || '' }}
+          labels: |
+            org.opencontainers.image.title=onebrain-admin-ui
+            org.opencontainers.image.version=sha-${{ github.sha }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: Report digest
         run: |
