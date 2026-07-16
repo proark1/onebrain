@@ -62,6 +62,10 @@ PURPOSE_SCOPES = {
     "kpi_read": (SCOPE_READ,),
     "kpi_configure": (SCOPE_WRITE,),
     "kpi_snapshot_write": (SCOPE_WRITE,),
+    "ai_employee_read": (SCOPE_READ,),
+    "ai_employee_configure": (SCOPE_WRITE,),
+    "ai_employee_action_propose": (SCOPE_WRITE,),
+    "ai_employee_action_approve": (SCOPE_WRITE,),
 }
 
 EXTERNAL_CREDENTIAL_APPS = frozenset({"assistant", "communication", "kpi_dashboard"})

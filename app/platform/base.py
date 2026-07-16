@@ -12,14 +12,15 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Protocol
 
 from app.assistant.contracts import ASSISTANT_PURPOSES
+from app.assistant.employees import AI_EMPLOYEE_PURPOSES
 
 
 ACCOUNT_KINDS = frozenset({"person", "organization", "family", "project"})
 SPACE_KINDS = frozenset({"personal", "business", "customer_service", "shared", "family", "project"})
-APP_IDS = frozenset({"onebrain_core", "assistant", "communication", "kpi_dashboard", "admin_console", "workers"})
+APP_IDS = frozenset({"onebrain_core", "assistant", "ai_employees", "communication", "kpi_dashboard", "admin_console", "workers"})
 # Assistant purposes come from the assistant contract so the platform registry
 # cannot drift behind it (drift here rejects valid assistant writes as 422s).
-PURPOSES = ASSISTANT_PURPOSES | frozenset({
+PURPOSES = ASSISTANT_PURPOSES | AI_EMPLOYEE_PURPOSES | frozenset({
     "customer_service_answer",
     "customer_service_inbox",
     "knowledge_management",

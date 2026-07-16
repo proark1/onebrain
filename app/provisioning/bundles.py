@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Dict, Tuple
 
 from app.assistant.contracts import ASSISTANT_PURPOSES as ASSISTANT_CONTRACT_PURPOSES
+from app.assistant.employees import AI_EMPLOYEE_PURPOSES as AI_EMPLOYEE_CONTRACT_PURPOSES
 
 
 CORE_MODULES = ("onebrain-api", "onebrain-admin-ui", "onebrain-workers")
@@ -47,6 +48,7 @@ CORE_PURPOSES = ("knowledge_management", "admin_management", "gdpr_export", "gdp
 ASSISTANT_PURPOSES = tuple(sorted(ASSISTANT_CONTRACT_PURPOSES))
 COMMUNICATION_PURPOSES = ("customer_service_answer", "customer_service_inbox")
 KPI_PURPOSES = ("kpi_read", "kpi_configure", "kpi_snapshot_write")
+AI_EMPLOYEE_PURPOSES = tuple(sorted(AI_EMPLOYEE_CONTRACT_PURPOSES))
 
 
 BUSINESS_SPACES = (
@@ -93,6 +95,12 @@ KPI_APP = AppTemplate(
     KPI_PURPOSES,
     "KPI Dashboard",
 )
+AI_EMPLOYEES_APP = AppTemplate(
+    "ai_employees",
+    ("business", "shared"),
+    AI_EMPLOYEE_PURPOSES,
+    "AI Employees",
+)
 
 
 BUNDLES: Dict[str, ProvisioningBundle] = {
@@ -126,6 +134,17 @@ BUNDLES: Dict[str, ProvisioningBundle] = {
         ),
         modules=CORE_MODULES,
     ),
+    "onebrain_ai_employees": ProvisioningBundle(
+        id="onebrain_ai_employees",
+        label="OneBrain + AI employees",
+        description="Core data layer plus governed AI employees for proactive draft work and approval-gated actions.",
+        spaces=BUSINESS_SPACES,
+        apps=(
+            _core_app(tuple(s.key for s in BUSINESS_SPACES)),
+            AI_EMPLOYEES_APP,
+        ),
+        modules=CORE_MODULES,
+    ),
     "onebrain_communication": ProvisioningBundle(
         id="onebrain_communication",
         label="OneBrain + communication",
@@ -140,13 +159,14 @@ BUNDLES: Dict[str, ProvisioningBundle] = {
     "full_stack": ProvisioningBundle(
         id="full_stack",
         label="Full stack",
-        description="OneBrain, assistant, communication and KPI dashboard features with separated private, business and service spaces.",
+        description="OneBrain, assistant, communication, KPI dashboard and AI employee features with separated private, business and service spaces.",
         spaces=FULL_STACK_SPACES,
         apps=(
             _core_app(tuple(s.key for s in FULL_STACK_SPACES)),
             _assistant_app(tuple(s.key for s in FULL_STACK_SPACES)),
             COMMUNICATION_APP,
             KPI_APP,
+            AI_EMPLOYEES_APP,
         ),
         modules=CORE_MODULES + ASSISTANT_MODULES + COMMUNICATION_MODULES,
     ),

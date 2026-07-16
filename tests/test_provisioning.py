@@ -186,6 +186,15 @@ def test_full_stack_provisioning_mints_constrained_integration_keys():
     assert set(stored_kpi.purposes) == {"kpi_snapshot_write"}
     assert {platform.get_space(space_id).kind for space_id in stored_kpi.space_ids} == {"business", "shared"}
 
+    ai_employees = next(app for app in result.installations if app.app_id == "ai_employees")
+    assert set(ai_employees.allowed_purposes) == {
+        "ai_employee_action_approve",
+        "ai_employee_action_propose",
+        "ai_employee_configure",
+        "ai_employee_read",
+    }
+    assert {platform.get_space(space_id).kind for space_id in ai_employees.enabled_space_ids} == {"business", "shared"}
+
 
 def test_kpi_dashboard_bundle_is_selectable_for_new_customers():
     platform, control = _stores()
@@ -219,6 +228,41 @@ def test_kpi_dashboard_bundle_is_selectable_for_new_customers():
     assert stored.app_id == "kpi_dashboard"
     assert set(stored.scopes) == {SCOPE_WRITE}
     assert set(stored.purposes) == {"kpi_snapshot_write"}
+
+
+def test_ai_employees_bundle_is_selectable_for_new_customers():
+    platform, control = _stores()
+    service_keys = MemoryServiceKeyStore()
+
+    result = CustomerProvisioner(platform, control, service_keys).provision(
+        account_id="agentco",
+        account_kind="organization",
+        customer_name="AgentCo",
+        owner_user_id="admin@onebrain",
+        bundle_id="onebrain_ai_employees",
+        deployment_id="dep_agentco",
+        deployment_type="dedicated_railway",
+        region="eu-central",
+        release_ring="pilot",
+        initial_version="2026.07.0",
+        mint_integration_keys=True,
+    )
+
+    assert [app.app_id for app in result.installations] == ["onebrain_core", "ai_employees"]
+    assert {m.module_id for m in result.modules} == {"onebrain-api", "onebrain-admin-ui", "onebrain-workers"}
+
+    ai_app = next(app for app in result.installations if app.app_id == "ai_employees")
+    assert set(ai_app.allowed_purposes) == {
+        "ai_employee_action_approve",
+        "ai_employee_action_propose",
+        "ai_employee_configure",
+        "ai_employee_read",
+    }
+    assert {platform.get_space(space_id).kind for space_id in ai_app.enabled_space_ids} == {"business", "shared"}
+
+    # Approval-gated execution is not implemented yet, so the module is
+    # installed without autonomous external credentials.
+    assert result.credentials == []
 
 
 def test_provisioning_stores_account_brand_and_app_overrides():

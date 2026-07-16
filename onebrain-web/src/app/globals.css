@@ -3117,3 +3117,247 @@ button:disabled,
     animation: none;
   }
 }
+
+.employeeCouncil {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.moduleCallout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.85fr);
+  gap: 12px;
+  margin: 12px 0;
+  border: 1px solid rgb(var(--brand-primary-rgb) / 12%);
+  border-radius: var(--radius);
+  background: rgb(var(--brand-primary-rgb) / 5%);
+  padding: 12px;
+}
+
+.moduleCallout div,
+.moduleCallout ul {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.moduleCallout span,
+.employeeGuardrails span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 780;
+  text-transform: uppercase;
+}
+
+.moduleCallout strong {
+  color: var(--brand-primary);
+  font-size: 17px;
+  font-weight: 820;
+}
+
+.moduleCallout p,
+.moduleCallout li,
+.employeeGuardrails p {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+  font-weight: 640;
+}
+
+.moduleCallout ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.employeeCard {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, #fff 0%, rgb(var(--brand-surface-rgb) / 92%) 100%);
+  padding: 12px;
+  box-shadow: var(--shadow-soft);
+}
+
+.employeePortrait {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border: 1px solid rgb(var(--brand-accent-rgb) / 18%);
+  border-radius: 16px;
+  background: radial-gradient(circle at 30% 25%, rgb(var(--brand-accent-rgb) / 22%), rgb(var(--brand-primary-rgb) / 12%));
+  color: var(--brand-primary);
+  font-size: 15px;
+  font-weight: 820;
+  letter-spacing: 0.04em;
+}
+
+.employeeProfile {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.employeeProfile > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 780;
+  text-transform: uppercase;
+}
+
+.employeeProfile strong {
+  color: var(--brand-primary);
+  font-size: 16px;
+  line-height: 1.05;
+  font-weight: 780;
+}
+
+.employeeProfile p,
+.employeeProfile dd {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.42;
+  font-weight: 630;
+}
+
+.employeeProfile dl {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+}
+
+.employeeProfile dl div {
+  display: grid;
+  gap: 1px;
+}
+
+.employeeProfile dt {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 780;
+  text-transform: uppercase;
+}
+
+.employeeProfile dd {
+  margin: 0;
+  color: var(--muted);
+}
+
+.employeeGuardrails {
+  display: grid;
+  gap: 3px;
+  border-top: 1px solid rgb(var(--brand-text-rgb) / 8%);
+  padding-top: 7px;
+}
+
+@media (max-width: 1100px) {
+  .employeeCouncil {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .moduleCallout,
+  .employeeCouncil,
+  .employeeCard {
+    grid-template-columns: 1fr;
+  }
+}
+
+.employeeActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.employeeActions li {
+  border: 1px solid rgb(var(--brand-accent-rgb) / 16%);
+  border-radius: 999px;
+  background: rgb(var(--brand-accent-rgb) / 8%);
+  color: var(--brand-primary);
+  padding: 3px 7px;
+  font-size: 10px;
+  font-weight: 720;
+}
+
+.moduleHero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.75fr);
+  gap: 14px;
+  border: 1px solid rgb(var(--brand-primary-rgb) / 12%);
+  border-radius: calc(var(--radius) * 1.2);
+  background: linear-gradient(135deg, #fff 0%, rgb(var(--brand-primary-rgb) / 5%) 100%);
+  padding: 18px;
+  box-shadow: var(--shadow-soft);
+}
+
+.moduleHero div {
+  display: grid;
+  gap: 8px;
+}
+
+.moduleHero strong {
+  color: var(--brand-primary);
+  font-size: clamp(24px, 3vw, 40px);
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+.moduleHero p,
+.moduleHero li,
+.moduleChecklist li,
+.aiEmployeeTable span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 650;
+}
+
+.moduleHero ul,
+.moduleChecklist {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.aiEmployeeTable {
+  display: grid;
+  gap: 8px;
+}
+
+.aiEmployeeTable article {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(100px, 0.7fr) minmax(120px, 0.7fr) minmax(130px, 0.8fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgb(var(--brand-text-rgb) / 8%);
+  border-radius: var(--radius);
+  background: rgb(var(--brand-surface-rgb) / 72%);
+  padding: 10px;
+}
+
+.aiEmployeeTable article div {
+  display: grid;
+  gap: 2px;
+}
+
+.aiEmployeeTable strong {
+  color: var(--brand-primary);
+  font-size: 14px;
+  line-height: 1.15;
+}
+
+@media (max-width: 900px) {
+  .moduleHero,
+  .aiEmployeeTable article {
+    grid-template-columns: 1fr;
+  }
+}
