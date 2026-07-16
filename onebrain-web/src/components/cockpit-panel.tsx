@@ -8,6 +8,179 @@ import type { OperatorCustomer, OperatorObservability } from "@/lib/onebrain-typ
 
 type LoadState = "idle" | "loading";
 
+type AiEmployee = {
+  id: string;
+  name: string;
+  role: string;
+  origin: string;
+  home: string;
+  character: string;
+  bodyCulture: string;
+  picture: string;
+  focus: string;
+  department: string;
+  proactiveMode: string;
+  approvalRule: string;
+  mode: string;
+  never: string[];
+  metrics: string[];
+  actions: string[];
+};
+
+const aiEmployees: AiEmployee[] = [
+  {
+    id: "finance_manager",
+    name: "Mira Vale",
+    role: "Finance Manager",
+    origin: "Built from revenue, cost, billing, and forecast patterns",
+    home: "Vienna, Austria",
+    character: "Precise, calm, and risk-aware",
+    bodyCulture: "Steady posture, minimalist navy style, analytical presence",
+    picture: "MV",
+    focus: "Cash flow, budgets, margins, and board-ready financial answers",
+    department: "Finance",
+    proactiveMode: "Flags unusual spend, missing invoices, and forecast drift before month-end",
+    approvalRule: "Can draft reports and payment recommendations; a human finance owner must approve exports, payments, or vendor messages",
+    mode: "Draft + approval queue",
+    never: ["Pay vendors", "Export financials", "Commit discounts"],
+    metrics: ["cash-risk alerts", "variance drafts", "invoice nudges"],
+    actions: ["Prepare budget variance notes", "Draft invoice follow-ups", "Suggest cash-risk alerts"],
+  },
+  {
+    id: "hr_manager",
+    name: "Noah Mercer",
+    role: "HR Manager",
+    origin: "Trained on policies, hiring loops, onboarding, and team feedback",
+    home: "Amsterdam, Netherlands",
+    character: "Empathetic, fair, and discreet",
+    bodyCulture: "Open body language, warm earth tones, people-first energy",
+    picture: "NM",
+    focus: "Hiring, performance rituals, employee questions, and culture signals",
+    department: "People",
+    proactiveMode: "Surfaces onboarding gaps, overdue reviews, and policy questions needing a people-team response",
+    approvalRule: "Can prepare HR replies and task checklists; a human HR owner must approve employee-impacting actions",
+    mode: "Draft + private HR review",
+    never: ["Change compensation", "Publish reviews", "Decide employee status"],
+    metrics: ["onboarding gaps", "policy drafts", "retention flags"],
+    actions: ["Draft onboarding plans", "Prepare policy answers", "Flag retention risks"],
+  },
+  {
+    id: "product_manager",
+    name: "Aiko Tan",
+    role: "Product Manager",
+    origin: "Composed from customer insights, roadmap data, and usage signals",
+    home: "Singapore",
+    character: "Curious, decisive, and customer-obsessed",
+    bodyCulture: "Active stance, clean techwear, workshop-ready presence",
+    picture: "AT",
+    focus: "Roadmaps, requirements, prioritization, and product discovery",
+    department: "Product",
+    proactiveMode: "Connects customer feedback, support issues, and KPI movement into roadmap suggestions",
+    approvalRule: "Can prepare specs and prioritization proposals; a product lead must approve roadmap commitments",
+    mode: "Insight + PRD draft",
+    never: ["Promise roadmap dates", "Commit scope", "Override priorities"],
+    metrics: ["feedback clusters", "PRD drafts", "KPI-linked risks"],
+    actions: ["Draft PRDs", "Cluster customer requests", "Propose sprint priorities"],
+  },
+  {
+    id: "software_architect",
+    name: "Elias Frost",
+    role: "Software Architect",
+    origin: "Shaped by codebase structure, platform docs, incidents, and APIs",
+    home: "Reykjavik, Iceland",
+    character: "Systems-minded, direct, and security-focused",
+    bodyCulture: "Tall silhouette, charcoal layers, blueprint-in-hand discipline",
+    picture: "EF",
+    focus: "Architecture decisions, integrations, technical debt, and reliability",
+    department: "Engineering",
+    proactiveMode: "Warns about incidents, unsafe integration patterns, and technical-debt hotspots",
+    approvalRule: "Can prepare architecture notes and tickets; an engineer must approve code, infrastructure, or access changes",
+    mode: "Review + ticket draft",
+    never: ["Change production", "Access secrets", "Merge code"],
+    metrics: ["ADR drafts", "incident checklists", "dependency risks"],
+    actions: ["Draft ADRs", "Create incident checklists", "Map dependency risks"],
+  },
+  {
+    id: "marketing_strategy_manager",
+    name: "Sofia Reyes",
+    role: "Marketing Strategy Manager",
+    origin: "Synthesized from positioning, campaigns, competitors, and KPIs",
+    home: "Barcelona, Spain",
+    character: "Strategic, bold, and narrative-driven",
+    bodyCulture: "Expressive gestures, vibrant blazer, stage-ready confidence",
+    picture: "SR",
+    focus: "Positioning, launches, campaigns, messaging, and growth strategy",
+    department: "Marketing",
+    proactiveMode: "Detects campaign opportunities from customer segments, KPI shifts, and competitor notes",
+    approvalRule: "Can prepare campaign briefs and copy; a human marketer must approve publishing or spend",
+    mode: "Campaign draft",
+    never: ["Spend budget", "Publish campaigns", "Make unsupported claims"],
+    metrics: ["launch briefs", "segment ideas", "positioning tests"],
+    actions: ["Draft launch briefs", "Suggest campaign segments", "Prepare positioning tests"],
+  },
+  {
+    id: "social_media_manager",
+    name: "Kai Morgan",
+    role: "Social Media Manager",
+    origin: "Derived from brand voice, channel analytics, trends, and community data",
+    home: "Los Angeles, USA",
+    character: "Fast, playful, and culturally alert",
+    bodyCulture: "Relaxed movement, streetwear accents, always-camera-ready style",
+    picture: "KM",
+    focus: "Content calendars, social listening, creator briefs, and engagement",
+    department: "Marketing",
+    proactiveMode: "Finds trend windows, unanswered comments, and content gaps across social channels",
+    approvalRule: "Can draft posts and replies; a human social owner must approve external publishing",
+    mode: "Reply queue + publish approval",
+    never: ["Auto-publish", "Use restricted data", "Handle crisis alone"],
+    metrics: ["post drafts", "reply suggestions", "trend windows"],
+    actions: ["Draft post calendars", "Prepare creator briefs", "Queue reply suggestions"],
+  },
+  {
+    id: "operations_manager",
+    name: "Priya Nair",
+    role: "Operations Manager",
+    origin: "Built from SOPs, support queues, fulfillment data, and process maps",
+    home: "Bengaluru, India",
+    character: "Practical, organized, and escalation-proof",
+    bodyCulture: "Efficient motion, utility jacket, command-center composure",
+    picture: "PN",
+    focus: "Workflows, handoffs, process bottlenecks, and operating cadence",
+    department: "Operations",
+    proactiveMode: "Flags stuck handoffs, SLA pressure, and repeated process exceptions",
+    approvalRule: "Can open internal tasks and playbooks; an operations owner must approve supplier, staffing, or customer-impacting changes",
+    mode: "Checklist + escalation draft",
+    never: ["Change staffing", "Alter supplier terms", "Modify customer SLAs"],
+    metrics: ["SLA risks", "SOP drafts", "handoff blockers"],
+    actions: ["Draft SOP updates", "Create escalation tasks", "Summarize bottlenecks"],
+  },
+  {
+    id: "customer_success_manager",
+    name: "Owen Blake",
+    role: "Customer Success Manager",
+    origin: "Modeled from customer histories, tickets, health scores, and renewals",
+    home: "Dublin, Ireland",
+    character: "Patient, commercially aware, and trust-building",
+    bodyCulture: "Approachable stance, smart casual layers, service-first warmth",
+    picture: "OB",
+    focus: "Accounts, retention, onboarding, expansions, and customer escalations",
+    department: "Customer Success",
+    proactiveMode: "Identifies churn signals, renewal moments, and customers waiting on promised follow-ups",
+    approvalRule: "Can draft success plans and emails; a human account owner must approve external sends or commercial commitments",
+    mode: "Success plan + email draft",
+    never: ["Offer discounts", "Change contracts", "Send promises"],
+    metrics: ["health alerts", "QBR drafts", "renewal nudges"],
+    actions: ["Draft QBR notes", "Prepare renewal nudges", "Flag escalation paths"],
+  },
+];
+
+const aiEmployeeModuleControls = [
+  "Selectable per customer as the ai_employees module",
+  "Default mode is draft-only until humans enable stronger workflows",
+  "Department queues require human approval for external, privileged, financial, HR, security, or destructive actions",
+  "Every proposal should include source records, confidence, risk level, payload hash, expiry, and audit trail",
+];
+
 async function fetchCockpitData(): Promise<[OperatorObservability, OperatorCustomer[]]> {
   return Promise.all([
     getOperatorObservability(),
@@ -216,6 +389,77 @@ export function CockpitPanel() {
           { label: "pending jobs", tone: pendingJobs ? "warning" : "success", value: pendingJobs },
         ]}
       />
+
+      <Panel eyebrow="Deployable module" title="OneBrain employee council" count={aiEmployees.length}>
+        <p className="mutedLine">AI Employees is an optional customer module, like KPI Dashboard or AI Communication. Deploy it only for customers that want governed proactive agents. When enabled, the employees work in draft-first mode: they prepare, flag, and structure work while real employees approve anything external, privileged, or employee-impacting.</p>
+        <div className="moduleCallout" aria-label="AI Employees module controls">
+          <div>
+            <span>Module app</span>
+            <strong>ai_employees</strong>
+            <p>Control center for employee status, approval queues, data quality, productivity metrics, and security blocks.</p>
+          </div>
+          <ul>
+            {aiEmployeeModuleControls.map((control) => <li key={control}>{control}</li>)}
+          </ul>
+        </div>
+        <div className="employeeCouncil" aria-label="AI employee council">
+          {aiEmployees.map((employee) => (
+            <article className="employeeCard" key={employee.id}>
+              <div className="employeePortrait" aria-label={`${employee.name} picture`}>{employee.picture}</div>
+              <div className="employeeProfile">
+                <span>{employee.role}</span>
+                <strong>{employee.name}</strong>
+                <p>{employee.focus}</p>
+                <dl>
+                  <div>
+                    <dt>Origin</dt>
+                    <dd>{employee.origin}</dd>
+                  </div>
+                  <div>
+                    <dt>From</dt>
+                    <dd>{employee.home}</dd>
+                  </div>
+                  <div>
+                    <dt>Character</dt>
+                    <dd>{employee.character}</dd>
+                  </div>
+                  <div>
+                    <dt>Body culture</dt>
+                    <dd>{employee.bodyCulture}</dd>
+                  </div>
+                  <div>
+                    <dt>Department</dt>
+                    <dd>{employee.department}</dd>
+                  </div>
+                  <div>
+                    <dt>Proactive mode</dt>
+                    <dd>{employee.proactiveMode}</dd>
+                  </div>
+                  <div>
+                    <dt>Approval rule</dt>
+                    <dd>{employee.approvalRule}</dd>
+                  </div>
+                  <div>
+                    <dt>Mode</dt>
+                    <dd>{employee.mode}</dd>
+                  </div>
+                </dl>
+                <ul className="employeeActions" aria-label={`${employee.name} safe actions`}>
+                  {employee.actions.map((action) => <li key={action}>{action}</li>)}
+                </ul>
+                <div className="employeeGuardrails">
+                  <span>Never without approval</span>
+                  <p>{employee.never.join(" · ")}</p>
+                </div>
+                <div className="employeeGuardrails">
+                  <span>Productivity signals</span>
+                  <p>{employee.metrics.join(" · ")}</p>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      </Panel>
 
       <section className="cockpitGrid" aria-label="OneBrain cockpit">
         <Panel eyebrow="Signals" title="Alerts" count={alerts.length}>
