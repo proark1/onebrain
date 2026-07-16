@@ -93,6 +93,44 @@ dc_over() {
   fi
 }
 
+alembic_current() {
+  if command -v "$ALEMBIC" >/dev/null 2>&1; then
+    "$ALEMBIC" current
+  else
+    dc_over exec -T onebrain-api alembic current
+  fi | awk 'NF { print $1; exit }'
+}
+
+dump_onebrain_db() {
+  if command -v "$PG_DUMP" >/dev/null 2>&1; then
+    "$PG_DUMP" -Fc -d "$PG_CONN"
+  else
+    dc exec -T postgres pg_dump -U onebrain -Fc -d onebrain
+  fi
+}
+
+restore_onebrain_db() {
+  local archive="$1"
+  if command -v "$PG_RESTORE" >/dev/null 2>&1; then
+    "$PG_RESTORE" --clean --if-exists -d "$PG_CONN" "$archive"
+  else
+    dc exec -T postgres pg_restore -U onebrain --clean --if-exists -d onebrain <"$archive"
+  fi
+}
+
+quiesce_application_services() {
+  local services=(caddy)
+  local service
+  for service in ${UPDATE_LOCAL_MODULES//,/ }; do
+    [ -n "$service" ] && services+=("$service")
+  done
+  dc_over "${PROFILE_ARGS[@]}" stop "${services[@]}"
+}
+
+resume_current_stack() {
+  dc_over "${PROFILE_ARGS[@]}" up -d
+}
+
 ATTEMPT_ID=""
 TARGET_VERSION=""
 
@@ -245,15 +283,13 @@ ENC=""   # encrypted backup path (set in step 4); recover decrypts THIS, never t
 crosses_migration() { [ "$MIG_FROM" != "$MIG_TO" ] || [ "$ROLLBACK_KIND" = "restore_required" ]; }
 if crosses_migration; then
   log "schema change -> quiesce + backup"
-  dc_over stop >>"$LOG" 2>&1 || true
-  PRE_MIGRATION_REV="$("$ALEMBIC" current 2>/dev/null | tr -d '[:space:]' || true)"
+  PRE_MIGRATION_REV="$(alembic_current 2>/dev/null | tr -d '[:space:]' || true)"
+  quiesce_application_services >>"$LOG" 2>&1 || true
   printf '%s\n' "$PRE_MIGRATION_REV" >"$WORK/pre_migration_revision"
   DUMP="$WORK/backup.dump"
   ENC="${UPDATE_DATA_DIR}/backups/backup-$(date -u +%Y%m%dT%H%M%SZ).dump.enc"
   mkdir -p "${UPDATE_DATA_DIR}/backups"
-  # 7c: -Fc (custom-format archive) so stock pg_restore consumes the decrypted backup;
-  # -d "$PG_CONN" makes the dump's connection target EXPLICIT and identical to restore's.
-  if "$PG_DUMP" -Fc -d "$PG_CONN" >"$DUMP" 2>>"$LOG" \
+  if dump_onebrain_db >"$DUMP" 2>>"$LOG" \
      && "$OPENSSL" enc -aes-256-cbc -pbkdf2 -salt -pass "pass:${UPDATE_BACKUP_KEY:-}" -in "$DUMP" -out "$ENC" 2>>"$LOG"; then
     BACKUP_STATUS="success"
     BACKUP_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -265,7 +301,8 @@ if crosses_migration; then
     log "backup ok -> $ENC"
   else
     BACKUP_STATUS="failed"
-    log "backup FAILED; holding (no destructive apply)"
+    log "backup FAILED; restoring current stack and holding (no destructive apply)"
+    resume_current_stack >>"$LOG" 2>&1 || log "current stack restore after backup failure warned"
     write_state "failed" "$PRE_MIGRATION_REV" "$BACKUP_STATUS" "$BACKUP_TS" "$BACKUP_MANIFEST"
     exit 0
   fi
@@ -284,7 +321,7 @@ dc_over "${PROFILE_ARGS[@]}" up -d >>"$LOG" 2>&1
 # --- 6. FENCE, don't flap ---------------------------------------------------
 MIGRATION_REACHED="$MIG_TO"
 if [ "$MIG_FROM" != "$MIG_TO" ]; then
-  CURRENT="$("$ALEMBIC" current 2>/dev/null | tr -d '[:space:]' || true)"
+  CURRENT="$(alembic_current 2>/dev/null | tr -d '[:space:]' || true)"
   MIGRATION_REACHED="$CURRENT"
   if [ "$CURRENT" != "$MIG_TO" ]; then
     log "fence FAILED: alembic current=$CURRENT != target=$MIG_TO; holding DEGRADED"
@@ -309,9 +346,7 @@ recover_restore_required() {
   RESTORE="$WORK/restore.dump"
   if "$OPENSSL" enc -d -aes-256-cbc -pbkdf2 -pass "pass:${UPDATE_BACKUP_KEY:-}" \
        -in "$ENC" -out "$RESTORE" 2>>"$LOG"; then
-    # 7c/G2-2: consume the custom-format archive into the SAME target the dump used
-    # ($PG_CONN); --clean --if-exists so restoring over the half-migrated schema is idempotent.
-    "$PG_RESTORE" --clean --if-exists -d "$PG_CONN" "$RESTORE" >>"$LOG" 2>&1 || log "pg_restore warned"
+    restore_onebrain_db "$RESTORE" >>"$LOG" 2>&1 || log "pg_restore warned"
     shred -u "$RESTORE" 2>/dev/null || rm -f "$RESTORE"
   else
     log "backup decrypt FAILED; cannot restore DB"

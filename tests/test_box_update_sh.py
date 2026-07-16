@@ -340,7 +340,7 @@ def test_update_sh_recover_restore_decrypts_before_restore():
     start = src.index("recover_restore_required() {")
     body = src[start:src.index("\n}", start)]
     decrypt = body.index('"$OPENSSL" enc -d')                 # decrypts the encrypted backup
-    restore = body.index('"$PG_RESTORE"')                     # restores from it
+    restore = body.index('restore_onebrain_db "$RESTORE"')    # restores from it
     assert decrypt < restore                                  # decrypt BEFORE restore
     assert '"$WORK/backup.dump"' not in body                  # never the deleted plaintext dump
 
@@ -485,11 +485,25 @@ def test_update_sh_dump_and_restore_share_connection_target():
     dump is never left implicit while the restore is explicit — and neither targets a
     plain .sql created without -Fc."""
     src = _UPDATE_SH.read_text(encoding="utf-8")
-    assert '"$PG_DUMP" -Fc -d "$PG_CONN"' in src                     # dump: custom-format + explicit target
-    assert '"$PG_RESTORE" --clean --if-exists -d "$PG_CONN"' in src  # restore: SAME shared target
+    assert '"$PG_DUMP" -Fc -d "$PG_CONN"' in src                     # custom operator path
+    assert '"$PG_RESTORE" --clean --if-exists -d "$PG_CONN"' in src  # same custom target
+    assert "dc exec -T postgres pg_dump -U onebrain -Fc -d onebrain" in src
+    assert "dc exec -T postgres pg_restore -U onebrain --clean --if-exists -d onebrain" in src
     # The dump/restore artifacts are custom-format archives (.dump), never a plain .sql
     # that stock pg_restore cannot read.
     assert 'DUMP="$WORK/backup.dump"' in src and 'RESTORE="$WORK/restore.dump"' in src
+
+
+def test_migration_backup_keeps_postgres_up_and_recovers_failed_backup():
+    src = _UPDATE_SH.read_text(encoding="utf-8")
+    quiesce = src[src.index("quiesce_application_services()"):
+                   src.index("resume_current_stack()")]
+    assert "services=(caddy)" in quiesce
+    assert "postgres" not in quiesce
+    assert "redis" not in quiesce
+    failure = src[src.index('log "backup FAILED; restoring current stack'):
+                  src.index('# --- 5. PULL + UP')]
+    assert "resume_current_stack" in failure
 
 
 # --- P5-07 7d: box records a well-formed backup_manifest (A17 gate) -----------
