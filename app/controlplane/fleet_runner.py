@@ -94,7 +94,7 @@ def plan_and_start_fleet_rollout(
     fleet_run = fleet_store.create_fleet_rollout(FleetRolloutRun(
         id=fleet_id, target_version=target_version, git_sha=git_sha, status="running",
         ring_order=plan.ring_order, current_ring=plan.ring_order[0],
-        failure_tolerance=failure_tolerance, started_by=started_by, created_at=created_at,
+        failure_tolerance=failure_tolerance, started_by=started_by, created_at=created_at, updated_at=created_at,
         callback_url=callback_url, dry_run=dry_run,
         ring_batch_size=ring_batch_size,
         only_deployment_ids=tuple(sorted(only_deployment_ids)),

@@ -76,6 +76,7 @@ class MemoryControlPlaneStore:
                     **d,
                     "ring_order": tuple(d.get("ring_order", [])),
                     "only_deployment_ids": tuple(d.get("only_deployment_ids", [])),
+                    "updated_at": d.get("updated_at", d.get("created_at", "")),
                 })
                 for d in data.get("fleet_rollouts", [])
             }
@@ -168,7 +169,11 @@ class MemoryControlPlaneStore:
         return self._releases.get(version)
 
     def list_releases(self) -> List[ReleaseManifest]:
-        return sorted(self._releases.values(), key=lambda r: r.version)
+        return sorted(
+            self._releases.values(),
+            key=lambda release: (release.created_at, release.version),
+            reverse=True,
+        )
 
     def create_release_candidate(
         self,
@@ -423,7 +428,7 @@ class MemoryControlPlaneStore:
 
     def latest_backup(self, deployment_id: str) -> Optional[BackupRun]:
         backups = [b for b in self._backups.values() if b.deployment_id == deployment_id]
-        return sorted(backups, key=lambda b: b.created_at or b.id)[-1] if backups else None
+        return max(backups, key=lambda backup: (backup.created_at, backup.id)) if backups else None
 
     def record_health(self, health: HealthCheckRun) -> HealthCheckRun:
         validate_run_status(health.status)
@@ -438,7 +443,7 @@ class MemoryControlPlaneStore:
 
     def latest_health(self, deployment_id: str) -> Optional[HealthCheckRun]:
         checks = [h for h in self._health.values() if h.deployment_id == deployment_id]
-        return sorted(checks, key=lambda h: h.created_at or h.id)[-1] if checks else None
+        return max(checks, key=lambda health: (health.created_at, health.id)) if checks else None
 
     def plan_update(
         self,
@@ -547,7 +552,11 @@ class MemoryControlPlaneStore:
         return self._rollouts.get(rollout_id)
 
     def list_rollouts(self, deployment_id: str) -> List[RolloutRun]:
-        return [r for r in self._rollouts.values() if r.deployment_id == deployment_id]
+        return sorted(
+            (rollout for rollout in self._rollouts.values() if rollout.deployment_id == deployment_id),
+            key=lambda rollout: (rollout.created_at, rollout.id),
+            reverse=True,
+        )
 
     def list_active_rollout(self, deployment_id: str) -> Optional[RolloutRun]:
         """A non-terminal rollout for this deployment (concurrency guard) or None."""
@@ -576,6 +585,7 @@ class MemoryControlPlaneStore:
         with self._lock:
             if fleet_run.id in self._fleet_rollouts:
                 raise ValueError(f"fleet rollout already exists: {fleet_run.id}")
+            fleet_run = replace(fleet_run, updated_at=fleet_run.updated_at or fleet_run.created_at)
             self._fleet_rollouts[fleet_run.id] = fleet_run
             self._save()
             return fleet_run
@@ -584,7 +594,7 @@ class MemoryControlPlaneStore:
         return self._fleet_rollouts.get(fleet_rollout_id)
 
     def list_fleet_rollouts(self) -> List[FleetRolloutRun]:
-        return sorted(self._fleet_rollouts.values(), key=lambda f: (f.created_at, f.id))
+        return sorted(self._fleet_rollouts.values(), key=lambda f: (f.updated_at or f.created_at, f.id), reverse=True)
 
     def update_fleet_rollout(self, fleet_rollout_id: str, **fields) -> FleetRolloutRun:
         bad = set(fields) - FLEET_EXEC_FIELDS
@@ -594,7 +604,7 @@ class MemoryControlPlaneStore:
             fleet_run = self._fleet_rollouts.get(fleet_rollout_id)
             if not fleet_run:
                 raise ValueError(f"unknown fleet rollout: {fleet_rollout_id}")
-            updated = replace(fleet_run, **fields)
+            updated = replace(fleet_run, **fields, updated_at=datetime.now(timezone.utc).isoformat())
             self._fleet_rollouts[fleet_rollout_id] = updated
             self._save()
             return updated
@@ -607,7 +617,11 @@ class MemoryControlPlaneStore:
             fleet_run = self._fleet_rollouts.get(fleet_rollout_id)
             if not fleet_run or fleet_run.status != "running" or fleet_run.current_ring != from_ring:
                 return False
-            self._fleet_rollouts[fleet_rollout_id] = replace(fleet_run, current_ring=to_ring)
+            self._fleet_rollouts[fleet_rollout_id] = replace(
+                fleet_run,
+                current_ring=to_ring,
+                updated_at=datetime.now(timezone.utc).isoformat(),
+            )
             self._save()
             return True
 

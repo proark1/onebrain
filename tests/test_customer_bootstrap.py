@@ -6,6 +6,7 @@ import pytest
 
 from app.auth.passwords import hash_password
 from app.platform.memory import MemoryPlatformStore
+from app.provisioning.bundles import OPTIONAL_MODULE_IDS
 from app.provisioning.customer_bootstrap import (
     CustomerBootstrapDescriptor,
     decode_customer_bootstrap,
@@ -25,7 +26,7 @@ def _descriptor() -> CustomerBootstrapDescriptor:
         account_id="onebrain-development",
         account_kind="project",
         customer_name="One Brain Development Gate",
-        bundle_id="full_stack",
+        module_ids=OPTIONAL_MODULE_IDS,
     )
 
 
@@ -60,12 +61,28 @@ def test_customer_bootstrap_descriptor_rejects_invalid_payloads(encoded: str, ma
         decode_customer_bootstrap(encoded)
 
 
-def test_customer_bootstrap_descriptor_rejects_unknown_bundle_and_unsafe_identity():
-    with pytest.raises(ValueError, match="bundle"):
-        encode_customer_bootstrap(replace(_descriptor(), bundle_id="not_a_bundle"))
+def test_customer_bootstrap_descriptor_rejects_unknown_module_and_unsafe_identity():
+    with pytest.raises(ValueError, match="module ids"):
+        encode_customer_bootstrap(replace(_descriptor(), module_ids=("not_a_module",)))
 
     with pytest.raises(ValueError, match="account id"):
         encode_customer_bootstrap(replace(_descriptor(), account_id="bad\naccount"))
+
+
+def test_core_only_bootstrap_does_not_require_integration_keys():
+    result = reconcile_customer_bootstrap(
+        replace(_descriptor(), module_ids=()),
+        platform_store=MemoryPlatformStore(),
+        service_key_store=MemoryServiceKeyStore(),
+        user_store=MemoryUserStore(),
+        session_store=MemorySessionStore(),
+        administrator_email="",
+        integration_keys={},
+    )
+
+    assert result.spaces == 2
+    assert result.apps == 1
+    assert result.integration_keys == 0
 
 
 def test_full_stack_bootstrap_creates_local_topology_credentials_and_audit_once():

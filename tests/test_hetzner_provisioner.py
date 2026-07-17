@@ -71,13 +71,13 @@ def _control(dep="dep_a", modules=_MODULES, version="0.1.0", images=None, enviro
 def _plain_run(dep="dep_a", version="0.1.0"):
     return ProvisioningRun(
         id="prun_direct", account_id="acct_a", deployment_id=dep,
-        bundle_id="full_stack", requested_by="usr_op",
+        module_ids=("assistant", "communication"), requested_by="usr_op",
         request_payload={"initial_version": version},
     )
 
 
 def _run(prov, dep="dep_a", version="0.1.0"):
-    return create_run(prov, account_id="acct_a", deployment_id=dep, bundle_id="full_stack",
+    return create_run(prov, account_id="acct_a", deployment_id=dep, module_ids=["assistant", "communication"],
                       requested_by="usr_op", payload={"initial_version": version})
 
 
@@ -392,7 +392,7 @@ def test_owner_otp_minted_hash_only_and_flagged():
 
     result = CustomerProvisioner(platform, control, None, users).provision(
         account_id="acct_owner", account_kind="organization", customer_name="Owner Co",
-        owner_user_id="usr_op", bundle_id="onebrain_only", deployment_id="dep_owner",
+        owner_user_id="usr_op", module_ids=[], deployment_id="dep_owner",
         deployment_type="dedicated_railway", region="", release_ring="pilot",
         initial_version="0.1.0", owner_email="Owner@Example.com",
     )
@@ -427,7 +427,7 @@ def test_owner_otp_minted_hash_only_and_flagged():
     # No owner_email -> no owner minted, no OTP (today's behavior, dormant).
     plain = CustomerProvisioner(MemoryPlatformStore(), MemoryControlPlaneStore(), None, users).provision(
         account_id="acct_none", account_kind="organization", customer_name="No Owner",
-        owner_user_id="usr_op", bundle_id="onebrain_only", deployment_id="dep_none",
+        owner_user_id="usr_op", module_ids=[], deployment_id="dep_none",
         deployment_type="dedicated_railway", region="", release_ring="pilot", initial_version="0.1.0",
     )
     assert plain.owner_one_time_password == ""

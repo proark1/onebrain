@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { MetricStrip, Notice, PageHeader, Panel, StatusBadge, Tabs } from "@/components/admin-ui";
+import { Timestamp } from "@/components/operational/timestamp";
 import {
   abortFleetRollout,
   createFleetRollout,
@@ -22,6 +23,7 @@ import type {
 } from "@/lib/onebrain-types";
 
 type FleetTab = "overview" | "rollouts" | "keys";
+type StatusTone = "success" | "danger" | "running" | "warning" | "neutral";
 
 const TABS: Array<{ id: FleetTab; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -34,9 +36,32 @@ function healthTone(healthy: boolean | null): "success" | "danger" | "neutral" {
   return healthy ? "success" : "danger";
 }
 
-function rolloutTone(status: string): "success" | "danger" | "running" | "warning" | "neutral" {
-  return { running: "running", succeeded: "success", failed: "danger", aborted: "danger", paused: "warning" }[status] as
-    | "success" | "danger" | "running" | "warning" | undefined ?? "neutral";
+function healthLabel(healthy: boolean | null): string {
+  if (healthy === null) return "No signal yet";
+  return healthy ? "Healthy" : "Needs attention";
+}
+
+function rolloutStatus(status: string, currentRing: string): { label: string; detail: string; tone: StatusTone } {
+  switch (status) {
+    case "pending":
+      return { label: "Preparing", detail: "Waiting to start the first rollout wave.", tone: "warning" };
+    case "running":
+      return {
+        label: "In progress",
+        detail: currentRing ? `Deploying the ${currentRing} ring.` : "Preparing the first rollout wave.",
+        tone: "running",
+      };
+    case "paused":
+      return { label: "Paused", detail: "An operator must decide whether to resume or stop it.", tone: "warning" };
+    case "succeeded":
+      return { label: "Complete", detail: "All planned rollout waves finished.", tone: "success" };
+    case "failed":
+      return { label: "Needs attention", detail: "A rollout wave failed and needs review.", tone: "danger" };
+    case "aborted":
+      return { label: "Stopped", detail: "This rollout was stopped before it completed.", tone: "danger" };
+    default:
+      return { label: "Needs review", detail: "The rollout reported an unfamiliar state.", tone: "neutral" };
+  }
 }
 
 export function FleetPanel() {
@@ -145,23 +170,26 @@ export function FleetPanel() {
               { label: "With alerts", value: String(overview.with_open_alerts) },
             ]}
           />
+          <Timestamp label="Snapshot generated" value={overview.generated_at} />
           <div className="tableScroll">
             <table className="adminTable">
               <thead>
                 <tr>
                   <th>Health</th><th>Customer</th><th>Ring</th><th>Version</th>
-                  <th>Installed</th><th>Last seen</th><th>Users</th><th>Alerts</th>
+                  <th>Added</th><th>Version active since</th><th>Last report</th><th>Received</th><th>Users</th><th>Alerts</th>
                 </tr>
               </thead>
               <tbody>
                 {overview.deployments.map((d) => (
                   <tr key={d.deployment_id}>
-                    <td><StatusBadge tone={healthTone(d.healthy)}>{d.healthy === null ? "no data" : d.healthy ? "healthy" : "unhealthy"}</StatusBadge></td>
+                    <td><StatusBadge tone={healthTone(d.healthy)}>{healthLabel(d.healthy)}</StatusBadge></td>
                     <td>{d.customer_name || d.deployment_id}{d.is_release_gate ? " · dev gate" : ""}</td>
                     <td>{d.release_ring}</td>
                     <td>{d.reported_version || d.current_version || "—"}{d.reported_version && d.current_version && d.reported_version !== d.current_version ? ` (registry ${d.current_version})` : ""}</td>
-                    <td>{d.current_version_deployed_at ? new Date(d.current_version_deployed_at).toLocaleDateString() : "unknown"}</td>
-                    <td>{d.last_received_at ? new Date(d.last_received_at).toLocaleString() : "never"}</td>
+                    <td><Timestamp label="Added" value={d.created_at} /></td>
+                    <td><Timestamp label="Active since" value={d.current_version_deployed_at} /></td>
+                    <td><Timestamp label="Reported" value={d.last_reported_at} /></td>
+                    <td><Timestamp label="Received" value={d.last_received_at} /></td>
                     <td>{d.counts?.users ?? "—"}</td>
                     <td>{d.open_alerts.length ? <StatusBadge tone="danger">{d.open_alerts.join(", ")}</StatusBadge> : "—"}</td>
                   </tr>
@@ -202,26 +230,48 @@ export function FleetPanel() {
             </form>
           </Panel>
           <Panel eyebrow="Active + history" title="Fleet rollouts" count={rollouts.length}>
+            <p className="muted">Every rollout shows when it started and when the control plane last recorded a state change.</p>
             <div className="tableScroll">
               <table className="adminTable">
                 <thead>
-                  <tr><th>Status</th><th>Version</th><th>Ring</th><th>Policy</th><th>Started by</th><th>Actions</th></tr>
+                  <tr><th>Status</th><th>Target version</th><th>Current wave</th><th>Safety policy</th><th>Scope</th><th>Started</th><th>Last updated</th><th>Actions</th></tr>
                 </thead>
                 <tbody>
-                  {rollouts.map((r) => (
-                    <tr key={r.id}>
-                      <td><StatusBadge tone={rolloutTone(r.status)}>{r.status}</StatusBadge></td>
-                      <td>{r.target_version}</td>
-                      <td>{r.current_ring || "—"} <span className="muted">({r.ring_order.join(" → ")})</span></td>
-                      <td>{r.ring_batch_size} at a time / {r.failure_tolerance} failures</td>
-                      <td>{r.started_by}</td>
-                      <td className="rowActions">
-                        {r.status === "running" ? <button onClick={() => run(() => pauseFleetRollout(r.id), "Paused.")}>Pause</button> : null}
-                        {r.status === "paused" ? <button onClick={() => run(() => resumeFleetRollout(r.id), "Resumed.")}>Resume</button> : null}
-                        {(r.status === "running" || r.status === "paused") ? <button onClick={() => run(() => abortFleetRollout(r.id), "Aborted.")}>Abort</button> : null}
-                      </td>
-                    </tr>
-                  ))}
+                  {rollouts.map((r) => {
+                    const status = rolloutStatus(r.status, r.current_ring);
+                    const scope = r.deployment_ids.length
+                      ? `${r.deployment_ids.length} selected deployment${r.deployment_ids.length === 1 ? "" : "s"}`
+                      : "All eligible deployments";
+
+                    return (
+                      <tr key={r.id}>
+                        <td>
+                          <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
+                          <div className="muted">{status.detail}</div>
+                        </td>
+                        <td><code>{r.target_version}</code></td>
+                        <td>
+                          <strong>{r.current_ring ? `${r.current_ring} ring` : "Not started"}</strong>
+                          <div className="muted">Planned: {r.ring_order.length ? r.ring_order.join(" → ") : "No eligible rings"}</div>
+                        </td>
+                        <td>
+                          <strong>{r.ring_batch_size === 1 ? "One customer at a time" : `${r.ring_batch_size} customers at a time`}</strong>
+                          <div className="muted">Stops after {r.failure_tolerance} failure{r.failure_tolerance === 1 ? "" : "s"}</div>
+                        </td>
+                        <td>{scope}</td>
+                        <td>
+                          <Timestamp label="Started" value={r.created_at} />
+                          <div className="muted">By {r.started_by || "system"}</div>
+                        </td>
+                        <td><Timestamp label="State changed" value={r.updated_at} /></td>
+                        <td className="rowActions">
+                          {r.status === "running" ? <button onClick={() => run(() => pauseFleetRollout(r.id), "Paused.")}>Pause</button> : null}
+                          {r.status === "paused" ? <button onClick={() => run(() => resumeFleetRollout(r.id), "Resumed.")}>Resume</button> : null}
+                          {(r.status === "running" || r.status === "paused") ? <button onClick={() => run(() => abortFleetRollout(r.id), "Aborted.")}>Abort</button> : null}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -247,7 +297,7 @@ export function FleetPanel() {
           <div className="tableScroll">
             <table className="adminTable">
               <thead>
-                <tr><th>Key id</th><th>Deployment</th><th>Label</th><th>Status</th><th>Last used</th><th></th></tr>
+                <tr><th>Key id</th><th>Deployment</th><th>Label</th><th>Status</th><th>Created</th><th>Last used</th><th></th></tr>
               </thead>
               <tbody>
                 {keys.map((k) => (
@@ -256,7 +306,8 @@ export function FleetPanel() {
                     <td>{k.deployment_id}</td>
                     <td>{k.label || "—"}</td>
                     <td><StatusBadge tone={k.status === "active" ? "success" : "neutral"}>{k.status}</StatusBadge></td>
-                    <td>{k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "never"}</td>
+                    <td><Timestamp label="Created" value={k.created_at} /></td>
+                    <td><Timestamp label="Last used" value={k.last_used_at} /></td>
                     <td>{k.status === "active" ? <button onClick={() => run(() => revokeFleetKey(k.id), "Key revoked.")}>Revoke</button> : null}</td>
                   </tr>
                 ))}

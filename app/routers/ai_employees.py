@@ -98,6 +98,10 @@ class AiEmployeeOut(StrictModel):
     model_provider: str
     model: str
     default_mode: str
+    safe_actions: list[str]
+    approval_rule: str
+    productivity_metrics: list[str]
+    never_without_approval: list[str]
 
 
 class AiEmployeeTeamOut(StrictModel):
@@ -1729,6 +1733,10 @@ def _agent_out(profile: AiEmployeeProfile, store) -> AiEmployeeOut:
         model_provider=policy.provider,
         model=policy.model,
         default_mode=employee.default_mode,
+        safe_actions=list(employee.safe_actions),
+        approval_rule=employee.approval_rule,
+        productivity_metrics=list(employee.productivity_metrics),
+        never_without_approval=list(employee.never_without_approval),
     )
 
 

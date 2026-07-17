@@ -180,7 +180,7 @@ class HetznerProvisioner:
             account_id=run.account_id,
             account_kind=str(run.request_payload.get("account_kind", "organization")),
             customer_name=deployment.customer_name,
-            bundle_id=run.bundle_id,
+            module_ids=run.module_ids,
         ))
 
         # Development candidates are signed by a CI-only key that customer boxes

@@ -168,8 +168,7 @@ five spaces, five installed apps, and at least the bootstrap audit event.
 The selected visual direction is the compact organization map.
 
 - Replace the oversized hero with a slim module header containing workspace,
-  installation state, and employee count. Keep mission, approval, work, chat,
-  and connector counts in the existing tab badges instead of duplicating them.
+  installation state, employee count, and the most useful operational signals.
 - Remove the duplicate leadership-council rail.
 - Show the Chief of Staff office as the hierarchy root.
 - Show Operations & corporate, Product/technology/security, and Market/customer
@@ -216,7 +215,6 @@ persists either raw key. A full-stack provision fails closed if either key is
 missing, if the Communication space is missing, or if both apps receive the
 same raw key. The generic service-key bundle fields remain optional for older
 single-module contracts but are no longer the full-stack source of truth.
-
 ## Verification
 
 ### Backend and provisioning tests

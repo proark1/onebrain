@@ -25,6 +25,7 @@ export const CUSTOMER_NAV: ConsoleNavItem[] = [
 export const MISSION_CONTROL_NAV: ConsoleNavItem[] = [
   { id: "operator", href: "/operator", label: "Control" },
   { id: "fleet", href: "/fleet", label: "Fleet" },
+  { id: "settings", href: "/settings", label: "Settings" },
 ];
 export const ALL_NAV: ConsoleNavItem[] = [STATUS_NAV, ...CUSTOMER_NAV, ...MISSION_CONTROL_NAV];
 

@@ -223,11 +223,12 @@ _SECRET_KEYS = (
 
 
 def test_env_files_are_per_service_and_cover_requirements():
+    from app.provisioning.bundles import OPTIONAL_MODULE_IDS
     from app.provisioning.customer_bootstrap import CustomerBootstrapDescriptor, encode_customer_bootstrap
 
     descriptor = encode_customer_bootstrap(CustomerBootstrapDescriptor(
         account_id="acct_1", account_kind="organization", customer_name="Customer A",
-        bundle_id="full_stack",
+        module_ids=OPTIONAL_MODULE_IDS,
     ))
     inp = _inputs(_ALL, customer_bootstrap=descriptor)
     env = render_env_files(inp)
@@ -362,11 +363,12 @@ def test_render_operator_overlay():
 
 
 def test_operator_render_rejects_customer_bootstrap_descriptor():
+    from app.provisioning.bundles import OPTIONAL_MODULE_IDS
     from app.provisioning.customer_bootstrap import CustomerBootstrapDescriptor, encode_customer_bootstrap
 
     descriptor = encode_customer_bootstrap(CustomerBootstrapDescriptor(
         account_id="acct_1", account_kind="organization", customer_name="Customer A",
-        bundle_id="full_stack",
+        module_ids=OPTIONAL_MODULE_IDS,
     ))
     with pytest.raises(ValueError, match="customer_bootstrap is only valid"):
         render_env_files(_inputs(_ALL, role="operator", customer_bootstrap=descriptor))

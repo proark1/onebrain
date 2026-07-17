@@ -49,7 +49,7 @@ def test_candidate_version_is_stable_for_a_run_number():
 
 
 def test_candidate_uses_the_single_current_alembic_head():
-    assert current_alembic_head() == "0024_ai_employees_runtime"
+    assert current_alembic_head() == "0025_provisioning_module_selection"
 
 
 def test_registration_prepares_then_dev_signs_exact_returned_manifest():

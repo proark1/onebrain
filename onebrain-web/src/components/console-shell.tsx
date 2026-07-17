@@ -33,7 +33,6 @@ export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
               <span className="brandMark">AD</span>
               <span>OneBrain</span>
             </Link>
-            <p>{identity}</p>
           </div>
 
           <nav className="consoleNav" aria-label="Primary sections">
@@ -48,13 +47,12 @@ export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
               </Link>
             ))}
           </nav>
-
         </aside>
 
         <div className="consoleFrame">
           <header className="commandBar">
             <div className="commandContext">
-              <span>Assad Dar</span>
+              <span>{identity}</span>
               <strong>{activeLabel}</strong>
             </div>
             {active === "kpis" ? <span /> : <WorkspaceSelector />}

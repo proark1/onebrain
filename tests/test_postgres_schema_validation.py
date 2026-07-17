@@ -142,6 +142,12 @@ def _provisioning_runs_migration_module():
     return module
 
 
+def _module_selection_migration_module():
+    return _load_migration_module(
+        "0025_provisioning_module_selection.py", "provisioning_module_selection_migration"
+    )
+
+
 def _governance_migration_module():
     path = (
         Path(__file__).resolve().parents[1]
@@ -267,6 +273,22 @@ def test_provisioning_runs_migration_tracks_expected_head():
     assert migration.revision == "0006_provisioning_runs"
     assert migration.down_revision == "0005_control_plane_postgres"
     assert {"provisioning_runs", "one_time_secret_envelopes"} == set(migration.PROVISIONING_TABLES)
+
+
+def test_module_selection_migration_replaces_bundle_identity():
+    migration = _module_selection_migration_module()
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "versions"
+        / "0025_provisioning_module_selection.py"
+    ).read_text()
+
+    assert migration.revision == "0025_provisioning_module_selection"
+    assert migration.down_revision == "0024_ai_employees_runtime"
+    assert "selected_module_ids JSONB" in source
+    assert "module_ids JSONB" in source
+    assert "DROP COLUMN IF EXISTS bundle_id" in source
 
 
 def test_governance_migration_extends_provisioning_runs():
@@ -537,7 +559,7 @@ def test_required_revision_matches_single_alembic_head():
     heads = ScriptDirectory.from_config(config).get_heads()
 
     assert heads == [REQUIRED_ALEMBIC_REVISION]
-    assert REQUIRED_ALEMBIC_REVISION == "0024_ai_employees_runtime"
+    assert REQUIRED_ALEMBIC_REVISION == "0025_provisioning_module_selection"
 
 
 def test_kpi_dashboard_migration_is_scoped_and_forced_rls():
@@ -583,6 +605,7 @@ def test_postgres_row_mappers_positional():
     deployment = store._deployment((
         "dep0", "cust1", "env2", "type3", "region4", "ring5", "status6",
         "ver7", "mig8", created, "acct10", "policy11",
+        False, None, None, None, "", "", ["assistant", "communication"],
     ))
     assert deployment.id == "dep0"
     assert deployment.customer_name == "cust1"
@@ -596,6 +619,7 @@ def test_postgres_row_mappers_positional():
     assert deployment.created_at == created.isoformat()
     assert deployment.account_id == "acct10"
     assert deployment.update_policy == "policy11"
+    assert deployment.selected_module_ids == ("assistant", "communication")
 
     release = store._release((
         "ver0", "sha1", {"m": "2"}, "from3", "to4", "notes5", "plan6",
@@ -742,6 +766,71 @@ def test_start_rollout_insert_persists_fleet_rollout_id():
     assert len(columns) == len(cursor.params)  # write-side arity
     assert dict(zip(columns, cursor.params))["fleet_rollout_id"] == "fr_1"
     assert returned.fleet_rollout_id == "fr_1"  # readable back on the postgres path
+    assert connection.committed
+
+
+def test_record_backup_preserves_reported_occurrence_time():
+    """Pull reconciliation supplies the time the backup happened, not merely the
+    later time Mission Control received the report.  The Postgres write must keep
+    that occurrence timestamp so the safety gate and operator history agree."""
+    from datetime import datetime, timezone
+
+    from app.controlplane.base import BackupRun
+
+    occurred_at = datetime(2026, 7, 17, 9, 59, tzinfo=timezone.utc)
+
+    class InsertCursor:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+            self.params = params
+
+        def fetchone(self):
+            return ("bak_reported", "dep_a", "success", "pull-report", occurred_at)
+
+    class InsertConnection:
+        def __init__(self, cursor):
+            self._cursor = cursor
+            self.committed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def cursor(self):
+            return self._cursor
+
+        def commit(self):
+            self.committed = True
+
+    cursor = InsertCursor()
+    connection = InsertConnection(cursor)
+    store = _bare_postgres_store()
+    store._conn = lambda: connection
+    store.get_deployment = lambda deployment_id: object() if deployment_id == "dep_a" else None
+
+    backup = store.record_backup(BackupRun(
+        "bak_reported",
+        "dep_a",
+        "success",
+        "pull-report",
+        created_at=occurred_at.isoformat(),
+    ))
+
+    assert "created_at" in cursor.sql
+    assert cursor.params[-1] == occurred_at.isoformat()
+    assert backup.created_at == occurred_at.isoformat()
     assert connection.committed
 
 

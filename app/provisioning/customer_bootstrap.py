@@ -23,15 +23,15 @@ from app.platform.base import (
     Space,
     default_brand_theme,
 )
-from app.provisioning.bundles import get_bundle
+from app.provisioning.bundles import resolve_module_composition
 from app.provisioning.service import PURPOSE_SCOPES
 from app.servicekeys.base import ServiceKey, hash_secret, parse_key
 
 
-BOOTSTRAP_SCHEMA_VERSION = 1
+BOOTSTRAP_SCHEMA_VERSION = 2
 MAX_BOOTSTRAP_ENCODED_BYTES = 4096
 _ACCOUNT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,119}$")
-_FIELDS = frozenset({"schema_version", "account_id", "account_kind", "customer_name", "bundle_id"})
+_FIELDS = frozenset({"schema_version", "account_id", "account_kind", "customer_name", "module_ids"})
 _LOCAL_INTEGRATION_APPS = ("assistant", "communication")
 
 
@@ -40,7 +40,7 @@ class CustomerBootstrapDescriptor:
     account_id: str
     account_kind: str
     customer_name: str
-    bundle_id: str
+    module_ids: tuple[str, ...] = ()
     schema_version: int = BOOTSTRAP_SCHEMA_VERSION
 
 
@@ -57,7 +57,6 @@ def _validated_descriptor(descriptor: CustomerBootstrapDescriptor) -> CustomerBo
     account_id = (descriptor.account_id or "").strip()
     account_kind = (descriptor.account_kind or "").strip()
     customer_name = (descriptor.customer_name or "").strip()
-    bundle_id = (descriptor.bundle_id or "").strip()
     if descriptor.schema_version != BOOTSTRAP_SCHEMA_VERSION:
         raise ValueError(f"Unsupported customer bootstrap schema version: {descriptor.schema_version}")
     if not _ACCOUNT_ID_RE.fullmatch(account_id):
@@ -66,12 +65,18 @@ def _validated_descriptor(descriptor: CustomerBootstrapDescriptor) -> CustomerBo
         raise ValueError(f"Customer bootstrap account kind is invalid: {account_kind}")
     if not customer_name or len(customer_name) > 200 or any(ord(ch) < 32 for ch in customer_name):
         raise ValueError("Customer bootstrap customer name is invalid.")
-    get_bundle(bundle_id)
+    module_ids = descriptor.module_ids
+    if isinstance(module_ids, str) or not isinstance(module_ids, (list, tuple)):
+        raise ValueError("Customer bootstrap module ids must be a list or tuple.")
+    try:
+        composition = resolve_module_composition(module_ids)
+    except ValueError as exc:
+        raise ValueError(f"Customer bootstrap module ids are invalid: {exc}") from exc
     return CustomerBootstrapDescriptor(
         account_id=account_id,
         account_kind=account_kind,
         customer_name=customer_name,
-        bundle_id=bundle_id,
+        module_ids=composition.selected_module_ids,
     )
 
 
@@ -81,8 +86,8 @@ def encode_customer_bootstrap(descriptor: CustomerBootstrapDescriptor) -> str:
         {
             "account_id": descriptor.account_id,
             "account_kind": descriptor.account_kind,
-            "bundle_id": descriptor.bundle_id,
             "customer_name": descriptor.customer_name,
+            "module_ids": list(descriptor.module_ids),
             "schema_version": descriptor.schema_version,
         },
         ensure_ascii=False,
@@ -115,13 +120,16 @@ def decode_customer_bootstrap(encoded: str) -> CustomerBootstrapDescriptor | Non
         raise ValueError("Customer bootstrap descriptor is not valid JSON.") from exc
     if not isinstance(payload, dict) or set(payload) != _FIELDS:
         raise ValueError("Customer bootstrap descriptor fields are invalid.")
+    module_ids = payload.get("module_ids")
+    if not isinstance(module_ids, list) or any(not isinstance(module_id, str) for module_id in module_ids):
+        raise ValueError("Customer bootstrap descriptor module ids are invalid.")
     try:
         descriptor = CustomerBootstrapDescriptor(
             schema_version=int(payload["schema_version"]),
             account_id=str(payload["account_id"]),
             account_kind=str(payload["account_kind"]),
             customer_name=str(payload["customer_name"]),
-            bundle_id=str(payload["bundle_id"]),
+            module_ids=tuple(module_ids),
         )
     except (TypeError, ValueError) as exc:
         raise ValueError("Customer bootstrap descriptor fields are invalid.") from exc
@@ -179,13 +187,13 @@ def reconcile_customer_bootstrap(
     administrator_email: str,
     integration_keys: Mapping[str, str],
 ) -> CustomerBootstrapResult:
-    """Converge a customer database to its explicit provisioning bundle."""
+    """Converge a customer database to its explicit product-module selection."""
     descriptor = _validated_descriptor(descriptor)
-    bundle = get_bundle(descriptor.bundle_id)
+    composition = resolve_module_composition(descriptor.module_ids)
     expected_integrations = [
         app_id
         for app_id in _LOCAL_INTEGRATION_APPS
-        if any(app.app_id == app_id for app in bundle.apps)
+        if any(app.app_id == app_id for app in composition.apps)
     ]
     raw_keys = {app_id: (integration_keys.get(app_id) or "").strip() for app_id in expected_integrations}
     missing = [app_id for app_id, raw in raw_keys.items() if not raw]
@@ -221,7 +229,7 @@ def reconcile_customer_bootstrap(
     ))
 
     spaces_by_key: dict[str, Space] = {}
-    for template in bundle.spaces:
+    for template in composition.spaces:
         space = platform_store.upsert_bootstrap_space(Space(
             id=f"sp_{descriptor.account_id}_{template.key}",
             account_id=descriptor.account_id,
@@ -230,8 +238,8 @@ def reconcile_customer_bootstrap(
         ))
         spaces_by_key[template.key] = space
 
-    app_templates = {template.app_id: template for template in bundle.apps}
-    for template in bundle.apps:
+    app_templates = {template.app_id: template for template in composition.apps}
+    for template in composition.apps:
         platform_store.upsert_bootstrap_installation(AppInstallation(
             id=f"appi_{descriptor.account_id}_{template.app_id}",
             account_id=descriptor.account_id,
@@ -276,13 +284,13 @@ def reconcile_customer_bootstrap(
         target_type="account",
         target_id=descriptor.account_id,
         decision="allowed",
-        meta={"bundle_id": descriptor.bundle_id, "schema_version": descriptor.schema_version},
+        meta={"module_ids": list(descriptor.module_ids), "schema_version": descriptor.schema_version},
     ))
 
     return CustomerBootstrapResult(
         account_id=descriptor.account_id,
-        spaces=len(bundle.spaces),
-        apps=len(bundle.apps),
+        spaces=len(composition.spaces),
+        apps=len(composition.apps),
         integration_keys=installed_key_count,
         administrator_rebound=administrator_rebound,
     )

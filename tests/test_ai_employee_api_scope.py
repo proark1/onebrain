@@ -13,7 +13,7 @@ from pydantic import ValidationError
 import app.routers.ai_employees as ai_router
 from app.ai_employees.backends.base import BackendEvent
 from app.ai_employees.backends.registry import BackendRegistry
-from app.ai_employees.contracts import AI_EMPLOYEE_PURPOSES
+from app.ai_employees.contracts import AI_EMPLOYEE_PURPOSES, get_ai_employee
 from app.ai_employees.memory import MemoryAiEmployeeStore
 from app.ai_employees.missions import AiMissionService, MissionAgentResult
 from app.ai_employees.actions import AiEmployeeActionService
@@ -124,6 +124,29 @@ def test_workspace_discovery_and_team_seed_are_live_and_module_scoped(monkeypatc
     assert all(row.model_provider == "gemini" for row in team.agents)
     assert all(row.model.startswith("gemini/") for row in team.agents)
     assert len(store.list_profiles(tenant_id="acme", account_id="acme", space_id="sp_business")) == 16
+
+
+def test_team_and_employee_detail_expose_safe_expanded_context_without_hidden_prompts(monkeypatch):
+    _wire(monkeypatch)
+    team = ai_router.get_ai_employee_team(
+        account_id="acme", space_id="sp_business", principal=_human(),
+    )
+    expected = get_ai_employee("finance_manager")
+    finance = next(agent for agent in team.agents if agent.employee_id == expected.id)
+    detail = ai_router.get_ai_employee_detail(
+        expected.id, account_id="acme", space_id="sp_business", principal=_human(),
+    )
+
+    for agent in (finance, detail):
+        assert agent.safe_actions == list(expected.safe_actions)
+        assert agent.approval_rule == expected.approval_rule
+        assert agent.productivity_metrics == list(expected.productivity_metrics)
+        assert agent.never_without_approval == list(expected.never_without_approval)
+        assert agent.biography
+        exposed = agent.model_dump()
+        assert "character_prompt" not in exposed
+        assert "purposes" not in exposed
+        assert "owner_role" not in exposed
 
 
 def test_space_member_can_read_but_only_account_admin_can_configure(monkeypatch):

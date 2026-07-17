@@ -1,7 +1,8 @@
-"""Customer provisioning bundles for modular OneBrain rollouts."""
+"""Customer provisioning with server-owned Core-plus-module composition."""
 
 from __future__ import annotations
 
+from itertools import combinations
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,7 @@ from app.controlplane.base import CustomerDeployment
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.platform.base import BrandTheme
 from app.platform.memory import MemoryPlatformStore
+from app.provisioning.bundles import CORE_MODULES, OPTIONAL_MODULES, resolve_module_composition
 from app.provisioning.runs import (
     MemoryProvisioningRunStore,
     ProvisioningCallback,
@@ -67,7 +69,62 @@ def _secret_settings(**overrides):
     return SimpleNamespace(**data)
 
 
-def test_full_stack_provisioning_separates_private_and_customer_service_spaces():
+def test_module_composition_covers_core_only_and_every_optional_combination():
+    """Core is implicit; every optional combination resolves deterministically."""
+    optional_ids = tuple(module.id for module in OPTIONAL_MODULES)
+    expected_apps = {module.id: module.apps[0].app_id for module in OPTIONAL_MODULES}
+    expected_services = {module.id: module.modules for module in OPTIONAL_MODULES}
+
+    for size in range(len(optional_ids) + 1):
+        for requested in combinations(reversed(optional_ids), size):
+            composition = resolve_module_composition(requested)
+            expected_ids = tuple(module_id for module_id in optional_ids if module_id in requested)
+            assert composition.selected_module_ids == expected_ids
+            assert composition.modules[:len(CORE_MODULES)] == CORE_MODULES
+            assert len(composition.modules) == len(set(composition.modules))
+            assert [app.app_id for app in composition.apps] == [
+                "onebrain_core", *(expected_apps[module_id] for module_id in expected_ids)
+            ]
+            assert composition.modules == tuple(
+                module_id
+                for module_group in (CORE_MODULES, *(expected_services[module_id] for module_id in expected_ids))
+                for module_id in module_group
+            )
+
+
+def test_module_composition_rejects_unknown_and_duplicate_optional_ids():
+    with pytest.raises(ValueError, match="Unknown optional module ids"):
+        resolve_module_composition(["unknown"])
+    with pytest.raises(ValueError, match="Duplicate optional module ids"):
+        resolve_module_composition(["assistant", "assistant"])
+
+
+def test_module_catalog_exposes_core_and_the_four_optional_choices(monkeypatch):
+    monkeypatch.setattr(provisioning_router, "get_settings", lambda: _secret_settings())
+
+    catalog = provisioning_router.get_module_catalog(principal=_principal("admin"))
+
+    assert catalog.core.id == "onebrain_core"
+    assert catalog.core.modules == list(CORE_MODULES)
+    assert [module.id for module in catalog.optional_modules] == [
+        "assistant", "kpi_dashboard", "ai_employees", "communication"
+    ]
+    assert next(module for module in catalog.optional_modules if module.id == "kpi_dashboard").modules == []
+    assert next(module for module in catalog.optional_modules if module.id == "ai_employees").modules == []
+
+
+def test_provisioning_request_rejects_legacy_bundle_and_duplicate_module_inputs():
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError, match="bundle_id"):
+        provisioning_router.CustomerProvisionCreate(customer_name="Acme", bundle_id="full_stack")
+    with pytest.raises(pydantic.ValidationError, match="module_ids"):
+        provisioning_router.CustomerProvisionCreate(
+            customer_name="Acme", module_ids=["assistant", "assistant"]
+        )
+
+
+def test_full_module_selection_separates_private_and_customer_service_spaces():
     platform, control = _stores()
 
     result = CustomerProvisioner(platform, control).provision(
@@ -75,7 +132,7 @@ def test_full_stack_provisioning_separates_private_and_customer_service_spaces()
         account_kind="organization",
         customer_name="Acme GmbH",
         owner_user_id="admin@onebrain",
-        bundle_id="full_stack",
+        module_ids=["assistant", "kpi_dashboard", "ai_employees", "communication"],
         deployment_id="dep_acme",
         deployment_type="dedicated_railway",
         region="eu-central",
@@ -111,10 +168,11 @@ def test_full_stack_provisioning_separates_private_and_customer_service_spaces()
 
     deployment = control.get_deployment("dep_acme")
     assert deployment and deployment.current_version == "2026.07.0"
+    assert deployment.selected_module_ids == ("assistant", "kpi_dashboard", "ai_employees", "communication")
     assert platform.list_audit("acme")[-1].action == "customer.provisioned"
 
 
-def test_communication_bundle_does_not_install_assistant_modules():
+def test_communication_selection_does_not_install_assistant_modules():
     platform, control = _stores()
 
     CustomerProvisioner(platform, control).provision(
@@ -122,7 +180,7 @@ def test_communication_bundle_does_not_install_assistant_modules():
         account_kind="organization",
         customer_name="SupportCo",
         owner_user_id="admin@onebrain",
-        bundle_id="onebrain_communication",
+        module_ids=["communication"],
         deployment_id="dep_supportco",
         deployment_type="shared_railway",
         region="eu-central",
@@ -136,7 +194,7 @@ def test_communication_bundle_does_not_install_assistant_modules():
     assert {s.kind for s in platform.list_spaces("supportco")} == {"business", "customer_service", "shared"}
 
 
-def test_full_stack_provisioning_mints_constrained_integration_keys():
+def test_full_module_selection_mints_constrained_integration_keys():
     platform, control = _stores()
     service_keys = MemoryServiceKeyStore()
 
@@ -145,7 +203,7 @@ def test_full_stack_provisioning_mints_constrained_integration_keys():
         account_kind="organization",
         customer_name="Acme GmbH",
         owner_user_id="admin@onebrain",
-        bundle_id="full_stack",
+        module_ids=["assistant", "kpi_dashboard", "ai_employees", "communication"],
         deployment_id="dep_acme",
         deployment_type="dedicated_railway",
         region="eu-central",
@@ -207,7 +265,7 @@ def test_full_stack_provisioning_mints_constrained_integration_keys():
     assert {platform.get_space(space_id).kind for space_id in ai_employees.enabled_space_ids} == {"business", "shared"}
 
 
-def test_kpi_dashboard_bundle_is_selectable_for_new_customers():
+def test_kpi_dashboard_module_is_selectable_for_new_customers():
     platform, control = _stores()
     service_keys = MemoryServiceKeyStore()
 
@@ -216,7 +274,7 @@ def test_kpi_dashboard_bundle_is_selectable_for_new_customers():
         account_kind="organization",
         customer_name="MetricsCo",
         owner_user_id="admin@onebrain",
-        bundle_id="onebrain_kpi_dashboard",
+        module_ids=["kpi_dashboard"],
         deployment_id="dep_metricsco",
         deployment_type="dedicated_railway",
         region="eu-central",
@@ -241,7 +299,7 @@ def test_kpi_dashboard_bundle_is_selectable_for_new_customers():
     assert set(stored.purposes) == {"kpi_snapshot_write"}
 
 
-def test_ai_employees_bundle_is_selectable_for_new_customers():
+def test_ai_employees_module_is_selectable_for_new_customers():
     platform, control = _stores()
     service_keys = MemoryServiceKeyStore()
 
@@ -250,7 +308,7 @@ def test_ai_employees_bundle_is_selectable_for_new_customers():
         account_kind="organization",
         customer_name="AgentCo",
         owner_user_id="admin@onebrain",
-        bundle_id="onebrain_ai_employees",
+        module_ids=["ai_employees"],
         deployment_id="dep_agentco",
         deployment_type="dedicated_railway",
         region="eu-central",
@@ -287,7 +345,7 @@ def test_provisioning_stores_account_brand_and_app_overrides():
         account_kind="organization",
         customer_name="BrandCo",
         owner_user_id="admin@onebrain",
-        bundle_id="full_stack",
+        module_ids=["assistant", "kpi_dashboard", "ai_employees", "communication"],
         deployment_id="dep_brandco",
         deployment_type="dedicated_railway",
         region="eu-central",
@@ -345,7 +403,7 @@ def test_unknown_app_brand_override_is_rejected_before_writes():
             account_kind="organization",
             customer_name="CoreOnly",
             owner_user_id="admin@onebrain",
-            bundle_id="onebrain_only",
+            module_ids=[],
             deployment_id="dep_coreonly",
             deployment_type="dedicated_railway",
             region="",
@@ -382,7 +440,7 @@ def test_duplicate_deployment_blocks_before_platform_records_are_created():
             account_kind="organization",
             customer_name="Acme",
             owner_user_id="admin@onebrain",
-            bundle_id="full_stack",
+            module_ids=["assistant", "kpi_dashboard", "ai_employees", "communication"],
             deployment_id="dep_acme",
             deployment_type="dedicated_railway",
             region="",
@@ -402,7 +460,7 @@ def test_unknown_module_version_override_is_rejected_before_writes():
             account_kind="organization",
             customer_name="AssistantCo",
             owner_user_id="admin@onebrain",
-            bundle_id="onebrain_assistant",
+            module_ids=["assistant"],
             deployment_id="dep_assistantco",
             deployment_type="dedicated_railway",
             region="",
@@ -436,7 +494,7 @@ def test_provisioning_router_requires_admin(monkeypatch):
     created = provisioning_router.provision_customer(
         provisioning_router.CustomerProvisionCreate(
             customer_name="Acme",
-            bundle_id="onebrain_only",
+            module_ids=[],
             account_id="acme",
             deployment_id="dep_acme",
             initial_version="0.1.0",
@@ -445,7 +503,7 @@ def test_provisioning_router_requires_admin(monkeypatch):
     )
 
     assert created.account.id == "acme"
-    assert created.bundle_id == "onebrain_only"
+    assert created.module_ids == []
     assert [app.app_id for app in created.apps] == ["onebrain_core"]
     assert created.credentials == []
     assert created.brand_theme.primary_color == "#16191e"
@@ -458,7 +516,7 @@ def test_provisioning_run_callbacks_store_bootstrap_secret_once():
         store,
         account_id="acme",
         deployment_id="dep_acme",
-        bundle_id="full_stack",
+        module_ids=["assistant", "kpi_dashboard", "ai_employees", "communication"],
         requested_by="admin",
         payload={"dry_run": True},
     )
@@ -497,7 +555,7 @@ def test_provisioning_run_refuses_stale_and_terminal_callbacks():
         store,
         account_id="acme",
         deployment_id="dep_acme",
-        bundle_id="full_stack",
+        module_ids=["assistant", "kpi_dashboard", "ai_employees", "communication"],
         requested_by="admin",
         payload={},
     )
@@ -521,7 +579,7 @@ def test_provisioning_callback_endpoint_requires_dedicated_callback_key(monkeypa
         store,
         account_id="acme",
         deployment_id="dep_acme",
-        bundle_id="full_stack",
+        module_ids=["assistant", "kpi_dashboard", "ai_employees", "communication"],
         requested_by="admin",
         payload={},
     )
@@ -559,7 +617,7 @@ def test_external_provisioning_without_github_config_creates_visible_failed_run(
     created = provisioning_router.provision_customer(
         provisioning_router.CustomerProvisionCreate(
             customer_name="Acme",
-            bundle_id="onebrain_only",
+            module_ids=[],
             account_id="acme",
             deployment_id="dep_acme",
             initial_version="0.1.0",
@@ -588,7 +646,7 @@ def test_external_provisioning_requires_callback_url_before_writes(monkeypatch):
         provisioning_router.provision_customer(
             provisioning_router.CustomerProvisionCreate(
                 customer_name="Acme",
-                bundle_id="onebrain_only",
+                module_ids=[],
                 account_id="acme",
                 deployment_id="dep_acme",
                 initial_version="0.1.0",
@@ -649,7 +707,7 @@ def test_hetzner_provision_customer_assembles_valid_bundle(monkeypatch):
 
     created = provisioning_router.provision_customer(
         provisioning_router.CustomerProvisionCreate(
-            customer_name="Acme", bundle_id="onebrain_only", account_id="acme",
+            customer_name="Acme", module_ids=[], account_id="acme",
             deployment_id="dep_acme", initial_version="0.1.0",
             owner_email="Owner@Acme.example",
             external_provisioning=True,
@@ -696,7 +754,7 @@ def test_hetzner_provision_customer_requires_owner_email(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         provisioning_router.provision_customer(
             provisioning_router.CustomerProvisionCreate(
-                customer_name="Acme", bundle_id="onebrain_only", account_id="acme",
+                customer_name="Acme", module_ids=[], account_id="acme",
                 deployment_id="dep_acme", initial_version="0.1.0",
                 external_provisioning=True,
                 callback_url="https://admin.example/cb/{run_id}",
@@ -717,7 +775,7 @@ def test_retry_rejects_non_failed_provisioning_run(monkeypatch):
         runs,
         account_id="acme",
         deployment_id="dep_acme",
-        bundle_id="onebrain_only",
+        module_ids=[],
         requested_by="admin",
         payload={"dry_run": True},
     )
@@ -812,7 +870,7 @@ def test_run_reads_reject_non_owning_admin(monkeypatch):
     from app.platform.base import Account
     platform.create_account(Account(id="acme", kind="organization", name="Acme", owner_user_id="someone_else@x"))
     runs = MemoryProvisioningRunStore()
-    run = create_run(runs, account_id="acme", deployment_id="dep_acme", bundle_id="onebrain_only",
+    run = create_run(runs, account_id="acme", deployment_id="dep_acme", module_ids=[],
                      requested_by="someone_else@x", payload={"dry_run": True})
     monkeypatch.setattr(provisioning_router, "get_provisioning_run_store", lambda: runs)
     monkeypatch.setattr(provisioning_router, "get_platform_store", lambda: platform)

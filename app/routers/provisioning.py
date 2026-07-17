@@ -6,7 +6,7 @@ import re
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.auth.account_access import authorized_account_ids, is_account_admin
 from app.auth.principal import Principal, resolve_principal
@@ -20,7 +20,7 @@ from app.deps import (
     get_user_store,
 )
 from app.platform.base import BrandTheme, DEFAULT_BRAND_THEME
-from app.provisioning.bundles import BUNDLES, ProvisioningBundle
+from app.provisioning.bundles import CORE_MODULE, OPTIONAL_MODULES, ProvisioningModule
 from app.provisioning.hetzner.broker import build_hetzner_broker
 from app.provisioning.hetzner.provisioner import HetznerProvisioner
 from app.provisioning.runs import (
@@ -62,13 +62,18 @@ def _reject_unsafe(value: str, field: str) -> str:
     return value
 
 
-class BundleOut(BaseModel):
+class ProvisioningModuleOut(BaseModel):
     id: str
     label: str
     description: str
     spaces: list[str]
     apps: list[str]
     modules: list[str]
+
+
+class ModuleCatalogOut(BaseModel):
+    core: ProvisioningModuleOut
+    optional_modules: list[ProvisioningModuleOut]
 
 
 class BrandThemeInput(BaseModel):
@@ -96,8 +101,10 @@ class BrandThemeInput(BaseModel):
 
 
 class CustomerProvisionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     customer_name: str = Field(min_length=1, max_length=200)
-    bundle_id: str = Field(default="full_stack", max_length=80)
+    module_ids: list[str] = Field(default_factory=list, max_length=4)
     account_kind: str = Field(default="organization", pattern="^(person|organization|family|project)$")
     account_id: str | None = Field(default=None, max_length=120)
     deployment_id: str | None = Field(default=None, max_length=120)
@@ -122,12 +129,22 @@ class CustomerProvisionCreate(BaseModel):
     callback_url: str = Field(default="", max_length=500)
 
     @field_validator(
-        "bundle_id", "deployment_type", "environment", "region", "release_ring",
+        "deployment_type", "environment", "region", "release_ring",
         "initial_version", "current_migration",
     )
     @classmethod
     def _structural_fields_are_inert(cls, v: str) -> str:
         return _reject_unsafe(v, "field")
+
+    @field_validator("module_ids")
+    @classmethod
+    def _module_ids_are_inert_and_unique(cls, v: list[str]) -> list[str]:
+        module_ids = [module_id.strip() for module_id in v]
+        for module_id in module_ids:
+            _reject_unsafe(module_id, "module id")
+        if len(set(module_ids)) != len(module_ids):
+            raise ValueError("module_ids must not contain duplicates")
+        return module_ids
 
     @field_validator("module_versions")
     @classmethod
@@ -181,6 +198,7 @@ class ProvisionedDeploymentOut(BaseModel):
     release_ring: str
     current_version: str
     current_migration: str = ""
+    selected_module_ids: list[str] = Field(default_factory=list)
 
 
 class ProvisionedModuleOut(BaseModel):
@@ -202,7 +220,7 @@ class ProvisionedCredentialOut(BaseModel):
 
 
 class ProvisioningResultOut(BaseModel):
-    bundle_id: str
+    module_ids: list[str] = Field(default_factory=list)
     account: ProvisionedAccountOut
     spaces: list[ProvisionedSpaceOut]
     apps: list[ProvisionedAppOut]
@@ -218,7 +236,7 @@ class ProvisioningRunOut(BaseModel):
     id: str
     account_id: str
     deployment_id: str
-    bundle_id: str
+    module_ids: list[str] = Field(default_factory=list)
     requested_by: str
     status: str
     external_provider: str = ""
@@ -286,14 +304,14 @@ def _validate_callback_url(url: str) -> None:
         raise HTTPException(status_code=400, detail="callback_url host is not allowed.")
 
 
-def _bundle_out(bundle: ProvisioningBundle) -> BundleOut:
-    return BundleOut(
-        id=bundle.id,
-        label=bundle.label,
-        description=bundle.description,
-        spaces=[space.kind for space in bundle.spaces],
-        apps=[app.app_id for app in bundle.apps],
-        modules=list(bundle.modules),
+def _module_out(module: ProvisioningModule) -> ProvisioningModuleOut:
+    return ProvisioningModuleOut(
+        id=module.id,
+        label=module.label,
+        description=module.description,
+        spaces=[space.kind for space in module.spaces],
+        apps=[app.app_id for app in module.apps],
+        modules=list(module.modules),
     )
 
 
@@ -357,7 +375,7 @@ def _run_out(run: ProvisioningRun) -> ProvisioningRunOut:
         id=run.id,
         account_id=run.account_id,
         deployment_id=run.deployment_id,
-        bundle_id=run.bundle_id,
+        module_ids=list(run.module_ids),
         requested_by=run.requested_by,
         status=run.status,
         external_provider=run.external_provider,
@@ -422,7 +440,7 @@ def _dispatch_run(run: ProvisioningRun, *, owner_otp: str = "",
 def _result_out(result: ProvisioningResult, run: ProvisioningRun | None = None) -> ProvisioningResultOut:
     deployment = result.deployment
     return ProvisioningResultOut(
-        bundle_id=result.bundle.id,
+        module_ids=list(result.composition.selected_module_ids),
         account=ProvisionedAccountOut(
             id=result.account.id,
             kind=result.account.kind,
@@ -448,6 +466,7 @@ def _result_out(result: ProvisioningResult, run: ProvisioningRun | None = None) 
             release_ring=deployment.release_ring,
             current_version=deployment.current_version,
             current_migration=deployment.current_migration,
+            selected_module_ids=list(deployment.selected_module_ids),
         ),
         modules=[
             ProvisionedModuleOut(module_id=m.module_id, version=m.version, status=m.status)
@@ -473,10 +492,13 @@ def _result_out(result: ProvisioningResult, run: ProvisioningRun | None = None) 
     )
 
 
-@router.get("/bundles", response_model=list[BundleOut])
-def list_bundles(principal: Principal = Depends(resolve_principal)):
+@router.get("/modules", response_model=ModuleCatalogOut)
+def get_module_catalog(principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
-    return [_bundle_out(bundle) for bundle in BUNDLES.values()]
+    return ModuleCatalogOut(
+        core=_module_out(CORE_MODULE),
+        optional_modules=[_module_out(module) for module in OPTIONAL_MODULES],
+    )
 
 
 @router.post("/customers", response_model=ProvisioningResultOut)
@@ -510,7 +532,7 @@ def _provision_customer_impl(body: CustomerProvisionCreate, principal: Principal
             customer_name=body.customer_name,
             owner_user_id=principal.user_id,
             owner_email=body.owner_email,
-            bundle_id=body.bundle_id,
+            module_ids=body.module_ids,
             deployment_id=deployment_id,
             deployment_type=body.deployment_type,
             environment=body.environment,
@@ -535,6 +557,7 @@ def _provision_customer_impl(body: CustomerProvisionCreate, principal: Principal
     run = None
     if body.external_provisioning:
         payload = {
+            "module_ids": list(result.composition.selected_module_ids),
             "customer_name": body.customer_name,
             "account_kind": body.account_kind,
             "deployment_type": body.deployment_type,
@@ -551,7 +574,7 @@ def _provision_customer_impl(body: CustomerProvisionCreate, principal: Principal
             get_provisioning_run_store(),
             account_id=result.account.id,
             deployment_id=result.deployment.id,
-            bundle_id=result.bundle.id,
+            module_ids=result.composition.selected_module_ids,
             requested_by=principal.user_id,
             payload=payload,
         )
@@ -605,7 +628,7 @@ def retry_provisioning_run(run_id: str, principal: Principal = Depends(resolve_p
         store,
         account_id=run.account_id,
         deployment_id=run.deployment_id,
-        bundle_id=run.bundle_id,
+        module_ids=run.module_ids,
         requested_by=principal.user_id,
         payload=run.request_payload,
         retry_of_run_id=run.id,

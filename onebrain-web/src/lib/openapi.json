@@ -1332,6 +1332,10 @@
       "AiEmployeeOut": {
         "additionalProperties": false,
         "properties": {
+          "approval_rule": {
+            "title": "Approval Rule",
+            "type": "string"
+          },
           "avatar_url": {
             "title": "Avatar Url",
             "type": "string"
@@ -1388,6 +1392,13 @@
             "title": "Name",
             "type": "string"
           },
+          "never_without_approval": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Never Without Approval",
+            "type": "array"
+          },
           "personality": {
             "items": {
               "type": "string"
@@ -1398,6 +1409,13 @@
           "pod": {
             "title": "Pod",
             "type": "string"
+          },
+          "productivity_metrics": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Productivity Metrics",
+            "type": "array"
           },
           "profile_id": {
             "title": "Profile Id",
@@ -1414,6 +1432,13 @@
           "role": {
             "title": "Role",
             "type": "string"
+          },
+          "safe_actions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Safe Actions",
+            "type": "array"
           },
           "status": {
             "title": "Status",
@@ -1467,7 +1492,11 @@
           "model_policy_id",
           "model_provider",
           "model",
-          "default_mode"
+          "default_mode",
+          "safe_actions",
+          "approval_rule",
+          "productivity_metrics",
+          "never_without_approval"
         ],
         "title": "AiEmployeeOut",
         "type": "object"
@@ -2820,6 +2849,11 @@
       },
       "BackupOut": {
         "properties": {
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
           "deployment_id": {
             "title": "Deployment Id",
             "type": "string"
@@ -3004,53 +3038,6 @@
           "danger_color"
         ],
         "title": "BrandThemeOut",
-        "type": "object"
-      },
-      "BundleOut": {
-        "properties": {
-          "apps": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Apps",
-            "type": "array"
-          },
-          "description": {
-            "title": "Description",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "label": {
-            "title": "Label",
-            "type": "string"
-          },
-          "modules": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Modules",
-            "type": "array"
-          },
-          "spaces": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Spaces",
-            "type": "array"
-          }
-        },
-        "required": [
-          "id",
-          "label",
-          "description",
-          "spaces",
-          "apps",
-          "modules"
-        ],
-        "title": "BundleOut",
         "type": "object"
       },
       "ChangePasswordRequest": {
@@ -3466,6 +3453,7 @@
         "type": "object"
       },
       "CustomerProvisionCreate": {
+        "additionalProperties": false,
         "properties": {
           "account_id": {
             "anyOf": [
@@ -3501,12 +3489,6 @@
                 "type": "null"
               }
             ]
-          },
-          "bundle_id": {
-            "default": "full_stack",
-            "maxLength": 80,
-            "title": "Bundle Id",
-            "type": "string"
           },
           "callback_url": {
             "default": "",
@@ -3571,6 +3553,14 @@
             "default": true,
             "title": "Mint Integration Keys",
             "type": "boolean"
+          },
+          "module_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 4,
+            "title": "Module Ids",
+            "type": "array"
           },
           "module_versions": {
             "additionalProperties": {
@@ -4203,6 +4193,11 @@
           "target_version": {
             "title": "Target Version",
             "type": "string"
+          },
+          "updated_at": {
+            "default": "",
+            "title": "Updated At",
+            "type": "string"
           }
         },
         "required": [
@@ -4448,6 +4443,11 @@
       },
       "HealthOut": {
         "properties": {
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
           "deployment_id": {
             "title": "Deployment Id",
             "type": "string"
@@ -5726,6 +5726,26 @@
           "scopes"
         ],
         "title": "MintedKey",
+        "type": "object"
+      },
+      "ModuleCatalogOut": {
+        "properties": {
+          "core": {
+            "$ref": "#/components/schemas/ProvisioningModuleOut"
+          },
+          "optional_modules": {
+            "items": {
+              "$ref": "#/components/schemas/ProvisioningModuleOut"
+            },
+            "title": "Optional Modules",
+            "type": "array"
+          }
+        },
+        "required": [
+          "core",
+          "optional_modules"
+        ],
+        "title": "ModuleCatalogOut",
         "type": "object"
       },
       "ModuleOut": {
@@ -7156,6 +7176,13 @@
           "release_ring": {
             "title": "Release Ring",
             "type": "string"
+          },
+          "selected_module_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Module Ids",
+            "type": "array"
           }
         },
         "required": [
@@ -7288,6 +7315,53 @@
         "title": "ProvisioningCallbackIn",
         "type": "object"
       },
+      "ProvisioningModuleOut": {
+        "properties": {
+          "apps": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Apps",
+            "type": "array"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "modules": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Modules",
+            "type": "array"
+          },
+          "spaces": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Spaces",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "description",
+          "spaces",
+          "apps",
+          "modules"
+        ],
+        "title": "ProvisioningModuleOut",
+        "type": "object"
+      },
       "ProvisioningResultOut": {
         "properties": {
           "account": {
@@ -7310,10 +7384,6 @@
           "brand_theme": {
             "$ref": "#/components/schemas/BrandThemeOut"
           },
-          "bundle_id": {
-            "title": "Bundle Id",
-            "type": "string"
-          },
           "credentials": {
             "items": {
               "$ref": "#/components/schemas/ProvisionedCredentialOut"
@@ -7323,6 +7393,13 @@
           },
           "deployment": {
             "$ref": "#/components/schemas/ProvisionedDeploymentOut"
+          },
+          "module_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Module Ids",
+            "type": "array"
           },
           "modules": {
             "items": {
@@ -7350,7 +7427,6 @@
           }
         },
         "required": [
-          "bundle_id",
           "account",
           "spaces",
           "apps",
@@ -7370,10 +7446,6 @@
           "bootstrap_secret_id": {
             "default": "",
             "title": "Bootstrap Secret Id",
-            "type": "string"
-          },
-          "bundle_id": {
-            "title": "Bundle Id",
             "type": "string"
           },
           "completed_at": {
@@ -7423,6 +7495,13 @@
             "default": "",
             "title": "Migration Revision",
             "type": "string"
+          },
+          "module_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Module Ids",
+            "type": "array"
           },
           "railway_environment_id": {
             "default": "",
@@ -7474,7 +7553,6 @@
           "id",
           "account_id",
           "deployment_id",
-          "bundle_id",
           "requested_by",
           "status"
         ],
@@ -8122,8 +8200,53 @@
             "title": "Ack Restore Required",
             "type": "boolean"
           },
+          "completed_at": {
+            "default": "",
+            "title": "Completed At",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
           "deployment_id": {
             "title": "Deployment Id",
+            "type": "string"
+          },
+          "dispatched_at": {
+            "default": "",
+            "title": "Dispatched At",
+            "type": "string"
+          },
+          "exec_status": {
+            "default": "pending",
+            "title": "Exec Status",
+            "type": "string"
+          },
+          "external_provider": {
+            "default": "",
+            "title": "External Provider",
+            "type": "string"
+          },
+          "external_run_id": {
+            "default": "",
+            "title": "External Run Id",
+            "type": "string"
+          },
+          "external_run_url": {
+            "default": "",
+            "title": "External Run Url",
+            "type": "string"
+          },
+          "failure_reason": {
+            "default": "",
+            "title": "Failure Reason",
+            "type": "string"
+          },
+          "fleet_rollout_id": {
+            "default": "",
+            "title": "Fleet Rollout Id",
             "type": "string"
           },
           "id": {
@@ -9105,6 +9228,11 @@
           "location_label": {
             "title": "Location Label",
             "type": "string"
+          },
+          "must_change_password": {
+            "default": false,
+            "title": "Must Change Password",
+            "type": "boolean"
           },
           "operator_mode": {
             "default": false,
@@ -13945,7 +14073,7 @@
     },
     "/api/operator/development-gate/provision": {
       "post": {
-        "description": "Create a full-stack customer-shaped dev gate; designation waits for verification.",
+        "description": "Create the Core-plus-modules development gate; designation waits for verification.",
         "operationId": "provision_development_gate_api_operator_development_gate_provision_post",
         "parameters": [
           {
@@ -16848,53 +16976,6 @@
         ]
       }
     },
-    "/api/provisioning/bundles": {
-      "get": {
-        "operationId": "list_bundles_api_provisioning_bundles_get",
-        "parameters": [
-          {
-            "in": "cookie",
-            "name": "ob_session",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Ob Session",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/BundleOut"
-                  },
-                  "title": "Response List Bundles Api Provisioning Bundles Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Bundles",
-        "tags": [
-          "provisioning"
-        ]
-      }
-    },
     "/api/provisioning/customers": {
       "post": {
         "operationId": "provision_customer_api_provisioning_customers_post",
@@ -16943,6 +17024,49 @@
           }
         },
         "summary": "Provision Customer",
+        "tags": [
+          "provisioning"
+        ]
+      }
+    },
+    "/api/provisioning/modules": {
+      "get": {
+        "operationId": "get_module_catalog_api_provisioning_modules_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModuleCatalogOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Module Catalog",
         "tags": [
           "provisioning"
         ]

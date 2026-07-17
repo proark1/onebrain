@@ -228,7 +228,10 @@ class DevelopmentGateProvisionIn(BaseModel):
 
 
 DEVELOPMENT_GATE_DEPLOYMENT_ID = "onebrain_development_gate"
-DEVELOPMENT_GATE_BUNDLE_ID = "full_stack"
+# The development gate deliberately includes every currently available optional
+# product module.  Core is resolved server-side for every provisioning request;
+# browsers and callers cannot opt it out.
+DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS = ("assistant", "kpi_dashboard", "ai_employees", "communication")
 DEVELOPMENT_GATE_ACCOUNT_ID = "onebrain-development"
 
 
@@ -243,6 +246,7 @@ class BackupOut(BaseModel):
     deployment_id: str
     status: str
     detail: str = ""
+    created_at: str = ""
 
 
 class HealthCreate(BaseModel):
@@ -256,6 +260,7 @@ class HealthOut(BaseModel):
     deployment_id: str
     status: str
     detail: str = ""
+    created_at: str = ""
 
 
 class UpdatePlanOut(BaseModel):
@@ -299,6 +304,15 @@ class RolloutOut(BaseModel):
     status: str
     started_by: str
     notes: str = ""
+    created_at: str = ""
+    exec_status: str = "pending"
+    external_provider: str = ""
+    external_run_id: str = ""
+    external_run_url: str = ""
+    failure_reason: str = ""
+    dispatched_at: str = ""
+    completed_at: str = ""
+    fleet_rollout_id: str = ""
     ack_restore_required: bool = False
 
 
@@ -544,11 +558,23 @@ def _release_out(
 
 
 def _backup_out(b: BackupRun) -> BackupOut:
-    return BackupOut(id=b.id, deployment_id=b.deployment_id, status=b.status, detail=b.detail)
+    return BackupOut(
+        id=b.id,
+        deployment_id=b.deployment_id,
+        status=b.status,
+        detail=b.detail,
+        created_at=b.created_at,
+    )
 
 
 def _health_out(h: HealthCheckRun) -> HealthOut:
-    return HealthOut(id=h.id, deployment_id=h.deployment_id, status=h.status, detail=h.detail)
+    return HealthOut(
+        id=h.id,
+        deployment_id=h.deployment_id,
+        status=h.status,
+        detail=h.detail,
+        created_at=h.created_at,
+    )
 
 
 def _plan_out(p: UpdatePlan) -> UpdatePlanOut:
@@ -564,6 +590,15 @@ def _rollout_out(r: RolloutRun) -> RolloutOut:
     return RolloutOut(
         id=r.id, deployment_id=r.deployment_id, target_version=r.target_version,
         status=r.status, started_by=r.started_by, notes=r.notes,
+        created_at=r.created_at,
+        exec_status=r.exec_status,
+        external_provider=r.external_provider,
+        external_run_id=r.external_run_id,
+        external_run_url=r.external_run_url,
+        failure_reason=r.failure_reason,
+        dispatched_at=r.dispatched_at,
+        completed_at=r.completed_at,
+        fleet_rollout_id=r.fleet_rollout_id,
         ack_restore_required=r.ack_restore_required,
     )
 
@@ -1001,7 +1036,7 @@ def list_customers(principal: Principal = Depends(resolve_principal)):
         backup = control_store.latest_backup(deployment.id) if deployment else None
         health = control_store.latest_health(deployment.id) if deployment else None
         rollouts = control_store.list_rollouts(deployment.id) if deployment else []
-        latest_rollout = sorted(rollouts, key=lambda r: r.created_at or r.id)[-1] if rollouts else None
+        latest_rollout = max(rollouts, key=lambda rollout: (rollout.created_at, rollout.id)) if rollouts else None
         rows.append(CustomerOverviewOut(
             account=_account_out(account),
             spaces=[_space_out(space) for space in platform_store.list_spaces(account.id)],
@@ -1340,9 +1375,9 @@ def _development_gate_blockers(store, gate: CustomerDeployment) -> list[str]:
         blockers.append("deployment_heartbeat_stale")
     if gate.last_heartbeat_healthy is not True:
         blockers.append("deployment_unhealthy")
-    from app.provisioning.bundles import BUNDLES
+    from app.provisioning.bundles import resolve_module_composition
 
-    required_modules = set(BUNDLES[DEVELOPMENT_GATE_BUNDLE_ID].modules)
+    required_modules = set(resolve_module_composition(DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS).modules)
     installed_modules = {
         module.module_id: module.version
         for module in store.list_modules(gate.id)
@@ -1442,7 +1477,7 @@ def provision_development_gate(
     body: DevelopmentGateProvisionIn,
     principal: Principal = Depends(resolve_principal),
 ):
-    """Create a full-stack customer-shaped dev gate; designation waits for verification."""
+    """Create the Core-plus-modules development gate; designation waits for verification."""
     _require_admin(principal)
     _require_operator_mode()
     settings = get_settings()
@@ -1456,19 +1491,20 @@ def provision_development_gate(
     baseline = _latest_approved_release(store)
     if not baseline:
         raise HTTPException(status_code=409, detail="A trusted approved baseline release is required first.")
-    from app.provisioning.bundles import BUNDLES
+    from app.provisioning.bundles import resolve_module_composition
     from app.routers.provisioning import CustomerProvisionCreate, _provision_customer_impl
 
-    module_ids = BUNDLES[DEVELOPMENT_GATE_BUNDLE_ID].modules
-    missing = sorted(module_id for module_id in module_ids if module_id not in baseline.modules)
+    composition = resolve_module_composition(DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS)
+    deployable_module_ids = composition.modules
+    missing = sorted(module_id for module_id in deployable_module_ids if module_id not in baseline.modules)
     if missing:
         raise HTTPException(
             status_code=409,
-            detail=f"Baseline release does not cover the full-stack bundle: {','.join(missing)}",
+            detail=f"Baseline release does not cover the development gate modules: {','.join(missing)}",
         )
-    missing_images = sorted(module_id for module_id in module_ids if module_id not in baseline.images)
+    missing_images = sorted(module_id for module_id in deployable_module_ids if module_id not in baseline.images)
     image_errors = verify_images(
-        {module_id: baseline.images[module_id] for module_id in module_ids if module_id in baseline.images},
+        {module_id: baseline.images[module_id] for module_id in deployable_module_ids if module_id in baseline.images},
         parse_registry_allowlist(settings.release_registry_allowlist),
     )
     if missing_images or image_errors:
@@ -1483,13 +1519,13 @@ def provision_development_gate(
             "dry_run": True,
             "deployment": {"id": deployment_id},
             "account_id": account_id,
-            "bundle_id": DEVELOPMENT_GATE_BUNDLE_ID,
+            "module_ids": list(composition.selected_module_ids),
             "environment": "development",
             "deployment_type": "dedicated_server",
             "region": body.region.strip(),
             "initial_version": baseline.version,
-            "modules": {module_id: baseline.modules[module_id] for module_id in module_ids},
-            "images": {module_id: baseline.images[module_id] for module_id in module_ids},
+            "modules": {module_id: baseline.modules[module_id] for module_id in deployable_module_ids},
+            "images": {module_id: baseline.images[module_id] for module_id in deployable_module_ids},
         }
     if not settings.dev_release_verify_public_key:
         raise HTTPException(
@@ -1504,7 +1540,7 @@ def provision_development_gate(
         raise HTTPException(status_code=409, detail="Mission Control fleet_public_url is required.")
     return _provision_customer_impl(CustomerProvisionCreate(
         customer_name="One Brain Development Gate",
-        bundle_id=DEVELOPMENT_GATE_BUNDLE_ID,
+        module_ids=list(composition.selected_module_ids),
         account_kind="project",
         account_id=account_id,
         deployment_id=deployment_id,
@@ -1515,7 +1551,7 @@ def provision_development_gate(
         release_ring="internal",
         initial_version=baseline.version,
         current_migration=baseline.migration_to,
-        module_versions={module_id: baseline.modules[module_id] for module_id in module_ids},
+        module_versions={module_id: baseline.modules[module_id] for module_id in deployable_module_ids},
         mint_integration_keys=True,
         external_provisioning=True,
         dry_run=body.dry_run,
@@ -1969,6 +2005,7 @@ class FleetRolloutOut(BaseModel):
     started_by: str = ""
     notes: str = ""
     created_at: str = ""
+    updated_at: str = ""
     ring_batch_size: int = 1
     deployment_ids: list[str] = Field(default_factory=list)
     include_manual_pinned: bool = False
@@ -1989,7 +2026,7 @@ def _fleet_out(fr) -> FleetRolloutOut:
     return FleetRolloutOut(
         id=fr.id, target_version=fr.target_version, status=fr.status, ring_order=list(fr.ring_order),
         current_ring=fr.current_ring, failure_tolerance=fr.failure_tolerance,
-        started_by=fr.started_by, notes=fr.notes, created_at=fr.created_at,
+        started_by=fr.started_by, notes=fr.notes, created_at=fr.created_at, updated_at=fr.updated_at,
         ring_batch_size=fr.ring_batch_size,
         deployment_ids=list(fr.only_deployment_ids),
         include_manual_pinned=fr.include_manual_pinned,

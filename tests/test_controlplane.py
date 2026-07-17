@@ -239,6 +239,27 @@ def test_unknown_module_and_invalid_ring_are_rejected():
         store.upsert_module(DeploymentModule("dep_ok", "unknown-module", "1.0.0"))
 
 
+def test_selected_product_module_ids_round_trip_in_memory_store(tmp_path):
+    path = tmp_path / "controlplane.json"
+    store = MemoryControlPlaneStore(persist_path=str(path))
+    created = store.create_deployment(CustomerDeployment(
+        id="dep_modules",
+        customer_name="Module Co",
+        selected_module_ids=("assistant", "kpi_dashboard"),
+    ))
+
+    assert created.selected_module_ids == ("assistant", "kpi_dashboard")
+    reloaded = MemoryControlPlaneStore(persist_path=str(path))
+    assert reloaded.get_deployment("dep_modules").selected_module_ids == ("assistant", "kpi_dashboard")
+
+    with pytest.raises(ValueError, match="duplicates"):
+        store.create_deployment(CustomerDeployment(
+            id="dep_duplicate_modules",
+            customer_name="Duplicate Co",
+            selected_module_ids=("assistant", "assistant"),
+        ))
+
+
 def test_operator_endpoint_lists_rollout_status(monkeypatch):
     store = _store()
     store.create_release(ReleaseManifest(
@@ -255,6 +276,46 @@ def test_operator_endpoint_lists_rollout_status(monkeypatch):
     assert len(rollouts) == 1
     assert rollouts[0].id == "roll_status"
     assert rollouts[0].status == "running"
+
+
+def test_operator_rollout_responses_include_lifecycle_timestamps_and_safe_execution_detail(monkeypatch):
+    store = _store()
+    store.create_release(ReleaseManifest(
+        version="2026.07.4",
+        git_sha="abc456",
+        modules={"onebrain-api": "0.8.0", "communication-api": "0.6.0"},
+    ))
+    store.start_rollout(RolloutRun(
+        "roll_lifecycle",
+        "dep_a",
+        "2026.07.4",
+        "pending",
+        "admin",
+        notes="Waiting for the development gate.",
+        created_at="2026-07-17T10:00:00+00:00",
+    ))
+    store.update_rollout_exec(
+        "roll_lifecycle",
+        exec_status="failed",
+        external_run_id="run_123",
+        external_run_url="https://github.com/proark1/onebrain/actions/runs/123",
+        failure_reason="The deployment did not report healthy.",
+        dispatched_at="2026-07-17T10:01:00+00:00",
+        completed_at="2026-07-17T10:04:00+00:00",
+    )
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
+
+    rollout = operator_router.list_rollouts("dep_a", principal=_admin())[0]
+
+    assert rollout.created_at == "2026-07-17T10:00:00+00:00"
+    assert rollout.exec_status == "failed"
+    assert rollout.external_provider == "github_actions"
+    assert rollout.external_run_id == "run_123"
+    assert rollout.external_run_url.endswith("/123")
+    assert rollout.failure_reason == "The deployment did not report healthy."
+    assert rollout.dispatched_at == "2026-07-17T10:01:00+00:00"
+    assert rollout.completed_at == "2026-07-17T10:04:00+00:00"
 
 
 def test_operator_endpoint_marks_rollout_success_and_updates_deployment(monkeypatch):
@@ -281,9 +342,15 @@ def test_operator_endpoint_marks_rollout_success_and_updates_deployment(monkeypa
 
 def test_operator_endpoints_expose_latest_backup_and_health(monkeypatch):
     store = _store()
-    store.record_backup(BackupRun("bak_failed", "dep_a", "failed", "old failure"))
-    store.record_backup(BackupRun("bak_ready", "dep_a", "success", "pre-update snapshot"))
-    store.record_health(HealthCheckRun("hlth_ready", "dep_a", "success", "all checks green"))
+    store.record_backup(BackupRun(
+        "bak_failed", "dep_a", "failed", "old failure", created_at="2026-07-17T09:00:00+00:00",
+    ))
+    store.record_backup(BackupRun(
+        "bak_ready", "dep_a", "success", "pre-update snapshot", created_at="2026-07-17T09:10:00+00:00",
+    ))
+    store.record_health(HealthCheckRun(
+        "hlth_ready", "dep_a", "success", "all checks green", created_at="2026-07-17T09:11:00+00:00",
+    ))
     monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
     monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
 
@@ -293,8 +360,53 @@ def test_operator_endpoints_expose_latest_backup_and_health(monkeypatch):
     assert backup is not None
     assert backup.id == "bak_ready"
     assert backup.status == "success"
+    assert backup.detail == "pre-update snapshot"
+    assert backup.created_at == "2026-07-17T09:10:00+00:00"
     assert health is not None
     assert health.status == "success"
+    assert health.detail == "all checks green"
+    assert health.created_at == "2026-07-17T09:11:00+00:00"
+
+
+def test_control_plane_lists_releases_and_rollouts_newest_first(monkeypatch):
+    store = _store()
+    for version, created_at in (
+        ("2026.07.8", "2026-07-17T08:00:00+00:00"),
+        ("2026.07.10", "2026-07-17T10:00:00+00:00"),
+        ("2026.07.11", "2026-07-17T10:00:00+00:00"),
+    ):
+        store.create_release(ReleaseManifest(
+            version=version,
+            git_sha=f"sha-{version}",
+            modules={"onebrain-api": "0.8.0", "communication-api": "0.6.0"},
+            created_at=created_at,
+        ))
+    for rollout_id, version, created_at in (
+        ("roll_old", "2026.07.8", "2026-07-17T08:10:00+00:00"),
+        ("roll_same_time_a", "2026.07.10", "2026-07-17T10:10:00+00:00"),
+        ("roll_same_time_b", "2026.07.11", "2026-07-17T10:10:00+00:00"),
+    ):
+        store.start_rollout(RolloutRun(
+            rollout_id,
+            "dep_a",
+            version,
+            "failed",
+            "admin",
+            created_at=created_at,
+        ))
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
+
+    assert [release.version for release in store.list_releases()] == [
+        "2026.07.11", "2026.07.10", "2026.07.8",
+    ]
+    assert [rollout.id for rollout in store.list_rollouts("dep_a")] == [
+        "roll_same_time_b", "roll_same_time_a", "roll_old",
+    ]
+    assert [release.version for release in operator_router.list_releases(principal=_admin())] == [
+        "2026.07.11", "2026.07.10", "2026.07.8",
+    ]
+
 
 
 def test_operator_can_list_and_revoke_customer_integration_keys(monkeypatch):

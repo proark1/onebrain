@@ -41,7 +41,7 @@ import type {
   PrivacyExport,
   ProvisionCustomerInput,
   ProvisioningRun,
-  ProvisioningBundle,
+  ProvisioningModuleCatalog,
   ProvisioningResult,
   BootstrapSecretResult,
   ServiceKeyInfo,
@@ -524,8 +524,8 @@ export function upsertPlatformBrandTheme(
   });
 }
 
-export function listProvisioningBundles(): Promise<ProvisioningBundle[]> {
-  return requestJson<ProvisioningBundle[]>("/provisioning/bundles");
+export function getProvisioningModuleCatalog(): Promise<ProvisioningModuleCatalog> {
+  return requestJson<ProvisioningModuleCatalog>("/provisioning/modules");
 }
 
 export function provisionCustomer(input: ProvisionCustomerInput): Promise<ProvisioningResult> {
@@ -535,7 +535,7 @@ export function provisionCustomer(input: ProvisionCustomerInput): Promise<Provis
     body: JSON.stringify({
       account_id: input.account_id?.trim() || null,
       account_kind: input.account_kind || "organization",
-      bundle_id: input.bundle_id,
+      module_ids: input.module_ids,
       current_migration: input.current_migration?.trim() || "",
       customer_name: input.customer_name.trim(),
       deployment_id: input.deployment_id?.trim() || null,

@@ -51,6 +51,10 @@ export type AiEmployee = {
   model_provider: string;
   model: string;
   default_mode: string;
+  safe_actions: string[];
+  approval_rule: string;
+  never_without_approval: string[];
+  productivity_metrics: string[];
 };
 
 export type AiEmployeeTeam = {
@@ -407,7 +411,7 @@ export type ServiceKeyInfo = {
   revoked_at: string;
 };
 
-export type ProvisioningBundle = {
+export type ProvisioningModule = {
   id: string;
   label: string;
   description: string;
@@ -416,10 +420,15 @@ export type ProvisioningBundle = {
   modules: string[];
 };
 
+export type ProvisioningModuleCatalog = {
+  core: ProvisioningModule;
+  optional_modules: ProvisioningModule[];
+};
+
 export type ProvisionCustomerInput = {
   account_id?: string;
   account_kind?: string;
-  bundle_id: string;
+  module_ids: string[];
   current_migration?: string;
   customer_name: string;
   deployment_id?: string;
@@ -450,7 +459,7 @@ export type ProvisionedCredential = {
 };
 
 export type ProvisioningResult = {
-  bundle_id: string;
+  module_ids: string[];
   account: {
     id: string;
     kind: string;
@@ -473,6 +482,7 @@ export type ProvisioningResult = {
     release_ring: string;
     current_version: string;
     current_migration: string;
+    selected_module_ids: string[];
   };
   modules: Array<{ module_id: string; version: string; status: string }>;
   credentials: ProvisionedCredential[];
@@ -485,7 +495,7 @@ export type ProvisioningRun = {
   id: string;
   account_id: string;
   deployment_id: string;
-  bundle_id: string;
+  module_ids: string[];
   requested_by: string;
   status: string;
   external_provider: string;
@@ -528,6 +538,7 @@ export type OperatorDeployment = {
   last_heartbeat_healthy: boolean | null;
   last_reported_version: string;
   last_reported_migration: string;
+  selected_module_ids: string[];
 };
 
 export type OperatorModule = {
@@ -591,6 +602,7 @@ export type OperatorBackup = {
   deployment_id: string;
   status: string;
   detail: string;
+  created_at: string;
 };
 
 export type OperatorHealth = {
@@ -598,6 +610,7 @@ export type OperatorHealth = {
   deployment_id: string;
   status: string;
   detail: string;
+  created_at: string;
 };
 
 export type OperatorRollout = {
@@ -607,6 +620,16 @@ export type OperatorRollout = {
   status: string;
   started_by: string;
   notes: string;
+  created_at: string;
+  updated_at: string;
+  exec_status: string;
+  external_provider: string;
+  external_run_id: string;
+  external_run_url: string;
+  failure_reason: string;
+  dispatched_at: string;
+  completed_at: string;
+  fleet_rollout_id: string;
 };
 
 export type OperatorUpdatePlan = {
@@ -989,6 +1012,7 @@ export interface FleetRollout {
   started_by: string;
   notes: string;
   created_at: string;
+  updated_at: string;
   ring_batch_size: number;
   deployment_ids: string[];
   include_manual_pinned: boolean;

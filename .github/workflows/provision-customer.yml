@@ -15,7 +15,7 @@ on:
       customer_name:
         required: true
         type: string
-      bundle_id:
+      module_ids_json:
         required: true
         type: string
       deployment_type:
@@ -64,7 +64,7 @@ jobs:
       IN_ACCOUNT_ID: ${{ inputs.account_id }}
       IN_DEPLOYMENT_ID: ${{ inputs.deployment_id }}
       IN_CUSTOMER_NAME: ${{ inputs.customer_name }}
-      IN_BUNDLE_ID: ${{ inputs.bundle_id }}
+      IN_MODULE_IDS_JSON: ${{ inputs.module_ids_json }}
       IN_DEPLOYMENT_TYPE: ${{ inputs.deployment_type }}
       IN_REGION: ${{ inputs.region }}
       IN_RELEASE_RING: ${{ inputs.release_ring }}
@@ -86,8 +86,21 @@ jobs:
           test -n "${IN_RUN_ID}"
           test -n "${IN_ACCOUNT_ID}"
           test -n "${IN_DEPLOYMENT_ID}"
-          test -n "${IN_BUNDLE_ID}"
           test -n "${IN_CALLBACK_URL}"
+          python - <<'PY'
+          import json
+          import os
+
+          module_ids = json.loads(os.environ["IN_MODULE_IDS_JSON"])
+          allowed = {"assistant", "kpi_dashboard", "ai_employees", "communication"}
+          if not isinstance(module_ids, list) or any(not isinstance(item, str) for item in module_ids):
+              raise SystemExit("module_ids_json must be an array of strings")
+          if len(set(module_ids)) != len(module_ids):
+              raise SystemExit("module_ids_json must not contain duplicates")
+          unknown = sorted(set(module_ids) - allowed)
+          if unknown:
+              raise SystemExit(f"unknown optional modules: {unknown}")
+          PY
           python -m json.tool <<< "${IN_MODULE_VERSIONS_JSON}" >/dev/null
           python -m json.tool <<< "${IN_BRAND_THEME_JSON}" >/dev/null
 
@@ -147,7 +160,7 @@ jobs:
               "migration_revision": "dry-run",
               "smoke_status": "dry_run_passed",
               "result_payload": {
-                  "bundle_id": os.environ["IN_BUNDLE_ID"],
+                  "module_ids": json.loads(os.environ["IN_MODULE_IDS_JSON"]),
                   "deployment_type": os.environ["IN_DEPLOYMENT_TYPE"],
                   "module_versions": json.loads(os.environ["IN_MODULE_VERSIONS_JSON"]),
               },
@@ -308,24 +321,31 @@ jobs:
             esac
           }
 
+          mapfile -t selected_modules < <(python - <<'PY'
+          import json, os
+
+          for module_id in json.loads(os.environ["IN_MODULE_IDS_JSON"]):
+              print(module_id)
+          PY
+          )
           module_services=()
-          case "${IN_BUNDLE_ID}" in
-            onebrain_only)
-              ;;
-            onebrain_assistant)
-              module_services=(assistant-service)
-              ;;
-            onebrain_communication)
-              module_services=(communication-api communication-widget communication-voice communication-workers)
-              ;;
-            full_stack)
-              module_services=(assistant-service communication-api communication-widget communication-voice communication-workers)
-              ;;
-            *)
-              echo "Unknown bundle: ${IN_BUNDLE_ID}" >&2
-              exit 1
-              ;;
-          esac
+          for selected_module in "${selected_modules[@]}"; do
+            case "${selected_module}" in
+              assistant)
+                module_services+=(assistant-service)
+                ;;
+              communication)
+                module_services+=(communication-api communication-widget communication-voice communication-workers)
+                ;;
+              kpi_dashboard|ai_employees)
+                # These product modules run within Core services today.
+                ;;
+              *)
+                echo "Unknown optional module: ${selected_module}" >&2
+                exit 1
+                ;;
+            esac
+          done
 
           if [ -n "${RAILWAY_API_TOKEN:-}" ]; then
             export RAILWAY_API_TOKEN="${RAILWAY_API_TOKEN}"
@@ -490,7 +510,7 @@ jobs:
               "migration_revision": os.environ["IN_INITIAL_VERSION"],
               "smoke_status": "core_smoke_passed",
               "result_payload": {
-                  "bundle_id": os.environ["IN_BUNDLE_ID"],
+                  "module_ids": json.loads(os.environ["IN_MODULE_IDS_JSON"]),
                   "deployment_type": os.environ["IN_DEPLOYMENT_TYPE"],
                   "service_ids": json.loads(os.environ["SERVICE_IDS_JSON"]),
                   "module_services_deployed": json.loads(os.environ["MODULE_DEPLOYED_JSON"]),
