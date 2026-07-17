@@ -3372,6 +3372,26 @@ button:disabled,
   margin: 0;
 }
 
+.settingsPanel { max-width: 520px; }
+.settingsActions { display: grid; gap: 10px; }
+.settingsAction {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  border: 1px solid rgb(var(--brand-text-rgb) / 12%);
+  border-radius: var(--radius);
+  background: var(--brand-surface);
+  color: var(--brand-primary);
+  padding: 14px 16px;
+  text-align: left;
+}
+.settingsAction > span:first-child { display: grid; gap: 3px; }
+.settingsAction small { color: var(--muted); font-size: 12px; }
+.settingsAction:hover { border-color: rgb(var(--brand-primary-rgb) / 35%); }
+.dangerAction strong { color: var(--brand-danger); }
+
 /* AI Employees — a live organizational dossier, scoped away from the core console. */
 .aiEmployeesWorkspace {
   --ai-ink: #111b24;
