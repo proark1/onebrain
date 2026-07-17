@@ -17,6 +17,14 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Alembic creates version_num as VARCHAR(32), but this published revision ID
+    # is 34 characters. Widen the bookkeeping column before Alembic stamps the
+    # new revision at the end of this transaction. Keep the wider type on
+    # downgrade so a future descriptive revision cannot recreate the outage.
+    op.execute(
+        "ALTER TABLE alembic_version "
+        "ALTER COLUMN version_num TYPE VARCHAR(128)"
+    )
     # Selected product modules are distinct from control_deployment_modules:
     # KPI Dashboard and AI Employees are real product choices even though they
     # currently add no separate container service row.

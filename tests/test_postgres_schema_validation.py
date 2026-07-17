@@ -275,8 +275,11 @@ def test_provisioning_runs_migration_tracks_expected_head():
     assert {"provisioning_runs", "one_time_secret_envelopes"} == set(migration.PROVISIONING_TABLES)
 
 
-def test_module_selection_migration_replaces_bundle_identity():
+def test_module_selection_migration_replaces_bundle_identity(monkeypatch):
     migration = _module_selection_migration_module()
+    statements: list[str] = []
+    monkeypatch.setattr(migration.op, "execute", statements.append)
+    migration.upgrade()
     source = (
         Path(__file__).resolve().parents[1]
         / "migrations"
@@ -286,6 +289,11 @@ def test_module_selection_migration_replaces_bundle_identity():
 
     assert migration.revision == "0025_provisioning_module_selection"
     assert migration.down_revision == "0024_ai_employees_runtime"
+    assert statements[0] == (
+        "ALTER TABLE alembic_version "
+        "ALTER COLUMN version_num TYPE VARCHAR(128)"
+    )
+    assert "alembic_version" not in " ".join(statements[1:])
     assert "selected_module_ids JSONB" in source
     assert "module_ids JSONB" in source
     assert "DROP COLUMN IF EXISTS bundle_id" in source
