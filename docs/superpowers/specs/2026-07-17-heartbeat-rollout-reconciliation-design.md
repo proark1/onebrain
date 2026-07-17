@@ -17,9 +17,10 @@ auditable state without an operator needing to remember a hidden recovery action
 ## Chosen approach
 
 Enable Mission Control's existing pull-reconcile scheduler with
-`ONEBRAIN_FLEET_RECONCILE_SECONDS=60`, then restart Mission Control.
+`ONEBRAIN_FLEET_RECONCILE_SECONDS=60`, deploy an immutable Mission Control image
+that includes development-gate pull reconciliation, then restart Mission Control.
 
-The scheduler already runs the authoritative `reconcile_pull_targets` reducer
+The scheduler runs the authoritative `reconcile_pull_targets` reducer
 against the latest authenticated heartbeat data. It uses the existing rollout state
 machine, including its exact attempt-ID checks and convergence timeout, rather than
 adding a second heartbeat-only completion path.
@@ -37,7 +38,9 @@ because the latter is the direct cause of an indefinitely stuck status.
    heartbeat set. Only pull-marked, non-terminal rollout rows can change state.
 4. A matching `succeeded` report marks the rollout successful through the existing
    update-plan gate; a matching failure or an expired convergence deadline marks it
-   failed with the existing reason codes.
+   failed with the existing reason codes. A convergence timeout finalizes both the
+   promotion and its still-active rollout, so the deployment concurrency lock and
+   UI cannot remain permanently `updating`.
 5. The next gate heartbeat promotes a successful development rollout to
    `dev_verified` only when its version, migration, module versions, attempt ID,
    and health match the signed release.
@@ -56,15 +59,23 @@ because the latter is the direct cause of an indefinitely stuck status.
 
 ## Current stuck rollout
 
-The currently deployed Mission Control version already exposes both the
-authenticated manual reconciliation endpoint and the scheduler code, but the live
-environment has not opted into the scheduler. Recovery has two bounded operations:
+The live Mission Control container predates standalone development-gate pull
+reconciliation. Enabling the scheduler exposed a second state-machine gap: its
+deadline correctly moved the promotion to `dev_failed`, but an active rollout row
+was left pending. The current gate's authenticated heartbeat nevertheless exactly
+matches release `2026.07.17.174` (version, migration, active modules, health, and
+attempt ID), so it is a verified success rather than a failed deployment.
 
-1. Call `POST /api/operator/fleet-rollouts/reconcile` once as an administrator.
-   This turns the current target into either a verified completion or an explicit
-   failure based on the gate's authenticated report; it does not force a version.
-2. Set `ONEBRAIN_FLEET_RECONCILE_SECONDS=60` on Mission Control and restart it.
-   The scheduler then prevents the same indefinite state on later releases.
+Recovery has three bounded operations:
+
+1. Deploy the current immutable Mission Control image containing development-gate
+   pull reconciliation and the convergence-timeout terminalization fix.
+2. Keep `ONEBRAIN_FLEET_RECONCILE_SECONDS=60` enabled on Mission Control.
+3. Reconcile the already verified release through the application state machine:
+   guarded checks must pass before its rollout is marked successful and its
+   promotion is re-entered from `dev_failed` to `dev_deploying`, then verified from
+   the authenticated stored report. This records the existing outcome with audit
+   events; it does not force a version or edit database rows directly.
 
 This deliberately does not edit the production database or bypass operator
 authentication. After a successful reconciliation, the normal candidate flow can
