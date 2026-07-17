@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Root-only, metadata-only fleet.v2 reporter for customer-shaped boxes.
-
-This deliberately has no OneBrain application imports and never reads a Compose
-environment file. ``onebrain-gate-agent.sh`` runs it as root after sourcing the
-root-owned ``/opt/onebrain/.env`` and ``box.env``. The resulting fleet
-credential therefore never enters a customer-facing container.
-"""
+"""Root-only, metadata-only fleet.v2 reporter for customer-shaped boxes."""
 
 from __future__ import annotations
 
@@ -55,8 +49,7 @@ def _module_ids(env: Mapping[str, str]) -> list[str]:
 
 
 def _release(env: Mapping[str, str]) -> dict:
-    """Use the last verified target when present, otherwise the immutable
-    provision-time release descriptor. Both files contain only release metadata."""
+    """Prefer verified updater state, then the provision-time descriptor."""
     data_dir = Path(env.get("UPDATE_DATA_DIR") or "/data")
     candidates = [
         data_dir / "onebrain_update" / "last_applied.json",
@@ -64,8 +57,12 @@ def _release(env: Mapping[str, str]) -> dict:
     ]
     for path in candidates:
         release = _read_json(path)
-        if _safe_string(release.get("version")) and isinstance(release.get("modules"), dict):
-            return release
+        version = _safe_string(release.get("version"))
+        modules = release.get("modules")
+        if not isinstance(modules, dict) and isinstance(release.get("images"), dict):
+            modules = dict.fromkeys(release["images"], version)
+        if version and isinstance(modules, dict):
+            return {**release, "modules": modules}
     return {}
 
 
