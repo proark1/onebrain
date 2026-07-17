@@ -71,6 +71,9 @@ LOCK="${WORK}/update.lock"
 
 mkdir -p "$WORK"
 
+# Preserve the non-root app identity across image upgrades; dry-run harnesses are not root.
+[ "$EUID" -ne 0 ] || { chown -Rh 10001:10001 "$UPDATE_DATA_DIR"; chmod 750 "$UPDATE_DATA_DIR"; }
+
 # Singleton: mkdir is atomic; a second run exits cleanly (A2 — no flock).
 if ! mkdir "$LOCK" 2>/dev/null; then
   exit 0

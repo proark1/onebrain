@@ -20,6 +20,11 @@ STATUS_FAILED = "failed"
 
 READY_STATUSES = (STATUS_QUEUED, STATUS_RETRYING)
 TERMINAL_STATUSES = (STATUS_SUCCEEDED, STATUS_FAILED)
+LEASE_EXPIRED_ERROR = "job lease expired before completion"
+
+
+class JobLeaseLostError(RuntimeError):
+    """Raised when a worker no longer owns a job's active lease."""
 
 
 def utcnow() -> datetime:
@@ -65,6 +70,8 @@ class Job:
     run_after: str = ""
     locked_by: str = ""
     locked_at: str = ""
+    lease_token: str = ""
+    lease_expires_at: str = ""
     created_at: str = ""
     updated_at: str = ""
     completed_at: str = ""
@@ -107,16 +114,32 @@ class JobStore(Protocol):
         max_attempts: int = 3,
     ) -> Job: ...
 
-    def get(self, job_id: str) -> Optional[Job]: ...
+    def get(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str = "",
+        account_id: str = "",
+        space_id: str = "",
+    ) -> Optional[Job]: ...
 
     def get_file(self, job_id: str) -> Optional[JobFile]: ...
 
-    def claim(self, worker_id: str, limit: int = 1) -> list[Job]: ...
+    def claim(self, worker_id: str, limit: int = 1, lease_seconds: int = 60) -> list[Job]: ...
 
-    def mark_succeeded(self, job_id: str, result: dict) -> Job: ...
+    def renew_lease(self, job_id: str, lease_token: str, lease_seconds: int) -> Job: ...
 
-    def mark_failed(self, job_id: str, error: str) -> Job: ...
+    def mark_succeeded(self, job_id: str, result: dict, *, lease_token: str) -> Job: ...
 
-    def mark_retry(self, job_id: str, error: str, run_after: datetime) -> Job: ...
+    def mark_failed(self, job_id: str, error: str, *, lease_token: str) -> Job: ...
+
+    def mark_retry(
+        self,
+        job_id: str,
+        error: str,
+        run_after: datetime,
+        *,
+        lease_token: str,
+    ) -> Job: ...
 
     def summary(self, recent_failures_limit: int = 10) -> JobSummary: ...

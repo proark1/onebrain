@@ -34,6 +34,19 @@ rollout. Anthropic and local backends are registered behind the same policy
 boundary and fail closed when they are unavailable or the data classification
 exceeds their configured ceiling.
 
+## Run reliability and reconnects
+
+Direct model turns are at-least-once operations with an idempotency key and a
+token-fenced, expiring lease. A browser reconnect must reuse its current key so
+the runtime returns the existing safe result/state instead of silently starting
+a second paid provider call. An intentional retry uses a new key.
+
+The running owner heartbeats its lease and may persist a terminal result only
+while its token is current. A disconnect, cancellation, provider timeout, or
+process failure cannot let a stale owner overwrite a reclaimed turn. Keep the
+provider timeout below the configured run lease so a heartbeat can occur, and
+alert on expired/lost leases rather than manually forcing a terminal result.
+
 ## Admin controls
 
 The OneBrain project admin can open **AI Employees → Admin** to edit a

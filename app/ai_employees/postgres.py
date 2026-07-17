@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Optional
 
 from app.ai_employees.base import (
+    AI_AGENT_RUN_LEASE_EXPIRED_ERROR,
     CHARACTER_VERSION_STATES,
     CONNECTOR_STATUSES,
     CONVERSATION_STATUSES,
@@ -15,8 +16,10 @@ from app.ai_employees.base import (
     MISSION_STATUSES,
     PROFILE_STATUSES,
     RUN_STATUSES,
+    RUN_TERMINAL_STATUSES,
     AiActionProposalRecord,
     AiAgentRun,
+    AiAgentRunClaim,
     AiConnectorBinding,
     AiEmployeeCharacterVersion,
     AiEmployeeConversation,
@@ -74,6 +77,8 @@ _TIMESTAMP_FIELDS = {
     "joined_at",
     "started_at",
     "completed_at",
+    "lease_expires_at",
+    "heartbeat_at",
     "retention_until",
     "approved_at",
     "expires_at",
@@ -146,6 +151,39 @@ class PostgresAiEmployeeStore:
             cur.execute(sql, self._params(record))
             conn.commit()
         return record
+
+    @staticmethod
+    def _validate_new_run_lease(run: AiAgentRun) -> None:
+        if run.status != "running":
+            raise ValueError("AI employee run leases can only start running turns.")
+        if not run.lease_token:
+            raise ValueError("AI employee running turns require a lease token.")
+        if not run.heartbeat_at or not run.lease_expires_at:
+            raise ValueError("AI employee running turns require lease heartbeat and expiry timestamps.")
+
+    @staticmethod
+    def _validate_owned_message(run: AiAgentRun, message: AiEmployeeMessage, *, speaker_type: str) -> None:
+        if (
+            message.tenant_id != run.tenant_id
+            or message.account_id != run.account_id
+            or message.space_id != run.space_id
+            or message.conversation_id != run.conversation_id
+            or message.run_id != run.id
+            or message.speaker_type != speaker_type
+        ):
+            raise ValueError("AI employee run message does not match the leased turn.")
+        if speaker_type == "employee" and message.speaker_id != run.employee_id:
+            raise ValueError("AI employee run assistant message has the wrong employee.")
+
+    def _insert_message(self, cur, message: AiEmployeeMessage) -> AiEmployeeMessage:
+        stored = replace(message, created_at=message.created_at or now_iso())
+        columns = [field.name for field in fields(stored)]
+        cur.execute(
+            "INSERT INTO ai_employee_messages "
+            f"({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))})",
+            self._params(stored),
+        )
+        return stored
 
     def _get(
         self, key: str, record_id: str, *, tenant_id: str, account_id: str, space_id: str,
@@ -502,15 +540,176 @@ class PostgresAiEmployeeStore:
         get_ai_employee(run.employee_id)
         if run.status not in RUN_STATUSES:
             raise ValueError("Unknown AI employee run status.")
+        if run.lease_token:
+            raise ValueError("Leased AI employee runs must start through atomic begin-or-get.")
         duplicate = self.get_run_by_idempotency(run.idempotency_key, **self._scope(run))
         if duplicate and duplicate.id != run.id:
             if duplicate.input_hash == run.input_hash:
                 return duplicate
             raise ValueError("AI employee run idempotency key conflicts with a different input.")
         current = self._get("runs", run.id, **self._scope(run))
+        if current and current.status == "running" and current.lease_token and current != run:
+            raise ValueError("Leased AI employee runs must be updated through lease ownership.")
         return self._upsert("runs", replace(
             run, created_at=(current.created_at if current else run.created_at) or now_iso(),
         ))
+
+    def begin_or_get_run(
+        self,
+        run: AiAgentRun,
+        *,
+        human_message: Optional[AiEmployeeMessage] = None,
+    ) -> AiAgentRunClaim:
+        """Atomically create a direct turn or return its existing idempotent run."""
+        get_ai_employee(run.employee_id)
+        run = replace(run, created_at=run.created_at or now_iso())
+        self._validate_new_run_lease(run)
+        if human_message:
+            self._validate_owned_message(run, human_message, speaker_type="human")
+        validate_scope(**self._scope(run))
+        table, _ = _TABLES["runs"]
+        columns = [field.name for field in fields(run)]
+        insert_sql = (
+            f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))}) "
+            "ON CONFLICT (tenant_id, account_id, space_id, idempotency_key) DO NOTHING "
+            f"RETURNING to_jsonb({table})"
+        )
+        with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, **self._scope(run))
+            cur.execute("SELECT %s::timestamptz > CURRENT_TIMESTAMP", (run.lease_expires_at,))
+            if not cur.fetchone()[0]:
+                raise ValueError("AI employee run lease expiry must be in the future.")
+            cur.execute(insert_sql, self._params(run))
+            created_row = cur.fetchone()
+            if created_row:
+                stored = _from_json("runs", created_row[0])
+                if human_message:
+                    self._insert_message(cur, human_message)
+                conn.commit()
+                return AiAgentRunClaim(run=stored, acquired=True)
+
+            cur.execute(
+                f"SELECT to_jsonb(r) FROM {table} r "
+                "WHERE tenant_id = %s AND account_id = %s AND space_id = %s AND idempotency_key = %s "
+                "FOR UPDATE",
+                (run.tenant_id, run.account_id, run.space_id, run.idempotency_key),
+            )
+            existing_row = cur.fetchone()
+            if not existing_row:
+                raise RuntimeError("AI employee idempotency conflict did not return a run.")
+            existing = _from_json("runs", existing_row[0])
+            if existing.input_hash == run.input_hash and existing.conversation_id == run.conversation_id:
+                cur.execute(
+                    f"UPDATE {table} "
+                    "SET status = 'failed', error = %s, completed_at = CURRENT_TIMESTAMP, "
+                    "lease_token = '', lease_expires_at = NULL "
+                    "WHERE id = %s AND tenant_id = %s AND account_id = %s AND space_id = %s "
+                    "AND status = 'running' AND ("
+                    "(lease_token <> '' AND lease_expires_at IS NOT NULL "
+                    "AND lease_expires_at <= CURRENT_TIMESTAMP) "
+                    "OR (mission_id = '' AND lease_token = '')"
+                    ") "
+                    f"RETURNING to_jsonb({table})",
+                    (
+                        AI_AGENT_RUN_LEASE_EXPIRED_ERROR,
+                        existing.id,
+                        existing.tenant_id,
+                        existing.account_id,
+                        existing.space_id,
+                    ),
+                )
+                expired_row = cur.fetchone()
+                if expired_row:
+                    existing = _from_json("runs", expired_row[0])
+            conn.commit()
+        return AiAgentRunClaim(run=existing, acquired=False)
+
+    def heartbeat_run(
+        self,
+        run_id: str,
+        *,
+        tenant_id: str,
+        account_id: str,
+        space_id: str,
+        lease_token: str,
+        lease_expires_at: str,
+    ) -> Optional[AiAgentRun]:
+        if not lease_token:
+            raise ValueError("AI employee run lease token is required.")
+        with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, tenant_id=tenant_id, account_id=account_id, space_id=space_id)
+            cur.execute(
+                "UPDATE ai_agent_runs "
+                "SET heartbeat_at = CURRENT_TIMESTAMP, lease_expires_at = %s "
+                "WHERE id = %s AND tenant_id = %s AND account_id = %s AND space_id = %s "
+                "AND status = 'running' AND lease_token = %s "
+                "AND lease_expires_at IS NOT NULL AND lease_expires_at > CURRENT_TIMESTAMP "
+                "AND %s::timestamptz > CURRENT_TIMESTAMP "
+                "RETURNING to_jsonb(ai_agent_runs)",
+                (
+                    lease_expires_at,
+                    run_id,
+                    tenant_id,
+                    account_id,
+                    space_id,
+                    lease_token,
+                    lease_expires_at,
+                ),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return _from_json("runs", row[0]) if row else None
+
+    def finalize_owned_run(
+        self,
+        run: AiAgentRun,
+        *,
+        lease_token: str,
+        assistant_message: Optional[AiEmployeeMessage] = None,
+    ) -> Optional[AiAgentRun]:
+        """Compare-and-set a terminal run state, optionally with its answer."""
+        if run.status not in RUN_TERMINAL_STATUSES:
+            raise ValueError("Only terminal AI employee run states can be finalized.")
+        if not lease_token:
+            raise ValueError("AI employee run lease token is required.")
+        if assistant_message:
+            self._validate_owned_message(run, assistant_message, speaker_type="employee")
+        with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(conn, **self._scope(run))
+            cur.execute(
+                "UPDATE ai_agent_runs "
+                "SET status = %s, provider_session_ref = %s, prompt_tokens = %s, completion_tokens = %s, "
+                "cost_usd = %s, warning = %s, error = %s, completed_at = %s, "
+                "lease_token = '', lease_expires_at = NULL "
+                "WHERE id = %s AND tenant_id = %s AND account_id = %s AND space_id = %s "
+                "AND status = 'running' AND lease_token = %s "
+                "AND lease_expires_at IS NOT NULL AND lease_expires_at > CURRENT_TIMESTAMP "
+                "RETURNING to_jsonb(ai_agent_runs)",
+                (
+                    run.status,
+                    run.provider_session_ref,
+                    run.prompt_tokens,
+                    run.completion_tokens,
+                    run.cost_usd,
+                    run.warning,
+                    run.error,
+                    run.completed_at or now_iso(),
+                    run.id,
+                    run.tenant_id,
+                    run.account_id,
+                    run.space_id,
+                    lease_token,
+                ),
+            )
+            row = cur.fetchone()
+            if not row:
+                conn.commit()
+                return None
+            stored = _from_json("runs", row[0])
+            if assistant_message:
+                self._insert_message(cur, assistant_message)
+            conn.commit()
+        return stored
 
     def get_run(self, run_id: str, *, tenant_id: str, account_id: str, space_id: str) -> Optional[AiAgentRun]:
         return self._get("runs", run_id, tenant_id=tenant_id, account_id=account_id, space_id=space_id)
@@ -624,9 +823,12 @@ class PostgresAiEmployeeStore:
 
     def export_scope(self, *, tenant_id: str, account_id: str, space_id: str = "") -> dict:
         return {
-            key: [asdict(row) for row in self._list(
-                key, tenant_id=tenant_id, account_id=account_id, space_id=space_id,
-            )]
+            key: [
+                asdict(replace(row, lease_token="")) if key == "runs" else asdict(row)
+                for row in self._list(
+                    key, tenant_id=tenant_id, account_id=account_id, space_id=space_id,
+                )
+            ]
             for key in _TABLES
         }
 

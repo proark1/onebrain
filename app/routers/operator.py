@@ -6,7 +6,9 @@ expose customer content.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import hashlib
+import secrets
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -16,6 +18,7 @@ from app.auth.account_access import authorize_account_admin, authorized_account_
 from app.auth.principal import Principal, resolve_principal
 from app.controlplane.base import (
     BackupRun,
+    CustomerTeardownRequest,
     CustomerDeployment,
     DeploymentModule,
     HealthCheckRun,
@@ -23,6 +26,8 @@ from app.controlplane.base import (
     ReleasePromotion,
     ReleasePromotionEvent,
     RolloutRun,
+    TEARDOWN_REQUEST_EXECUTION_DISABLED,
+    TEARDOWN_REQUEST_EXPIRED,
     UpdatePlan,
 )
 from app.config import get_settings
@@ -37,9 +42,8 @@ from app.deps import (
     get_store,
 )
 from app.controlplane.rollout_exec import (
-    build_rollout_dispatch_inputs,
     mark_rollout_dispatch_failed,
-    resolve_railway_target,
+    resolve_provisioned_target,
     target_provider,
 )
 from app.controlplane.fleet_runner import plan_and_start_fleet_rollout, reconcile_fleet_rollout
@@ -50,9 +54,8 @@ from app.controlplane.promotion import (
     register_candidate,
     transition as transition_promotion,
 )
-from app.controlplane.pull_reconcile import reconcile_pull_targets
+from app.controlplane.reconcile_scheduler import reconcile_once
 from app.controlplane.migration_lint import classify_release
-from app.provisioning.runs import RolloutWorkflowDispatcher
 from app.trust.release import (
     parse_registry_allowlist,
     release_signature_fields,
@@ -62,7 +65,7 @@ from app.trust.release import (
 )
 from app.fleet.keys import verify_secret
 from app.monitoring import MonitoringSummary, monitoring_snapshot
-from app.platform.base import AuditEvent
+from app.platform.base import AuditEvent, scope_is_held
 from app.schemas import BrandThemeOut, ServiceKeyInfo
 
 router = APIRouter(prefix="/api/operator", tags=["operator"])
@@ -72,7 +75,11 @@ class DeploymentCreate(BaseModel):
     customer_name: str = Field(min_length=1, max_length=200)
     account_id: str = Field(default="", max_length=120)
     environment: str = Field(default="production", max_length=80)
-    deployment_type: str = Field(default="dedicated_railway", max_length=80)
+    deployment_type: str = Field(
+        default="dedicated_server",
+        max_length=80,
+        pattern="^(dedicated_server|customer_owned)$",
+    )
     region: str = Field(default="", max_length=80)
     release_ring: str = Field(default="manual", max_length=80)
     status: str = Field(default="active", max_length=80)
@@ -314,6 +321,39 @@ class RolloutOut(BaseModel):
     completed_at: str = ""
     fleet_rollout_id: str = ""
     ack_restore_required: bool = False
+
+
+class CustomerTeardownRequestCreate(BaseModel):
+    """Evidence required to open a record-only teardown approval request."""
+    legal_hold_evidence_ref: str = Field(min_length=1, max_length=500)
+    backup_retention_evidence_ref: str = Field(min_length=1, max_length=500)
+
+
+class CustomerTeardownApproval(BaseModel):
+    # Empty values are handled in the endpoint so the denied attempt is audited.
+    nonce: str = Field(default="", max_length=500)
+
+
+class CustomerTeardownRequestOut(BaseModel):
+    id: str
+    deployment_id: str
+    account_id: str
+    legal_hold_evidence_ref: str
+    backup_retention_evidence_ref: str
+    requested_by: str
+    approver_ids: list[str] = Field(default_factory=list)
+    nonce_expires_at: str
+    status: str
+    execution_result: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    completed_at: str = ""
+
+
+class CustomerTeardownRequestCreatedOut(BaseModel):
+    request: CustomerTeardownRequestOut
+    # Returned exactly once at creation; only its SHA-256 hash is persisted.
+    approval_nonce: str
 
 
 class OperatorAccountOut(BaseModel):
@@ -601,6 +641,69 @@ def _rollout_out(r: RolloutRun) -> RolloutOut:
         fleet_rollout_id=r.fleet_rollout_id,
         ack_restore_required=r.ack_restore_required,
     )
+
+
+_TEARDOWN_APPROVAL_NONCE_TTL = timedelta(minutes=15)
+
+
+def _teardown_request_out(request: CustomerTeardownRequest) -> CustomerTeardownRequestOut:
+    """Return protocol state without the nonce hash or any raw approval secret."""
+    return CustomerTeardownRequestOut(
+        id=request.id,
+        deployment_id=request.deployment_id,
+        account_id=request.account_id,
+        legal_hold_evidence_ref=request.legal_hold_evidence_ref,
+        backup_retention_evidence_ref=request.backup_retention_evidence_ref,
+        requested_by=request.requested_by,
+        approver_ids=list(request.approver_ids),
+        nonce_expires_at=request.nonce_expires_at,
+        status=request.status,
+        execution_result=request.execution_result,
+        created_at=request.created_at,
+        updated_at=request.updated_at,
+        completed_at=request.completed_at,
+    )
+
+
+def _record_teardown_audit(
+    principal: Principal,
+    *,
+    account_id: str,
+    deployment_id: str,
+    request_id: str,
+    action: str,
+    decision: str,
+    meta: dict | None = None,
+) -> None:
+    """Record intent/review only; never put raw approval nonces in the audit log."""
+    get_platform_store().record_audit(AuditEvent(
+        id=f"aud_teardown_{uuid4().hex}",
+        account_id=account_id,
+        actor_id=principal.user_id,
+        actor_type=principal.principal_type,
+        action=action,
+        target_type="customer_teardown_request",
+        target_id=request_id or deployment_id,
+        purpose="customer_teardown",
+        decision=decision,
+        meta={"deployment_id": deployment_id, **(meta or {})},
+    ))
+
+
+def _teardown_target(deployment_id: str, principal: Principal):
+    """Resolve the authorized deployment/account binding for a teardown record."""
+    control = get_control_plane_store()
+    deployment = control.get_deployment(deployment_id)
+    if not deployment:
+        raise HTTPException(status_code=404, detail="Deployment not found.")
+    _authorize_deployment(principal, deployment_id)
+    account_id = deployment.account_id or _account_id_from_signals(deployment_id)
+    if not account_id:
+        raise HTTPException(status_code=409, detail="Deployment account binding is required for teardown review.")
+    platform = get_platform_store()
+    if not platform.get_account(account_id):
+        raise HTTPException(status_code=409, detail="Deployment account is not available for teardown review.")
+    return control, deployment, account_id, platform
 
 
 def _account_out(account) -> OperatorAccountOut:
@@ -1088,6 +1191,190 @@ def set_update_policy(deployment_id: str, body: UpdatePolicyUpdate,
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _deployment_out(deployment)
+
+
+@router.post(
+    "/deployments/{deployment_id}/teardown-requests",
+    response_model=CustomerTeardownRequestCreatedOut,
+    status_code=201,
+)
+def create_customer_teardown_request(
+    deployment_id: str,
+    body: CustomerTeardownRequestCreate,
+    principal: Principal = Depends(resolve_principal),
+):
+    """Open a review record only; this endpoint has no deletion capability."""
+    _require_admin(principal)
+    control, deployment, account_id, platform = _teardown_target(deployment_id, principal)
+    if scope_is_held(platform.list_legal_holds(account_id)):
+        _record_teardown_audit(
+            principal,
+            account_id=account_id,
+            deployment_id=deployment.id,
+            request_id="",
+            action="customer_teardown.request_denied",
+            decision="denied_legal_hold",
+            meta={"reason": "active_legal_hold"},
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="This account is under an active legal hold and cannot enter teardown review.",
+        )
+
+    now = datetime.now(timezone.utc)
+    approval_nonce = secrets.token_urlsafe(32)
+    request = CustomerTeardownRequest(
+        id=f"tear_{uuid4().hex[:12]}",
+        deployment_id=deployment.id,
+        account_id=account_id,
+        nonce_hash=hashlib.sha256(approval_nonce.encode("utf-8")).hexdigest(),
+        nonce_expires_at=(now + _TEARDOWN_APPROVAL_NONCE_TTL).isoformat(),
+        legal_hold_evidence_ref=body.legal_hold_evidence_ref.strip(),
+        backup_retention_evidence_ref=body.backup_retention_evidence_ref.strip(),
+        requested_by=principal.user_id,
+        created_at=now.isoformat(),
+        updated_at=now.isoformat(),
+    )
+    try:
+        stored = control.create_teardown_request(request)
+    except ValueError as exc:
+        _record_teardown_audit(
+            principal,
+            account_id=account_id,
+            deployment_id=deployment.id,
+            request_id=request.id,
+            action="customer_teardown.request_denied",
+            decision="denied",
+            meta={"reason": str(exc)},
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _record_teardown_audit(
+        principal,
+        account_id=account_id,
+        deployment_id=deployment.id,
+        request_id=stored.id,
+        action="customer_teardown.request_created",
+        decision="recorded",
+        meta={
+            "legal_hold_evidence_ref": stored.legal_hold_evidence_ref,
+            "backup_retention_evidence_ref": stored.backup_retention_evidence_ref,
+            "nonce_expires_at": stored.nonce_expires_at,
+            "execution": "disabled",
+        },
+    )
+    return CustomerTeardownRequestCreatedOut(
+        request=_teardown_request_out(stored),
+        approval_nonce=approval_nonce,
+    )
+
+
+@router.post(
+    "/deployments/{deployment_id}/teardown-requests/{request_id}/approvals",
+    response_model=CustomerTeardownRequestOut,
+)
+def approve_customer_teardown_request(
+    deployment_id: str,
+    request_id: str,
+    body: CustomerTeardownApproval,
+    principal: Principal = Depends(resolve_principal),
+):
+    """Record an independent approval; terminal state explicitly disables execution."""
+    _require_admin(principal)
+    control, deployment, account_id, platform = _teardown_target(deployment_id, principal)
+    request = control.get_teardown_request(request_id)
+    if not request or request.deployment_id != deployment.id:
+        raise HTTPException(status_code=404, detail="Teardown request not found.")
+    if request.account_id != account_id:
+        _record_teardown_audit(
+            principal,
+            account_id=account_id,
+            deployment_id=deployment.id,
+            request_id=request.id,
+            action="customer_teardown.approval_denied",
+            decision="denied_binding_mismatch",
+            meta={"reason": "deployment_account_binding_mismatch"},
+        )
+        raise HTTPException(status_code=409, detail="Teardown request account binding does not match the deployment.")
+    if scope_is_held(platform.list_legal_holds(account_id)):
+        _record_teardown_audit(
+            principal,
+            account_id=account_id,
+            deployment_id=deployment.id,
+            request_id=request.id,
+            action="customer_teardown.approval_denied",
+            decision="denied_legal_hold",
+            meta={"reason": "active_legal_hold"},
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="This account is under an active legal hold and cannot approve teardown review.",
+        )
+
+    raw_nonce = body.nonce.strip()
+    if not raw_nonce:
+        _record_teardown_audit(
+            principal,
+            account_id=account_id,
+            deployment_id=deployment.id,
+            request_id=request.id,
+            action="customer_teardown.approval_denied",
+            decision="denied",
+            meta={"reason": "missing_nonce"},
+        )
+        raise HTTPException(status_code=400, detail="An approval nonce is required.")
+
+    try:
+        updated = control.approve_teardown_request(
+            request.id,
+            approver_id=principal.user_id,
+            nonce_hash=hashlib.sha256(raw_nonce.encode("utf-8")).hexdigest(),
+            approved_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except ValueError as exc:
+        reason = str(exc)
+        _record_teardown_audit(
+            principal,
+            account_id=account_id,
+            deployment_id=deployment.id,
+            request_id=request.id,
+            action="customer_teardown.approval_denied",
+            decision="denied",
+            meta={"reason": reason},
+        )
+        status_code = 400 if reason == "teardown approval nonce is invalid." else 409
+        raise HTTPException(status_code=status_code, detail=reason) from exc
+
+    if updated.status == TEARDOWN_REQUEST_EXPIRED:
+        _record_teardown_audit(
+            principal,
+            account_id=account_id,
+            deployment_id=deployment.id,
+            request_id=updated.id,
+            action="customer_teardown.approval_denied",
+            decision="denied_expired",
+            meta={"reason": "nonce_expired", "execution_result": updated.execution_result},
+        )
+        raise HTTPException(status_code=409, detail="The teardown approval nonce has expired.")
+
+    _record_teardown_audit(
+        principal,
+        account_id=account_id,
+        deployment_id=deployment.id,
+        request_id=updated.id,
+        action=(
+            "customer_teardown.approved_execution_disabled"
+            if updated.status == TEARDOWN_REQUEST_EXECUTION_DISABLED
+            else "customer_teardown.approval_recorded"
+        ),
+        decision=("execution_disabled" if updated.status == TEARDOWN_REQUEST_EXECUTION_DISABLED else "recorded"),
+        meta={
+            "approver_count": len(updated.approver_ids),
+            "status": updated.status,
+            "execution_result": updated.execution_result,
+        },
+    )
+    return _teardown_request_out(updated)
 
 
 @router.get("/releases", response_model=list[ReleaseOut])
@@ -1896,12 +2183,11 @@ def start_rollout(deployment_id: str, body: RolloutCreate, principal: Principal 
 
 
 def offer_pull_target(control, rollout) -> None:
-    """Hetzner/pull provider (H-9): the box converges on its OWN signed desired-state
-    (P2/P3), so claim the rollout and mark it OFFERED — exec_status 'dispatched',
-    dispatched_at now, request_payload flagged pull — WITHOUT calling any workflow
-    dispatcher. The box pulls the desired-state and reports the outcome via its
-    UpdateReport; reconcile_pull_targets synthesizes the terminal status. dispatched_at
-    anchors the convergence deadline (H-8)."""
+    """Offer a rollout to a Hetzner box through its signed desired state.
+
+    The box reports the outcome through its fleet report; the reconcile tick
+    synthesizes the terminal state. No external workflow is dispatched.
+    """
     if not control.claim_rollout_dispatch(rollout.id):
         return
     control.update_rollout_exec(rollout.id, dispatched_at=datetime.now(timezone.utc).isoformat(),
@@ -1915,9 +2201,7 @@ def dispatch_rollout(
     body: RolloutDispatch,
     principal: Principal = Depends(resolve_principal),
 ):
-    """Dispatch a real update-customer workflow run for an existing (pending)
-    rollout. Re-checks the plan_update safety gate, guards single-in-flight per
-    deployment, and requires known Railway coordinates (fail-closed)."""
+    """Offer an existing rollout to a Hetzner deployment (fail closed otherwise)."""
     _require_admin(principal)
     _authorize_deployment(principal, deployment_id)
     from app.routers.provisioning import _validate_callback_url
@@ -1942,44 +2226,21 @@ def dispatch_rollout(
     if not release or not deployment:
         raise HTTPException(status_code=409, detail="Rollout target is no longer available.")
 
-    _validate_callback_url(body.callback_url)
+    _validate_callback_url(body.callback_url, placeholder="{rollout_id}")
     try:
-        railway = resolve_railway_target(get_provisioning_run_store(), deployment_id)
+        target = resolve_provisioned_target(get_provisioning_run_store(), deployment_id)
     except ValueError as exc:
         mark_rollout_dispatch_failed(control, rollout, str(exc))
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if target_provider(railway) != "railway":
-        # H-9 (was WP5 fail-closed): the GitHub/Railway workflow cannot act on a
-        # Hetzner box, so OFFER the pull target instead of failing — the box
-        # converges on its own signed desired-state and reports via its
-        # UpdateReport; the reconcile tick resolves it. 200 (offered), no dispatch.
+    if target_provider(target) == "hetzner":
+        # The box converges on its own signed desired state and the reconcile
+        # tick resolves the terminal state from its fleet report.
         offer_pull_target(control, rollout)
         return _rollout_out(control.get_rollout(rollout_id))
 
-    # Atomically claim the pending rollout (compare-and-set exec_status
-    # pending->dispatched) BEFORE the network dispatch, so two concurrent requests
-    # can never both fire a real update job for the same rollout.
-    if not control.claim_rollout_dispatch(rollout_id):
-        raise HTTPException(status_code=409, detail="Rollout has already been dispatched.")
-
-    settings = get_settings()
-    inputs = build_rollout_dispatch_inputs(
-        rollout=rollout, plan=plan, release=release, deployment=deployment, railway=railway,
-        callback_url=body.callback_url, callback_key_id=settings.provisioning_callback_key_id,
-        dry_run=body.dry_run,
-    )
-    try:
-        workflow_url = RolloutWorkflowDispatcher(settings).dispatch(inputs)
-    except RuntimeError as exc:
-        mark_rollout_dispatch_failed(control, rollout, str(exc))
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    updated = control.update_rollout_exec(
-        rollout_id, external_run_url=workflow_url,
-        dispatched_at=datetime.now(timezone.utc).isoformat(),
-        request_payload={"dry_run": body.dry_run},
-    )
-    return _rollout_out(updated)
+    reason = "Rollout target is not a Hetzner deployment."
+    mark_rollout_dispatch_failed(control, rollout, reason)
+    raise HTTPException(status_code=409, detail=reason)
 
 
 # --- fleet rollouts (Phase 2: ring-by-ring fleet-wide update) ----------------
@@ -2053,7 +2314,6 @@ def _dispatch_child_rollout(fleet_id: str, deployment_id: str, *, target_version
     recorded on the child (dispatch_failed, i.e. bookkeeping 'failed') so the fleet
     reducer counts it toward failure_tolerance; this never raises."""
     control = get_control_plane_store()
-    settings = get_settings()
     child_id = child_id or f"roll_{uuid4().hex[:12]}"
     if not child_precreated:
         try:
@@ -2079,30 +2339,15 @@ def _dispatch_child_rollout(fleet_id: str, deployment_id: str, *, target_version
         mark_rollout_dispatch_failed(control, rollout, "update no longer available")
         return
     try:
-        railway = resolve_railway_target(get_provisioning_run_store(), deployment_id)
+        target = resolve_provisioned_target(get_provisioning_run_store(), deployment_id)
     except ValueError as exc:
         mark_rollout_dispatch_failed(control, rollout, str(exc))
         return
-    if target_provider(railway) != "railway":
-        # H-9 (was WP5 fail-closed): OFFER the pull child instead of failing it —
-        # the box converges on its own signed desired-state and the reconcile tick
-        # resolves it from the box's UpdateReport. The child sits in-flight
-        # (dispatched), not dispatch_failed.
+    if target_provider(target) == "hetzner":
+        # The child remains in-flight until the box reports a terminal state.
         offer_pull_target(control, rollout)
         return
-    if not control.claim_rollout_dispatch(child_id):
-        return
-    inputs = build_rollout_dispatch_inputs(
-        rollout=rollout, plan=plan, release=release, deployment=deployment, railway=railway,
-        callback_url=callback_url, callback_key_id=settings.provisioning_callback_key_id, dry_run=dry_run)
-    try:
-        workflow_url = RolloutWorkflowDispatcher(settings).dispatch(inputs)
-    except RuntimeError as exc:
-        mark_rollout_dispatch_failed(control, rollout, str(exc))
-        return
-    control.update_rollout_exec(
-        child_id, external_run_url=workflow_url,
-        dispatched_at=datetime.now(timezone.utc).isoformat(), request_payload={"dry_run": dry_run})
+    mark_rollout_dispatch_failed(control, rollout, "Rollout target is not a Hetzner deployment.")
 
 
 def fleet_dispatch_child(fleet_run, deployment_id) -> None:
@@ -2117,7 +2362,7 @@ def create_fleet_rollout(body: FleetRolloutCreate, principal: Principal = Depend
     _require_admin(principal)
     _require_operator_mode()
     from app.routers.provisioning import _validate_callback_url
-    _validate_callback_url(body.callback_url)
+    _validate_callback_url(body.callback_url, placeholder="{rollout_id}")
     control = get_control_plane_store()
     release = control.get_release(body.target_version)
     if not release:
@@ -2158,11 +2403,7 @@ def reconcile_pull(principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
     _require_operator_mode()
     control = get_control_plane_store()
-    runs = reconcile_pull_targets(
-        control, control, get_fleet_store().latest_heartbeats(),
-        now=datetime.now(timezone.utc),
-        deadline_seconds=get_settings().fleet_pull_convergence_deadline_seconds,
-        dispatch_child=fleet_dispatch_child)
+    runs = reconcile_once(get_settings(), control, get_fleet_store())
     return [_fleet_out(r) for r in runs]
 
 

@@ -45,7 +45,8 @@ class IngestPipeline:
     def ingest_text(self, *, title, text, classification, location, category, uploaded_by, tenant,
                     require_approval=False, block_public_on_pii=True, pii_phase="dpia_signed",
                     account_id: str = "", space_id: str = "",
-                    space_kind: str = "", owner_user_id: str = "") -> IngestResult:
+                    space_kind: str = "", owner_user_id: str = "",
+                    idempotency_key: str = "") -> IngestResult:
         cls = Classification.parse(classification)
         location = (location or GLOBAL_LOCATION).strip().lower() or GLOBAL_LOCATION
         category = (category or GENERAL_CATEGORY).strip().lower() or GENERAL_CATEGORY
@@ -55,6 +56,35 @@ class IngestPipeline:
         tenant = (tenant or "").strip()
         if not tenant:
             raise ValueError("tenant is required — a chunk with no tenant is unreachable.")
+
+        idempotency_key = (idempotency_key or "").strip()
+        # Keep the recovered result byte-for-byte equivalent to the original
+        # job result without re-writing its chunks.
+        pii_findings = scan_pii(text)
+        doc_id = (
+            uuid.uuid5(uuid.NAMESPACE_URL, f"onebrain:ingest:{idempotency_key}").hex
+            if idempotency_key
+            else uuid.uuid4().hex
+        )
+        if idempotency_key:
+            existing = self._store.get_document_meta(doc_id)
+            if existing is not None:
+                if (
+                    existing.get("tenant_id", "") != tenant
+                    or existing.get("account_id", "") != (account_id or "").strip()
+                    or existing.get("space_id", "") != (space_id or "").strip()
+                ):
+                    raise ValueError("ingestion idempotency key is already bound to another scope")
+                return IngestResult(
+                    doc_id=doc_id,
+                    title=existing.get("title", title),
+                    classification=existing.get("classification_label", "internal"),
+                    location=existing.get("location", GLOBAL_LOCATION),
+                    category=existing.get("category", GENERAL_CATEGORY),
+                    chunks=int(existing.get("chunks", 0)),
+                    status=existing.get("status", STATUS_APPROVED),
+                    pii_findings=pii_findings,
+                )
 
         account_id = (account_id or "").strip()
         space_id = (space_id or "").strip()
@@ -75,7 +105,6 @@ class IngestPipeline:
         # Publication lifecycle: decide whether this upload goes live immediately
         # or lands in quarantine for a second pair of eyes. A mislabel, or a PII
         # leak into PUBLIC, is caught HERE — before the content is reachable.
-        pii_findings = scan_pii(text)
         # Synthetic-data phase interlock: before a signed DPIA, real personal data
         # must not enter the system AT ALL — the scanner is the tripwire, so a
         # careless upload of a real member/employee file is refused, not just parked.
@@ -94,7 +123,6 @@ class IngestPipeline:
             status = STATUS_APPROVED
 
         vectors = self._embedder.embed([f"{title}. {piece}" for piece in pieces])
-        doc_id = uuid.uuid4().hex
         # A single ingest timestamp for the whole document. Retention filters on
         # this: a chunk with no created_at (pre-Phase-1b) is never aged out, so
         # retention can only ever delete records it can prove are old enough.
@@ -114,6 +142,8 @@ class IngestPipeline:
                 "pii_findings": pii_findings,
                 "created_at": created_at,
             }
+            if idempotency_key:
+                meta["job_idempotency_key"] = idempotency_key
             if account_id:
                 meta["account_id"] = account_id
             if space_id:
@@ -139,7 +169,8 @@ class IngestPipeline:
     def ingest_file(self, *, filename, data, classification, location, category, uploaded_by, tenant,
                     require_approval=False, block_public_on_pii=True, pii_phase="dpia_signed",
                     account_id: str = "", space_id: str = "",
-                    space_kind: str = "", owner_user_id: str = "") -> IngestResult:
+                    space_kind: str = "", owner_user_id: str = "",
+                    idempotency_key: str = "") -> IngestResult:
         text = extract_text(filename, data)
         return self.ingest_text(
             title=filename, text=text, classification=classification,
@@ -147,4 +178,5 @@ class IngestPipeline:
             require_approval=require_approval, block_public_on_pii=block_public_on_pii, pii_phase=pii_phase,
             account_id=account_id, space_id=space_id,
             space_kind=space_kind, owner_user_id=owner_user_id,
+            idempotency_key=idempotency_key,
         )

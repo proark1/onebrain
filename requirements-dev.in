@@ -1,0 +1,6 @@
+-r requirements.in
+
+# Development and CI-only tools.
+pytest==9.1.1
+requests==2.34.2
+pip-audit==2.10.1

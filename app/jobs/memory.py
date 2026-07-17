@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import threading
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from app.jobs.base import (
     JobFailureSummary,
     JobSummary,
+    JobLeaseLostError,
+    LEASE_EXPIRED_ERROR,
     READY_STATUSES,
     STATUS_FAILED,
     STATUS_QUEUED,
@@ -34,6 +36,16 @@ def _iso(value: datetime | str | None = None) -> str:
 
 def _parse(value: str) -> datetime:
     return datetime.fromisoformat(value)
+
+
+def _lease_expired(job: Job, now: datetime) -> bool:
+    if not job.lease_expires_at:
+        # Running rows created before leases existed are intentionally reclaimable.
+        return True
+    try:
+        return _parse(job.lease_expires_at) <= now
+    except (TypeError, ValueError):
+        return True
 
 
 class MemoryJobStore:
@@ -83,7 +95,17 @@ class MemoryJobStore:
                 )
         return job
 
-    def get(self, job_id: str) -> Job | None:
+    def get(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str = "",
+        account_id: str = "",
+        space_id: str = "",
+    ) -> Job | None:
+        # Memory mode has no database role boundary; keep the production store
+        # signature so routers always supply the authenticated scope.
+        del tenant_id, account_id, space_id
         with self._lock:
             return self._jobs.get(job_id)
 
@@ -91,14 +113,43 @@ class MemoryJobStore:
         with self._lock:
             return self._files.get(job_id)
 
-    def claim(self, worker_id: str, limit: int = 1) -> list[Job]:
+    def claim(self, worker_id: str, limit: int = 1, lease_seconds: int = 60) -> list[Job]:
         now = utcnow()
+        lease_seconds = max(1, int(lease_seconds))
+        lease_expires_at = _iso(now + timedelta(seconds=lease_seconds))
         out: list[Job] = []
         with self._lock:
+            # A job that exhausted its final leased attempt must not become an
+            # unbounded poison-message loop. Terminalizing happens under the
+            # same lock as claiming so another worker cannot race the decision.
+            for job in tuple(self._jobs.values()):
+                if (
+                    job.status == STATUS_RUNNING
+                    and _lease_expired(job, now)
+                    and job.attempts >= job.max_attempts
+                ):
+                    self._jobs[job.id] = replace(
+                        job,
+                        status=STATUS_FAILED,
+                        result=None,
+                        error=LEASE_EXPIRED_ERROR,
+                        locked_by="",
+                        locked_at="",
+                        lease_token="",
+                        lease_expires_at="",
+                        updated_at=_iso(now),
+                        completed_at=_iso(now),
+                    )
             ready = sorted(
                 (
                     job for job in self._jobs.values()
-                    if job.status in READY_STATUSES and _parse(job.run_after) <= now
+                    if (
+                        job.status in READY_STATUSES and _parse(job.run_after) <= now
+                    ) or (
+                        job.status == STATUS_RUNNING
+                        and _lease_expired(job, now)
+                        and job.attempts < job.max_attempts
+                    )
                 ),
                 key=lambda job: job.created_at,
             )
@@ -109,21 +160,36 @@ class MemoryJobStore:
                     attempts=job.attempts + 1,
                     locked_by=worker_id,
                     locked_at=_iso(now),
+                    lease_token=f"lease_{uuid4().hex}",
+                    lease_expires_at=lease_expires_at,
                     updated_at=_iso(now),
                 )
                 self._jobs[job.id] = updated
                 out.append(updated)
         return out
 
-    def mark_succeeded(self, job_id: str, result: dict) -> Job:
-        return self._update_terminal(job_id, STATUS_SUCCEEDED, result=result)
-
-    def mark_failed(self, job_id: str, error: str) -> Job:
-        return self._update_terminal(job_id, STATUS_FAILED, error=error)
-
-    def mark_retry(self, job_id: str, error: str, run_after: datetime) -> Job:
+    def renew_lease(self, job_id: str, lease_token: str, lease_seconds: int) -> Job:
+        lease_seconds = max(1, int(lease_seconds))
+        now = utcnow()
         with self._lock:
-            job = self._require(job_id)
+            job = self._require_active_lease(job_id, lease_token, now)
+            updated = replace(
+                job,
+                lease_expires_at=_iso(now + timedelta(seconds=lease_seconds)),
+                updated_at=_iso(now),
+            )
+            self._jobs[job_id] = updated
+            return updated
+
+    def mark_succeeded(self, job_id: str, result: dict, *, lease_token: str) -> Job:
+        return self._update_terminal(job_id, STATUS_SUCCEEDED, lease_token=lease_token, result=result)
+
+    def mark_failed(self, job_id: str, error: str, *, lease_token: str) -> Job:
+        return self._update_terminal(job_id, STATUS_FAILED, lease_token=lease_token, error=error)
+
+    def mark_retry(self, job_id: str, error: str, run_after: datetime, *, lease_token: str) -> Job:
+        with self._lock:
+            job = self._require_active_lease(job_id, lease_token, utcnow())
             updated = replace(
                 job,
                 status=STATUS_RETRYING,
@@ -131,6 +197,8 @@ class MemoryJobStore:
                 run_after=_iso(run_after),
                 locked_by="",
                 locked_at="",
+                lease_token="",
+                lease_expires_at="",
                 updated_at=_iso(),
             )
             self._jobs[job_id] = updated
@@ -172,9 +240,17 @@ class MemoryJobStore:
             ],
         )
 
-    def _update_terminal(self, job_id: str, status: str, result: dict | None = None, error: str = "") -> Job:
+    def _update_terminal(
+        self,
+        job_id: str,
+        status: str,
+        *,
+        lease_token: str,
+        result: dict | None = None,
+        error: str = "",
+    ) -> Job:
         with self._lock:
-            job = self._require(job_id)
+            job = self._require_active_lease(job_id, lease_token, utcnow())
             now = _iso()
             updated = replace(
                 job,
@@ -183,6 +259,8 @@ class MemoryJobStore:
                 error=error[:2000],
                 locked_by="",
                 locked_at="",
+                lease_token="",
+                lease_expires_at="",
                 updated_at=now,
                 completed_at=now,
             )
@@ -193,4 +271,15 @@ class MemoryJobStore:
         job = self._jobs.get(job_id)
         if job is None:
             raise KeyError(f"unknown job: {job_id}")
+        return job
+
+    def _require_active_lease(self, job_id: str, lease_token: str, now: datetime) -> Job:
+        job = self._require(job_id)
+        if (
+            not lease_token
+            or job.status != STATUS_RUNNING
+            or job.lease_token != lease_token
+            or _lease_expired(job, now)
+        ):
+            raise JobLeaseLostError(f"job lease is no longer active: {job_id}")
         return job

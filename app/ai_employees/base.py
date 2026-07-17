@@ -16,8 +16,14 @@ PROFILE_STATUSES = frozenset({"active", "paused"})
 CONVERSATION_STATUSES = frozenset({"active", "archived"})
 MISSION_STATUSES = frozenset({"draft", "queued", "running", "paused", "completed", "cancelled", "failed"})
 RUN_STATUSES = frozenset({"queued", "running", "completed", "failed", "cancelled", "blocked"})
+RUN_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "blocked"})
 MEMORY_STATUSES = frozenset({"pending", "approved", "rejected", "deleted"})
 CONNECTOR_STATUSES = frozenset({"active", "paused", "revoked", "error"})
+
+# A lease expiry is deliberately terminal for an idempotency key. Replaying a
+# paid provider request after losing ownership can duplicate spend and produce
+# two competing answers for the same human turn.
+AI_AGENT_RUN_LEASE_EXPIRED_ERROR = "AI employee turn lease expired before completion."
 
 
 @dataclass(frozen=True)
@@ -164,6 +170,19 @@ class AiAgentRun:
     created_at: str = ""
     started_at: str = ""
     completed_at: str = ""
+    # Lease fields are internal coordination capabilities. They must never be
+    # included in customer-facing run payloads or privacy exports.
+    lease_token: str = ""
+    lease_expires_at: str = ""
+    heartbeat_at: str = ""
+
+
+@dataclass(frozen=True)
+class AiAgentRunClaim:
+    """Result of atomically starting or looking up an idempotent AI turn."""
+
+    run: AiAgentRun
+    acquired: bool
 
 
 @dataclass(frozen=True)
@@ -244,6 +263,32 @@ class AiEmployeeStore(Protocol):
     def get_profile(
         self, employee_id: str, *, tenant_id: str, account_id: str, space_id: str,
     ) -> Optional[AiEmployeeProfile]: ...
+
+    def begin_or_get_run(
+        self,
+        run: AiAgentRun,
+        *,
+        human_message: Optional[AiEmployeeMessage] = None,
+    ) -> AiAgentRunClaim: ...
+
+    def heartbeat_run(
+        self,
+        run_id: str,
+        *,
+        tenant_id: str,
+        account_id: str,
+        space_id: str,
+        lease_token: str,
+        lease_expires_at: str,
+    ) -> Optional[AiAgentRun]: ...
+
+    def finalize_owned_run(
+        self,
+        run: AiAgentRun,
+        *,
+        lease_token: str,
+        assistant_message: Optional[AiEmployeeMessage] = None,
+    ) -> Optional[AiAgentRun]: ...
 
     def export_scope(self, *, tenant_id: str, account_id: str, space_id: str = "") -> dict: ...
 

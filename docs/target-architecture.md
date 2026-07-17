@@ -29,6 +29,9 @@ realistic release target without becoming a control-plane or fleet console.
   runtime queues are not.
 - A customer deployment reports only its own sanitized health, release digest,
   and agent status to MC.
+- Customer ingress has no route that can create a control-plane teardown or
+  infrastructure action. A two-person MC teardown review is non-destructive and
+  does not change this boundary.
 
 ## Platform services
 
@@ -40,6 +43,13 @@ realistic release target without becoming a control-plane or fleet console.
 | Dev gate | Test a complete candidate with dummy data | Access other customer data or MC UI |
 | Mission Control | Super-admin deployment metadata and explicit rollout decisions | Handle customer content or cloud credentials |
 | Hetzner broker | Bounded cloud actions for MC | Expose customer UI/data or return cloud credentials |
+
+Production API replicas share PostgreSQL state for authentication rate limits,
+sessions, rollout coordination, and audit records. Durable jobs and direct AI
+turns use token-fenced leases so a failed process can be recovered without
+letting a stale process write over the new owner. The production embedding
+contract is likewise shared: its configured LiteLLM dimension must match the
+migrated pgvector column before traffic is accepted.
 
 ## Release lifecycle
 
@@ -68,4 +78,6 @@ to every customer.
 MC receives only deployment metadata. Customer content remains in the
 customer's environment. The broker holds no customer application data. See the
 [data-layer boundary](onebrain-data-layer-boundary.md) and
-[deletion contract](deletion-tombstone-contract.md) for data-level rules.
+[deletion contract](deletion-tombstone-contract.md) for data-level rules, and
+the [production activation runbook](production-activation-runbook.md) for the
+required broker, recovery, and tenant-isolation proof.

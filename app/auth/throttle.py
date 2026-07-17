@@ -43,9 +43,31 @@ class LoginThrottle:
         with self._lock:
             self._fails.setdefault(key, []).append(self._clock())
 
+    def reserve(self, key: str) -> int:
+        """Consume an attempt slot before a password hash is evaluated."""
+        with self._lock:
+            times = self._recent(key)
+            if len(times) >= self._max:
+                wait = self._cooldown - (self._clock() - min(times))
+                return max(1, int(wait) + 1)
+            times.append(self._clock())
+            self._fails[key] = times
+            return 0
+
     def record_success(self, key: str) -> None:
         with self._lock:
             self._fails.pop(key, None)
+
+    def release_success(self, key: str) -> None:
+        """Undo one successful reservation without clearing other failures."""
+        with self._lock:
+            times = self._recent(key)
+            if times:
+                times.pop()
+            if times:
+                self._fails[key] = times
+            else:
+                self._fails.pop(key, None)
 
 
 class RateLimiter:

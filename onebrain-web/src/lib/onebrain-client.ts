@@ -70,7 +70,11 @@ import type {
 } from "@/lib/onebrain-types";
 import { cleanScope, scopeQuery } from "@/lib/onebrain-types";
 
-const PROXY_BASE = "/api/onebrain";
+// Caddy proxies this same-origin namespace directly to the API and overwrites
+// X-Forwarded-For from the socket peer.  Do not route browser calls through
+// the Next.js server: doing so would make every user share the web container's
+// address for login and abuse limits.
+const PROXY_BASE = "/api";
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${PROXY_BASE}${path}`, init);

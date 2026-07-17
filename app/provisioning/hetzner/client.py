@@ -29,8 +29,7 @@ FLEET_LABEL_VALUE = "onebrain-fleet"
 class HetznerApiError(RuntimeError):
     """A non-2xx response (or transport error) from the Hetzner Cloud API. Carries
     the HTTP status and a truncated, secret-free body (<=500 chars). The real
-    client raises it; P4-03 maps it to a provisioning `dispatch_failed`, mirroring
-    `dispatch_workflow`'s RuntimeError shape."""
+    client raises it; P4-03 maps it to a provisioning `dispatch_failed`."""
 
     def __init__(self, status: int, body: str = ""):
         self.status = int(status)

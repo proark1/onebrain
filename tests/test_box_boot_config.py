@@ -74,6 +74,8 @@ def test_mc_box_env_satisfies_onebrain_api_boot_requirements():
     # (proves the ${VAR} ref really interpolated from the baked dotenv, not a default).
     assert settings.auth_secret == art.bundle["ONEBRAIN_AUTH_SECRET"]
     assert len(settings.auth_secret) == 64
+    assert settings.login_rate_limit_secret == art.bundle["ONEBRAIN_LOGIN_RATE_LIMIT_SECRET"]
+    assert len(settings.login_rate_limit_secret) == 64
     # MC-specific: Mission Control is armed and passes the G1-1 startup interlock app/main.py
     # asserts under operator_mode (active signer present in the served wrapper-key set).
     assert settings.operator_mode is True
@@ -106,5 +108,7 @@ def test_customer_box_env_satisfies_onebrain_api_boot_requirements():
     # The cookie secret is the strong per-box value delivered inside the bundle dotenv.
     assert settings.auth_secret == bundle["ONEBRAIN_AUTH_SECRET"]
     assert len(settings.auth_secret) == 64
+    assert settings.login_rate_limit_secret == bundle["ONEBRAIN_LOGIN_RATE_LIMIT_SECRET"]
+    assert len(settings.login_rate_limit_secret) == 64
     # A customer box is NEVER Mission Control (no operator overlay).
     assert settings.operator_mode is False

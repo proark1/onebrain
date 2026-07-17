@@ -132,6 +132,8 @@ def test_idempotent_turn_replays_the_stored_result_without_calling_the_model_twi
         principal=principal, conversation_id=conversation.id,
         question="What matters this week?", idempotency_key="same-turn",
     ))
+    backend.available = False
+    backend.unavailable_reason = "removed after the first turn"
     replay = list(runtime.stream_turn(
         principal=principal, conversation_id=conversation.id,
         question="What matters this week?", idempotency_key="same-turn",

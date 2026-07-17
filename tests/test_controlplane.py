@@ -80,12 +80,22 @@ def _operator_settings(**over):
     return SimpleNamespace(**data)
 
 
+@pytest.fixture(autouse=True)
+def _mount_operator_surface(monkeypatch):
+    """Direct router tests exercise Mission Control, never the secure customer default."""
+    monkeypatch.setattr(
+        operator_router,
+        "get_settings",
+        lambda: _operator_settings(operator_mode=False),
+    )
+
+
 def _store() -> MemoryControlPlaneStore:
     store = MemoryControlPlaneStore()
     store.create_deployment(CustomerDeployment(
         id="dep_a",
         customer_name="Customer A",
-        deployment_type="dedicated_railway",
+        deployment_type="dedicated_server",
         release_ring="pilot",
         current_version="2026.07.0",
         current_migration="0041",
@@ -298,7 +308,7 @@ def test_operator_rollout_responses_include_lifecycle_timestamps_and_safe_execut
         "roll_lifecycle",
         exec_status="failed",
         external_run_id="run_123",
-        external_run_url="https://github.com/proark1/onebrain/actions/runs/123",
+        external_run_url="https://fleet.example/rollouts/123",
         failure_reason="The deployment did not report healthy.",
         dispatched_at="2026-07-17T10:01:00+00:00",
         completed_at="2026-07-17T10:04:00+00:00",
@@ -310,7 +320,7 @@ def test_operator_rollout_responses_include_lifecycle_timestamps_and_safe_execut
 
     assert rollout.created_at == "2026-07-17T10:00:00+00:00"
     assert rollout.exec_status == "failed"
-    assert rollout.external_provider == "github_actions"
+    assert rollout.external_provider == "hetzner"
     assert rollout.external_run_id == "run_123"
     assert rollout.external_run_url.endswith("/123")
     assert rollout.failure_reason == "The deployment did not report healthy."
@@ -494,7 +504,7 @@ def test_operator_customer_overview_aggregates_metadata_only(monkeypatch):
     control.create_deployment(CustomerDeployment(
         id="dep_acme",
         customer_name="Acme",
-        deployment_type="dedicated_railway",
+        deployment_type="dedicated_server",
         release_ring="pilot",
         current_version="2026.07.1",
     ))
@@ -582,8 +592,12 @@ def test_operator_observability_aggregates_current_onebrain_state(monkeypatch):
         space_id="sp_service",
         payload={"raw": "must not appear"},
     )
-    job_store.claim("worker_a")
-    job_store.mark_failed(failed.id, "embedding provider timeout")
+    claimed = job_store.claim("worker_a")
+    job_store.mark_failed(
+        failed.id,
+        "embedding provider timeout",
+        lease_token=claimed[0].lease_token,
+    )
     job_store.enqueue(type=JOB_SERVICE_CAPTURE, tenant_id="acme")
     monkeypatch.setattr(
         operator_router,
@@ -1358,7 +1372,7 @@ def test_dispatch_requires_ack_for_restore_required(monkeypatch):
         return s
 
     prov_runs = [SimpleNamespace(
-        id="r1", deployment_id="dep_a", status="succeeded", railway_project_id="p1",
+        id="r1", deployment_id="dep_a", status="succeeded", railway_project_id="hetzner:123",
         railway_environment_id="e1", result_payload={"service_ids": {}},
         completed_at="t", created_at="t")]
 
@@ -1366,32 +1380,21 @@ def test_dispatch_requires_ack_for_restore_required(monkeypatch):
         def list_runs(self, account_id="", deployment_id=""):
             return [r for r in prov_runs if not deployment_id or r.deployment_id == deployment_id]
 
-    dispatched = []
-
-    class _FakeDispatcher:
-        def __init__(self, settings):
-            pass
-
-        def dispatch(self, inputs, opener=None):
-            dispatched.append(inputs)
-            return "https://github.com/o/repo/actions/workflows/update-customer.yml"
-
     monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
     monkeypatch.setattr(provisioning_router, "get_settings", _operator_settings)
     monkeypatch.setattr(operator_router, "get_provisioning_run_store", lambda: _ProvStore())
-    monkeypatch.setattr(operator_router, "RolloutWorkflowDispatcher", _FakeDispatcher)
     body = operator_router.RolloutDispatch(
         callback_url="https://mc.example/api/rollouts/{rollout_id}/callback", dry_run=True)
 
-    # WITH ack: dispatches.
+    # WITH ack: the Hetzner pull target is offered.
     store = _restore_required_store()
     monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
     store.start_rollout(RolloutRun("roll_acked", "dep_a", "2026.07.24", "pending", "op",
                                    ack_restore_required=True))
     out = operator_router.dispatch_rollout("dep_a", "roll_acked", body, principal=_admin())
     assert out.ack_restore_required is True
-    assert len(dispatched) == 1
     assert store.get_rollout("roll_acked").exec_status == "dispatched"
+    assert store.get_rollout("roll_acked").request_payload == {"provider": "hetzner", "pull": True}
 
     # Ack-less (A5 construction — do not improvise another path).
     store2 = _restore_required_store()
@@ -1404,7 +1407,6 @@ def test_dispatch_requires_ack_for_restore_required(monkeypatch):
         operator_router.dispatch_rollout("dep_a", "roll_noack", body, principal=_admin())
     assert ei.value.status_code == 409
     assert "restore_required_ack_needed" in ei.value.detail
-    assert len(dispatched) == 1  # the dispatcher was never called again
     assert store2.get_rollout("roll_noack").exec_status == "pending"  # plan-blocked, not terminal
 
 

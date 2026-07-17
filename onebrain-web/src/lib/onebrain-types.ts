@@ -501,8 +501,8 @@ export type ProvisioningRun = {
   external_provider: string;
   external_run_id: string;
   external_run_url: string;
-  railway_project_id: string;
-  railway_environment_id: string;
+  target_id: string;
+  target_environment: string;
   service_urls: Record<string, string>;
   migration_revision: string;
   smoke_status: string;

@@ -3,7 +3,7 @@ ONEBRAIN_MODULE_PROBES_ENABLED=true AND ONEBRAIN_LOCAL_MODULES names modules —
 (A4: the settings field is module_probes_enabled, which env_prefix="ONEBRAIN_"
 maps to ONEBRAIN_MODULE_PROBES_ENABLED — the P1 compose convention MUST use
 this exact name; probes fail quiet, so a misspelled var silently stays off) —
-both unset on Railway, so the fleet's heartbeats gain no module claims until
+both unset on a minimally configured deployment, so the fleet's heartbeats gain no module claims until
 the compose boxes (P1) set them. Probes address
 http://<host or module_id>:<port><path> — cross-container by compose service
 name, not 127.0.0.1."""

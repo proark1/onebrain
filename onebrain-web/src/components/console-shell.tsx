@@ -47,7 +47,7 @@ export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
               </Link>
             ))}
           </nav>
-        </aside>
+          </aside>
 
         <div className="consoleFrame">
           <header className="commandBar">

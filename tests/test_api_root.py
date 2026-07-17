@@ -137,3 +137,23 @@ def test_operator_startup_skipped_when_emission_off(monkeypatch):
         assert main.app is not None
     finally:
         _clear_main()
+
+
+def test_production_mission_control_preflight_runs_at_startup(monkeypatch):
+    """Production-like MC must fail before routers or background daemons start."""
+    try:
+        with pytest.raises(RuntimeError, match="ONEBRAIN_PROVISIONER_BACKEND=hetzner"):
+            _import_main(
+                monkeypatch,
+                ONEBRAIN_ENVIRONMENT="production",
+                ONEBRAIN_VECTOR_STORE="pgvector",
+                ONEBRAIN_DATABASE_URL="postgresql://onebrain:secret@postgres/onebrain",
+                ONEBRAIN_RLS_ENFORCED="true",
+                ONEBRAIN_OPERATOR_MODE="true",
+                ONEBRAIN_POSTGRES_APP_ROLE="onebrain_app",
+                ONEBRAIN_POSTGRES_WORKER_ROLE="onebrain_worker",
+                ONEBRAIN_LOGIN_RATE_LIMIT_SECRET="x" * 32,
+                ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS="mc.example",
+            )
+    finally:
+        _clear_main()

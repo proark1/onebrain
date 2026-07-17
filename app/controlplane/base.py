@@ -6,8 +6,9 @@ stores deployment metadata only, never customer content.
 
 from __future__ import annotations
 
+import hmac
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Protocol
 
@@ -23,7 +24,12 @@ MODULE_IDS = frozenset({
     "communication-workers",
 })
 ROLL_OUT_RINGS = frozenset({"internal", "pilot", "early", "stable", "manual"})
-DEPLOYMENT_TYPES = frozenset({"dedicated_railway", "shared_railway", "dedicated_server", "customer_owned"})
+# Existing rows may contain these retired provider values.  Keep them readable
+# until a separately approved data migration can retire historic records; all
+# creation paths use ACTIVE_DEPLOYMENT_TYPES below.
+ACTIVE_DEPLOYMENT_TYPES = frozenset({"dedicated_server", "customer_owned"})
+RETIRED_DEPLOYMENT_TYPES = frozenset({"dedicated_railway", "shared_railway"})
+DEPLOYMENT_TYPES = ACTIVE_DEPLOYMENT_TYPES | RETIRED_DEPLOYMENT_TYPES
 RUN_STATUSES = frozenset({"pending", "running", "success", "failed", "paused"})
 PROMOTION_STATES = frozenset({
     "dev_pending",
@@ -37,6 +43,15 @@ PROMOTION_STATES = frozenset({
 
 ROLLBACK_KINDS = frozenset({"", "code_only", "restore_required"})
 UPDATE_POLICIES = frozenset({"", "auto", "manual", "pinned"})
+TEARDOWN_REQUEST_PENDING = "pending"
+TEARDOWN_REQUEST_EXECUTION_DISABLED = "execution_disabled"
+TEARDOWN_REQUEST_EXPIRED = "expired"
+TEARDOWN_REQUEST_STATUSES = frozenset({
+    TEARDOWN_REQUEST_PENDING,
+    TEARDOWN_REQUEST_EXECUTION_DISABLED,
+    TEARDOWN_REQUEST_EXPIRED,
+})
+TEARDOWN_EXECUTION_DISABLED_RESULT = "execution_disabled: no customer resources were deleted"
 # registry/repo@sha256:<64 hex> — digest-pinned image reference, never a floating tag.
 IMAGE_DIGEST_RE = re.compile(
     r"^(?P<registry>[a-z0-9][a-z0-9.\-]*(?::\d+)?)/(?P<repo>[a-z0-9][a-z0-9._\-/]*)@sha256:(?P<digest>[0-9a-f]{64})$"
@@ -70,7 +85,7 @@ class CustomerDeployment:
     customer_name: str
     account_id: str = ""          # owning platform account; authoritative for operator authz
     environment: str = "production"
-    deployment_type: str = "dedicated_railway"
+    deployment_type: str = "dedicated_server"
     region: str = ""
     release_ring: str = "manual"
     status: str = "active"
@@ -180,9 +195,10 @@ class RolloutRun:
     started_by: str
     notes: str = ""
     created_at: str = ""
-    # Execution lifecycle (a rollout is a dispatched GitHub-Actions update job).
+    # Execution lifecycle. Rollouts are offered to Hetzner boxes through the
+    # signed desired-state pull path; no workflow dispatcher is involved.
     exec_status: str = "pending"          # see rollout_exec.ROLLOUT_EXEC_STATUSES
-    external_provider: str = "github_actions"
+    external_provider: str = "hetzner"
     external_run_id: str = ""
     external_run_url: str = ""
     failure_reason: str = ""
@@ -203,6 +219,30 @@ class ServedFloorBump:
     floor_version: str = ""    # denormalized for the operator list view
     updated_by: str = ""
     updated_at: str = ""
+
+
+@dataclass(frozen=True)
+class CustomerTeardownRequest:
+    """A record-only, two-person customer teardown authorization.
+
+    This record deliberately contains no infrastructure identifiers or executor
+    instructions.  It can prove review and evidence collection, but it cannot
+    perform a remote deletion.
+    """
+    id: str
+    deployment_id: str
+    account_id: str
+    nonce_hash: str
+    nonce_expires_at: str
+    legal_hold_evidence_ref: str
+    backup_retention_evidence_ref: str
+    requested_by: str
+    approver_ids: tuple[str, ...] = ()
+    status: str = TEARDOWN_REQUEST_PENDING
+    execution_result: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    completed_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -337,6 +377,22 @@ class ControlPlaneStore(Protocol):
 
     def update_rollout_exec(self, rollout_id: str, **fields) -> RolloutRun: ...
 
+    # --- customer teardown protocol (record-only; no execution capability) ---
+    def create_teardown_request(self, request: CustomerTeardownRequest) -> CustomerTeardownRequest: ...
+
+    def get_teardown_request(self, request_id: str) -> Optional[CustomerTeardownRequest]: ...
+
+    def list_teardown_requests(self, deployment_id: str) -> List[CustomerTeardownRequest]: ...
+
+    def approve_teardown_request(
+        self,
+        request_id: str,
+        *,
+        approver_id: str,
+        nonce_hash: str,
+        approved_at: str,
+    ) -> CustomerTeardownRequest: ...
+
     # --- served floor bumps (P5-01 revocation kill-switch) ---
     def set_served_floor_bump(self, bump: ServedFloorBump) -> ServedFloorBump: ...
 
@@ -361,6 +417,92 @@ def validate_deployment(deployment: CustomerDeployment) -> None:
         raise ValueError("Selected module ids must be non-empty strings.")
     if len(set(module_ids)) != len(module_ids):
         raise ValueError("Selected module ids must not contain duplicates.")
+
+
+def _parse_teardown_timestamp(value: str, field: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be an ISO-8601 timestamp.") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field} must include a timezone.")
+    return parsed.astimezone(timezone.utc)
+
+
+def validate_teardown_request(request: CustomerTeardownRequest) -> None:
+    required = {
+        "request id": request.id,
+        "deployment id": request.deployment_id,
+        "account id": request.account_id,
+        "legal-hold evidence reference": request.legal_hold_evidence_ref,
+        "backup/retention evidence reference": request.backup_retention_evidence_ref,
+        "requester": request.requested_by,
+    }
+    for label, value in required.items():
+        if not str(value).strip():
+            raise ValueError(f"{label} is required.")
+    if not re.fullmatch(r"[0-9a-f]{64}", request.nonce_hash or ""):
+        raise ValueError("teardown request nonce hash must be a SHA-256 hex digest.")
+    _parse_teardown_timestamp(request.nonce_expires_at, "nonce expiry")
+    if request.status not in TEARDOWN_REQUEST_STATUSES:
+        raise ValueError(f"Unknown teardown request status: {request.status}")
+    if len(request.approver_ids) > 2 or len(set(request.approver_ids)) != len(request.approver_ids):
+        raise ValueError("teardown request approvers must contain at most two distinct identities.")
+    if request.requested_by in request.approver_ids:
+        raise ValueError("teardown requester cannot approve the request.")
+    if any(not approver.strip() for approver in request.approver_ids):
+        raise ValueError("teardown approver identity is required.")
+    if request.status in {TEARDOWN_REQUEST_EXECUTION_DISABLED, TEARDOWN_REQUEST_EXPIRED}:
+        if request.execution_result != TEARDOWN_EXECUTION_DISABLED_RESULT:
+            raise ValueError("terminal teardown requests require an execution-disabled result.")
+    if request.status == TEARDOWN_REQUEST_EXECUTION_DISABLED and len(request.approver_ids) != 2:
+        raise ValueError("execution-disabled teardown requests require two approvals.")
+
+
+def apply_teardown_approval(
+    request: CustomerTeardownRequest,
+    *,
+    approver_id: str,
+    nonce_hash: str,
+    approved_at: str,
+) -> CustomerTeardownRequest:
+    """Apply one approval without ever exposing or handling a raw nonce.
+
+    An expired request becomes terminal with the same explicit non-execution
+    result.  Callers audit and surface that as a denial rather than treating it
+    as a successful approval.
+    """
+    validate_teardown_request(request)
+    actor = approver_id.strip()
+    if not actor:
+        raise ValueError("teardown approver identity is required.")
+    if request.status != TEARDOWN_REQUEST_PENDING:
+        raise ValueError("teardown request is no longer pending.")
+    now = _parse_teardown_timestamp(approved_at, "approval time")
+    if _parse_teardown_timestamp(request.nonce_expires_at, "nonce expiry") <= now:
+        return replace(
+            request,
+            status=TEARDOWN_REQUEST_EXPIRED,
+            execution_result=TEARDOWN_EXECUTION_DISABLED_RESULT,
+            updated_at=approved_at,
+            completed_at=approved_at,
+        )
+    if not nonce_hash or not hmac.compare_digest(request.nonce_hash, nonce_hash):
+        raise ValueError("teardown approval nonce is invalid.")
+    if actor == request.requested_by:
+        raise ValueError("teardown requester cannot approve the request.")
+    if actor in request.approver_ids:
+        raise ValueError("teardown approver has already approved this request.")
+    approvers = (*request.approver_ids, actor)
+    terminal = len(approvers) == 2
+    return replace(
+        request,
+        approver_ids=approvers,
+        status=TEARDOWN_REQUEST_EXECUTION_DISABLED if terminal else TEARDOWN_REQUEST_PENDING,
+        execution_result=TEARDOWN_EXECUTION_DISABLED_RESULT if terminal else "",
+        updated_at=approved_at,
+        completed_at=approved_at if terminal else "",
+    )
 
 
 def validate_module(module: DeploymentModule) -> None:

@@ -26,13 +26,29 @@
         respond "Not Found" 404
     }
     handle /api/onebrain/* {
-        reverse_proxy onebrain-admin-ui:3000
+        uri replace /api/onebrain /api
+        reverse_proxy {
+            dynamic a api-edge 8000 {
+                refresh 5s
+            }
+            header_up X-Forwarded-For {remote_host}
+        }
     }
     handle /api/* {
-        reverse_proxy onebrain-api:8000
+        reverse_proxy {
+            dynamic a api-edge 8000 {
+                refresh 5s
+            }
+            header_up X-Forwarded-For {remote_host}
+        }
     }
     handle /health* {
-        reverse_proxy onebrain-api:8000
+        reverse_proxy {
+            dynamic a api-edge 8000 {
+                refresh 5s
+            }
+            header_up X-Forwarded-For {remote_host}
+        }
     }
     handle {
         reverse_proxy onebrain-admin-ui:3000

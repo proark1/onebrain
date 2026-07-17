@@ -32,7 +32,13 @@ def _service_names(compose: str) -> set:
     """Top-level compose service names (2-space indent under `services:`) without a
     YAML parser (PyYAML is not a project dependency)."""
     names = set()
+    in_services = False
     for line in compose.splitlines():
+        if line == "services:":
+            in_services = True
+            continue
+        if not in_services:
+            continue
         if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":"):
             names.add(line.strip().rstrip(":"))
     return names
@@ -153,11 +159,19 @@ def test_compose_onebrain_only():
     _assert_golden("compose_onebrain.yml", compose)
     services = _service_names(compose)
     assert "onebrain-migrate" in services
+    assert "postgres-roles" in services
+    assert "PGHOST=postgres exec /opt/onebrain/postgres-init.sh" in compose
+    assert "      postgres-roles:\n        condition: service_completed_successfully" in compose
     assert "profiles: [onebrain]" in compose
     # one-shot migrate gates the api via service_completed_successfully
     assert "      onebrain-migrate:\n        condition: service_completed_successfully" in compose
     assert "- env/onebrain-api.env" in compose
     assert "- /data:/data" in compose
+    assert "x-x: &x {read_only: true" in compose
+    assert 'tmpfs: ["/tmp:mode=1777,size=64m", "/app/.next/cache:mode=1777,size=64m"]' in compose
+    assert "edge: {ipv4_address: 172.30.0.2}" in compose
+    assert "edge: {aliases: [api-edge]}" in compose
+    assert "edge: {internal: true, ipam: {config: [{subnet: 172.30.0.0/24}]}}" in compose
     assert ":8080" not in compose                      # never Railway's masked port
     assert "8000" in compose and "3000" in compose     # onebrain ports
     for absent in ("4000", "5174", "4100", "4200"):
@@ -167,7 +181,13 @@ def test_compose_onebrain_only():
     assert "expose:" in compose
     assert compose.count("ports:") == 1
     assert '"80:80"' in compose and '"443:443"' in compose
-    assert "  caddy:\n    image: caddy:2" in compose   # ingress present, no profile
+    assert "  caddy:\n    image: caddy:2@sha256:" in compose   # ingress present, no profile
+    for support_image in (
+        "caddy:2@sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9",
+        "pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb",
+        "redis:7@sha256:a8f08480e1f88f2647fed492d1178c06abb0d0c1fbf02c682a61e2f483fb3954",
+    ):
+        assert f"image: {support_image}" in compose
 
 
 def test_compose_with_communication():
@@ -194,7 +214,7 @@ def test_compose_full_stack():
     _assert_golden("compose_full.yml", compose)
     services = _service_names(compose)
     # images map covers exactly the enabled modules (+ ingress + infra + migrates)
-    module_services = {s for s in services if s not in ("caddy", "postgres", "redis") and not s.endswith("-migrate")}
+    module_services = {s for s in services if s not in ("caddy", "postgres", "postgres-roles", "redis") and not s.endswith("-migrate")}
     assert module_services == set(_ALL)
     # Caddy has NO profile, so the ingress is present on every stack regardless of products
     assert "caddy" in services
@@ -215,10 +235,11 @@ def test_full_stack_accepts_one_digest_pinned_communication_image_for_all_module
 
 # --- env files ---------------------------------------------------------------
 _SECRET_KEYS = (
-    "POSTGRES_PASSWORD", "REDIS_PASSWORD",
+    "POSTGRES_PASSWORD", "POSTGRES_APP_PASSWORD", "POSTGRES_WORKER_PASSWORD",
+    "POSTGRES_ASSISTANT_PASSWORD", "POSTGRES_COMMUNICATION_PASSWORD", "REDIS_PASSWORD",
     "ONEBRAIN_LLM_API_KEY", "ONEBRAIN_SERVICE_KEY", "ONEBRAIN_ADMIN_PASSWORD",
     "ONEBRAIN_ASSISTANT_SERVICE_KEY", "ONEBRAIN_COMMUNICATION_SERVICE_KEY",
-    "ONEBRAIN_AUTH_SECRET",
+    "ONEBRAIN_AUTH_SECRET", "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET",
 )
 
 
@@ -247,7 +268,7 @@ def test_env_files_are_per_service_and_cover_requirements():
     assert "ONEBRAIN_MODULE_PROBES_ENABLED=true" in api
     assert "ONEBRAIN_LOCAL_MODULES=" in api
     assert "ONEBRAIN_DATA_DIR=/data" in api
-    assert "TRUST_PROXY=1" in api
+    assert "TRUST_PROXY" not in api
     # The admin seed pair — seed.py (seed_admin_from_env) creates a loginable admin at
     # container start ONLY when BOTH are non-empty. Both are ${VAR} refs filled from the
     # exchanged (customer) / baked (MC) /opt/onebrain/.env; without the email the box seeds
@@ -274,8 +295,8 @@ def test_env_files_are_per_service_and_cover_requirements():
                     }
                 else:
                     assert value == "${" + key + "}", f"{key} is not a ${{VAR}} ref: {line!r}"
-            if key in ("ONEBRAIN_DATABASE_URL", "DATABASE_URL"):
-                assert "${POSTGRES_PASSWORD}" in value    # password is a ref, never plaintext
+            if key in ("ONEBRAIN_DATABASE_URL", "DATABASE_URL", "ONEBRAIN_WORKER_DATABASE_URL"):
+                assert "${POSTGRES_" in value             # password is a ref, never plaintext
             if key == "REDIS_URL":
                 assert "${REDIS_PASSWORD}" in value
 
@@ -313,8 +334,19 @@ def test_env_bakes_production_boot_essentials():
     # The cookie secret (a ${VAR} ref) + Secure cookies live ONLY on onebrain-api — the worker
     # never constructs the app / signs cookies, so it neither validates nor needs the secret.
     assert "ONEBRAIN_AUTH_SECRET=${ONEBRAIN_AUTH_SECRET}" in api
+    assert "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET=${ONEBRAIN_LOGIN_RATE_LIMIT_SECRET}" in api
     assert "ONEBRAIN_COOKIE_SECURE=true" in api
+    assert "ONEBRAIN_TRUSTED_PROXY_CIDRS=172.30.0.2/32" in api
+    assert "ONEBRAIN_TRUSTED_PROXY_HOPS=1" in api
+    assert "ONEBRAIN_POSTGRES_APP_ROLE=onebrain_app" in api
+    assert "ONEBRAIN_POSTGRES_WORKER_ROLE=onebrain_worker" in api
+    assert "postgresql://onebrain_app:${POSTGRES_APP_PASSWORD}@postgres:5432/onebrain" in api
+    assert "ONEBRAIN_WORKER_DATABASE_URL" not in api
+    assert "ONEBRAIN_WORKER_DATABASE_URL=postgresql://onebrain_worker:${POSTGRES_WORKER_PASSWORD}@postgres:5432/onebrain" in workers
+    assert "postgresql://assistant_app:${POSTGRES_ASSISTANT_PASSWORD}@postgres:5432/assistant" in env["env/assistant-service.env"]
+    assert "postgresql://communication_app:${POSTGRES_COMMUNICATION_PASSWORD}@postgres:5432/communication" in env["env/communication-api.env"]
     assert "ONEBRAIN_AUTH_SECRET" not in workers
+    assert "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET" not in workers
     assert "ONEBRAIN_COOKIE_SECURE" not in workers
 
 
@@ -329,11 +361,29 @@ def test_per_product_databases_are_distinct():
     assert ob_db in env["env/onebrain-migrate.env"]
     assert as_db in env["env/assistant-migrate.env"]
     assert ob_db != as_db
+    assert "ONEBRAIN_DATABASE_URL=postgresql://onebrain_app:${POSTGRES_APP_PASSWORD}@postgres:5432/onebrain" in env["env/onebrain-api.env"]
+    assert "ONEBRAIN_PROCESS=worker" in env["env/onebrain-workers.env"]
+    assert "ONEBRAIN_WORKER_DATABASE_URL=postgresql://onebrain_worker:${POSTGRES_WORKER_PASSWORD}@postgres:5432/onebrain" in env["env/onebrain-workers.env"]
+    # Runtime services never receive the product owner's global credential;
+    # the owner DSNs remain only in their one-shot migration environments.
+    for name in ("env/assistant-service.env", "env/communication-api.env",
+                 "env/communication-workers.env", "env/communication-voice.env"):
+        assert "postgresql://onebrain:${POSTGRES_PASSWORD}" not in env[name]
     # the createdb names equal the Phase-6 pg_restore targets
     from app.provisioning.hetzner import render as R
     init = R._read_box_file("postgres-init.sh")
     for db in ("onebrain", "assistant", "communication"):
         assert db in init
+    for role in ("POSTGRES_ASSISTANT_ROLE", "POSTGRES_COMMUNICATION_ROLE"):
+        assert role in init
+    assert "ALTER DEFAULT PRIVILEGES" in init
+
+
+def test_runtime_database_roles_must_be_distinct_non_owner_logins():
+    with pytest.raises(ValueError, match="must all differ"):
+        render_compose(_inputs(_ONEBRAIN, postgres_assistant_role="onebrain_app"))
+    with pytest.raises(ValueError, match="must not use the owner"):
+        render_compose(_inputs(_ONEBRAIN, postgres_assistant_role="onebrain"))
 
 
 def test_render_operator_overlay():
@@ -344,6 +394,7 @@ def test_render_operator_overlay():
     assert "ONEBRAIN_IS_OPERATOR_SURFACE=true" in op
     assert "ONEBRAIN_FLEET_PUBLIC_URL=https://mc.example.com" in op   # MC's own public URL
     assert "ONEBRAIN_FLEET_URL=https://mc.example.com" in op        # self-pointing (caller sets the URL)
+    assert "ONEBRAIN_OPERATOR_DATABASE_URL=postgresql://onebrain:${POSTGRES_PASSWORD}@postgres:5432/onebrain" in op
     assert "ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS=" in op
     assert "ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY=${ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY}" in op
     # G1-1: the box's OWN accepted wrapper-key set, or its startup assertion bricks it.
@@ -447,7 +498,10 @@ def test_caddyfile_routes_only_enabled_and_tls():
     full = render_caddyfile(_inputs(_ALL))
     assert full.startswith("dep_a.fleet.example {")      # a domain implies Caddy auto-HTTPS (80/443)
     assert "reverse_proxy communication-api:4000" in full
-    assert "reverse_proxy onebrain-api:8000" in full
+    assert "dynamic a api-edge 8000" in full
+    assert "refresh 5s" in full
+    assert "header_up X-Forwarded-For {remote_host}" in full
+    assert "uri replace /api/onebrain /api" in full
     # Denials come before generic /api/* routing so a customer browser cannot
     # even reach an unmounted control-plane route through the API proxy.
     deny = 'handle /api/fleet/* {\n        respond "Not Found" 404\n    }'
@@ -485,10 +539,7 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
         "/opt/onebrain/onebrain_gate_report.py", "/opt/onebrain/installed-release.json",
         "/etc/systemd/system/onebrain-update.service", "/etc/systemd/system/onebrain-update.timer",
     ):
-        if required == "/opt/onebrain/box.env":
-            assert f"- path: {required}" in wf
-        else:
-            assert required in assets
+        assert required in assets
     assert "/opt/onebrain/env/onebrain-api.env" in assets
     assert "set -euo pipefail" in assets["/opt/onebrain/update.sh"][1]
     assert "verify_desired_state" in assets["/opt/onebrain/onebrain_box_verify.py"][1]
@@ -501,10 +552,19 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
     # run_id is baked at render time (no literal placeholder survives), in both the
     # callback URL and box.env — else the box POSTs to /runs/{run_id}/callback and 404s.
     assert "/api/provisioning/runs/prun_fixture/callback" in ci
-    assert "ONEBRAIN_RUN_ID=prun_fixture" in ci
+    assert "ONEBRAIN_RUN_ID=prun_fixture" in assets["/opt/onebrain/box.env"][1]
     assert "{run_id}" not in ci
     assert assets["/opt/onebrain/onebrain_gate_report.py"][0] == "0755"
     assert "tar -xf /opt/onebrain/onebrain-assets.tar -C /" in rc
+
+
+def test_cloud_init_uses_the_preflighted_callback_url_template():
+    ci = render_cloud_init(_inputs(
+        _ONEBRAIN,
+        callback_url="https://callbacks.example/provisioning/runs/{run_id}/callback?source=box",
+    ))
+    assert "https://callbacks.example/provisioning/runs/prun_fixture/callback?source=box" in ci
+    assert "${ONEBRAIN_FLEET_URL}/api/provisioning/runs/prun_fixture/callback" not in ci
 
 
 def test_cloud_init_requires_run_id():
@@ -561,17 +621,20 @@ def test_customer_cloud_init_under_hetzner_user_data_limit():
         n = len(render_cloud_init(_inputs(modules)).encode("utf-8"))
         assert n < _HETZNER_USER_DATA_LIMIT, (
             f"customer cloud-init {n} bytes exceeds Hetzner's {_HETZNER_USER_DATA_LIMIT}-byte limit")
-    # The onebrain-only box (what the MC box mirrors module-wise) has a comfortable margin.
-    assert len(render_cloud_init(_inputs(_ONEBRAIN)).encode("utf-8")) < 30000
+    # The onebrain-only box (what the MC box mirrors module-wise) retains a
+    # concrete 768-byte safety margin after the extra runtime-role isolation
+    # configuration is rendered.
+    assert len(render_cloud_init(_inputs(_ONEBRAIN)).encode("utf-8")) < 32000
 
 
 def test_cloud_init_large_entries_are_gz_b64_and_roundtrip_byte_identical():
     """Compressible write_files entries (the box scripts, the full compose, the non-secret
     systemd units) are embedded with cloud-init's `encoding: gz+b64` WHEN that is smaller than
     the plain form, and base64-decode + gunzip reproduces the ORIGINAL bytes EXACTLY (cloud-init
-    writes those decompressed bytes to disk), with permissions preserved. The SECRET-bearing
-    entries (env/*.env, box.env, the MC-baked .env) are FORCED plain so bootstrap_mc._redact can
-    mask their ${VAR}s / baked values and the boot-config tests can resolve them."""
+    writes those decompressed bytes to disk), with permissions preserved. The operator's
+    secret-bearing files live in a dedicated opaque archive so bootstrap_mc._redact can
+    mask the whole reversible blob; customer `box.env` is a root-only 0600 member of the
+    normal asset archive."""
     from app.provisioning.hetzner import render as R
 
     inp = _inputs(_ALL)
@@ -599,15 +662,11 @@ def test_cloud_init_large_entries_are_gz_b64_and_roundtrip_byte_identical():
     assert gz["/opt/onebrain/update.sh"][0] == "0755"
     assert gz["/opt/onebrain/onebrain_bootstrap.sh"][0] == "0755"
 
-    # SECURITY: every SECRET-bearing entry stays plain (never gz+b64) so _redact can mask its
-    # values and the boot-config tests can resolve them. env/*.env + box.env for a customer box
-    # (a full-stack box has no baked .env; the MC .env plain-ness is covered in the MC test).
-    wf = _write_files_section(ci)
-    secret_plain = ["/opt/onebrain/box.env"]
-    for plain_path in secret_plain:
-        assert plain_path not in gz, f"{plain_path} was unexpectedly gz+b64 (a secret must stay plain)"
-        body = wf.split(f"  - path: {plain_path}\n", 1)[1].split("  - path:", 1)[0]
-        assert "content: |" in body and "encoding:" not in body, f"{plain_path} is not a plain entry"
+    # Customer box.env is inside the root-only archive to fit Hetzner's hard
+    # user-data limit. Its short-lived tokens remain mode 0600 after extraction.
+    assets = _asset_entries(ci)
+    assert assets["/opt/onebrain/box.env"][0] == "0600"
+    assert "/opt/onebrain/box.env" not in _write_files_section(ci)
 
     # Every gz+b64 entry is a genuine WIN: re-emitting its decoded content as forced-plain is
     # LONGER than the chosen gz+b64 entry (pick-smaller is never a pessimization).
@@ -623,19 +682,19 @@ def test_cloud_init_large_entries_are_gz_b64_and_roundtrip_byte_identical():
 
 def test_mc_cloud_init_under_hetzner_user_data_limit():
     """The MC (operator) box — the actual go-live artifact bootstrap_mc renders — fits under
-    Hetzner's 32768-byte user_data limit via build_mc_artifacts, with a comfortable margin,
-    while its baked /opt/onebrain/.env stays PLAIN (so bootstrap_mc._redact can mask its
-    secret values and the boot-config tests can resolve it)."""
+    Hetzner's 32768-byte user_data limit via build_mc_artifacts. Its baked dotenv and
+    optional broker mTLS material live in a dedicated opaque archive, which dry-runs redact
+    as a unit while boot-config tests still resolve its original contents."""
     from tests.test_bootstrap_mc import _args, _base_argv, _mc_settings, mc
 
     art = mc.build_mc_artifacts(_args(_base_argv()), _mc_settings())
     n = len(art.server.user_data.encode("utf-8"))
     assert n < _HETZNER_USER_DATA_LIMIT, (
         f"MC user_data {n} bytes exceeds Hetzner's {_HETZNER_USER_DATA_LIMIT}-byte limit")
-    assert n < 30000, f"MC user_data {n} bytes has no comfortable margin under {_HETZNER_USER_DATA_LIMIT}"
     gz = _gz_b64_entries(art.server.user_data)
     assert "/opt/onebrain/onebrain_box_verify.py" in gz     # the large verifier is compressed
-    assert "/opt/onebrain/.env" not in gz                   # the baked .env stays plain (redaction/tests)
+    assert "/opt/onebrain/.env" not in gz                   # restored only after MC-secret archive extraction
+    assert "/opt/onebrain/mc-broker-tls.tar" in _gz_b64_raw_entries(art.server.user_data)
 
 
 def test_update_sh_has_no_crlf():
@@ -696,6 +755,9 @@ def test_operator_cloud_init_omits_exchange_but_keeps_drop_persistence():
     # metadata-drop persistence still applies to it.
     rc = _runcmd_section(render_cloud_init(_inputs(_ALL, role="operator")))
     assert "onebrain_bootstrap.sh" not in rc
+    assert "/opt/onebrain/onebrain_bootstrap.sh" not in _asset_entries(
+        render_cloud_init(_inputs(_ALL, role="operator"))
+    )
     assert "systemctl enable --now onebrain-metadata-drop.service" in rc
 
 
@@ -718,6 +780,11 @@ def test_render_rejects_hostile_token():
         render_cloud_init(_inputs(_ONEBRAIN, bootstrap_token="bt; rm -rf /"))
     with pytest.raises(ValueError, match="callback_token"):
         render_cloud_init(_inputs(_ONEBRAIN, callback_token="a b"))
+    with pytest.raises(ValueError, match="callback_url"):
+        render_cloud_init(_inputs(
+            _ONEBRAIN,
+            callback_url="https://callbacks.example/x?run=$(id)&id={run_id}",
+        ))
 
 
 # --- injection discipline ----------------------------------------------------

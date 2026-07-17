@@ -4,7 +4,7 @@ per-deployment fleet key and receiving the three env vars its reporter needs.
 `fleet_enrollment_vars` is pure (the exact env a reporting deployment sets).
 `mint_deployment_fleet_key` mints a key and stores only its hash (reusing the
 service-key hashing) — the plaintext token is returned once, to be delivered to
-the deployment via Railway env (at provision time, or an operator enroll call).
+the deployment through its rendered environment (at provision time, or an operator enroll call).
 """
 
 from __future__ import annotations

@@ -3,6 +3,7 @@ import { ConsoleShell } from "@/components/console-shell";
 import { OperatorPanel } from "@/components/operator-panel";
 import { getSession, onebrainApiBaseUrl } from "@/lib/onebrain-api";
 import { loginHref } from "@/lib/login-redirect";
+import { notFound } from "next/navigation";
 
 export default async function OperatorPage() {
   const apiBaseUrl = onebrainApiBaseUrl();
@@ -16,6 +17,10 @@ export default async function OperatorPage() {
 
   if (!sessionResult.session) {
     return <SignedOutState loginHref={loginHref("/operator")} />;
+  }
+
+  if (!sessionResult.session.is_operator_surface) {
+    notFound();
   }
 
   if (sessionResult.session.role_id !== "admin") {

@@ -1,7 +1,7 @@
 """Per-module deployment contracts: the env vars the provisioner must deliver and
 the health probe the ground-truth reporter uses. Keyed by MODULE_IDS — the single
 module vocabulary. Ports are the Dockerfiles' OWN defaults (verified in-repo),
-never provision-customer.yml's Railway-masked :8080 wiring:
+never the retired workflow's port-masked :8080 wiring:
   onebrain Dockerfile EXPOSE 8000 · onebrain-web/Dockerfile EXPOSE 3000
   personalasisstant assistant-runtime Dockerfile EXPOSE 8000 (/health/ready)
   comm scripts/healthcheck.mjs: api 4000 · widget 5174 · voice 4100 · workers 4200
@@ -49,15 +49,18 @@ MODULE_HEALTH_PROBES: Dict[str, HealthProbe] = {
 
 # Env vars the provisioner MUST deliver per module (names verified in each repo;
 # comm reads ONEBRAIN_API_BASE_URL / ONEBRAIN_SERVICE_KEY / ONEBRAIN_SPACE_ID /
-# ONEBRAIN_ACCOUNT_ID — the SERVICE_KEY+SPACE_ID pair is what provision-customer.yml
+# ONEBRAIN_ACCOUNT_ID — the SERVICE_KEY+SPACE_ID pair is what the retired workflow
 # never set, letting comm silently run in local-brain fallback; PA reads
 # ONEBRAIN_API_BASE_URL + ONEBRAIN_SERVICE_KEY). Aggregate counts of names only.
 MODULE_ENV_REQUIREMENTS: Dict[str, Tuple[str, ...]] = {
     # Fleet credentials are host-agent inputs, never application-container
     # requirements. The deployment id remains customer-visible metadata.
     "onebrain-api":          ("ONEBRAIN_VECTOR_STORE", "ONEBRAIN_DATABASE_URL", "ONEBRAIN_DATA_DIR",
-                              "ONEBRAIN_DEPLOYMENT_ID"),
-    "onebrain-workers":      ("ONEBRAIN_VECTOR_STORE", "ONEBRAIN_DATABASE_URL", "ONEBRAIN_DATA_DIR"),
+                              "ONEBRAIN_DEPLOYMENT_ID", "ONEBRAIN_POSTGRES_APP_ROLE",
+                              "ONEBRAIN_POSTGRES_WORKER_ROLE"),
+    "onebrain-workers":      ("ONEBRAIN_VECTOR_STORE", "ONEBRAIN_DATABASE_URL", "ONEBRAIN_DATA_DIR",
+                              "ONEBRAIN_WORKER_DATABASE_URL", "ONEBRAIN_POSTGRES_APP_ROLE",
+                              "ONEBRAIN_POSTGRES_WORKER_ROLE"),
     "onebrain-admin-ui":     (),
     "assistant-service":     ("ONEBRAIN_API_BASE_URL", "ONEBRAIN_SERVICE_KEY", "DATABASE_URL", "REDIS_URL"),
     "communication-api":     ("ONEBRAIN_API_BASE_URL", "ONEBRAIN_SERVICE_KEY", "ONEBRAIN_SPACE_ID",

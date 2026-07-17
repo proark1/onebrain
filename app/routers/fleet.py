@@ -11,6 +11,7 @@ customer-serving deployment never ingests or exposes fleet state.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -34,7 +35,7 @@ from app.deps import (
     get_provisioning_run_store,
 )
 from app.fleet.base import FleetKey, Heartbeat
-from app.fleet.bootstrap_bundle import render_dotenv
+from app.fleet.bootstrap_bundle import backfill_runtime_db_passwords, render_dotenv
 from app.fleet.enrollment import fleet_enrollment_vars, mint_deployment_fleet_key
 from app.fleet.heartbeat import AnyFleetHeartbeat, FleetHeartbeat  # noqa: F401 — FleetHeartbeat kept for typing
 from app.fleet.keys import (
@@ -119,7 +120,7 @@ def ingest_heartbeat(body: AnyFleetHeartbeat, authorization: str = Header(defaul
     key = _authenticate_fleet_key(authorization, body.deployment_id)
     # Cap per-deployment posting rate so a leaked/misused key can't flood the
     # append-only heartbeat table; reject implausibly-skewed reported_at.
-    wait = get_fleet_heartbeat_rate_limiter().check(f"hb:{body.deployment_id}")
+    wait = get_fleet_heartbeat_rate_limiter().check(body.deployment_id)
     if wait:
         raise HTTPException(status_code=429, detail="Heartbeat rate limit exceeded.",
                             headers={"Retry-After": str(wait)})
@@ -235,7 +236,7 @@ def bootstrap_exchange(authorization: str = Header(default=""),
 
     # G1-5: a DEDICATED, aggressively-low rate limit keyed by the resolved deployment —
     # a single fetch exfiltrates the whole bundle, so a leaked key cannot poll it.
-    wait = get_fleet_bootstrap_rate_limiter().check(f"bootstrap:{deployment_id}")
+    wait = get_fleet_bootstrap_rate_limiter().check(deployment_id)
     if wait:
         raise HTTPException(status_code=429, detail="Bootstrap rate limit exceeded.",
                             headers={"Retry-After": str(wait)})
@@ -400,7 +401,7 @@ def rotate_desired_state_key(principal: Principal = Depends(resolve_principal)):
     prov = get_provisioning_run_store()
     rotated = 0
     for dep in control.list_deployments():
-        # Only boxes with a bundle re-fetch (Railway deployments have none) — skip
+        # Only boxes with a bundle re-fetch have a local state file — skip the rest.
         # those rather than raising, so the count reflects the pull-managed fleet.
         if prov.get_secret_bundle(dep.id) is not None:
             prov.bump_secrets_epoch(dep.id)
@@ -421,6 +422,70 @@ def rotate_deployment_secrets(deployment_id: str, principal: Principal = Depends
     if prov.get_secret_bundle(deployment_id) is None:
         raise HTTPException(status_code=404, detail="No secret bundle for that deployment.")
     return DeploymentRotateResult(deployment_id=deployment_id, secrets_epoch=prov.bump_secrets_epoch(deployment_id))
+
+
+class RuntimeDbCredentialBackfillResult(BaseModel):
+    deployment_id: str
+    updated: bool
+    secrets_epoch: int
+
+
+@router.post(
+    "/deployments/{deployment_id}/backfill-runtime-db-credentials",
+    response_model=RuntimeDbCredentialBackfillResult,
+)
+def backfill_runtime_db_credentials(
+    deployment_id: str,
+    principal: Principal = Depends(resolve_principal),
+):
+    """Add missing restricted runtime DB passwords to a legacy box bundle.
+
+    This is an operator-admin-only, MC-side migration path for bundles sealed
+    before the full restricted-runtime role split existed. It decrypts only in MC
+    memory, adds *only* missing values, re-seals before storage, and returns no
+    password material. A successful change then bumps secrets_epoch so the box
+    re-fetches its authoritative bundle. Never generate these values on a box:
+    that would leave MC unable to service a later rotation.
+    """
+
+    _require_operator_admin(principal)
+    _require_active_signer_in_served_set()
+    if not get_control_plane_store().get_deployment(deployment_id):
+        raise HTTPException(status_code=404, detail="No such deployment in the registry.")
+    prov = get_provisioning_run_store()
+    bundle_row = prov.get_secret_bundle(deployment_id)
+    if bundle_row is None:
+        raise HTTPException(status_code=404, detail="No secret bundle for that deployment.")
+
+    try:
+        cipher = OneTimeSecretCipher(get_settings())
+        decoded = json.loads(cipher.open_bundle(bundle_row.ciphertext))
+        if not isinstance(decoded, dict):
+            raise ValueError("Secret bundle must be a JSON object.")
+        updated_bundle, added = backfill_runtime_db_passwords(decoded)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        # Never return a ciphertext/decryption detail: it can become an oracle
+        # for the MC's escrow key or stored secret format.
+        raise HTTPException(status_code=500, detail="Secret bundle could not be opened.")
+
+    if not added:
+        return RuntimeDbCredentialBackfillResult(
+            deployment_id=deployment_id,
+            updated=False,
+            secrets_epoch=bundle_row.secrets_epoch,
+        )
+
+    # upsert_secret_bundle preserves the current epoch; only the explicit bump
+    # below signals the host agent to re-fetch this newly sealed content.
+    prov.upsert_secret_bundle(replace(
+        bundle_row,
+        ciphertext=cipher.seal_bundle(json.dumps(updated_bundle, separators=(",", ":"), sort_keys=True)),
+    ))
+    return RuntimeDbCredentialBackfillResult(
+        deployment_id=deployment_id,
+        updated=True,
+        secrets_epoch=prov.bump_secrets_epoch(deployment_id),
+    )
 
 
 # --- key management (operator-admin) -----------------------------------------
@@ -576,7 +641,7 @@ class EnrollmentOut(BaseModel):
 @router.post("/deployments/{deployment_id}/enroll", response_model=EnrollmentOut)
 def enroll_deployment(deployment_id: str, principal: Principal = Depends(resolve_principal)):
     """Mint a fleet key for a deployment and return the three env vars its reporter
-    needs. The operator applies these to the deployment's Railway env (provisioning
+    needs. The operator applies these to the deployment's rendered environment (provisioning
     does this automatically for new deployments)."""
     _require_operator_admin(principal)
     if not get_control_plane_store().get_deployment(deployment_id):

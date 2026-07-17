@@ -21,14 +21,37 @@ from app.trust.envelope import DesiredStateEnvelope, SignedReleaseBlock, sign_de
 from app.trust.release import canonical_release_payload
 from app.trust.signing import generate_keypair, sign_payload
 
-_BASH = shutil.which("bash")
+def _find_usable_bash() -> str | None:
+    """Return Bash only when the discovered executable can actually run.
+
+    Windows can expose ``bash.exe`` as the WSL launcher even when no Linux
+    distribution is installed.  Treating that launcher as Bash makes every
+    shell harness test fail before its first assertion.
+    """
+
+    candidate = shutil.which("bash")
+    if candidate is None:
+        return None
+    try:
+        result = subprocess.run(
+            [candidate, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return candidate if result.returncode == 0 else None
+
+
+_BASH = _find_usable_bash()
 _CYGPATH = shutil.which("cygpath")
 _BOX_DIR = Path(__file__).resolve().parents[1] / "deploy" / "box"
 _UPDATE_SH = _BOX_DIR / "update.sh"
 _BOOTSTRAP_SH = _BOX_DIR / "onebrain_bootstrap.sh"
 _VERIFY_PY = _BOX_DIR / "onebrain_box_verify.py"
 
-pytestmark = pytest.mark.skipif(_BASH is None, reason="bash unavailable (harness needs /usr/bin/bash)")
+pytestmark = pytest.mark.skipif(_BASH is None, reason="functional bash unavailable (harness needs /usr/bin/bash)")
 
 REL_PRIV, REL_PUB = generate_keypair()
 DS_PRIV, DS_PUB = generate_keypair()

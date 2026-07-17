@@ -18,7 +18,8 @@ from app.deps import (
     get_store,
     get_user_store,
 )
-from app.deploy.runtime import validate_runtime_safety
+from app.deploy.runtime import validate_embedding_runtime_contract, validate_runtime_safety
+from app.http_limits import RequestBodyTooLargeError, limited_receive
 from app.monitoring import record_api_error
 from app.provisioning.customer_bootstrap import (
     decode_customer_bootstrap,
@@ -42,6 +43,8 @@ def create_app() -> FastAPI:
     if customer_bootstrap and settings.operator_mode:
         raise RuntimeError("Customer bootstrap cannot run on Mission Control.")
     validate_runtime_safety(settings)
+    validate_embedding_runtime_contract(settings)
+    settings.assert_production_mission_control_ready()
 
     # Fail closed: a weak/default cookie-signing secret means anyone can forge a
     # session token for any user. Refuse to start rather than run insecurely.
@@ -59,8 +62,11 @@ def create_app() -> FastAPI:
         cl = request.headers.get("content-length")
         if cl and cl.isdigit() and int(cl) > settings.max_body_bytes:
             return JSONResponse({"detail": "Payload too large"}, status_code=413)
+        request._receive = limited_receive(request._receive, max_body_bytes=settings.max_body_bytes)
         try:
             response = await call_next(request)
+        except RequestBodyTooLargeError:
+            return JSONResponse({"detail": "Payload too large"}, status_code=413)
         except Exception:
             record_api_error(route=_route_template(request), status_code=500)
             raise

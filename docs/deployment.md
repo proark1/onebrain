@@ -1,7 +1,10 @@
 # OneBrain Deployment
 
 This guide describes the active Hetzner deployment model. Railway is not a
-production or customer-deployment path.
+production or customer-deployment path, and no active provisioning or rollout
+workflow may use it. Retiring old Railway credentials and organization-level
+automation is an external operator task in the
+[production activation runbook](production-activation-runbook.md).
 
 ## Deployment shapes
 
@@ -46,11 +49,34 @@ firewall restriction, and token custody have been verified. Until then, do not
 enable MC-managed infrastructure creation or bypass the boundary by placing a
 Hetzner token on MC.
 
+## Multi-replica runtime boundary
+
+Production API replicas share PostgreSQL-backed authentication-rate-limit state.
+Each failed login increments atomic account and client-address counters whose
+subjects are stored only as keyed hashes. A replica uses the direct peer address
+unless an explicitly configured, trusted proxy CIDR and hop count permits a
+forwarded address. Never trust a caller-supplied forwarding header by default.
+
+Run migrations before scaling API or worker replicas. Background jobs and
+direct AI Employee turns carry random lease tokens and expiries; heartbeats and
+terminal writes are conditional on the current token. A stopped replica may
+leave work for recovery after expiry, but a stale owner cannot complete or fail
+work claimed by another replica. Handlers must make their external effects
+idempotent by job ID before lease recovery is enabled.
+
+For a LiteLLM + pgvector production deployment, the configured embedding
+dimension is part of the persisted vector contract. Startup preflight verifies
+provider reachability/output dimension and pgvector schema dimension before
+traffic is served. Changing a model or dimension requires a deliberate
+versioned re-embedding migration; it is never a runtime inference or table
+rebuild.
+
 ## Safe release and rollout
 
 1. Build immutable container images and publish a signed release descriptor.
 2. Deploy the candidate to the dummy-data, full-stack development gate.
-3. Verify service health, schema compatibility, and the product flow.
+3. Verify service health, schema compatibility, exact rollout
+   attempt/release/migration/module reports, and the product flow.
 4. In Mission Control, record the approved release and select an individual
    customer deliberately.
 5. Create a recoverable rollout: preserve the prior image digests and database
@@ -62,6 +88,22 @@ Any failed verification leaves the previous customer release in place or
 returns it to the preserved known-good release. Do not auto-advance a customer
 because a newer dev build exists.
 
+Before allowing real customer creation, perform a broker-provisioned dummy-data
+canary, an explicit update and rollback canary, an isolated backup/restore
+rehearsal, and tenant-isolation negative tests. A stale, malformed, or
+mismatched customer report remains pending until its deadline and then fails;
+it must not complete a rollout.
+
+## Teardown review boundary
+
+Customer teardown is intentionally non-destructive. The operator flow can bind
+a review request to a deployment/account, capture legal-hold and
+backup/retention evidence references, and record two distinct approvals. It
+stores only a hash of the short-lived approval nonce and blocks active legal
+holds. Its terminal state is explicitly `execution_disabled`; no broker or
+cloud deletion action is invoked. A future live deletion capability needs a
+separate reviewed design and external legal/retention authorization.
+
 ## Required production safeguards
 
 - Use immutable image digests, never mutable tags as a release identity.
@@ -72,7 +114,11 @@ because a newer dev build exists.
   ingress.
 - Keep customer application containers free of Hetzner credentials and MC
   control-plane keys.
+- Alert on broker health, rollout reconciliation deadlines, shared login-limit
+  spikes, lease loss/retry exhaustion, backup freshness, and embedding
+  preflight failures.
 
 See [release promotion](release-promotion-activation.md) for the release
-workflow and [target architecture](target-architecture.md) for the isolation
-model.
+workflow, [target architecture](target-architecture.md) for the isolation
+model, and the [production activation runbook](production-activation-runbook.md)
+for the operator-owned activation and recovery steps.

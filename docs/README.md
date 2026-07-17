@@ -20,6 +20,10 @@ production and customer-deployment model is Hetzner-only.
 - [Release promotion](release-promotion-activation.md) — dev-gate validation
   and explicit customer rollout.
 
+- [Production activation and recovery](production-activation-runbook.md) —
+  external credential retirement, broker activation, multi-replica, canary,
+  restore, and isolation checks.
+
 ## Technical contracts
 
 - [Data-layer boundary](onebrain-data-layer-boundary.md)

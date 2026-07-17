@@ -9,9 +9,9 @@ everything up to it is fake-tested.
 The MC box is BAKED, not exchanged (G3-1 — CRITICAL). The customer-box model (MC holds
 the bundle in ITS db, the customer box fetches it via ``/bootstrap``) is CIRCULAR for the
 MC box: its ``fleet_url`` is its OWN url and it boots with an EMPTY DB, so a self-served
-``/bootstrap`` 404s and its Postgres never comes up. Resolution: this runner renders the
-full ``/opt/onebrain/.env`` DIRECTLY into cloud-init (``render_dotenv`` + the operator
-overlay values). **No bootstrap token is minted and no ``/bootstrap`` exchange runs for
+``/bootstrap`` 404s and its Postgres never comes up. Resolution: this runner bakes the
+full ``/opt/onebrain/.env`` (``render_dotenv`` + the operator overlay values) into an
+MC-only root-readable cloud-init archive. **No bootstrap token is minted and no ``/bootstrap`` exchange runs for
 ``role=="operator"``** — the token/exchange path is customer-box only.
 
 MC self-enrolls at first boot (G3-2): the app's ``seed_operator_self_deployment`` creates
@@ -20,23 +20,27 @@ box's OWN db, so the reporter heartbeats to itself with no manual enroll. First-
 in-compose migrate (G3-5) runs ``alembic upgrade head`` on the on-box DB — do NOT migrate
 the MC DB "before boot" (impossible; the DB is created inside the box's compose stack).
 
-Secret hygiene: the ONE Hetzner Cloud token (which now also covers DNS — the unified
-Cloud API, GA 2025-11-10) is read from the environment (never a flag, never echoed); no
-separate DNS token is needed. Dry-run prints the rendered cloud-init with every secret
-VALUE REDACTED;
-the create path prints only the request SHAPE (never the user-data). Dry-run is the
-default; ``--no-dry-run`` is the single gate to a real create and hard-requires the token.
+Secret hygiene: the initial Hetzner Cloud token (which also covers DNS) is read from the
+bootstrap workstation environment (never a flag, never echoed) and is used only to create
+the first MC box. It is deliberately omitted from the rendered MC; its later provisioning
+uses the remote broker over mTLS. Dry-run redacts every secret value (including the opaque
+MC secret archive), while the create path prints only the request shape (never user-data).
+Dry-run is the default; ``--no-dry-run`` is the single gate to a real create and
+hard-requires the initial token.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import secrets
+import ssl
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -45,7 +49,7 @@ from app.config import get_settings  # noqa: E402
 from app.controlplane.desired_state import active_signer_in_served_set  # noqa: E402
 from app.fleet.bootstrap_bundle import render_dotenv, validate_bundle  # noqa: E402
 from app.fleet.keys import generate_fleet_key  # noqa: E402
-from app.provisioning.hetzner.broker import build_hetzner_broker  # noqa: E402
+from app.provisioning.hetzner.broker import InProcessHetznerBroker  # noqa: E402
 from app.provisioning.hetzner.client import (  # noqa: E402
     FLEET_LABEL_KEY,
     FLEET_LABEL_VALUE,
@@ -60,6 +64,7 @@ from app.provisioning.hetzner.render import (  # noqa: E402
     enabled_product_dbs,
     render_cloud_init,
 )
+from app.provisioning.hetzner.urllib_client import UrllibHetznerClient  # noqa: E402
 
 # The MC box's operator surface: the OneBrain API + admin UI + workers. No comm/assistant
 # module (so ONEBRAIN_SERVICE_KEY / ONEBRAIN_SPACE_ID stay empty in the bundle).
@@ -85,13 +90,25 @@ class McArtifacts:
     admin_password_generated: bool
 
 
-def build_mc_bundle(settings, *, dns_token: str, fleet_token: str,
+@dataclass(frozen=True)
+class _McBrokerTls:
+    """Validated PEM material to copy to the MC API's private bind mount."""
+
+    client_certificate: str
+    client_key: str
+    ca_certificate: str = ""
+
+
+def build_mc_bundle(settings, *, fleet_token: str,
                     admin_email: str, admin_password: str) -> dict:
-    """The MC box's BAKED bundle (G3-1). Every foundational secret is freshly generated
-    here (the MC box is never exchanged, so nothing is stored MC-side). ONEBRAIN_DNS_TOKEN
-    is the UNIFIED Cloud API token (same as compute; MC may manage DNS through it); service
-    key / space id are empty (MC runs no comm/assistant module). Mirrors the customer bundle
-    in HetznerProvisioner._provision_box_secrets.
+    """The MC box's baked bundle (G3-1).
+
+    Every foundational secret is freshly generated here (the MC box is never
+    exchanged, so nothing is stored MC-side). ``ONEBRAIN_DNS_TOKEN`` is
+    intentionally empty: the rendered MC has no direct HCloud capability and
+    must use its dedicated remote broker over mTLS. Service key / space id are
+    empty because MC runs no comm/assistant module. Mirrors the customer bundle
+    shape in ``HetznerProvisioner._provision_box_secrets``.
 
     ONEBRAIN_ADMIN_EMAIL/PASSWORD are the admin seed pair seed.py needs to make the MC box
     loginable (both REQUIRED bundle keys). Unlike a customer box's foundational secrets, the
@@ -100,6 +117,10 @@ def build_mc_bundle(settings, *, dns_token: str, fleet_token: str,
     here — because the operator must be able to log into Mission Control afterward."""
     return {
         "POSTGRES_PASSWORD": secrets.token_urlsafe(32),
+        "POSTGRES_APP_PASSWORD": secrets.token_urlsafe(32),
+        "POSTGRES_WORKER_PASSWORD": secrets.token_urlsafe(32),
+        "POSTGRES_ASSISTANT_PASSWORD": secrets.token_urlsafe(32),
+        "POSTGRES_COMMUNICATION_PASSWORD": secrets.token_urlsafe(32),
         "REDIS_PASSWORD": secrets.token_urlsafe(32),
         "ONEBRAIN_FLEET_KEY": fleet_token,
         "ONEBRAIN_LLM_API_KEY": getattr(settings, "llm_api_key", "") or "",
@@ -107,6 +128,8 @@ def build_mc_bundle(settings, *, dns_token: str, fleet_token: str,
         # onebrain-api without a >=32-char non-default value; freshly minted here (never
         # stored MC-side — the MC box is baked, not exchanged).
         "ONEBRAIN_AUTH_SECRET": secrets.token_hex(32),
+        # Independent HMAC key for shared Postgres login counters.
+        "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET": secrets.token_hex(32),
         "ONEBRAIN_ADMIN_EMAIL": admin_email,
         "ONEBRAIN_ADMIN_PASSWORD": admin_password,
         "ONEBRAIN_SERVICE_KEY": "",
@@ -114,7 +137,7 @@ def build_mc_bundle(settings, *, dns_token: str, fleet_token: str,
         "UPDATE_BACKUP_KEY": secrets.token_urlsafe(32),
         "UPDATE_DESIRED_STATE_PUBLIC_KEYS": (
             settings.fleet_desired_state_public_keys or settings.fleet_desired_state_public_key),
-        "ONEBRAIN_DNS_TOKEN": dns_token,
+        "ONEBRAIN_DNS_TOKEN": "",
         # BK3: MC's own offsite-backup S3 credentials (empty when backups off). MC's DB holds every
         # customer's sealed bundle, so MC's offsite backup is the fleet's last-resort DR — same
         # PUT/GET/LIST-only shared credential as customer boxes.
@@ -143,11 +166,182 @@ def _parse_images(raw: str) -> dict:
     return images
 
 
+_HETZNER_USER_DATA_LIMIT = 32_768
+_MAX_BROKER_TLS_FILE_BYTES = 12 * 1024
+
+
+def _https_origin(value: str):
+    """Return a parsed, credential-free HTTPS origin or ``None``."""
+    try:
+        parsed = urlsplit((value or "").strip())
+        port = parsed.port
+    except ValueError:
+        return None
+    if not (
+        parsed.scheme == "https"
+        and parsed.hostname
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.path in ("", "/")
+        and port in (None, 443)
+    ):
+        return None
+    return parsed
+
+
+def _single_line(value: object) -> bool:
+    """Values that will enter a dotenv/env-file must not alter its syntax."""
+    return isinstance(value, str) and bool(value.strip()) and not any(char in value for char in "\x00\r\n")
+
+
+def _is_rfc1123_fqdn(value: str) -> bool:
+    """Strict DNS name for the public HTTPS/TLS MC endpoint."""
+    labels = value.split(".")
+    return (
+        len(value) <= 253
+        and len(labels) >= 2
+        and all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels)
+    )
+
+
+def _read_broker_pem(path_value: str, label: str) -> tuple[Path, str]:
+    path = Path((path_value or "").strip())
+    try:
+        stat = path.stat()
+        if not path.is_file():
+            raise OSError("not a regular file")
+        if stat.st_size <= 0 or stat.st_size > _MAX_BROKER_TLS_FILE_BYTES:
+            raise OSError(f"file must be between 1 and {_MAX_BROKER_TLS_FILE_BYTES} bytes")
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"{label} must name a readable PEM file: {exc}") from exc
+    if "\x00" in content:
+        raise ValueError(f"{label} must be a PEM text file")
+    return path, content
+
+
+def _load_broker_tls(settings) -> _McBrokerTls:
+    """Read and validate the exact client material the rendered API will use."""
+    certificate_path, certificate = _read_broker_pem(
+        getattr(settings, "hetzner_broker_client_certificate_file", ""),
+        "ONEBRAIN_HETZNER_BROKER_CLIENT_CERTIFICATE_FILE",
+    )
+    key_path, key = _read_broker_pem(
+        getattr(settings, "hetzner_broker_client_key_file", ""),
+        "ONEBRAIN_HETZNER_BROKER_CLIENT_KEY_FILE",
+    )
+    ca_path_value = getattr(settings, "hetzner_broker_ca_file", "") or ""
+    ca_path: Path | None = None
+    ca = ""
+    if ca_path_value.strip():
+        ca_path, ca = _read_broker_pem(ca_path_value, "ONEBRAIN_HETZNER_BROKER_CA_FILE")
+    try:
+        context = ssl.create_default_context()
+        context.load_cert_chain(str(certificate_path), str(key_path))
+        if ca_path is not None:
+            context.load_verify_locations(cafile=str(ca_path))
+    except (OSError, ssl.SSLError) as exc:
+        raise ValueError("Mission Control broker mTLS files are not a valid certificate/key/CA set") from exc
+    return _McBrokerTls(certificate, key, ca)
+
+
+def _validate_production_bootstrap(args, settings) -> _McBrokerTls:
+    """Validate the source configuration for the one-time MC creation step.
+
+    The bootstrap workstation intentionally has a direct Hetzner token so it can
+    create the first MC box. The *rendered* MC must instead pass the strict
+    remote-broker preflight, so this is deliberately not a call to
+    ``Settings.assert_production_mission_control_ready`` on the workstation
+    settings.
+    """
+    if not getattr(settings, "is_production_like", False):
+        return _McBrokerTls("", "")
+
+    errors: list[str] = []
+    fqdn = (getattr(args, "fqdn", "") or "").strip().lower()
+    parsed_fleet_url = _https_origin(getattr(args, "fleet_public_url", ""))
+    if not _is_rfc1123_fqdn(fqdn):
+        errors.append("set a safe RFC1123 --fqdn for production Mission Control")
+    if parsed_fleet_url is None:
+        errors.append("--fleet-public-url must be an HTTPS origin without credentials, path, query, or fragment")
+    elif parsed_fleet_url.hostname != fqdn:
+        errors.append("--fleet-public-url hostname must exactly match --fqdn")
+
+    base_domain = (getattr(settings, "fleet_base_domain", "") or "").strip().lower().rstrip(".")
+    expected_fqdn = f"{getattr(args, 'deployment_id', '')}.{base_domain}" if base_domain else ""
+    if (getattr(settings, "fleet_dns_provider", "") or "").strip().lower() != "hetzner":
+        errors.append("set ONEBRAIN_FLEET_DNS_PROVIDER=hetzner for production MC bootstrap")
+    if not (getattr(settings, "fleet_dns_zone_id", "") or "").strip():
+        errors.append("set ONEBRAIN_FLEET_DNS_ZONE_ID for production MC bootstrap")
+    if not base_domain:
+        errors.append("set ONEBRAIN_FLEET_BASE_DOMAIN for production MC bootstrap")
+    elif fqdn != expected_fqdn:
+        errors.append("--fqdn must equal <deployment-id>.<ONEBRAIN_FLEET_BASE_DOMAIN>")
+    if not (getattr(settings, "hetzner_firewall_id", "") or "").strip():
+        errors.append("set ONEBRAIN_HETZNER_FIREWALL_ID to a pre-created MC firewall")
+
+    if getattr(settings, "provisioner_backend", "") != "hetzner":
+        errors.append("set ONEBRAIN_PROVISIONER_BACKEND=hetzner")
+    if getattr(settings, "hetzner_allow_inprocess_broker", False):
+        errors.append("ONEBRAIN_HETZNER_ALLOW_INPROCESS_BROKER must be false for the rendered MC")
+    if _https_origin(getattr(settings, "hetzner_broker_url", "")) is None:
+        errors.append("set ONEBRAIN_HETZNER_BROKER_URL to an HTTPS origin")
+    if not _single_line(getattr(settings, "hetzner_broker_credential", "")):
+        errors.append("set ONEBRAIN_HETZNER_BROKER_CREDENTIAL to a non-empty single-line secret")
+    if not (getattr(settings, "hetzner_broker_client_certificate_file", "") or "").strip():
+        errors.append("set ONEBRAIN_HETZNER_BROKER_CLIENT_CERTIFICATE_FILE")
+    if not (getattr(settings, "hetzner_broker_client_key_file", "") or "").strip():
+        errors.append("set ONEBRAIN_HETZNER_BROKER_CLIENT_KEY_FILE")
+
+    if not _single_line(getattr(settings, "secret_encryption_key", "")):
+        errors.append("set ONEBRAIN_SECRET_ENCRYPTION_KEY to the escrowed Fernet key")
+    else:
+        try:
+            from app.provisioning.runs import OneTimeSecretCipher
+
+            OneTimeSecretCipher(settings, require_encoded_key=True)
+        except (TypeError, ValueError):
+            errors.append("ONEBRAIN_SECRET_ENCRYPTION_KEY must be a valid URL-safe base64 Fernet key")
+    if not any(host.strip() for host in (getattr(settings, "provisioning_callback_allowed_hosts", "") or "").split(",")):
+        errors.append("set ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS")
+
+    if not (getattr(settings, "fleet_desired_state_private_key", "") or "").strip():
+        errors.append("set ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY")
+    if not ((getattr(settings, "fleet_desired_state_public_keys", "") or "").strip()
+            or (getattr(settings, "fleet_desired_state_public_key", "") or "").strip()):
+        errors.append("set ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS")
+    if int(getattr(settings, "fleet_desired_state_ttl_seconds", 0) or 0) <= 0:
+        errors.append("ONEBRAIN_FLEET_DESIRED_STATE_TTL_SECONDS must be positive")
+    if int(getattr(settings, "fleet_reconcile_seconds", 0) or 0) <= 0:
+        errors.append("ONEBRAIN_FLEET_RECONCILE_SECONDS must be positive")
+
+    if not _single_line(getattr(settings, "release_verify_public_key", "")):
+        errors.append("set ONEBRAIN_RELEASE_VERIFY_PUBLIC_KEY")
+    if not _single_line(getattr(settings, "release_registry_allowlist", "")):
+        errors.append("set ONEBRAIN_RELEASE_REGISTRY_ALLOWLIST")
+    for attr, name in (
+        ("release_require_signature", "ONEBRAIN_RELEASE_REQUIRE_SIGNATURE=true"),
+        ("release_require_signed_images", "ONEBRAIN_RELEASE_REQUIRE_SIGNED_IMAGES=true"),
+        ("release_require_rollback_kind", "ONEBRAIN_RELEASE_REQUIRE_ROLLBACK_KIND=true"),
+        ("release_promotion_required", "ONEBRAIN_RELEASE_PROMOTION_REQUIRED=true"),
+    ):
+        if not getattr(settings, attr, False):
+            errors.append(f"set {name}")
+
+    if errors:
+        raise ValueError("Production Mission Control bootstrap configuration is incomplete: " + "; ".join(errors))
+    return _load_broker_tls(settings)
+
+
 def build_mc_artifacts(args, settings) -> McArtifacts:
     """Pure (no network): assemble the MC bundle, render the operator-overlay cloud-init
     with the bundle BAKED as /opt/onebrain/.env (G3-1), and build the create request
     shapes (default-deny firewall P5-05, server, optional volume + DNS). Raises ValueError
     on any fail-closed condition (G1-1 interlock, missing images, invalid bundle)."""
+    broker_tls = _validate_production_bootstrap(args, settings)
+
     # G1-1 preflight: never bake a box whose served wrapper-key set excludes MC's active
     # desired-state signer — it would fail its OWN G1-1 startup assertion on first boot.
     # Inert when emission is off (no private key): active_signer_in_served_set -> True.
@@ -180,12 +374,11 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
     if admin_password_generated:
         admin_password = secrets.token_urlsafe(32)
 
-    # DNS now rides the UNIFIED Cloud API (GA 2025-11-10): the SAME Hetzner Cloud token as
-    # compute covers DNS — there is no separate ONEBRAIN_FLEET_DNS_TOKEN. Baked as the box's
-    # ONEBRAIN_DNS_TOKEN so the MC box can manage DNS through the Cloud API at runtime.
-    dns_token = settings.hetzner_api_token
+    # The initial direct Hetzner token is a bootstrap-workstation capability only.
+    # The rendered MC has no cloud token: runtime provisioning and DNS both go
+    # through the dedicated remote broker over mTLS.
     _, _, fleet_token = generate_fleet_key()
-    bundle = build_mc_bundle(settings, dns_token=dns_token, fleet_token=fleet_token,
+    bundle = build_mc_bundle(settings, fleet_token=fleet_token,
                              admin_email=admin_email, admin_password=admin_password)
     errors = validate_bundle(bundle)
     if errors:
@@ -210,6 +403,13 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
          settings.fleet_desired_state_public_keys or settings.fleet_desired_state_public_key),
         ("ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS",
          getattr(settings, "provisioning_callback_allowed_hosts", "") or ""),
+        # These are MC-only overlays rather than shared bootstrap-bundle keys:
+        # customer boxes must never receive a broker credential or the durable
+        # Fernet key that encrypts MC-held customer bundles.
+        ("ONEBRAIN_HETZNER_BROKER_CREDENTIAL",
+         getattr(settings, "hetzner_broker_credential", "") or ""),
+        ("ONEBRAIN_SECRET_ENCRYPTION_KEY",
+         getattr(settings, "secret_encryption_key", "") or ""),
     ]
     dotenv += "".join(f"{k}={v}\n" for k, v in overlay)
 
@@ -236,6 +436,16 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
         bootstrap_token="",       # G3-1: the MC box is NEVER minted a first-boot token
         callback_token=callback_token,
         dotenv=dotenv,            # G3-1: the baked /opt/onebrain/.env body
+        postgres_app_role=getattr(settings, "postgres_app_role", "") or "onebrain_app",
+        postgres_worker_role=getattr(settings, "postgres_worker_role", "") or "onebrain_worker",
+        postgres_assistant_role=getattr(settings, "postgres_assistant_role", "") or "assistant_app",
+        postgres_communication_role=(
+            getattr(settings, "postgres_communication_role", "") or "communication_app"),
+        operator_broker_url=(getattr(settings, "hetzner_broker_url", "") or "").rstrip("/"),
+        operator_broker_client_certificate=broker_tls.client_certificate,
+        operator_broker_client_key=broker_tls.client_key,
+        operator_broker_ca=broker_tls.ca_certificate,
+        operator_fleet_reconcile_seconds=int(getattr(settings, "fleet_reconcile_seconds", 0) or 0),
         # BK3: MC's own non-secret offsite-backup config, baked into box.env so MC's agent runs
         # (the two S3 creds ride the baked .env as bundle keys). backup_dbs = MC's product DBs.
         backup_enabled=bool(getattr(settings, "backup_enabled", False)),
@@ -245,6 +455,11 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
         backup_retention_days=int(getattr(settings, "backup_retention_days", 30) or 30),
         backup_dbs=enabled_product_dbs(_MC_MODULES),
     ))
+    user_data_bytes = len(cloud_init.encode("utf-8"))
+    if user_data_bytes > _HETZNER_USER_DATA_LIMIT:
+        raise ValueError(
+            "MC cloud-init exceeds Hetzner's 32768-byte user_data limit "
+            f"({user_data_bytes} bytes); use a compact ECDSA client certificate/chain or remove optional CA material")
 
     firewall = None
     if not settings.hetzner_firewall_id:
@@ -288,7 +503,16 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
     # (Referenced by name, not overlay position, so reordering the overlay never silently
     # drops the crown-jewel private key from redaction.)
     secret_values = tuple(
-        v for v in (list(bundle.values()) + [private_key, callback_token, admin_password]) if v)
+        v for v in (
+            list(bundle.values())
+            + [
+                private_key,
+                callback_token,
+                admin_password,
+                getattr(settings, "hetzner_broker_credential", ""),
+                getattr(settings, "secret_encryption_key", ""),
+            ]
+        ) if v)
     return McArtifacts(cloud_init=cloud_init, bundle=bundle, server=server, firewall=firewall,
                        volume=volume, dns=dns, fleet_token=fleet_token, secret_values=secret_values,
                        admin_email=admin_email, admin_password=admin_password,
@@ -297,9 +521,22 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
 
 def _redact(text: str, secret_values) -> str:
     """Mask every secret VALUE (longest first, so a secret that is a substring of another
-    is redacted correctly) so a printed cloud-init never leaks a baked secret."""
+    is redacted correctly) so a printed cloud-init never leaks a baked secret.
+
+    The mTLS tar uses gz+b64 for user-data efficiency; that is reversible
+    encoding, not encryption, so mask its entire content field too. Replacing
+    the raw PEM source text would not match the encoded archive.
+    """
     for value in sorted({v for v in secret_values if v}, key=len, reverse=True):
         text = text.replace(value, "***REDACTED***")
+    text = re.sub(
+        r"(?m)(  - path: /opt/onebrain/mc-broker-tls\.tar\n"
+        r"    permissions: '[0-7]+'\n"
+        r"    encoding: gz\+b64\n"
+        r"    content: )\S+",
+        r"\1***REDACTED***",
+        text,
+    )
     return text
 
 
@@ -408,11 +645,17 @@ def main(argv=None, *, settings=None, client=None) -> int:
         print("error: --no-dry-run requires ONEBRAIN_HETZNER_API_TOKEN in the environment "
               "(never passed as a flag). Aborting without creating anything.", file=sys.stderr)
         return 2
-    try:
-        broker = build_hetzner_broker(settings, client=client)
-    except RuntimeError as exc:   # A6 guard / unbuilt remote broker
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
+    # This is the one deliberate direct-cloud operation: MC does not exist yet,
+    # so it cannot call its own remote broker. Do not route this through
+    # build_hetzner_broker(settings): the bootstrap workstation correctly holds
+    # a short-lived initial token *and* the remote-broker settings that will be
+    # baked into MC, a combination the runtime factory rightly rejects.
+    initial_client = client if client is not None else UrllibHetznerClient(settings.hetzner_api_token)
+    broker = InProcessHetznerBroker(
+        initial_client,
+        max_fleet_servers=int(getattr(settings, "hetzner_max_fleet_servers", 0) or 0),
+        enable_backups=bool(getattr(settings, "hetzner_enable_backups", True)),
+    )
 
     print("# create request SHAPE:")
     print(json.dumps(shape, indent=2))

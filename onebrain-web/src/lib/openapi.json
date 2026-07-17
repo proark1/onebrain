@@ -2919,6 +2919,24 @@
         "title": "Body_upload_api_upload_post",
         "type": "object"
       },
+      "BootstrapExchangeOut": {
+        "properties": {
+          "dotenv": {
+            "title": "Dotenv",
+            "type": "string"
+          },
+          "secrets_epoch": {
+            "title": "Secrets Epoch",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "secrets_epoch",
+          "dotenv"
+        ],
+        "title": "BootstrapExchangeOut",
+        "type": "object"
+      },
       "BootstrapSecretOut": {
         "properties": {
           "plaintext": {
@@ -3521,8 +3539,9 @@
             "title": "Deployment Id"
           },
           "deployment_type": {
-            "default": "dedicated_railway",
+            "default": "dedicated_server",
             "maxLength": 80,
+            "pattern": "^(dedicated_server|customer_owned)$",
             "title": "Deployment Type",
             "type": "string"
           },
@@ -3592,6 +3611,133 @@
           "customer_name"
         ],
         "title": "CustomerProvisionCreate",
+        "type": "object"
+      },
+      "CustomerTeardownApproval": {
+        "properties": {
+          "nonce": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Nonce",
+            "type": "string"
+          }
+        },
+        "title": "CustomerTeardownApproval",
+        "type": "object"
+      },
+      "CustomerTeardownRequestCreate": {
+        "description": "Evidence required to open a record-only teardown approval request.",
+        "properties": {
+          "backup_retention_evidence_ref": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Backup Retention Evidence Ref",
+            "type": "string"
+          },
+          "legal_hold_evidence_ref": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Legal Hold Evidence Ref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "legal_hold_evidence_ref",
+          "backup_retention_evidence_ref"
+        ],
+        "title": "CustomerTeardownRequestCreate",
+        "type": "object"
+      },
+      "CustomerTeardownRequestCreatedOut": {
+        "properties": {
+          "approval_nonce": {
+            "title": "Approval Nonce",
+            "type": "string"
+          },
+          "request": {
+            "$ref": "#/components/schemas/CustomerTeardownRequestOut"
+          }
+        },
+        "required": [
+          "request",
+          "approval_nonce"
+        ],
+        "title": "CustomerTeardownRequestCreatedOut",
+        "type": "object"
+      },
+      "CustomerTeardownRequestOut": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "approver_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Approver Ids",
+            "type": "array"
+          },
+          "backup_retention_evidence_ref": {
+            "title": "Backup Retention Evidence Ref",
+            "type": "string"
+          },
+          "completed_at": {
+            "default": "",
+            "title": "Completed At",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "deployment_id": {
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "execution_result": {
+            "default": "",
+            "title": "Execution Result",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "legal_hold_evidence_ref": {
+            "title": "Legal Hold Evidence Ref",
+            "type": "string"
+          },
+          "nonce_expires_at": {
+            "title": "Nonce Expires At",
+            "type": "string"
+          },
+          "requested_by": {
+            "title": "Requested By",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "default": "",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "deployment_id",
+          "account_id",
+          "legal_hold_evidence_ref",
+          "backup_retention_evidence_ref",
+          "requested_by",
+          "nonce_expires_at",
+          "status"
+        ],
+        "title": "CustomerTeardownRequestOut",
         "type": "object"
       },
       "DataAccessEventIn": {
@@ -3790,8 +3936,9 @@
             "type": "string"
           },
           "deployment_type": {
-            "default": "dedicated_railway",
+            "default": "dedicated_server",
             "maxLength": 80,
+            "pattern": "^(dedicated_server|customer_owned)$",
             "title": "Deployment Type",
             "type": "string"
           },
@@ -3943,6 +4090,130 @@
         "title": "DeploymentOut",
         "type": "object"
       },
+      "DeploymentOverview": {
+        "properties": {
+          "applied_secrets_epoch": {
+            "default": 0,
+            "title": "Applied Secrets Epoch",
+            "type": "integer"
+          },
+          "counts": {
+            "additionalProperties": true,
+            "title": "Counts",
+            "type": "object"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_version": {
+            "default": "",
+            "title": "Current Version",
+            "type": "string"
+          },
+          "current_version_deployed_at": {
+            "default": "",
+            "title": "Current Version Deployed At",
+            "type": "string"
+          },
+          "customer_name": {
+            "title": "Customer Name",
+            "type": "string"
+          },
+          "deployment_id": {
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "deployment_type": {
+            "title": "Deployment Type",
+            "type": "string"
+          },
+          "environment": {
+            "title": "Environment",
+            "type": "string"
+          },
+          "healthy": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Healthy"
+          },
+          "is_release_gate": {
+            "default": false,
+            "title": "Is Release Gate",
+            "type": "boolean"
+          },
+          "last_received_at": {
+            "default": "",
+            "title": "Last Received At",
+            "type": "string"
+          },
+          "last_reported_at": {
+            "default": "",
+            "title": "Last Reported At",
+            "type": "string"
+          },
+          "migration_revision": {
+            "default": "",
+            "title": "Migration Revision",
+            "type": "string"
+          },
+          "open_alerts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Open Alerts",
+            "type": "array"
+          },
+          "release_ring": {
+            "title": "Release Ring",
+            "type": "string"
+          },
+          "reported_version": {
+            "default": "",
+            "title": "Reported Version",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "customer_name",
+          "environment",
+          "deployment_type",
+          "release_ring",
+          "status"
+        ],
+        "title": "DeploymentOverview",
+        "type": "object"
+      },
+      "DeploymentRotateResult": {
+        "properties": {
+          "deployment_id": {
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "secrets_epoch": {
+            "title": "Secrets Epoch",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "secrets_epoch"
+        ],
+        "title": "DeploymentRotateResult",
+        "type": "object"
+      },
       "DevelopmentGateOut": {
         "properties": {
           "blockers": {
@@ -4053,6 +4324,210 @@
           "chunks"
         ],
         "title": "DocumentSummary",
+        "type": "object"
+      },
+      "EnrollmentOut": {
+        "properties": {
+          "deployment_id": {
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "env": {
+            "additionalProperties": true,
+            "title": "Env",
+            "type": "object"
+          },
+          "key_id": {
+            "title": "Key Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "key_id",
+          "env"
+        ],
+        "title": "EnrollmentOut",
+        "type": "object"
+      },
+      "FleetHeartbeat": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_version": {
+            "const": "fleet.v1",
+            "default": "fleet.v1",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "deployment_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "modules": {
+            "items": {
+              "$ref": "#/components/schemas/ModuleReport"
+            },
+            "maxItems": 50,
+            "title": "Modules",
+            "type": "array"
+          },
+          "onebrain": {
+            "$ref": "#/components/schemas/OneBrainReport"
+          },
+          "reported_at": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Reported At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "reported_at",
+          "onebrain"
+        ],
+        "title": "FleetHeartbeat",
+        "type": "object"
+      },
+      "FleetHeartbeatV2": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_version": {
+            "const": "fleet.v2",
+            "default": "fleet.v2",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "deployment_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "modules": {
+            "items": {
+              "$ref": "#/components/schemas/ModuleReport"
+            },
+            "maxItems": 50,
+            "title": "Modules",
+            "type": "array"
+          },
+          "onebrain": {
+            "$ref": "#/components/schemas/OneBrainReportV2"
+          },
+          "reported_at": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Reported At",
+            "type": "string"
+          },
+          "update": {
+            "$ref": "#/components/schemas/UpdateReport"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "reported_at",
+          "onebrain"
+        ],
+        "title": "FleetHeartbeatV2",
+        "type": "object"
+      },
+      "FleetKeyCreate": {
+        "properties": {
+          "deployment_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment_id"
+        ],
+        "title": "FleetKeyCreate",
+        "type": "object"
+      },
+      "FleetKeyInfo": {
+        "properties": {
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "deployment_id": {
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "last_used_at": {
+            "default": "",
+            "title": "Last Used At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "deployment_id",
+          "status"
+        ],
+        "title": "FleetKeyInfo",
+        "type": "object"
+      },
+      "FleetOverviewOut": {
+        "properties": {
+          "deployments": {
+            "items": {
+              "$ref": "#/components/schemas/DeploymentOverview"
+            },
+            "title": "Deployments",
+            "type": "array"
+          },
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "healthy": {
+            "title": "Healthy",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "with_open_alerts": {
+            "title": "With Open Alerts",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "generated_at",
+          "deployments",
+          "total",
+          "healthy",
+          "with_open_alerts"
+        ],
+        "title": "FleetOverviewOut",
         "type": "object"
       },
       "FleetRolloutCreate": {
@@ -4236,6 +4711,62 @@
           }
         },
         "title": "FleetRolloutPlanOut",
+        "type": "object"
+      },
+      "FloorBumpInfo": {
+        "properties": {
+          "floor_version": {
+            "default": "",
+            "title": "Floor Version",
+            "type": "string"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "updated_at": {
+            "default": "",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "updated_by": {
+            "default": "",
+            "title": "Updated By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "title": "FloorBumpInfo",
+        "type": "object"
+      },
+      "FloorBumpServeOut": {
+        "properties": {
+          "floor_bump": {
+            "additionalProperties": true,
+            "title": "Floor Bump",
+            "type": "object"
+          }
+        },
+        "required": [
+          "floor_bump"
+        ],
+        "title": "FloorBumpServeOut",
+        "type": "object"
+      },
+      "FloorBumpSet": {
+        "properties": {
+          "bump": {
+            "additionalProperties": true,
+            "title": "Bump",
+            "type": "object"
+          }
+        },
+        "required": [
+          "bump"
+        ],
+        "title": "FloorBumpSet",
         "type": "object"
       },
       "GoogleCalendarBindingUpdate": {
@@ -4472,6 +5003,88 @@
           "status"
         ],
         "title": "HealthOut",
+        "type": "object"
+      },
+      "HeartbeatAck": {
+        "properties": {
+          "config": {
+            "additionalProperties": true,
+            "title": "Config",
+            "type": "object"
+          },
+          "deployment_id": {
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "received": {
+            "default": true,
+            "title": "Received",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deployment_id"
+        ],
+        "title": "HeartbeatAck",
+        "type": "object"
+      },
+      "HeartbeatHistoryOut": {
+        "properties": {
+          "deployment_id": {
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/HeartbeatPoint"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "points",
+          "total"
+        ],
+        "title": "HeartbeatHistoryOut",
+        "type": "object"
+      },
+      "HeartbeatPoint": {
+        "properties": {
+          "counts": {
+            "additionalProperties": true,
+            "title": "Counts",
+            "type": "object"
+          },
+          "healthy": {
+            "title": "Healthy",
+            "type": "boolean"
+          },
+          "received_at": {
+            "title": "Received At",
+            "type": "string"
+          },
+          "reported_at": {
+            "default": "",
+            "title": "Reported At",
+            "type": "string"
+          },
+          "version": {
+            "default": "",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "received_at",
+          "healthy"
+        ],
+        "title": "HeartbeatPoint",
         "type": "object"
       },
       "IntakeRecordOut": {
@@ -5663,6 +6276,34 @@
         "title": "MessageOut",
         "type": "object"
       },
+      "MintedFleetKey": {
+        "properties": {
+          "deployment_id": {
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "deployment_id",
+          "token"
+        ],
+        "title": "MintedFleetKey",
+        "type": "object"
+      },
       "MintedKey": {
         "properties": {
           "account_id": {
@@ -5776,6 +6417,44 @@
         "title": "ModuleOut",
         "type": "object"
       },
+      "ModuleReport": {
+        "additionalProperties": false,
+        "properties": {
+          "events_failed": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Events Failed",
+            "type": "integer"
+          },
+          "events_pending": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Events Pending",
+            "type": "integer"
+          },
+          "healthy": {
+            "default": true,
+            "title": "Healthy",
+            "type": "boolean"
+          },
+          "module_id": {
+            "maxLength": 64,
+            "title": "Module Id",
+            "type": "string"
+          },
+          "version": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module_id"
+        ],
+        "title": "ModuleReport",
+        "type": "object"
+      },
       "ModuleUpsert": {
         "properties": {
           "module_id": {
@@ -5797,6 +6476,169 @@
           "version"
         ],
         "title": "ModuleUpsert",
+        "type": "object"
+      },
+      "OneBrainReport": {
+        "additionalProperties": false,
+        "properties": {
+          "accounts": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Accounts",
+            "type": "integer"
+          },
+          "active_service_keys": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Active Service Keys",
+            "type": "integer"
+          },
+          "api_5xx_recent": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Api 5Xx Recent",
+            "type": "integer"
+          },
+          "auth_failures_recent": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Auth Failures Recent",
+            "type": "integer"
+          },
+          "chunks": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Chunks",
+            "type": "integer"
+          },
+          "healthy": {
+            "default": true,
+            "title": "Healthy",
+            "type": "boolean"
+          },
+          "intake_records": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Intake Records",
+            "type": "integer"
+          },
+          "jobs_failed": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Jobs Failed",
+            "type": "integer"
+          },
+          "jobs_pending": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Jobs Pending",
+            "type": "integer"
+          },
+          "migration_revision": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Migration Revision",
+            "type": "string"
+          },
+          "users": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Users",
+            "type": "integer"
+          },
+          "version": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "title": "OneBrainReport",
+        "type": "object"
+      },
+      "OneBrainReportV2": {
+        "additionalProperties": false,
+        "description": "v1 counts plus uptime: uptime_seconds lets MC tell 'restarted' (cumulative\ncounters reset) from 'recovered' without changing any v1 key's meaning.",
+        "properties": {
+          "accounts": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Accounts",
+            "type": "integer"
+          },
+          "active_service_keys": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Active Service Keys",
+            "type": "integer"
+          },
+          "api_5xx_recent": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Api 5Xx Recent",
+            "type": "integer"
+          },
+          "auth_failures_recent": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Auth Failures Recent",
+            "type": "integer"
+          },
+          "chunks": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Chunks",
+            "type": "integer"
+          },
+          "healthy": {
+            "default": true,
+            "title": "Healthy",
+            "type": "boolean"
+          },
+          "intake_records": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Intake Records",
+            "type": "integer"
+          },
+          "jobs_failed": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Jobs Failed",
+            "type": "integer"
+          },
+          "jobs_pending": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Jobs Pending",
+            "type": "integer"
+          },
+          "migration_revision": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Migration Revision",
+            "type": "string"
+          },
+          "uptime_seconds": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Uptime Seconds",
+            "type": "integer"
+          },
+          "users": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Users",
+            "type": "integer"
+          },
+          "version": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "title": "OneBrainReportV2",
         "type": "object"
       },
       "OperatorAccountOut": {
@@ -7242,6 +8084,7 @@
         "type": "object"
       },
       "ProvisioningCallbackIn": {
+        "additionalProperties": false,
         "properties": {
           "bootstrap_password": {
             "default": "",
@@ -7271,18 +8114,6 @@
             "default": "",
             "maxLength": 120,
             "title": "Migration Revision",
-            "type": "string"
-          },
-          "railway_environment_id": {
-            "default": "",
-            "maxLength": 200,
-            "title": "Railway Environment Id",
-            "type": "string"
-          },
-          "railway_project_id": {
-            "default": "",
-            "maxLength": 200,
-            "title": "Railway Project Id",
             "type": "string"
           },
           "result_payload": {
@@ -7503,16 +8334,6 @@
             "title": "Module Ids",
             "type": "array"
           },
-          "railway_environment_id": {
-            "default": "",
-            "title": "Railway Environment Id",
-            "type": "string"
-          },
-          "railway_project_id": {
-            "default": "",
-            "title": "Railway Project Id",
-            "type": "string"
-          },
           "requested_by": {
             "title": "Requested By",
             "type": "string"
@@ -7541,6 +8362,16 @@
           },
           "status": {
             "title": "Status",
+            "type": "string"
+          },
+          "target_environment": {
+            "default": "",
+            "title": "Target Environment",
+            "type": "string"
+          },
+          "target_id": {
+            "default": "",
+            "title": "Target Id",
             "type": "string"
           },
           "updated_at": {
@@ -8080,60 +8911,6 @@
         "title": "RoleInfo",
         "type": "object"
       },
-      "RolloutCallbackIn": {
-        "properties": {
-          "dry_run": {
-            "default": false,
-            "title": "Dry Run",
-            "type": "boolean"
-          },
-          "external_run_id": {
-            "default": "",
-            "maxLength": 200,
-            "title": "External Run Id",
-            "type": "string"
-          },
-          "external_run_url": {
-            "default": "",
-            "maxLength": 500,
-            "title": "External Run Url",
-            "type": "string"
-          },
-          "failure_reason": {
-            "default": "",
-            "maxLength": 1000,
-            "title": "Failure Reason",
-            "type": "string"
-          },
-          "migration_revision": {
-            "default": "",
-            "maxLength": 120,
-            "title": "Migration Revision",
-            "type": "string"
-          },
-          "result_payload": {
-            "additionalProperties": true,
-            "title": "Result Payload",
-            "type": "object"
-          },
-          "smoke_status": {
-            "default": "",
-            "maxLength": 80,
-            "title": "Smoke Status",
-            "type": "string"
-          },
-          "status": {
-            "maxLength": 40,
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "title": "RolloutCallbackIn",
-        "type": "object"
-      },
       "RolloutCreate": {
         "properties": {
           "ack_restore_required": {
@@ -8279,6 +9056,42 @@
           "started_by"
         ],
         "title": "RolloutOut",
+        "type": "object"
+      },
+      "RotateResult": {
+        "properties": {
+          "rotated": {
+            "title": "Rotated",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rotated"
+        ],
+        "title": "RotateResult",
+        "type": "object"
+      },
+      "RuntimeDbCredentialBackfillResult": {
+        "properties": {
+          "deployment_id": {
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "secrets_epoch": {
+            "title": "Secrets Epoch",
+            "type": "integer"
+          },
+          "updated": {
+            "title": "Updated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "updated",
+          "secrets_epoch"
+        ],
+        "title": "RuntimeDbCredentialBackfillResult",
         "type": "object"
       },
       "ServiceAskRequest": {
@@ -9402,6 +10215,78 @@
           "update_policy"
         ],
         "title": "UpdatePolicyUpdate",
+        "type": "object"
+      },
+      "UpdateReport": {
+        "additionalProperties": false,
+        "description": "Bounded update-outcome (architecture \u00a73f): lets MC distinguish converged /\nfailed-and-rolled-back / not-yet-started, which version+healthy cannot.\nattempt_id is the RolloutRun id MC offered (opaque token, never free text);\nts is when the box recorded the outcome. Field semantics are LOAD-BEARING for\nthe P2 reconcile tick \u2014 do not repurpose.",
+        "properties": {
+          "applied_secrets_epoch": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Applied Secrets Epoch",
+            "type": "integer"
+          },
+          "attempt_id": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "backup_manifest": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Backup Manifest",
+            "type": "string"
+          },
+          "backup_status": {
+            "default": "",
+            "enum": [
+              "",
+              "success",
+              "failed"
+            ],
+            "title": "Backup Status",
+            "type": "string"
+          },
+          "backup_ts": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Backup Ts",
+            "type": "string"
+          },
+          "last_target_version": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Last Target Version",
+            "type": "string"
+          },
+          "migration_reached": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Migration Reached",
+            "type": "string"
+          },
+          "outcome": {
+            "default": "none",
+            "enum": [
+              "none",
+              "in_progress",
+              "succeeded",
+              "failed",
+              "rolled_back"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "ts": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Ts",
+            "type": "string"
+          }
+        },
+        "title": "UpdateReport",
         "type": "object"
       },
       "ValidationError": {
@@ -12752,6 +13637,879 @@
         ]
       }
     },
+    "/api/fleet/bootstrap": {
+      "post": {
+        "description": "Deliver a box's re-readable secret bundle as an /opt/onebrain/.env body. Auth is\nEITHER a single-use, unconsumed+unexpired bootstrap token (first boot) OR the\ndeployment's fleet key (rotation re-fetch); the deployment is derived from the\nauthenticated credential \u2014 NEVER a free parameter \u2014 so a box can only fetch its OWN\nbundle. Ordering (G1-2): validate the token, load+decrypt the bundle, assemble the\nbody, and consume the token ONLY as the last step before returning 200.",
+        "operationId": "bootstrap_exchange_api_fleet_bootstrap_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-onebrain-deployment-id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "X-Onebrain-Deployment-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapExchangeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bootstrap Exchange",
+        "tags": [
+          "fleet"
+        ]
+      }
+    },
+    "/api/fleet/deployments/{deployment_id}/backfill-runtime-db-credentials": {
+      "post": {
+        "description": "Add missing restricted runtime DB passwords to a legacy box bundle.\n\nThis is an operator-admin-only, MC-side migration path for bundles sealed\nbefore the full restricted-runtime role split existed. It decrypts only in MC\nmemory, adds *only* missing values, re-seals before storage, and returns no\npassword material. A successful change then bumps secrets_epoch so the box\nre-fetches its authoritative bundle. Never generate these values on a box:\nthat would leave MC unable to service a later rotation.",
+        "operationId": "backfill_runtime_db_credentials_api_fleet_deployments__deployment_id__backfill_runtime_db_credentials_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeDbCredentialBackfillResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backfill Runtime Db Credentials",
+        "tags": [
+          "fleet"
+        ]
+      }
+    },
+    "/api/fleet/deployments/{deployment_id}/enroll": {
+      "post": {
+        "description": "Mint a fleet key for a deployment and return the three env vars its reporter\nneeds. The operator applies these to the deployment's rendered environment (provisioning\ndoes this automatically for new deployments).",
+        "operationId": "enroll_deployment_api_fleet_deployments__deployment_id__enroll_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enroll Deployment",
+        "tags": [
+          "fleet"
+        ]
+      }
+    },
+    "/api/fleet/deployments/{deployment_id}/history": {
+      "get": {
+        "operationId": "heartbeat_history_api_fleet_deployments__deployment_id__history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Since",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeartbeatHistoryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Heartbeat History",
+        "tags": [
+          "fleet"
+        ]
+      }
+    },
+    "/api/fleet/deployments/{deployment_id}/rotate-secrets": {
+      "post": {
+        "description": "Bump a single deployment's secrets_epoch (single-box secret rotation, e.g. a\nDB-password re-mint via P5-03). 404 if the deployment is unknown or has no bundle.\nSame G1-1 interlock first.",
+        "operationId": "rotate_deployment_secrets_api_fleet_deployments__deployment_id__rotate_secrets_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentRotateResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rotate Deployment Secrets",
+        "tags": [
+          "fleet"
+        ]
+      }
+    },
+    "/api/fleet/desired-state": {
+      "get": {
+        "description": "The AUTHORITATIVE desired-state channel (P1-F): the box authenticates with its\nOWN fleet key (the same _authenticate_fleet_key as heartbeat, pinned to a\ndeployment) and can fetch ONLY its own desired-state. Read-only; no side effects.\nReturns None while emission is dormant (no wrapper key configured). The response\nwraps the signed, verify-don't-trust envelope alongside the unsigned out-of-band\nattempt_id hint \u2014 exactly the shape the box verifier (P4-08) consumes.",
+        "operationId": "get_desired_state_api_fleet_desired_state_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-onebrain-deployment-id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "X-Onebrain-Deployment-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Get Desired State Api Fleet Desired State Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Desired State",
+        "tags": [
+          "fleet"
+        ]
+      }
+    },
+    "/api/fleet/floor-bump": {
+      "delete": {
+        "description": "Clear the served bump for a scope ('*' or a deployment_id); 404 if absent.",
+        "operationId": "clear_floor_bump_api_fleet_floor_bump_delete",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Scope",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Floor Bump",
+        "tags": [
+          "fleet"
+        ]
+      },
+      "get": {
+        "description": "Serve the most-specific pre-signed floor bump for the authenticated box.\nFleet-key auth (same _authenticate_fleet_key as heartbeat/desired-state, pinned\nto a deployment); read-only, no side effects. Resolves the deployment-scoped bump\nfirst, then the fleet-wide '*' fallback. Returns None when neither exists. MC does\nNOT re-sign or mutate the bump.",
+        "operationId": "get_floor_bump_api_fleet_floor_bump_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-onebrain-deployment-id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "X-Onebrain-Deployment-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FloorBumpServeOut"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Get Floor Bump Api Fleet Floor Bump Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Floor Bump",
+        "tags": [
+          "fleet"
+        ]
+      },
+      "post": {
+        "description": "Set the served floor bump (operator-admin). MC verifies the OFFLINE signature\nbefore storing. 409 when release_verify_public_key is unset (cannot verify an\nunverifiable kill-switch). 400 on a malformed body or a rejected signature.\n(G2-4) deployment_scope is fed as expected_deployment_id, so scope_mismatch is\nUNREACHABLE here \u2014 the only reachable store-time reject codes are\nsignature_invalid and version_not_comparable. Real per-box scope enforcement\nhappens box-side against the box's OWN deployment_id.",
+        "operationId": "set_floor_bump_api_fleet_floor_bump_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FloorBumpSet"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FloorBumpInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Floor Bump",
+        "tags": [
+          "fleet"
+        ]
+      }
+    },
+    "/api/fleet/floor-bumps": {
+      "get": {
+        "description": "List the currently-served bumps (operator visibility of the kill-switch state).",
+        "operationId": "list_floor_bumps_api_fleet_floor_bumps_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/FloorBumpInfo"
+                  },
+                  "title": "Response List Floor Bumps Api Fleet Floor Bumps Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Floor Bumps",
+        "tags": [
+          "fleet"
+        ]
+      }
+    },
+    "/api/fleet/heartbeat": {
+      "post": {
+        "operationId": "ingest_heartbeat_api_fleet_heartbeat_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "discriminator": {
+                  "mapping": {
+                    "fleet.v1": "#/components/schemas/FleetHeartbeat",
+                    "fleet.v2": "#/components/schemas/FleetHeartbeatV2"
+                  },
+                  "propertyName": "contract_version"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/FleetHeartbeat"
+                  },
+                  {
+                    "$ref": "#/components/schemas/FleetHeartbeatV2"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeartbeatAck"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ingest Heartbeat",
+        "tags": [
+          "fleet"
+        ]
+      }
+    },
+    "/api/fleet/keys": {
+      "get": {
+        "operationId": "list_fleet_keys_api_fleet_keys_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "deployment_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/FleetKeyInfo"
+                  },
+                  "title": "Response List Fleet Keys Api Fleet Keys Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Fleet Keys",
+        "tags": [
+          "fleet"
+        ]
+      },
+      "post": {
+        "operationId": "mint_fleet_key_api_fleet_keys_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetKeyCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MintedFleetKey"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mint Fleet Key",
+        "tags": [
+          "fleet"
+        ]
+      }
+    },
+    "/api/fleet/keys/{key_id}/revoke": {
+      "post": {
+        "operationId": "revoke_fleet_key_api_fleet_keys__key_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Fleet Key",
+        "tags": [
+          "fleet"
+        ]
+      }
+    },
+    "/api/fleet/overview": {
+      "get": {
+        "operationId": "fleet_overview_api_fleet_overview_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetOverviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fleet Overview",
+        "tags": [
+          "fleet"
+        ]
+      }
+    },
+    "/api/fleet/rotate-desired-state-key": {
+      "post": {
+        "description": "Tell every provisioned box to re-fetch the accepted wrapper-key set: bump the\nsecrets_epoch of each deployment that has a secret bundle. Idempotent-safe\n(re-bumping just raises the epoch). Refuses (409) when the active signer is not\nin the served set (G1-1).",
+        "operationId": "rotate_desired_state_key_api_fleet_rotate_desired_state_key_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RotateResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rotate Desired State Key",
+        "tags": [
+          "fleet"
+        ]
+      }
+    },
     "/api/jobs/{job_id}": {
       "get": {
         "operationId": "get_job_api_jobs__job_id__get",
@@ -13887,7 +15645,7 @@
     },
     "/api/operator/deployments/{deployment_id}/rollouts/{rollout_id}/dispatch": {
       "post": {
-        "description": "Dispatch a real update-customer workflow run for an existing (pending)\nrollout. Re-checks the plan_update safety gate, guards single-in-flight per\ndeployment, and requires known Railway coordinates (fail-closed).",
+        "description": "Offer an existing rollout to a Hetzner deployment (fail closed otherwise).",
         "operationId": "dispatch_rollout_api_operator_deployments__deployment_id__rollouts__rollout_id__dispatch_post",
         "parameters": [
           {
@@ -13952,6 +15710,141 @@
           }
         },
         "summary": "Dispatch Rollout",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/deployments/{deployment_id}/teardown-requests": {
+      "post": {
+        "description": "Open a review record only; this endpoint has no deletion capability.",
+        "operationId": "create_customer_teardown_request_api_operator_deployments__deployment_id__teardown_requests_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerTeardownRequestCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerTeardownRequestCreatedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Customer Teardown Request",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/deployments/{deployment_id}/teardown-requests/{request_id}/approvals": {
+      "post": {
+        "description": "Record an independent approval; terminal state explicitly disables execution.",
+        "operationId": "approve_customer_teardown_request_api_operator_deployments__deployment_id__teardown_requests__request_id__approvals_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerTeardownApproval"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerTeardownRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Customer Teardown Request",
         "tags": [
           "operator"
         ]
@@ -17265,16 +19158,6 @@
               "title": "Authorization",
               "type": "string"
             }
-          },
-          {
-            "in": "header",
-            "name": "x-onebrain-callback-key-id",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "X-Onebrain-Callback-Key-Id",
-              "type": "string"
-            }
           }
         ],
         "requestBody": {
@@ -17364,76 +19247,6 @@
         "summary": "Retry Provisioning Run",
         "tags": [
           "provisioning"
-        ]
-      }
-    },
-    "/api/rollouts/{rollout_id}/callback": {
-      "post": {
-        "operationId": "rollout_callback_api_rollouts__rollout_id__callback_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "rollout_id",
-            "required": true,
-            "schema": {
-              "title": "Rollout Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Authorization",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-onebrain-callback-key-id",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "X-Onebrain-Callback-Key-Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RolloutCallbackIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Rollout Callback",
-        "tags": [
-          "rollouts"
         ]
       }
     },

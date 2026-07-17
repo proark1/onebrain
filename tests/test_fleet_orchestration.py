@@ -22,7 +22,17 @@ from app.controlplane.fleet_runner import (
     plan_and_start_fleet_rollout,
     reconcile_fleet_rollout,
 )
-from app.controlplane.rollout_exec import RolloutCallback, apply_rollout_callback
+
+
+def _mark_child_terminal(store, rollout_id: str, *, succeeded: bool, reason: str = ""):
+    """Model a verified fleet report without reviving the retired callback API."""
+    if succeeded:
+        store.update_rollout_status(rollout_id, "success")
+        return store.update_rollout_exec(rollout_id, exec_status="succeeded", completed_at="verified")
+    store.update_rollout_status(rollout_id, "failed", notes=reason)
+    return store.update_rollout_exec(
+        rollout_id, exec_status="failed", failure_reason=reason, completed_at="verified"
+    )
 
 
 # --- pure planner ------------------------------------------------------------
@@ -127,7 +137,7 @@ def _fake_dispatcher(store):
 
 
 def _succeed(store, dispatch, rid):
-    apply_rollout_callback(store, rid, RolloutCallback(status="succeeded"))
+    _mark_child_terminal(store, rid, succeeded=True)
     advance_fleet_on_child(store, store, store.get_rollout(rid), dispatch_child=dispatch)
 
 
@@ -166,9 +176,9 @@ def test_runner_pauses_when_ring_failures_exceed_tolerance():
     assert len(internal_children) == 2
 
     # One succeeds, one fails -> 1 failure > tolerance 0 -> PAUSE, pilot never opens.
-    apply_rollout_callback(store, internal_children[0], RolloutCallback(status="succeeded"))
+    _mark_child_terminal(store, internal_children[0], succeeded=True)
     advance_fleet_on_child(store, store, store.get_rollout(internal_children[0]), dispatch_child=dispatch)
-    apply_rollout_callback(store, internal_children[1], RolloutCallback(status="failed", failure_reason="x"))
+    _mark_child_terminal(store, internal_children[1], succeeded=False, reason="x")
     advance_fleet_on_child(store, store, store.get_rollout(internal_children[1]), dispatch_child=dispatch)
 
     fr = store.get_fleet_rollout("f1")
@@ -383,7 +393,7 @@ def test_ring_batch_caps_inflight():
 
     def _drain(batch):
         for rid in [r for r in made if store.get_rollout(r).status == "pending"]:
-            apply_rollout_callback(store, rid, RolloutCallback(status="succeeded"))
+            _mark_child_terminal(store, rid, succeeded=True)
         return reconcile_fleet_rollout(store, store, "fb", dispatch_child=dispatch, ring_batch_size=batch)
 
     _drain(2)
@@ -415,8 +425,8 @@ def test_batch_failure_still_pauses_via_reducer():
 
     # One of the first batch fails -> the reducer pauses at drain (1 failure > tolerance 0),
     # and the next batch never opens (a failure is never re-dispatched by the batcher).
-    apply_rollout_callback(store, made[0], RolloutCallback(status="succeeded"))
-    apply_rollout_callback(store, made[1], RolloutCallback(status="failed", failure_reason="boom"))
+    _mark_child_terminal(store, made[0], succeeded=True)
+    _mark_child_terminal(store, made[1], succeeded=False, reason="boom")
     reconcile_fleet_rollout(store, store, "fb", dispatch_child=dispatch, ring_batch_size=2)
 
     assert store.get_fleet_rollout("fb").status == "paused"

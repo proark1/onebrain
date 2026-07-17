@@ -11,7 +11,7 @@ The core is two PURE functions:
   so a canary failure in internal/pilot never reaches early/stable.
 
 Both are pure of I/O and the executor, so ring orchestration is unit-testable
-without Railway. The runner that actually dispatches each ring's child rollouts
+without an external workflow executor. The runner that offers each ring's child rollouts
 is thin glue over the Phase-1 executor (the noted infra tail).
 """
 

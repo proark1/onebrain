@@ -8,7 +8,13 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
 
 from app.auth.passwords import hash_password
-from app.controlplane.base import CustomerDeployment, DeploymentModule, validate_deployment, validate_module
+from app.controlplane.base import (
+    ACTIVE_DEPLOYMENT_TYPES,
+    CustomerDeployment,
+    DeploymentModule,
+    validate_deployment,
+    validate_module,
+)
 from app.platform.base import Account, AppInstallation, AuditEvent, BrandTheme, BRAND_COLOR_FIELDS, Space, default_brand_theme
 from app.provisioning.bundles import ModuleComposition, resolve_module_composition
 from app.servicekeys.base import SCOPE_READ, SCOPE_WRITE, ServiceKey, generate_key, hash_secret
@@ -174,6 +180,9 @@ class CustomerProvisioner:
         account_id = normalize_id(account_id)
         deployment_id = normalize_id(deployment_id)
         customer_name = customer_name.strip()
+        deployment_type = deployment_type.strip()
+        if deployment_type not in ACTIVE_DEPLOYMENT_TYPES:
+            raise ValueError("New deployments must use a supported Hetzner-era deployment type.")
         initial_version = initial_version.strip()
         module_versions = {
             normalize_id(module_id).replace("_", "-"): version.strip()
@@ -193,7 +202,7 @@ class CustomerProvisioner:
             customer_name=customer_name,
             account_id=account_id,
             environment=environment.strip(),
-            deployment_type=deployment_type.strip(),
+            deployment_type=deployment_type,
             region=region.strip(),
             release_ring=release_ring.strip(),
             current_version=initial_version,

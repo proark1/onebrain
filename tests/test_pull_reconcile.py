@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from app.controlplane.base import (
     CustomerDeployment,
     DeploymentModule,
@@ -21,10 +23,11 @@ from app.controlplane.memory import MemoryControlPlaneStore
 from app.controlplane.orchestration import FleetRolloutRun
 from app.controlplane.pull_reconcile import (
     materialize_backup_from_report,
+    pull_acknowledgement_matches,
     reconcile_pull_targets,
     synthesize_pull_status,
 )
-from app.fleet.heartbeat import UpdateReport, build_heartbeat_v2
+from app.fleet.heartbeat import ModuleReport, UpdateReport, build_heartbeat_v2
 
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
 DEADLINE = 1800
@@ -52,7 +55,11 @@ def test_synthesize_matrix():
     assert synthesize_pull_status(stale, other, now=NOW, deadline_seconds=DEADLINE) == "failed"
 
     # attempt matches:
-    assert synthesize_pull_status(fresh, _match("succeeded"), now=NOW, deadline_seconds=DEADLINE) == "success"
+    assert synthesize_pull_status(
+        fresh, _match("succeeded"), now=NOW, deadline_seconds=DEADLINE, success_verified=True,
+    ) == "success"
+    assert synthesize_pull_status(fresh, _match("succeeded"), now=NOW, deadline_seconds=DEADLINE) is None
+    assert synthesize_pull_status(stale, _match("succeeded"), now=NOW, deadline_seconds=DEADLINE) == "failed"
     assert synthesize_pull_status(fresh, _match("failed"), now=NOW, deadline_seconds=DEADLINE) == "failed"
     assert synthesize_pull_status(fresh, _match("rolled_back"), now=NOW, deadline_seconds=DEADLINE) == "failed"
     # in_progress / none: before deadline keep waiting, past deadline timeout-fail.
@@ -67,18 +74,49 @@ def test_synthesize_matrix():
 
 # --- the tick ----------------------------------------------------------------
 
-def _hb(deployment_id: str, *, attempt_id: str = "", outcome: str = "none",
-        backup_status: str = "", backup_ts: str = "", backup_manifest: str = ""):
+def _hb(
+    deployment_id: str,
+    *,
+    attempt_id: str = "",
+    outcome: str = "none",
+    version: str = "2026.07.1",
+    last_target_version: str | None = None,
+    migration_revision: str = "0041",
+    migration_reached: str = "0041",
+    healthy: bool = True,
+    modules=None,
+    backup_status: str = "",
+    backup_ts: str = "",
+    backup_manifest: str = "",
+):
     """A stored-heartbeat stand-in whose .payload matches latest_heartbeats()'s shape."""
     body = build_heartbeat_v2(
-        deployment_id=deployment_id, reported_at=NOW.isoformat(), version="2026.07.1",
-        update=UpdateReport(attempt_id=attempt_id, outcome=outcome, last_target_version="2026.07.1",
-                            backup_status=backup_status, backup_ts=backup_ts,
-                            backup_manifest=backup_manifest))
+        deployment_id=deployment_id,
+        reported_at=NOW.isoformat(),
+        version=version,
+        migration_revision=migration_revision,
+        onebrain_healthy=healthy,
+        modules=modules if modules is not None else [ModuleReport(module_id="onebrain-api", version="0.8.0")],
+        update=UpdateReport(
+            attempt_id=attempt_id,
+            outcome=outcome,
+            last_target_version=version if last_target_version is None else last_target_version,
+            migration_reached=migration_reached,
+            backup_status=backup_status,
+            backup_ts=backup_ts,
+            backup_manifest=backup_manifest,
+        ),
+    )
     return SimpleNamespace(payload=body.model_dump())
 
 
-def _store_with_offered_child(*, migration_to: str = "0041", current_migration: str = "0041", tol: int = 0):
+def _store_with_offered_child(
+    *,
+    migration_to: str = "0041",
+    current_migration: str = "0041",
+    tol: int = 0,
+    communication_enabled: bool = False,
+):
     """A running fleet rollout with ONE offered pull child — exactly what
     offer_pull_target produces: started, claimed, marked dispatched with a
     dispatched_at anchor and the pull request_payload."""
@@ -86,9 +124,13 @@ def _store_with_offered_child(*, migration_to: str = "0041", current_migration: 
     store.create_deployment(CustomerDeployment(
         id="dep_p", customer_name="dep_p", account_id="acct", release_ring="pilot",
         current_version="2026.07.0", current_migration=current_migration))
+    modules = {"onebrain-api": "0.8.0"}
     store.upsert_module(DeploymentModule("dep_p", "onebrain-api", "0.7.0"))
+    if communication_enabled:
+        modules["communication-api"] = "2.0.0"
+        store.upsert_module(DeploymentModule("dep_p", "communication-api", "1.0.0"))
     store.create_release(ReleaseManifest(
-        version="2026.07.1", git_sha="sha", modules={"onebrain-api": "0.8.0"},
+        version="2026.07.1", git_sha="sha", modules=modules,
         migration_from="0041", migration_to=migration_to))
     store.create_fleet_rollout(FleetRolloutRun(
         id="f1", target_version="2026.07.1", status="running", ring_order=("pilot",),
@@ -140,6 +182,82 @@ def test_reconcile_still_running_before_deadline():
                            dispatch_child=_noop_dispatch)
     assert store.get_rollout("c_dep").status == "pending"           # untouched, still waiting
     assert store.get_fleet_rollout("f1").status == "running"
+
+
+@pytest.mark.parametrize(
+    "heartbeat_kwargs",
+    [
+        {"attempt_id": "other"},
+        {"last_target_version": "2026.07.0"},
+        {"version": "2026.07.0"},
+        {"migration_reached": "0040"},
+        {"migration_revision": "0040"},
+        {"healthy": False},
+        {"modules": []},
+        {"modules": [ModuleReport(module_id="onebrain-api", version="0.7.0")]},
+        {"modules": [ModuleReport(module_id="onebrain-api", version="0.8.0", healthy=False)]},
+    ],
+)
+def test_reconcile_keeps_mismatched_success_pending_until_deadline(heartbeat_kwargs):
+    store = _store_with_offered_child()
+    heartbeat = _hb("dep_p", outcome="succeeded", **{"attempt_id": "c_dep", **heartbeat_kwargs})
+
+    assert pull_acknowledgement_matches(store, store.get_rollout("c_dep"), heartbeat) is False
+    reconcile_pull_targets(
+        store, store, {"dep_p": heartbeat}, now=NOW, deadline_seconds=DEADLINE,
+        dispatch_child=_noop_dispatch,
+    )
+    assert store.get_rollout("c_dep").status == "pending"
+
+    reconcile_pull_targets(
+        store,
+        store,
+        {"dep_p": heartbeat},
+        now=NOW + timedelta(seconds=DEADLINE + 1),
+        deadline_seconds=DEADLINE,
+        dispatch_child=_noop_dispatch,
+    )
+    child = store.get_rollout("c_dep")
+    assert child.status == "failed" and child.failure_reason == "pull_convergence_timeout"
+
+
+def test_reconcile_requires_every_enabled_module_to_report_the_expected_version():
+    store = _store_with_offered_child(communication_enabled=True)
+    child = store.get_rollout("c_dep")
+    matching = _hb(
+        "dep_p",
+        attempt_id="c_dep",
+        outcome="succeeded",
+        modules=[
+            ModuleReport(module_id="onebrain-api", version="0.8.0"),
+            ModuleReport(module_id="communication-api", version="2.0.0"),
+        ],
+    )
+    assert pull_acknowledgement_matches(store, child, matching) is True
+
+    missing = _hb(
+        "dep_p", attempt_id="c_dep", outcome="succeeded",
+        modules=[ModuleReport(module_id="onebrain-api", version="0.8.0")],
+    )
+    wrong = _hb(
+        "dep_p",
+        attempt_id="c_dep",
+        outcome="succeeded",
+        modules=[
+            ModuleReport(module_id="onebrain-api", version="0.8.0"),
+            ModuleReport(module_id="communication-api", version="1.0.0"),
+        ],
+    )
+    assert pull_acknowledgement_matches(store, child, missing) is False
+    assert pull_acknowledgement_matches(store, child, wrong) is False
+
+
+def test_reconcile_does_not_require_a_disabled_module_to_report():
+    store = _store_with_offered_child()
+    store.upsert_module(DeploymentModule("dep_p", "communication-api", "1.0.0", status="disabled"))
+
+    heartbeat = _hb("dep_p", attempt_id="c_dep", outcome="succeeded")
+    assert pull_acknowledgement_matches(store, store.get_rollout("c_dep"), heartbeat) is True
 
 
 def test_reconcile_materializes_backup():
@@ -253,7 +371,12 @@ def test_reconcile_converges_standalone_development_pull_before_timeout():
 
     reconcile_pull_targets(
         store, store,
-        {gate.id: _hb(gate.id, attempt_id=rollout_id, outcome="succeeded")},
+        {gate.id: _hb(
+            gate.id,
+            attempt_id=rollout_id,
+            outcome="succeeded",
+            modules=[ModuleReport(module_id="onebrain-api", version=version)],
+        )},
         now=NOW, deadline_seconds=DEADLINE, dispatch_child=_noop_dispatch,
     )
 

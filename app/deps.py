@@ -94,9 +94,19 @@ def get_session_store():
 
 @lru_cache
 def get_login_throttle():
+    settings = get_settings()
+    if settings.vector_store == "pgvector":
+        from app.auth.login_limits import PostgresLoginThrottle
+
+        return PostgresLoginThrottle(
+            settings.pg_database_url,
+            settings.login_rate_limit_secret,
+            settings.login_max_attempts,
+            settings.login_lockout_seconds,
+        )
+
     from app.auth.throttle import LoginThrottle
 
-    settings = get_settings()
     return LoginThrottle(settings.login_max_attempts, settings.login_lockout_seconds)
 
 
@@ -109,9 +119,20 @@ def get_service_key_store():
 
 @lru_cache
 def get_service_rate_limiter():
+    settings = get_settings()
+    if settings.vector_store == "pgvector":
+        from app.auth.login_limits import PostgresRateLimiter
+
+        return PostgresRateLimiter(
+            settings.pg_database_url,
+            settings.login_rate_limit_secret,
+            settings.service_rate_limit,
+            settings.service_rate_window_seconds,
+            scope="service_key",
+        )
+
     from app.auth.throttle import RateLimiter
 
-    settings = get_settings()
     return RateLimiter(settings.service_rate_limit, settings.service_rate_window_seconds)
 
 
@@ -153,6 +174,9 @@ def get_ai_employee_runtime():
         retrieval_service=get_retrieval_service(),
         backend_registry=get_ai_employee_backend_registry(),
         max_output_tokens=settings.ai_employees_max_output_tokens,
+        run_lease_seconds=settings.ai_employees_run_lease_seconds,
+        run_heartbeat_seconds=settings.ai_employees_run_heartbeat_seconds,
+        provider_timeout_seconds=settings.ai_employees_provider_timeout_seconds,
     )
 
 
@@ -213,9 +237,20 @@ def get_fleet_store():
 
 @lru_cache
 def get_fleet_heartbeat_rate_limiter():
+    settings = get_settings()
+    if settings.vector_store == "pgvector":
+        from app.auth.login_limits import PostgresRateLimiter
+
+        return PostgresRateLimiter(
+            settings.pg_database_url,
+            settings.login_rate_limit_secret,
+            settings.fleet_heartbeat_rate_limit,
+            settings.fleet_heartbeat_rate_window_seconds,
+            scope="fleet_heartbeat",
+        )
+
     from app.auth.throttle import RateLimiter
 
-    settings = get_settings()
     return RateLimiter(settings.fleet_heartbeat_rate_limit, settings.fleet_heartbeat_rate_window_seconds)
 
 
@@ -223,9 +258,20 @@ def get_fleet_heartbeat_rate_limiter():
 def get_fleet_bootstrap_rate_limiter():
     # G1-5: a DEDICATED, aggressively-low limiter for the /api/fleet/bootstrap secret
     # exchange — never the heartbeat budget (one fetch exfiltrates the whole bundle).
+    settings = get_settings()
+    if settings.vector_store == "pgvector":
+        from app.auth.login_limits import PostgresRateLimiter
+
+        return PostgresRateLimiter(
+            settings.pg_database_url,
+            settings.login_rate_limit_secret,
+            settings.fleet_bootstrap_rate_limit,
+            settings.fleet_bootstrap_rate_window_seconds,
+            scope="fleet_bootstrap",
+        )
+
     from app.auth.throttle import RateLimiter
 
-    settings = get_settings()
     return RateLimiter(settings.fleet_bootstrap_rate_limit, settings.fleet_bootstrap_rate_window_seconds)
 
 

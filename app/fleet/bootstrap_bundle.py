@@ -15,11 +15,14 @@ tick.
 
 from __future__ import annotations
 
+import secrets
+from collections.abc import Callable
 from typing import Dict, List
 
 # Canonical bundle key order. render_dotenv emits keys in THIS order.
 BUNDLE_KEYS = (
-    "POSTGRES_PASSWORD", "REDIS_PASSWORD",
+    "POSTGRES_PASSWORD", "POSTGRES_APP_PASSWORD", "POSTGRES_WORKER_PASSWORD",
+    "POSTGRES_ASSISTANT_PASSWORD", "POSTGRES_COMMUNICATION_PASSWORD", "REDIS_PASSWORD",
     "ONEBRAIN_FLEET_KEY", "ONEBRAIN_LLM_API_KEY",
     # ONEBRAIN_AUTH_SECRET signs session cookies. app/main.py FAILS CLOSED (RuntimeError,
     # refuses to boot) unless it is a strong (>=32-char) non-default secret, so a box that
@@ -27,6 +30,9 @@ BUNDLE_KEYS = (
     # is minted into the bundle (MC + customer), making it a REQUIRED key with a min-length
     # floor (validate_bundle) — never provision a box whose api can't come up.
     "ONEBRAIN_AUTH_SECRET",
+    # Distinct HMAC key for shared PostgreSQL login limits. It is deliberately
+    # not reused for cookies so rotating either security boundary is isolated.
+    "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET",
     # ONEBRAIN_ADMIN_EMAIL + ONEBRAIN_ADMIN_PASSWORD are the admin seed pair: seed.py
     # (seed_admin_from_env) creates a loginable admin at container start ONLY when BOTH
     # are non-empty. Without the email the box comes up with no admin and — SSH being
@@ -54,19 +60,64 @@ BUNDLE_KEYS = (
 # Keys without which a fresh box cannot come up — a bundle missing/empty on any of
 # these must fail closed (dispatch_failed), never provision a box that can't boot.
 REQUIRED_KEYS = (
-    "POSTGRES_PASSWORD", "REDIS_PASSWORD",
-    "ONEBRAIN_FLEET_KEY", "ONEBRAIN_AUTH_SECRET",
+    "POSTGRES_PASSWORD", "POSTGRES_APP_PASSWORD", "POSTGRES_WORKER_PASSWORD",
+    "POSTGRES_ASSISTANT_PASSWORD", "POSTGRES_COMMUNICATION_PASSWORD", "REDIS_PASSWORD",
+    "ONEBRAIN_FLEET_KEY", "ONEBRAIN_AUTH_SECRET", "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET",
     "ONEBRAIN_ADMIN_EMAIL", "ONEBRAIN_ADMIN_PASSWORD",
     "UPDATE_BACKUP_KEY",
 )
 # Extra floor for keys the app itself rejects when too short. ONEBRAIN_AUTH_SECRET must
 # clear app/main.py's >=32-char cookie-secret guard, so a present-but-weak value is as
 # fatal as a missing one — reject it here rather than boot-loop the box.
-MIN_KEY_LENGTHS = {"ONEBRAIN_AUTH_SECRET": 32}
+MIN_KEY_LENGTHS = {
+    "ONEBRAIN_AUTH_SECRET": 32,
+    "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET": 32,
+}
 # Legitimately empty in valid configs: no LLM key (local provider), no comm/assistant
 # module (service key + space id), dormant desired-state emission (empty pubkey set),
 # and DNS unmanaged (customer box). These are allowed to be empty/absent.
 OPTIONAL_KEYS = tuple(k for k in BUNDLE_KEYS if k not in REQUIRED_KEYS)
+
+# These credentials were introduced across multiple production hardening
+# releases, so a long-lived encrypted bundle can be missing any of them. They
+# are deliberately handled by an MC-side backfill: a customer host must never
+# mint a password that the MC escrow cannot later serve again during rotation.
+RUNTIME_DB_PASSWORD_KEYS = (
+    "POSTGRES_APP_PASSWORD",
+    "POSTGRES_WORKER_PASSWORD",
+    "POSTGRES_ASSISTANT_PASSWORD",
+    "POSTGRES_COMMUNICATION_PASSWORD",
+)
+
+
+def backfill_runtime_db_passwords(
+    bundle: Dict[str, object],
+    *,
+    password_factory: Callable[[], str] | None = None,
+) -> tuple[Dict[str, object], tuple[str, ...]]:
+    """Return a copy with only missing restricted-runtime passwords added.
+
+    This is intentionally idempotent: valid existing values are preserved, so
+    it is safe to retry after a control-plane interruption. Callers must run it
+    only on Mission Control after decrypting a stored bundle, then re-seal and
+    bump the bundle epoch so the box re-fetches the authoritative values.
+    """
+
+    updated = dict(bundle)
+    mint = password_factory or (lambda: secrets.token_urlsafe(32))
+    added: list[str] = []
+    for key in RUNTIME_DB_PASSWORD_KEYS:
+        current = updated.get(key)
+        if isinstance(current, str) and current.strip():
+            continue
+        if current is not None and not isinstance(current, str):
+            raise ValueError(f"Secret bundle key {key} must be a string when present.")
+        password = mint()
+        if not isinstance(password, str) or len(password) < 32:
+            raise ValueError(f"Generated {key} must be a string of at least 32 characters.")
+        updated[key] = password
+        added.append(key)
+    return updated, tuple(added)
 
 
 def render_dotenv(bundle: Dict[str, str]) -> str:

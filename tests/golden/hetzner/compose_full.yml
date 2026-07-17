@@ -1,6 +1,7 @@
+x-x: &x {read_only: true, tmpfs: ["/tmp:mode=1777,size=64m"], cap_drop: [ALL], security_opt: [no-new-privileges:true]}
 services:
   caddy:
-    image: caddy:2
+    image: caddy:2@sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9
     restart: unless-stopped
     ports:
       - "80:80"
@@ -9,8 +10,11 @@ services:
       - /opt/onebrain/Caddyfile:/etc/caddy/Caddyfile:ro
       - /opt/onebrain/caddy-data:/data
       - /opt/onebrain/caddy-config:/config
+    networks:
+      default: {}
+      edge: {ipv4_address: 172.30.0.2}
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
     restart: unless-stopped
     env_file:
       - env/postgres.env
@@ -24,8 +28,19 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+  postgres-roles:
+    image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
+    restart: "no"
+    command: ["sh", "-ec", "PGHOST=postgres exec /opt/onebrain/postgres-init.sh"]
+    env_file:
+      - env/postgres.env
+    volumes:
+      - /opt/onebrain/postgres-init.sh:/opt/onebrain/postgres-init.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
   redis:
-    image: redis:7
+    image: redis:7@sha256:a8f08480e1f88f2647fed492d1178c06abb0d0c1fbf02c682a61e2f483fb3954
     restart: unless-stopped
     command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
     env_file:
@@ -40,16 +55,18 @@ services:
   onebrain-migrate:
     image: ghcr.io/proark1/onebrain-api@sha256:0000000000000000000000000000000000000000000000000000000000000000
     profiles: [onebrain]
+    <<: *x
     restart: "no"
     command: ["alembic", "upgrade", "head"]
     env_file:
       - env/onebrain-migrate.env
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-roles:
+        condition: service_completed_successfully
   onebrain-api:
     image: ghcr.io/proark1/onebrain-api@sha256:0000000000000000000000000000000000000000000000000000000000000000
     profiles: [onebrain]
+    <<: *x
     restart: unless-stopped
     env_file:
       - env/onebrain-api.env
@@ -57,35 +74,41 @@ services:
       - "8000"
     volumes:
       - /data:/data
+    networks:
+      default: {}
+      edge: {aliases: [api-edge]}
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-roles:
+        condition: service_completed_successfully
       onebrain-migrate:
         condition: service_completed_successfully
   onebrain-admin-ui:
     image: ghcr.io/proark1/onebrain-admin-ui@sha256:0000000000000000000000000000000000000000000000000000000000000001
     profiles: [onebrain]
+    <<: *x
     restart: unless-stopped
+    tmpfs: ["/tmp:mode=1777,size=64m", "/app/.next/cache:mode=1777,size=64m"]
     env_file:
       - env/onebrain-admin-ui.env
     expose:
       - "3000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-roles:
+        condition: service_completed_successfully
       onebrain-migrate:
         condition: service_completed_successfully
   onebrain-workers:
     image: ghcr.io/proark1/onebrain-workers@sha256:0000000000000000000000000000000000000000000000000000000000000002
     profiles: [onebrain]
+    <<: *x
     restart: unless-stopped
     env_file:
       - env/onebrain-workers.env
     volumes:
       - /data:/data
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-roles:
+        condition: service_completed_successfully
       onebrain-migrate:
         condition: service_completed_successfully
   assistant-migrate:
@@ -96,8 +119,8 @@ services:
     env_file:
       - env/assistant-migrate.env
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-roles:
+        condition: service_completed_successfully
   assistant-service:
     image: ghcr.io/proark1/assistant-service@sha256:0000000000000000000000000000000000000000000000000000000000000003
     profiles: [assistant]
@@ -107,8 +130,8 @@ services:
     expose:
       - "8000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-roles:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       assistant-migrate:
@@ -121,8 +144,8 @@ services:
     env_file:
       - env/communication-migrate.env
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-roles:
+        condition: service_completed_successfully
   communication-api:
     image: ghcr.io/proark1/communication-api@sha256:0000000000000000000000000000000000000000000000000000000000000004
     profiles: [communication]
@@ -132,8 +155,8 @@ services:
     expose:
       - "4000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-roles:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       communication-migrate:
@@ -147,8 +170,8 @@ services:
     expose:
       - "5174"
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-roles:
+        condition: service_completed_successfully
       communication-migrate:
         condition: service_completed_successfully
   communication-voice:
@@ -160,8 +183,8 @@ services:
     expose:
       - "4100"
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-roles:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       communication-migrate:
@@ -175,9 +198,11 @@ services:
     expose:
       - "4200"
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-roles:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       communication-migrate:
         condition: service_completed_successfully
+networks:
+  edge: {internal: true, ipam: {config: [{subnet: 172.30.0.0/24}]}}

@@ -21,7 +21,7 @@
 --     must be given the tenant explicitly.)
 --   * Global operations that span tenants — schema migration, demo/sample seeding,
 --     the /health row count — must run as the OWNER/superuser role, which bypasses
---     the policy. In the current single-role Railway setup the app IS the owner, so
+--     the policy. In a single-role deployment the app IS the owner, so
 --     enabling this safely means splitting into (a) an owner role for migrations +
 --     seeding and (b) a restricted app role for request queries, and threading the
 --     tenant into every store call. That split is the Phase-4 service-auth work.

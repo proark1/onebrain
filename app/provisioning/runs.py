@@ -11,8 +11,6 @@ import threading
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Protocol
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -60,7 +58,7 @@ class ProvisioningRun:
     # resolved by the provisioning catalogue when a run is created.
     module_ids: tuple[str, ...] = ()
     status: str = STATUS_PENDING
-    external_provider: str = "github_actions"
+    external_provider: str = "hetzner"
     external_run_id: str = ""
     external_run_url: str = ""
     request_payload: Dict = None
@@ -227,7 +225,14 @@ def hash_callback_secret(secret: str) -> str:
     return _hashed_secret(secret)
 
 
-def _fernet_key(raw: str) -> bytes:
+def _fernet_key(raw: str, *, require_encoded: bool = False) -> bytes:
+    """Normalize the supported secret-key forms for Fernet.
+
+    The historic passphrase fallback remains useful for local development and
+    existing test fixtures. Production Mission Control, however, must use an
+    explicit Fernet key or a 32-byte hex key so a typo cannot silently become a
+    different encryption key and make persisted bootstrap bundles unreadable.
+    """
     value = (raw or "").strip()
     if not value:
         raise ValueError("ONEBRAIN_SECRET_ENCRYPTION_KEY is required.")
@@ -243,13 +248,20 @@ def _fernet_key(raw: str) -> bytes:
             return base64.urlsafe_b64encode(decoded)
     except Exception:
         pass
+    if require_encoded:
+        raise ValueError(
+            "ONEBRAIN_SECRET_ENCRYPTION_KEY must be a URL-safe base64 Fernet key "
+            "or a 32-byte hex key."
+        )
     digest = hashlib.sha256(value.encode("utf-8")).digest()
     return base64.urlsafe_b64encode(digest)
 
 
 class OneTimeSecretCipher:
-    def __init__(self, settings: Settings):
-        self._fernet = Fernet(_fernet_key(settings.secret_encryption_key))
+    def __init__(self, settings: Settings, *, require_encoded_key: bool = False):
+        self._fernet = Fernet(
+            _fernet_key(settings.secret_encryption_key, require_encoded=require_encoded_key)
+        )
         self.key_version = settings.secret_encryption_key_version or "v1"
         self.ttl_seconds = max(1, int(settings.bootstrap_secret_ttl_seconds or 3600))
 
@@ -818,108 +830,6 @@ class PostgresProvisioningRunStore:
         )
 
 
-class GitHubWorkflowDispatcher:
-    def __init__(self, settings: Settings):
-        self.settings = settings
-
-    @property
-    def enabled(self) -> bool:
-        return all([
-            self.settings.github_owner,
-            self.settings.github_repo,
-            self.settings.github_workflow,
-            self.settings.github_ref,
-            self.settings.github_dispatch_token,
-        ])
-
-    def dispatch(self, run: ProvisioningRun) -> ProvisioningRun:
-        if not self.enabled:
-            raise RuntimeError("GitHub provisioning dispatch is not configured.")
-        callback_url = str(run.request_payload.get("callback_url", "")).strip()
-        if not callback_url:
-            raise RuntimeError("Provisioning callback URL is required.")
-        inputs = {
-            "run_id": run.id,
-            "account_id": run.account_id,
-            "deployment_id": run.deployment_id,
-            "module_ids_json": json.dumps(list(run.module_ids)),
-            "customer_name": str(run.request_payload.get("customer_name", "")),
-            "deployment_type": str(run.request_payload.get("deployment_type", "")),
-            "region": str(run.request_payload.get("region", "")),
-            "release_ring": str(run.request_payload.get("release_ring", "")),
-            "initial_version": str(run.request_payload.get("initial_version", "")),
-            "module_versions_json": json.dumps(run.request_payload.get("module_versions", {})),
-            "brand_theme_json": json.dumps(run.request_payload.get("brand_theme", {})),
-            "callback_url": callback_url.replace("{run_id}", run.id),
-            "callback_key_id": self.settings.provisioning_callback_key_id,
-            "dry_run": "true" if run.request_payload.get("dry_run", True) else "false",
-        }
-        workflow_url = dispatch_workflow(
-            self.settings, self.settings.github_workflow, self.settings.github_ref, inputs
-        )
-        return replace(run, status=STATUS_DISPATCHED, external_run_url=workflow_url, dispatched_at=now_iso())
-
-
-def dispatch_workflow(settings, workflow: str, ref: str, inputs: dict, *, opener=None) -> str:
-    """POST a GitHub workflow_dispatch and return the workflow's Actions URL.
-
-    Pure of any one job's specifics — provisioning and rollouts both use it.
-    `opener(request, timeout)` is injectable so tests need no network (same
-    pattern as app/fleet/reporter.send_heartbeat)."""
-    url = (
-        f"https://api.github.com/repos/{settings.github_owner}/{settings.github_repo}/"
-        f"actions/workflows/{workflow}/dispatches"
-    )
-    request = Request(
-        url,
-        data=json.dumps({"ref": ref, "inputs": inputs}).encode("utf-8"),
-        method="POST",
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {settings.github_dispatch_token}",
-            "Content-Type": "application/json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    do_open = opener or (lambda req, timeout: urlopen(req, timeout=timeout))
-    try:
-        with do_open(request, 20):
-            pass
-    except HTTPError as exc:
-        body = exc.read().decode("utf-8")[:500]
-        raise RuntimeError(f"GitHub workflow dispatch failed ({exc.code}): {body}") from exc
-    except URLError as exc:
-        raise RuntimeError(f"GitHub workflow dispatch failed: {exc.reason}") from exc
-    return f"https://github.com/{settings.github_owner}/{settings.github_repo}/actions/workflows/{workflow}"
-
-
-class RolloutWorkflowDispatcher:
-    """Dispatches the update-customer workflow for a rollout (mirrors
-    GitHubWorkflowDispatcher). Returns the workflow URL; the caller records it on
-    the rollout. Requires the same github_* config plus github_update_workflow."""
-
-    def __init__(self, settings: Settings):
-        self.settings = settings
-
-    @property
-    def enabled(self) -> bool:
-        return all([
-            self.settings.github_owner,
-            self.settings.github_repo,
-            self.settings.github_update_workflow,
-            self.settings.github_ref,
-            self.settings.github_dispatch_token,
-        ])
-
-    def dispatch(self, inputs: dict, *, opener=None) -> str:
-        if not self.enabled:
-            raise RuntimeError("GitHub rollout dispatch is not configured.")
-        return dispatch_workflow(
-            self.settings, self.settings.github_update_workflow, self.settings.github_ref,
-            inputs, opener=opener,
-        )
-
-
 def create_run(
     store: ProvisioningRunStore,
     *,
@@ -1000,10 +910,7 @@ def apply_callback(
     # "hetzner:<server_id>", railway_environment_id = <compose_project>, and
     # result_payload's service_ids + erasure_manifest. Keep the run's value for any
     # of these the callback omits, mirroring the external_run_id/url `or`-preserve,
-    # so resolve_railway_target can still target a provisioned box for pull-updates.
-    # The Railway path is unaffected: its workflow callback supplies these, so the
-    # callback value wins on every conflict (its result_payload keys override, and
-    # its run.result_payload is empty at callback time so the merge is a no-op).
+    # so resolve_provisioned_target can still target a provisioned box for pull-updates.
     return store.update_run(replace(
         run,
         status=status,

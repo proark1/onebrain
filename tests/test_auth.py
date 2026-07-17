@@ -142,6 +142,38 @@ def test_login_surfaces_must_change_password(monkeypatch):
     assert resp.headers.get("set-cookie", "").startswith("ob_session=")   # session still issued
 
 
+def test_ip_lockout_does_not_consume_account_budget(monkeypatch):
+    class RecordingThrottle:
+        def __init__(self):
+            self.reserved: list[str] = []
+            self.released: list[str] = []
+
+        def reserve(self, key: str) -> int:
+            self.reserved.append(key)
+            return 9 if key.startswith("ip:") else 0
+
+        def release_success(self, key: str) -> None:
+            self.released.append(key)
+
+    throttle = RecordingThrottle()
+    settings = SimpleNamespace(
+        auth_secret="unit-test-secret",
+        session_days=7,
+        cookie_secure=False,
+        trusted_proxy_cidrs="",
+        trusted_proxy_hops=0,
+    )
+    monkeypatch.setattr(auth_router, "get_login_throttle", lambda: throttle)
+    monkeypatch.setattr(auth_router, "get_settings", lambda: settings)
+
+    with pytest.raises(HTTPException) as exc:
+        auth_router.login(LoginRequest(email="victim@example.test", password="irrelevant"), Response())
+
+    assert exc.value.status_code == 429
+    assert throttle.reserved == ["account:victim@example.test", "ip:unknown"]
+    assert throttle.released == ["account:victim@example.test"]
+
+
 def test_resolve_principal_blocks_until_password_changed(monkeypatch):
     sessions, users = MemorySessionStore(), MemoryUserStore()
     users.create(_mc_user(must_change=True))

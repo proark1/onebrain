@@ -13,7 +13,7 @@ import app.routers.provisioning as provisioning_router
 from app.config import Settings
 from app.controlplane.base import CustomerDeployment, DeploymentModule, ReleaseManifest
 from app.controlplane.memory import MemoryControlPlaneStore
-from app.controlplane.rollout_exec import resolve_railway_target, target_provider
+from app.controlplane.rollout_exec import resolve_provisioned_target, target_provider
 from app.fleet.memory import MemoryFleetStore
 from app.provisioning.hetzner.broker import InProcessHetznerBroker
 from app.provisioning.hetzner.fake import FakeHetznerClient
@@ -43,9 +43,10 @@ def _settings(**over):
         hetzner_server_type="cx22",
         hetzner_image="ubuntu-24.04",
         hetzner_volume_size_gb=10,
-        fleet_dns_provider="",
-        fleet_base_domain="",
-        fleet_dns_zone_id="",
+        dev_release_verify_public_key="development-release-public-key",
+        fleet_dns_provider="hetzner",
+        fleet_base_domain="fleet.example",
+        fleet_dns_zone_id="z1",
         fleet_url="https://mc.example",
     )
     data.update(over)
@@ -110,22 +111,26 @@ def test_dispatch_creates_server_with_firewall_and_writes_d6_slots():
 
 
 def test_dispatch_bakes_separate_release_verifiers_for_dev_and_customer_boxes():
+    from tests.boot_config_helper import extract_cloud_init_file
+
     settings = _settings(
         release_verify_public_key="production-release-public-key",
         dev_release_verify_public_key="development-release-public-key",
     )
     production_fake = FakeHetznerClient()
     HetznerProvisioner(settings, InProcessHetznerBroker(production_fake), _control()).dispatch(_plain_run())
-    assert "UPDATE_RELEASE_PUBLIC_KEY=production-release-public-key" in production_fake.servers[0].user_data
-    assert "development-release-public-key" not in production_fake.servers[0].user_data
+    production_box_env = extract_cloud_init_file(production_fake.servers[0].user_data, "/opt/onebrain/box.env")
+    assert "UPDATE_RELEASE_PUBLIC_KEY=production-release-public-key" in production_box_env
+    assert "development-release-public-key" not in production_box_env
 
     development_fake = FakeHetznerClient()
     development = _control(dep="dev-gate", environment="development")
     HetznerProvisioner(settings, InProcessHetznerBroker(development_fake), development).dispatch(
         _plain_run(dep="dev-gate")
     )
-    assert "UPDATE_RELEASE_PUBLIC_KEY=development-release-public-key" in development_fake.servers[0].user_data
-    assert "production-release-public-key" not in development_fake.servers[0].user_data
+    development_box_env = extract_cloud_init_file(development_fake.servers[0].user_data, "/opt/onebrain/box.env")
+    assert "UPDATE_RELEASE_PUBLIC_KEY=development-release-public-key" in development_box_env
+    assert "production-release-public-key" not in development_box_env
 
 
 def test_development_dispatch_fails_before_server_creation_without_dev_key():
@@ -133,7 +138,7 @@ def test_development_dispatch_fails_before_server_creation_without_dev_key():
     control = _control(dep="dev-gate", environment="development")
 
     with pytest.raises(RuntimeError, match="DEV_RELEASE_VERIFY_PUBLIC_KEY"):
-        HetznerProvisioner(_settings(), InProcessHetznerBroker(fake), control).dispatch(
+        HetznerProvisioner(_settings(dev_release_verify_public_key=""), InProcessHetznerBroker(fake), control).dispatch(
             _plain_run(dep="dev-gate")
         )
 
@@ -181,13 +186,35 @@ def test_dispatch_attaches_data_volume():
 
 
 def test_dispatch_skips_dns_without_provider():
-    control = _control()
+    # Raw-IP / HTTP is retained only for development dogfooding. Production
+    # customer targets fail closed before a server is created.
+    control = _control(environment="development")
     fake = FakeHetznerClient()
     out = HetznerProvisioner(_settings(fleet_dns_provider="", fleet_base_domain=""),
                              InProcessHetznerBroker(fake), control).dispatch(_plain_run())
 
     assert "upsert_dns_record" not in fake.calls
     assert out.external_run_url == "203.0.113.1"        # falls back to the raw IP
+
+
+@pytest.mark.parametrize(
+    "overrides, marker",
+    [
+        ({"fleet_dns_provider": ""}, "ONEBRAIN_FLEET_DNS_PROVIDER=hetzner"),
+        ({"fleet_dns_provider": "cloudflare"}, "ONEBRAIN_FLEET_DNS_PROVIDER=hetzner"),
+        ({"fleet_base_domain": "bad_domain.example"}, "valid public DNS hostname"),
+        ({"fleet_dns_zone_id": ""}, "ONEBRAIN_FLEET_DNS_PROVIDER=hetzner"),
+    ],
+)
+def test_production_dispatch_refuses_http_only_or_invalid_tls_hostname(overrides, marker):
+    fake = FakeHetznerClient()
+
+    with pytest.raises(RuntimeError, match=marker):
+        HetznerProvisioner(
+            _settings(**overrides), InProcessHetznerBroker(fake), _control()
+        ).dispatch(_plain_run())
+
+    assert fake.servers == []
 
 
 def test_dispatch_sets_dns_with_provider():
@@ -273,7 +300,7 @@ def test_api_image_packages_cloud_init_assets():
     assert "COPY deploy ./deploy" in dockerfile
 
 
-def test_dispatch_run_router_switch_selects_backend(monkeypatch):
+def test_dispatch_run_router_selects_enabled_or_disabled_backend(monkeypatch):
     control = _control()
     prov = MemoryProvisioningRunStore()
     fake = FakeHetznerClient()
@@ -286,27 +313,19 @@ def test_dispatch_run_router_switch_selects_backend(monkeypatch):
     assert out.external_provider == "hetzner" and out.status == STATUS_DISPATCHED
     assert len(fake.servers) == 1
 
-    # github backend -> GitHubWorkflowDispatcher (unchanged); unconfigured here so it
-    # dispatch-fails with a GitHub reason, and the hetzner fake is NOT invoked.
+    # Disabled provisioning must fail closed and never invoke the Hetzner fake.
     monkeypatch.setattr(provisioning_router, "get_settings",
-                        lambda: _settings(provisioner_backend="github"))
-    gh_out = provisioning_router._dispatch_run(_run(prov))
-    assert gh_out.status == STATUS_DISPATCH_FAILED
-    assert "GitHub" in gh_out.failure_reason
+                        lambda: _settings(provisioner_backend="disabled"))
+    disabled_out = provisioning_router._dispatch_run(_run(prov))
+    assert disabled_out.status == STATUS_DISPATCH_FAILED
+    assert disabled_out.failure_reason == "Hetzner provisioning is required."
     assert len(fake.servers) == 1      # hetzner path was not taken
-
-    # unknown backend -> named fail-closed reason, never a silent fallback.
-    monkeypatch.setattr(provisioning_router, "get_settings",
-                        lambda: _settings(provisioner_backend="bogus"))
-    bad = provisioning_router._dispatch_run(_run(prov))
-    assert bad.status == STATUS_DISPATCH_FAILED
-    assert "unknown provisioner_backend: bogus" in bad.failure_reason
 
 
 def test_dispatch_requires_configuration():
     control = _control()
-    # provisioner_backend defaults to github -> enabled is False -> refuses.
-    prov = HetznerProvisioner(_settings(provisioner_backend="github"),
+    # Disabled provisioning keeps the Hetzner executor unavailable.
+    prov = HetznerProvisioner(_settings(provisioner_backend="disabled"),
                               InProcessHetznerBroker(FakeHetznerClient()), control)
     assert prov.enabled is False
     with pytest.raises(RuntimeError, match="not configured"):
@@ -323,7 +342,7 @@ def test_resolve_target_classifies_hetzner_run():
     prov.update_run(dispatched)
 
     # The box's succeeded callback round-trips the D-6 coordinates + service_ids
-    # (pins the slot contract end-to-end); resolve_railway_target reads them back.
+    # (pins the slot contract end-to-end); resolve_provisioned_target reads them back.
     apply_callback(prov, _settings(), dispatched.id, ProvisioningCallback(
         status="succeeded",
         railway_project_id=dispatched.railway_project_id,
@@ -332,9 +351,9 @@ def test_resolve_target_classifies_hetzner_run():
         smoke_status="passed",
     ))
 
-    target = resolve_railway_target(prov, "dep_a")
-    assert target["railway_project_id"] == "hetzner:server_1"
-    assert target["railway_environment_id"] == "onebrain-dep-a"
+    target = resolve_provisioned_target(prov, "dep_a")
+    assert target["target_id"] == "hetzner:server_1"
+    assert target["target_environment"] == "onebrain-dep-a"
     assert target["service_ids"] == {m: m for m in _MODULES}
     assert target_provider(target) == "hetzner"
 
@@ -344,7 +363,7 @@ def test_resolve_target_survives_box_callback_that_omits_d6_coordinates():
     status/smoke_status/bootstrap_password/external_run_url (see the done_cb in
     app/provisioning/hetzner/render.py) — it does NOT echo the D-6 coordinates that
     dispatch wrote. apply_callback must preserve them (unlike the pre-P5 unconditional
-    overwrite, which wiped them to ""), or resolve_railway_target finds no truthy
+    overwrite, which wiped them to ""), or resolve_provisioned_target finds no truthy
     railway_project_id and the box can never be targeted for a pull-update. The
     Phase-4 test above sidesteps this by re-sending the coordinates in the callback;
     this one deliberately does NOT."""
@@ -364,15 +383,15 @@ def test_resolve_target_survives_box_callback_that_omits_d6_coordinates():
         external_run_url="203.0.113.1",
     ))
     # The persisted run kept the dispatch-written coordinates AND the erasure manifest
-    # (the teardown ids), not just the piece resolve_railway_target happens to read.
+    # (the teardown ids), not just the piece resolve_provisioned_target happens to read.
     assert applied.railway_project_id == "hetzner:server_1"
     assert applied.railway_environment_id == "onebrain-dep-a"
     assert applied.result_payload["service_ids"] == {m: m for m in _MODULES}
     assert applied.result_payload["erasure_manifest"]["server_id"] == "server_1"
 
-    target = resolve_railway_target(prov, "dep_a")
-    assert target["railway_project_id"] == "hetzner:server_1"
-    assert target["railway_environment_id"] == "onebrain-dep-a"
+    target = resolve_provisioned_target(prov, "dep_a")
+    assert target["target_id"] == "hetzner:server_1"
+    assert target["target_environment"] == "onebrain-dep-a"
     assert target["service_ids"] == {m: m for m in _MODULES}
     assert target_provider(target) == "hetzner"
 
@@ -393,7 +412,7 @@ def test_owner_otp_minted_hash_only_and_flagged():
     result = CustomerProvisioner(platform, control, None, users).provision(
         account_id="acct_owner", account_kind="organization", customer_name="Owner Co",
         owner_user_id="usr_op", module_ids=[], deployment_id="dep_owner",
-        deployment_type="dedicated_railway", region="", release_ring="pilot",
+        deployment_type="dedicated_server", region="", release_ring="pilot",
         initial_version="0.1.0", owner_email="Owner@Example.com",
     )
 
@@ -428,7 +447,7 @@ def test_owner_otp_minted_hash_only_and_flagged():
     plain = CustomerProvisioner(MemoryPlatformStore(), MemoryControlPlaneStore(), None, users).provision(
         account_id="acct_none", account_kind="organization", customer_name="No Owner",
         owner_user_id="usr_op", module_ids=[], deployment_id="dep_none",
-        deployment_type="dedicated_railway", region="", release_ring="pilot", initial_version="0.1.0",
+        deployment_type="dedicated_server", region="", release_ring="pilot", initial_version="0.1.0",
     )
     assert plain.owner_one_time_password == ""
     assert store_owner_one_time_password(prov, settings, _run(prov, dep="dep_none"), "").bootstrap_secret_id == ""
@@ -475,9 +494,11 @@ def test_dispatch_mints_bundle_and_unconsumed_bootstrap_token():
     assert [k.deployment_id for k in fleet.list_keys("dep_a")] == ["dep_a"]
 
     # The raw first-boot token is baked into user-data, and its hash is stored UNCONSUMED.
-    import re
+    from tests.boot_config_helper import extract_cloud_init_file
     from app.fleet.keys import hash_secret, parse_bootstrap_token
-    raw = re.search(r"ONEBRAIN_BOOTSTRAP_TOKEN=(bt_[A-Za-z0-9_-]+)", fake.servers[0].user_data)
+    import re
+    box_env = extract_cloud_init_file(fake.servers[0].user_data, "/opt/onebrain/box.env")
+    raw = re.search(r"ONEBRAIN_BOOTSTRAP_TOKEN=(bt_[A-Za-z0-9_-]+)", box_env)
     assert raw, "bootstrap token must be baked in box.env"
     record = prov.get_bootstrap_token(hash_secret(parse_bootstrap_token(raw.group(1))[1]))
     assert record is not None and not record.consumed_at and record.deployment_id == "dep_a"
@@ -585,10 +606,10 @@ def test_retry_reuses_stored_bundle_without_reminting():
 
 # --- P5-05: default-deny Cloud Firewall + DNS provider gating -----------------
 
-def _p5_dispatch(settings, fake, *, prov=None, fleet=None):
+def _p5_dispatch(settings, fake, *, prov=None, fleet=None, environment="production"):
     prov = prov if prov is not None else MemoryProvisioningRunStore()
     fleet = fleet if fleet is not None else MemoryFleetStore()
-    p = HetznerProvisioner(settings, InProcessHetznerBroker(fake), _control(),
+    p = HetznerProvisioner(settings, InProcessHetznerBroker(fake), _control(environment=environment),
                            prov_store=prov, fleet_store=fleet)
     # owner_email is REQUIRED now (ONEBRAIN_ADMIN_EMAIL is a required bundle key), so a
     # bundle-building dispatch must thread it or validate_bundle fails closed.
@@ -622,10 +643,11 @@ def test_provision_attaches_precreated_firewall_without_creating():
 
 
 def test_provision_dns_skipped_for_non_hetzner_provider():
-    # A cloudflare/unknown provider -> DNS skipped (serve on IP), never mis-called.
+    # A cloudflare/unknown provider is only permitted for development dogfooding;
+    # production fails closed rather than falling back to HTTP on an IP.
     fake = FakeHetznerClient()
     out = _p5_dispatch(_p5_settings(fleet_dns_provider="cloudflare", fleet_base_domain="fleet.example",
-                                    fleet_dns_zone_id="z1"), fake)
+                                    fleet_dns_zone_id="z1"), fake, environment="development")
     assert fake.dns == []
     assert out.external_run_url == "203.0.113.1"         # the raw server IP
 
@@ -679,52 +701,42 @@ def test_bundle_carries_backup_s3_credentials_from_settings():
 # --- G1-7: customer-box provisioning callback authenticates via the per-run token -----
 
 def test_customer_box_callback_authenticates_with_per_run_token(monkeypatch):
-    # A customer Hetzner box bakes a PER-RUN ONEBRAIN_PROVISIONING_CALLBACK_TOKEN that cannot
-    # match MC's single global callback hash. MC stores the per-run hash on the run and accepts
-    # the box's done_cb/fail_cb against it, so the metadata-egress failure_reason is not lost
-    # to a 401 (which would degrade it to a generic timeout).
+    # A customer Hetzner box bakes a per-run callback token. MC stores only its
+    # hash and accepts the box's done_cb/fail_cb against that exact run.
     import re
+    from tests.boot_config_helper import extract_cloud_init_file
 
     from fastapi import HTTPException
-
-    from app.provisioning.runs import hash_callback_secret
 
     control = _control()
     prov = MemoryProvisioningRunStore()
     fake = FakeHetznerClient()
-    # A DIFFERENT global callback hash is configured (the Railway path); the box's per-run
-    # token deliberately does not match it.
-    settings = _p5_settings(provisioning_callback_key_hash=hash_callback_secret("global-secret"),
-                            provisioning_callback_key_id="cb_global")
+    settings = _p5_settings()
     _wire_router(monkeypatch, settings, prov, control, fake)
 
     dispatched = provisioning_router._dispatch_run(_run(prov), owner_otp="owner-otp",
                                                    owner_email="owner@example.com")
     assert dispatched.status == STATUS_DISPATCHED
-    token = re.search(r"ONEBRAIN_PROVISIONING_CALLBACK_TOKEN=([A-Za-z0-9_-]+)",
-                      fake.servers[0].user_data).group(1)
-    assert token and token != "global-secret"
+    box_env = extract_cloud_init_file(fake.servers[0].user_data, "/opt/onebrain/box.env")
+    token = re.search(r"ONEBRAIN_PROVISIONING_CALLBACK_TOKEN=([A-Za-z0-9_-]+)", box_env).group(1)
+    assert token
 
-    # fail_cb: the box posts the baked per-run token and NO key-id header -> authenticated,
-    # and the failure_reason survives.
+    # fail_cb: the box posts the baked per-run token and the failure reason survives.
     out = provisioning_router.provisioning_callback(
         dispatched.id,
         provisioning_router.ProvisioningCallbackIn(
             status="failed", smoke_status="failed", failure_reason="metadata_egress_block_failed"),
         authorization=f"Bearer {token}",
-        x_onebrain_callback_key_id="",
     )
     assert out.status == "failed"
     assert out.failure_reason == "metadata_egress_block_failed"
 
-    # A wrong bearer still 401s (it falls back to the global mechanism the box's token never
-    # satisfies) — per-run acceptance is scoped to the exact minted token.
+    # A wrong bearer still 401s; acceptance is scoped to the exact minted token.
     with pytest.raises(HTTPException) as exc:
         provisioning_router.provisioning_callback(
             dispatched.id,
             provisioning_router.ProvisioningCallbackIn(status="failed"),
             authorization="Bearer wrong-token",
-            x_onebrain_callback_key_id="",
         )
     assert exc.value.status_code == 401
 

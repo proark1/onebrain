@@ -61,7 +61,16 @@ def resolve_job_principal(
 
 @router.get("/{job_id}", response_model=JobStatusOut)
 def get_job(job_id: str, principal: Principal = Depends(resolve_job_principal)):
-    job = get_job_store().get(job_id)
+    # The store applies this authenticated scope before it looks up an opaque
+    # job id.  The Python check below remains the finer-grained human/service
+    # authorization layer, but an application DB connection cannot read a job
+    # from a different tenant while evaluating that check.
+    job = get_job_store().get(
+        job_id,
+        tenant_id=principal.tenant_id,
+        account_id=principal.account_id,
+        space_id=selected_space_id(principal),
+    )
     if not job or not _can_read_job(job, principal):
         raise HTTPException(status_code=404, detail="Job not found.")
     return job_status_out(job)

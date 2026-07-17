@@ -76,7 +76,7 @@ export function FleetPanel() {
 
   const [form, setForm] = useState<CreateFleetRolloutInput>({
     target_version: "",
-    callback_url: typeof window === "undefined" ? "" : `${window.location.origin}/api/onebrain/rollouts/{rollout_id}/callback`,
+    callback_url: typeof window === "undefined" ? "" : `${window.location.origin}/api/rollouts/{rollout_id}/callback`,
     failure_tolerance: 0,
     dry_run: true,
     deployment_ids: [],

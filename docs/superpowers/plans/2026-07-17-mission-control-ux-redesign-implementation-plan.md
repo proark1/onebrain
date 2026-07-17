@@ -68,7 +68,8 @@ behind explicit Expand controls.
 
 **Files**
 
-- Add a migration after `migrations/versions/0029_job_queue_rls_roles.py`.
+- Use the implemented `migrations/versions/0025_provisioning_module_selection.py`;
+  the subsequent hardening chain begins at `0026_job_leases.py`.
 - Modify `app/controlplane/base.py`, `app/controlplane/memory.py`, and
   `app/controlplane/postgres.py`.
 - Modify `app/provisioning/runs.py`.

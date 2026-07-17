@@ -37,22 +37,31 @@ gate, choose the customer in Mission Control, create a recoverable rollout,
 and verify health before marking it complete. Nothing advances customers
 automatically.
 
+Production can run more than one API replica. Login failures are therefore
+limited through the shared PostgreSQL store, and background jobs and streaming
+AI turns use fenced, expiring leases so a stopped replica cannot overwrite a
+new owner. The operational activation and recovery checks are in the
+[production runbook](docs/production-activation-runbook.md).
+
 The current detailed guidance lives in [docs/README.md](docs/README.md).
 
 ## Local development
 
-Prerequisites: Python 3.11+, Docker, and Node.js 20+ for `onebrain-web`.
+Prerequisites: Python 3.12, Docker, and Node.js 20+ for `onebrain-web`.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements-dev.txt
+python -m pip install --require-hashes -r requirements-dev.txt
 copy .env.example .env
 pytest -q
 ```
 
 The default `.env` values are for local, synthetic development only. Use
 Postgres with pgvector, RLS, strong secrets, and HTTPS for any real deployment.
+`requirements.txt` and `requirements-dev.txt` are hash-locked; edit their
+matching `.in` file deliberately, regenerate with the command in the lock-file
+header, and run `python scripts/verify_requirements_lock.py` before committing.
 
 ## Repository layout
 
@@ -67,6 +76,11 @@ Postgres with pgvector, RLS, strong secrets, and HTTPS for any real deployment.
 - Keep the Hetzner API token only on the private broker host.
 - Keep release-signing private keys offline; deployment hosts receive public
   verification keys only.
+- Use the shared PostgreSQL login limiter in every production API replica; do
+  not trust client-supplied forwarding headers without an explicit proxy trust
+  boundary.
 - Use dummy data on the development gate.
 - Do not expose Mission Control or fleet APIs to customer deployments.
+- Do not treat a two-person teardown review as permission to delete a customer
+  environment: live teardown is disabled.
 - Do not treat archived documentation as operational instructions.

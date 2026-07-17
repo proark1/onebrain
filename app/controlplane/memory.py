@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 from app.controlplane.base import (
     UPDATE_POLICIES,
     BackupRun,
+    CustomerTeardownRequest,
     CustomerDeployment,
     DeploymentModule,
     HealthCheckRun,
@@ -21,6 +22,7 @@ from app.controlplane.base import (
     RolloutRun,
     ServedFloorBump,
     UpdatePlan,
+    apply_teardown_approval,
     compute_update_plan,
     release_promotion_plan_context,
     require_signed_releases,
@@ -29,6 +31,7 @@ from app.controlplane.base import (
     validate_promotion,
     validate_release,
     validate_run_status,
+    validate_teardown_request,
 )
 from app.controlplane.orchestration import FLEET_EXEC_FIELDS, FleetRolloutRun
 
@@ -45,6 +48,7 @@ class MemoryControlPlaneStore:
         self._rollouts: Dict[str, RolloutRun] = {}
         self._fleet_rollouts: Dict[str, FleetRolloutRun] = {}
         self._served_floor_bumps: Dict[str, ServedFloorBump] = {}
+        self._teardown_requests: Dict[str, CustomerTeardownRequest] = {}
         self._lock = threading.RLock()
         self._persist_path = persist_path
         self._load()
@@ -84,12 +88,20 @@ class MemoryControlPlaneStore:
             self._served_floor_bumps = {
                 d["scope"]: ServedFloorBump(**d) for d in data.get("served_floor_bumps", [])
             }
+            self._teardown_requests = {
+                d["id"]: CustomerTeardownRequest(**{
+                    **d,
+                    "approver_ids": tuple(d.get("approver_ids", [])),
+                })
+                for d in data.get("teardown_requests", [])
+            }
         except Exception:
             self._deployments, self._modules, self._releases = {}, {}, {}
             self._release_promotions, self._release_promotion_events = {}, []
             self._backups, self._health, self._rollouts = {}, {}, {}
             self._fleet_rollouts = {}
             self._served_floor_bumps = {}
+            self._teardown_requests = {}
 
     def _save(self) -> None:
         if not self._persist_path:
@@ -112,6 +124,10 @@ class MemoryControlPlaneStore:
                 }
                                    for f in self._fleet_rollouts.values()],
                 "served_floor_bumps": [b.__dict__ for b in self._served_floor_bumps.values()],
+                "teardown_requests": [{
+                    **request.__dict__,
+                    "approver_ids": list(request.approver_ids),
+                } for request in self._teardown_requests.values()],
             }, fh)
 
     def create_deployment(self, deployment: CustomerDeployment) -> CustomerDeployment:
@@ -633,8 +649,8 @@ class MemoryControlPlaneStore:
     def update_rollout_exec(self, rollout_id: str, **fields) -> RolloutRun:
         """Persist execution-lifecycle fields only. Bookkeeping status transitions
         (and the version-apply) go through update_rollout_status; this keeps them
-        cleanly separated. Guarding (monotonic rank / terminal) is done by the pure
-        apply_rollout_callback before it calls here."""
+        cleanly separated. Pull reconciliation owns terminal transitions before
+        it calls here."""
         bad = set(fields) - self._EXEC_FIELDS
         if bad:
             raise ValueError(f"cannot update rollout exec fields: {sorted(bad)}")
@@ -666,3 +682,56 @@ class MemoryControlPlaneStore:
 
     def list_served_floor_bumps(self) -> List[ServedFloorBump]:
         return sorted(self._served_floor_bumps.values(), key=lambda b: b.scope)
+
+    # --- customer teardown protocol (record-only; no execution capability) ---
+    def create_teardown_request(self, request: CustomerTeardownRequest) -> CustomerTeardownRequest:
+        validate_teardown_request(request)
+        with self._lock:
+            deployment = self._deployments.get(request.deployment_id)
+            if not deployment:
+                raise ValueError(f"unknown deployment: {request.deployment_id}")
+            if deployment.account_id and deployment.account_id != request.account_id:
+                raise ValueError("teardown request account does not match deployment ownership.")
+            if request.id in self._teardown_requests:
+                raise ValueError(f"teardown request already exists: {request.id}")
+            now = datetime.now(timezone.utc).isoformat()
+            stored = replace(
+                request,
+                created_at=request.created_at or now,
+                updated_at=request.updated_at or request.created_at or now,
+            )
+            self._teardown_requests[stored.id] = stored
+            self._save()
+            return stored
+
+    def get_teardown_request(self, request_id: str) -> Optional[CustomerTeardownRequest]:
+        return self._teardown_requests.get(request_id)
+
+    def list_teardown_requests(self, deployment_id: str) -> List[CustomerTeardownRequest]:
+        return sorted(
+            (request for request in self._teardown_requests.values()
+             if request.deployment_id == deployment_id),
+            key=lambda request: (request.created_at, request.id),
+        )
+
+    def approve_teardown_request(
+        self,
+        request_id: str,
+        *,
+        approver_id: str,
+        nonce_hash: str,
+        approved_at: str,
+    ) -> CustomerTeardownRequest:
+        with self._lock:
+            request = self._teardown_requests.get(request_id)
+            if not request:
+                raise ValueError("teardown request not found.")
+            updated = apply_teardown_approval(
+                request,
+                approver_id=approver_id,
+                nonce_hash=nonce_hash,
+                approved_at=approved_at,
+            )
+            self._teardown_requests[request_id] = updated
+            self._save()
+            return updated

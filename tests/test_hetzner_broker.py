@@ -251,10 +251,10 @@ def test_broker_reuse_converges_backups():
 
 
 def test_factory_threads_enable_backups_default_true():
-    on = build_hetzner_broker(Settings(provisioner_backend="github"), client=FakeHetznerClient())
+    on = build_hetzner_broker(Settings(provisioner_backend="disabled"), client=FakeHetznerClient())
     assert on._enable_backups is True                      # default true, threaded by the factory
     off = build_hetzner_broker(
-        Settings(provisioner_backend="github", hetzner_enable_backups=False), client=FakeHetznerClient())
+        Settings(provisioner_backend="disabled", hetzner_enable_backups=False), client=FakeHetznerClient())
     assert off._enable_backups is False
 
 
@@ -283,8 +283,8 @@ def test_build_broker_forbids_live_inprocess_for_hetzner():
     broker = build_hetzner_broker(allowed, client=FakeHetznerClient())
     assert isinstance(broker, InProcessHetznerBroker)
 
-    # dormant default (github) -> the guard never fires.
-    dormant = Settings(provisioner_backend="github")
+    # Disabled provisioning is dormant, so the Hetzner-specific guard never fires.
+    dormant = Settings(provisioner_backend="disabled")
     assert isinstance(build_hetzner_broker(dormant, client=FakeHetznerClient()), InProcessHetznerBroker)
 
 

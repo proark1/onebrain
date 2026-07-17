@@ -149,7 +149,7 @@ IDs but never log descriptor-adjacent secrets or environment dumps.
 
 Navigation is derived from server-issued deployment capabilities:
 
-- `operator_mode`: Status, Control, Fleet;
+- `operator_mode`: Status, Control, Fleet, Settings;
 - customer mode: Status plus the customer navigation set;
 - customer deployments cannot gain Control or Fleet from the user's admin role.
 
@@ -163,26 +163,26 @@ values do not display as authoritative zeroes while the initial request is in
 flight or has failed. After bootstrap, the development gate shows one account,
 five spaces, five installed apps, and at least the bootstrap audit event.
 
-## AI Employees Organization Layout
+## AI Employees Directory Layout
 
-The selected visual direction is the compact organization map.
+The selected visual direction is a compact, expandable employee directory.
 
 - Replace the oversized hero with a slim module header containing workspace,
   installation state, employee count, and the most useful operational signals.
-- Remove the duplicate leadership-council rail.
-- Show the Chief of Staff office as the hierarchy root.
-- Show Operations & corporate, Product/technology/security, and Market/customer
-  as three compact pod columns beneath it.
-- Render each employee as a compact name-and-role row rather than a large card.
-- Preserve the existing click-to-open profile sheet for biography, reporting
-  line, model, personality, strengths, watch-outs, and working style.
-- Preserve visible keyboard focus, meaningful button labels, Escape/close
-  behavior, and reduced-motion behavior.
-- At narrow widths, stack the hierarchy and pods in one column without hiding
-  employees or requiring horizontal scrolling.
+  Keep mission, approval, work, chat, and connector counts in the existing tab
+  badges instead of duplicating them.
+- Remove the duplicate leadership-council rail and static pod hierarchy.
+- Render every employee as a compact, scannable card that shows identity,
+  department, working mode, and current status.
+- Reveal biography, approval rules, safe actions, approval-only actions,
+  productivity signals, character notes, and technical details only when the
+  operator expands that employee.
+- Preserve visible keyboard focus and meaningful expand/collapse labels.
+- At narrow widths, stack employee cards without hiding anyone or requiring
+  horizontal scrolling.
 
-The organization map is the only substantial visual signature. The surrounding
-module interface remains restrained so the hierarchy is easy to scan.
+The directory is the only substantial visual signature. The surrounding module
+interface remains restrained so the whole team is easy to scan.
 
 ## AI Employees Activation
 
@@ -215,6 +215,7 @@ persists either raw key. A full-stack provision fails closed if either key is
 missing, if the Communication space is missing, or if both apps receive the
 same raw key. The generic service-key bundle fields remain optional for older
 single-module contracts but are no longer the full-stack source of truth.
+
 ## Verification
 
 ### Backend and provisioning tests
@@ -239,8 +240,8 @@ single-module contracts but are no longer the full-stack source of truth.
   receives no customer navigation.
 - Prove Privacy remains present on the customer surface.
 - Prove Apps renders loading and error states instead of misleading zeroes.
-- Exercise every employee profile control by keyboard.
-- Verify the organization map at desktop, tablet, and mobile widths.
+- Exercise every employee-card expansion by keyboard.
+- Verify the employee directory at desktop, tablet, and mobile widths.
 - Run Python tests, frontend tests, lint, type checking, and a production build.
 
 ## Acceptance Criteria
@@ -251,7 +252,7 @@ The change is complete when a newly provisioned or upgraded development gate:
 2. contains its own account, five canonical spaces, five canonical app
    installations, brand defaults, and bootstrap audit event;
 3. opens AI Employees in an accessible Business or Shared workspace;
-4. presents the compact organization map and detailed profile sheet;
+4. presents the compact employee directory and expandable governance details;
 5. shows Privacy but never Control or Fleet;
 6. presents a single functional Settings identity link without inert
    Admin / DPO or All locations sidebar labels; and

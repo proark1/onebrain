@@ -28,11 +28,73 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from app.controlplane.pull_reconcile import reconcile_pull_targets
 
 _log = logging.getLogger("onebrain.fleet")
+_LOCAL_RECONCILE_LOCK = threading.Lock()
+# Stable, namespaced 64-bit key for the one logical Mission Control reconcile
+# leader. A held session lock is automatically released if its replica dies.
+_RECONCILE_ADVISORY_LOCK_KEY = 4_822_021_191
+
+
+@contextmanager
+def _reconcile_leadership(settings):
+    """Yield whether this process may run a reconcile reducer tick.
+
+    Production pgvector deployments share the PostgreSQL advisory lock across
+    API replicas. Local/test stores use a process-local lock so a scheduler and
+    a manual request in the same process still cannot interleave reducers.
+    Failure to establish production leadership fails closed to a no-op.
+    """
+    if getattr(settings, "vector_store", "memory") != "pgvector":
+        acquired = _LOCAL_RECONCILE_LOCK.acquire(blocking=False)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                _LOCAL_RECONCILE_LOCK.release()
+        return
+
+    dsn = (
+        getattr(settings, "pg_operator_database_url", "")
+        or getattr(settings, "operator_database_url", "")
+        or getattr(settings, "database_url", "")
+    )
+    if not dsn:
+        _log.warning("Pull reconcile skipped: no PostgreSQL leadership DSN configured")
+        yield False
+        return
+    try:
+        import psycopg
+
+        conn = psycopg.connect(dsn, autocommit=True)
+        cur = conn.cursor()
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (_RECONCILE_ADVISORY_LOCK_KEY,))
+        row = cur.fetchone()
+    except Exception as exc:
+        _log.warning("Pull reconcile skipped: unable to acquire leadership: %s", exc)
+        try:
+            conn.close()  # type: ignore[name-defined]
+        except Exception:
+            pass
+        yield False
+        return
+
+    acquired = bool(row and row[0])
+    try:
+        yield acquired
+    finally:
+        try:
+            if acquired:
+                cur.execute("SELECT pg_advisory_unlock(%s)", (_RECONCILE_ADVISORY_LOCK_KEY,))
+        finally:
+            try:
+                cur.close()
+            finally:
+                conn.close()
 
 
 def reconcile_once(settings, control_store, fleet_store) -> list:
@@ -48,11 +110,14 @@ def reconcile_once(settings, control_store, fleet_store) -> list:
     from app.routers.operator import fleet_dispatch_child
 
     try:
-        return reconcile_pull_targets(
-            control_store, control_store, fleet_store.latest_heartbeats(),
-            now=datetime.now(timezone.utc),
-            deadline_seconds=settings.fleet_pull_convergence_deadline_seconds,
-            dispatch_child=fleet_dispatch_child)
+        with _reconcile_leadership(settings) as leader:
+            if not leader:
+                return []
+            return reconcile_pull_targets(
+                control_store, control_store, fleet_store.latest_heartbeats(),
+                now=datetime.now(timezone.utc),
+                deadline_seconds=settings.fleet_pull_convergence_deadline_seconds,
+                dispatch_child=fleet_dispatch_child)
     except Exception as exc:  # a reconcile failure must never kill the daemon
         _log.warning("Pull reconcile tick failed: %s", exc)
         return []

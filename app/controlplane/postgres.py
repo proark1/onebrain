@@ -9,6 +9,7 @@ from typing import Dict, List, Optional
 from app.controlplane.base import (
     UPDATE_POLICIES,
     BackupRun,
+    CustomerTeardownRequest,
     CustomerDeployment,
     DeploymentModule,
     HealthCheckRun,
@@ -18,6 +19,7 @@ from app.controlplane.base import (
     RolloutRun,
     ServedFloorBump,
     UpdatePlan,
+    apply_teardown_approval,
     compute_update_plan,
     release_promotion_plan_context,
     require_signed_releases,
@@ -26,6 +28,7 @@ from app.controlplane.base import (
     validate_promotion,
     validate_release,
     validate_run_status,
+    validate_teardown_request,
 )
 from app.controlplane.orchestration import FLEET_EXEC_FIELDS, FleetRolloutRun
 from app.db.schema import validate_postgres_schema
@@ -79,6 +82,7 @@ class PostgresControlPlaneStore:
                     "control_served_floor_bumps",
                     "control_release_promotions",
                     "control_release_promotion_events",
+                    "control_customer_teardown_requests",
                 ),
             )
 
@@ -718,8 +722,8 @@ class PostgresControlPlaneStore:
                 f"""
                 INSERT INTO control_rollouts
                 (id, deployment_id, target_version, status, started_by, notes,
-                 ack_restore_required, fleet_rollout_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                 external_provider, ack_restore_required, fleet_rollout_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING {self._ROLLOUT_COLS}
                 """,
                 (
@@ -729,6 +733,9 @@ class PostgresControlPlaneStore:
                     rollout.status,
                     rollout.started_by,
                     rollout.notes,
+                    # Pin the provider on every write instead of inheriting a
+                    # legacy database default from the retired workflow era.
+                    rollout.external_provider,
                     rollout.ack_restore_required,
                     # Fleet children link back to their fleet rollout here; the
                     # memory store persists the whole dataclass, and
@@ -829,6 +836,12 @@ class PostgresControlPlaneStore:
         "exec_status", "external_run_id", "external_run_url", "failure_reason",
         "dispatched_at", "completed_at", "request_payload", "fleet_rollout_id",
     }
+
+    _TEARDOWN_REQUEST_COLS = (
+        "id, deployment_id, account_id, nonce_hash, nonce_expires_at, "
+        "legal_hold_evidence_ref, backup_retention_evidence_ref, requested_by, "
+        "approver_ids, status, execution_result, created_at, updated_at, completed_at"
+    )
 
     def get_rollout(self, rollout_id: str) -> Optional[RolloutRun]:
         with self._conn() as conn, conn.cursor() as cur:
@@ -1039,6 +1052,121 @@ class PostgresControlPlaneStore:
             rows = cur.fetchall()
         return [self._served_floor_bump(row) for row in rows]
 
+    # --- customer teardown protocol (record-only; no execution capability) ---
+    def create_teardown_request(self, request: CustomerTeardownRequest) -> CustomerTeardownRequest:
+        validate_teardown_request(request)
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT account_id FROM control_deployments WHERE id = %s FOR KEY SHARE",
+                (request.deployment_id,),
+            )
+            deployment = cur.fetchone()
+            if not deployment:
+                raise ValueError(f"unknown deployment: {request.deployment_id}")
+            if deployment[0] and deployment[0] != request.account_id:
+                raise ValueError("teardown request account does not match deployment ownership.")
+            cur.execute(
+                f"""
+                INSERT INTO control_customer_teardown_requests
+                (id, deployment_id, account_id, nonce_hash, nonce_expires_at,
+                 legal_hold_evidence_ref, backup_retention_evidence_ref, requested_by,
+                 approver_ids, status, execution_result, created_at, updated_at, completed_at)
+                VALUES (%s, %s, %s, %s, %s::timestamptz, %s, %s, %s,
+                        %s::jsonb, %s, %s, COALESCE(%s::timestamptz, now()),
+                        COALESCE(%s::timestamptz, now()), %s::timestamptz)
+                RETURNING {self._TEARDOWN_REQUEST_COLS}
+                """,
+                (
+                    request.id,
+                    request.deployment_id,
+                    request.account_id,
+                    request.nonce_hash,
+                    request.nonce_expires_at,
+                    request.legal_hold_evidence_ref,
+                    request.backup_retention_evidence_ref,
+                    request.requested_by,
+                    json.dumps(list(request.approver_ids)),
+                    request.status,
+                    request.execution_result,
+                    request.created_at or None,
+                    request.updated_at or request.created_at or None,
+                    request.completed_at or None,
+                ),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return self._teardown_request(row)
+
+    def get_teardown_request(self, request_id: str) -> Optional[CustomerTeardownRequest]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {self._TEARDOWN_REQUEST_COLS} "
+                "FROM control_customer_teardown_requests WHERE id = %s",
+                (request_id,),
+            )
+            row = cur.fetchone()
+        return self._teardown_request(row) if row else None
+
+    def list_teardown_requests(self, deployment_id: str) -> List[CustomerTeardownRequest]:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {self._TEARDOWN_REQUEST_COLS} "
+                "FROM control_customer_teardown_requests "
+                "WHERE deployment_id = %s ORDER BY created_at, id",
+                (deployment_id,),
+            )
+            rows = cur.fetchall()
+        return [self._teardown_request(row) for row in rows]
+
+    def approve_teardown_request(
+        self,
+        request_id: str,
+        *,
+        approver_id: str,
+        nonce_hash: str,
+        approved_at: str,
+    ) -> CustomerTeardownRequest:
+        # The row lock makes the two-person rule race-safe: two concurrent
+        # approvals serialize before either can append an approver identity.
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {self._TEARDOWN_REQUEST_COLS} "
+                "FROM control_customer_teardown_requests WHERE id = %s FOR UPDATE",
+                (request_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("teardown request not found.")
+            updated = apply_teardown_approval(
+                self._teardown_request(row),
+                approver_id=approver_id,
+                nonce_hash=nonce_hash,
+                approved_at=approved_at,
+            )
+            cur.execute(
+                f"""
+                UPDATE control_customer_teardown_requests
+                SET approver_ids = %s::jsonb,
+                    status = %s,
+                    execution_result = %s,
+                    updated_at = %s::timestamptz,
+                    completed_at = %s::timestamptz
+                WHERE id = %s
+                RETURNING {self._TEARDOWN_REQUEST_COLS}
+                """,
+                (
+                    json.dumps(list(updated.approver_ids)),
+                    updated.status,
+                    updated.execution_result,
+                    updated.updated_at or approved_at,
+                    updated.completed_at or None,
+                    request_id,
+                ),
+            )
+            stored = cur.fetchone()
+            conn.commit()
+        return self._teardown_request(stored)
+
     def _served_floor_bump(self, row) -> ServedFloorBump:
         return ServedFloorBump(
             scope=row[0],
@@ -1046,6 +1174,27 @@ class PostgresControlPlaneStore:
             floor_version=row[2] or "",
             updated_by=row[3] or "",
             updated_at=_iso(row[4]),
+        )
+
+    def _teardown_request(self, row) -> CustomerTeardownRequest:
+        approver_ids = row[8]
+        if isinstance(approver_ids, str):
+            approver_ids = json.loads(approver_ids or "[]")
+        return CustomerTeardownRequest(
+            id=row[0],
+            deployment_id=row[1],
+            account_id=row[2],
+            nonce_hash=row[3],
+            nonce_expires_at=_iso(row[4]),
+            legal_hold_evidence_ref=row[5],
+            backup_retention_evidence_ref=row[6],
+            requested_by=row[7],
+            approver_ids=tuple(approver_ids or ()),
+            status=row[9],
+            execution_result=row[10] or "",
+            created_at=_iso(row[11]),
+            updated_at=_iso(row[12]),
+            completed_at=_iso(row[13]),
         )
 
     def _deployment(self, row) -> CustomerDeployment:

@@ -32,6 +32,14 @@ def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
 
+def test_new_provisioning_runs_default_to_hetzner():
+    run = ProvisioningRun(
+        id="prun_1", account_id="acct_1", deployment_id="dep_1",
+        module_ids=("assistant",), requested_by="admin",
+    )
+    assert run.external_provider == "hetzner"
+
+
 # --- re-readable bundle cipher (G1-4 / G2-1) ----------------------------------
 
 def test_seal_open_bundle_round_trips():
@@ -219,8 +227,7 @@ def test_postgres_bundle_token_cols_arity_matches_mapper():
 
 
 def test_postgres_run_update_persists_external_provider():
-    """A provider dispatcher may reclassify a newly-created run (for example,
-    github_actions -> hetzner); the Postgres update must persist that field."""
+    """The Postgres update must persist the run's provider classification."""
     store = _bare_postgres_provisioning_store()
     captured = {}
 
@@ -239,7 +246,7 @@ def test_postgres_run_update_persists_external_provider():
             provider = (
                 captured["params"][1]
                 if "external_provider = %s" in captured["sql"]
-                else "github_actions"
+                else "hetzner"
             )
             return (
                 "prun_1", "acct_1", "dep_1", ["assistant"], "admin", "dispatched",
@@ -281,37 +288,8 @@ def test_postgres_run_update_persists_external_provider():
     assert "external_provider = %s" in captured["sql"]
 
 
-def test_github_dispatch_passes_selected_optional_module_ids(monkeypatch):
-    from app.provisioning.runs import GitHubWorkflowDispatcher
+def test_provisioning_runs_expose_no_github_workflow_dispatcher():
+    import app.provisioning.runs as provisioning_runs
 
-    captured = {}
-    settings = SimpleNamespace(
-        github_owner="onebrain",
-        github_repo="product",
-        github_workflow="provision-customer.yml",
-        github_ref="main",
-        github_dispatch_token="token",
-        provisioning_callback_key_id="callback-key",
-    )
-    run = ProvisioningRun(
-        id="prun_modules",
-        account_id="acct_modules",
-        deployment_id="dep_modules",
-        requested_by="admin",
-        module_ids=("assistant", "communication"),
-        request_payload={
-            "callback_url": "https://mc.example/runs/{run_id}/callback",
-            "module_versions": {"assistant-service": "1.0.0"},
-        },
-    )
-    def _dispatch(_settings, _workflow, _ref, inputs):
-        captured["inputs"] = inputs
-        return "https://gh.example"
-
-    monkeypatch.setattr("app.provisioning.runs.dispatch_workflow", _dispatch)
-
-    dispatched = GitHubWorkflowDispatcher(settings).dispatch(run)
-
-    assert dispatched.status == "dispatched"
-    assert captured["inputs"]["module_ids_json"] == '["assistant", "communication"]'
-    assert "bundle_id" not in captured["inputs"]
+    assert not hasattr(provisioning_runs, "GitHubWorkflowDispatcher")
+    assert not hasattr(provisioning_runs, "dispatch_workflow")

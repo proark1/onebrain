@@ -208,7 +208,7 @@ export function OperatorPanel() {
   const [provisionRing, setProvisionRing] = useState("manual");
   const [provisionAccountId, setProvisionAccountId] = useState("");
   const [provisionCallbackUrl] = useState(() =>
-    typeof window === "undefined" ? "" : `${window.location.origin}/api/onebrain/provisioning/runs/{run_id}/callback`,
+    typeof window === "undefined" ? "" : `${window.location.origin}/api/provisioning/runs/{run_id}/callback`,
   );
   const [provisionBrandTheme, setProvisionBrandTheme] = useState<BrandThemeInput>(DEFAULT_BRAND_THEME);
 
@@ -975,8 +975,8 @@ function ProvisioningRunList({
             >
               <div className="operatorMeta">
                 <span>Selected: {run.module_ids.length ? run.module_ids.map(labelFor).join(", ") : "OneBrain Core only"}</span>
-                {run.railway_project_id ? <span>{run.railway_project_id}</span> : null}
-                {run.external_run_url ? <a href={run.external_run_url} rel="noreferrer" target="_blank">Open workflow</a> : null}
+                {run.target_id ? <span>{[run.target_id, run.target_environment].filter(Boolean).join(" / ")}</span> : null}
+                {run.external_run_url ? <a href={run.external_run_url} rel="noreferrer" target="_blank">Open deployment</a> : null}
                 {run.smoke_status ? <span>Smoke check: {labelFor(run.smoke_status)}</span> : null}
               </div>
               <Timestamp label="Created" value={run.created_at} />
