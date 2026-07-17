@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "test": "node --test --experimental-strip-types",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "openapi": "python ../scripts/export_openapi.py src/lib/openapi.json"

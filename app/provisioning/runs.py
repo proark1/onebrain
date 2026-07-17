@@ -55,8 +55,10 @@ class ProvisioningRun:
     id: str
     account_id: str
     deployment_id: str
-    bundle_id: str
     requested_by: str
+    # Selected optional product IDs.  The Core services are implicit and are
+    # resolved by the provisioning catalogue when a run is created.
+    module_ids: tuple[str, ...] = ()
     status: str = STATUS_PENDING
     external_provider: str = "github_actions"
     external_run_id: str = ""
@@ -77,6 +79,7 @@ class ProvisioningRun:
     completed_at: str = ""
 
     def __post_init__(self):
+        object.__setattr__(self, "module_ids", tuple(self.module_ids or ()))
         object.__setattr__(self, "request_payload", dict(self.request_payload or {}))
         object.__setattr__(self, "result_payload", dict(self.result_payload or {}))
         object.__setattr__(self, "service_urls", dict(self.service_urls or {}))
@@ -190,6 +193,14 @@ def _json(value) -> Dict:
     if isinstance(value, str):
         return json.loads(value or "{}")
     return dict(value)
+
+
+def _json_list(value) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        value = json.loads(value or "[]")
+    return tuple(str(item) for item in (value or ()))
 
 
 def _validate_status(status: str) -> None:
@@ -465,13 +476,13 @@ class PostgresProvisioningRunStore:
             cur.execute(
                 """
                 INSERT INTO provisioning_runs
-                (id, account_id, deployment_id, bundle_id, requested_by, status, external_provider,
+                (id, account_id, deployment_id, module_ids, requested_by, status, external_provider,
                  external_run_id, external_run_url, request_payload, result_payload,
                  railway_project_id, railway_environment_id, service_urls, migration_revision,
                  smoke_status, failure_reason, bootstrap_secret_id, retry_of_run_id,
                  dispatched_at, completed_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id, account_id, deployment_id, bundle_id, requested_by, status,
+                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, account_id, deployment_id, module_ids, requested_by, status,
                     external_provider, external_run_id, external_run_url, request_payload,
                     result_payload, railway_project_id, railway_environment_id, service_urls,
                     migration_revision, smoke_status, failure_reason, bootstrap_secret_id,
@@ -529,7 +540,7 @@ class PostgresProvisioningRunStore:
                     dispatched_at = %s,
                     completed_at = %s
                 WHERE id = %s
-                RETURNING id, account_id, deployment_id, bundle_id, requested_by, status,
+                RETURNING id, account_id, deployment_id, module_ids, requested_by, status,
                     external_provider, external_run_id, external_run_url, request_payload,
                     result_payload, railway_project_id, railway_environment_id, service_urls,
                     migration_revision, smoke_status, failure_reason, bootstrap_secret_id,
@@ -734,7 +745,7 @@ class PostgresProvisioningRunStore:
 
     def _run_cols(self) -> str:
         return (
-            "id, account_id, deployment_id, bundle_id, requested_by, status, external_provider, "
+            "id, account_id, deployment_id, module_ids, requested_by, status, external_provider, "
             "external_run_id, external_run_url, request_payload, result_payload, railway_project_id, "
             "railway_environment_id, service_urls, migration_revision, smoke_status, failure_reason, "
             "bootstrap_secret_id, retry_of_run_id, created_at, updated_at, dispatched_at, completed_at"
@@ -745,7 +756,7 @@ class PostgresProvisioningRunStore:
             run.id,
             run.account_id,
             run.deployment_id,
-            run.bundle_id,
+            json.dumps(list(run.module_ids)),
             run.requested_by,
             run.status,
             run.external_provider,
@@ -770,7 +781,7 @@ class PostgresProvisioningRunStore:
             id=row[0],
             account_id=row[1],
             deployment_id=row[2],
-            bundle_id=row[3],
+            module_ids=_json_list(row[3]),
             requested_by=row[4],
             status=row[5],
             external_provider=row[6],
@@ -831,7 +842,7 @@ class GitHubWorkflowDispatcher:
             "run_id": run.id,
             "account_id": run.account_id,
             "deployment_id": run.deployment_id,
-            "bundle_id": run.bundle_id,
+            "module_ids_json": json.dumps(list(run.module_ids)),
             "customer_name": str(run.request_payload.get("customer_name", "")),
             "deployment_type": str(run.request_payload.get("deployment_type", "")),
             "region": str(run.request_payload.get("region", "")),
@@ -914,7 +925,7 @@ def create_run(
     *,
     account_id: str,
     deployment_id: str,
-    bundle_id: str,
+    module_ids: tuple[str, ...] | list[str],
     requested_by: str,
     payload: Dict,
     retry_of_run_id: str = "",
@@ -923,8 +934,8 @@ def create_run(
         id=f"prun_{uuid4().hex}",
         account_id=account_id,
         deployment_id=deployment_id,
-        bundle_id=bundle_id,
         requested_by=requested_by,
+        module_ids=tuple(module_ids),
         request_payload=payload,
         retry_of_run_id=retry_of_run_id,
     ))

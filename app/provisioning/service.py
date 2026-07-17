@@ -5,12 +5,12 @@ from __future__ import annotations
 import re
 import secrets
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from app.auth.passwords import hash_password
 from app.controlplane.base import CustomerDeployment, DeploymentModule, validate_deployment, validate_module
 from app.platform.base import Account, AppInstallation, AuditEvent, BrandTheme, BRAND_COLOR_FIELDS, Space, default_brand_theme
-from app.provisioning.bundles import ProvisioningBundle, get_bundle
+from app.provisioning.bundles import ModuleComposition, resolve_module_composition
 from app.servicekeys.base import SCOPE_READ, SCOPE_WRITE, ServiceKey, generate_key, hash_secret
 from app.users.base import User
 
@@ -40,7 +40,7 @@ class ProvisionedCredential:
 
 @dataclass(frozen=True)
 class ProvisioningResult:
-    bundle: ProvisioningBundle
+    composition: ModuleComposition
     account: Account
     spaces: List[Space]
     installations: List[AppInstallation]
@@ -156,7 +156,7 @@ class CustomerProvisioner:
         account_kind: str,
         customer_name: str,
         owner_user_id: str,
-        bundle_id: str,
+        module_ids: Iterable[str] | None = None,
         deployment_id: str,
         deployment_type: str,
         region: str,
@@ -170,7 +170,7 @@ class CustomerProvisioner:
         app_brand_themes: Optional[Dict[str, BrandTheme]] = None,
         owner_email: str = "",
     ) -> ProvisioningResult:
-        bundle = get_bundle(bundle_id)
+        composition = resolve_module_composition(module_ids)
         account_id = normalize_id(account_id)
         deployment_id = normalize_id(deployment_id)
         customer_name = customer_name.strip()
@@ -179,14 +179,14 @@ class CustomerProvisioner:
             normalize_id(module_id).replace("_", "-"): version.strip()
             for module_id, version in (module_versions or {}).items()
         }
-        unknown_module_versions = sorted(set(module_versions) - set(bundle.modules))
+        unknown_module_versions = sorted(set(module_versions) - set(composition.modules))
         if unknown_module_versions:
-            raise ValueError(f"Unknown module versions for this bundle: {unknown_module_versions}")
+            raise ValueError(f"Unknown module versions for this module selection: {unknown_module_versions}")
         app_brand_themes = app_brand_themes or {}
-        bundle_app_ids = {app.app_id for app in bundle.apps}
-        unknown_theme_apps = sorted(set(app_brand_themes) - bundle_app_ids)
+        composition_app_ids = {app.app_id for app in composition.apps}
+        unknown_theme_apps = sorted(set(app_brand_themes) - composition_app_ids)
         if unknown_theme_apps:
-            raise ValueError(f"Unknown app theme overrides for this bundle: {unknown_theme_apps}")
+            raise ValueError(f"Unknown app theme overrides for this module selection: {unknown_theme_apps}")
 
         deployment = CustomerDeployment(
             id=deployment_id,
@@ -198,6 +198,7 @@ class CustomerProvisioner:
             release_ring=release_ring.strip(),
             current_version=initial_version,
             current_migration=current_migration.strip(),
+            selected_module_ids=composition.selected_module_ids,
         )
         modules = [
             DeploymentModule(
@@ -205,7 +206,7 @@ class CustomerProvisioner:
                 module_id=module_id,
                 version=module_versions.get(module_id, initial_version),
             )
-            for module_id in bundle.modules
+            for module_id in composition.modules
         ]
 
         validate_deployment(deployment)
@@ -246,7 +247,7 @@ class CustomerProvisioner:
             ))
 
         spaces_by_key: dict[str, Space] = {}
-        for template in bundle.spaces:
+        for template in composition.spaces:
             space = self.platform_store.create_space(Space(
                 id=f"sp_{account_id}_{template.key}",
                 account_id=account_id,
@@ -256,7 +257,7 @@ class CustomerProvisioner:
             spaces_by_key[template.key] = space
 
         installations: list[AppInstallation] = []
-        for template in bundle.apps:
+        for template in composition.apps:
             installation = self.platform_store.install_app(AppInstallation(
                 id=f"appi_{account_id}_{template.app_id}",
                 account_id=account_id,
@@ -302,7 +303,7 @@ class CustomerProvisioner:
             target_type="account",
             target_id=account_id,
             meta={
-                "bundle_id": bundle.id,
+                "module_ids": list(composition.selected_module_ids),
                 "deployment_id": created_deployment.id,
                 "modules": {m.module_id: m.version for m in created_modules},
                 "service_key_ids": [credential.id for credential in credentials],
@@ -312,7 +313,7 @@ class CustomerProvisioner:
         ))
 
         return ProvisioningResult(
-            bundle=bundle,
+            composition=composition,
             account=account,
             spaces=list(spaces_by_key.values()),
             installations=installations,

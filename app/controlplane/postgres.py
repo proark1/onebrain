@@ -45,6 +45,14 @@ def _json_dict(value) -> Dict[str, str]:
     return {str(k): str(v) for k, v in dict(value).items()}
 
 
+def _json_list(value) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        value = json.loads(value or "[]")
+    return tuple(str(item) for item in (value or ()))
+
+
 class PostgresControlPlaneStore:
     def __init__(self, dsn: str):
         import psycopg
@@ -78,7 +86,7 @@ class PostgresControlPlaneStore:
         "id, customer_name, environment, deployment_type, region, release_ring, "
         "status, current_version, current_migration, created_at, account_id, update_policy, "
         "is_release_gate, current_version_deployed_at, last_heartbeat_at, "
-        "last_heartbeat_healthy, last_reported_version, last_reported_migration"
+        "last_heartbeat_healthy, last_reported_version, last_reported_migration, selected_module_ids"
     )
 
     def create_deployment(self, deployment: CustomerDeployment) -> CustomerDeployment:
@@ -89,8 +97,8 @@ class PostgresControlPlaneStore:
                 INSERT INTO control_deployments
                 (id, customer_name, environment, deployment_type, region, release_ring,
                  status, current_version, current_migration, account_id, update_policy,
-                 is_release_gate, current_version_deployed_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 is_release_gate, current_version_deployed_at, selected_module_ids)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 RETURNING {self._DEPLOYMENT_COLS}
                 """,
                 (
@@ -107,6 +115,7 @@ class PostgresControlPlaneStore:
                     deployment.update_policy,
                     deployment.is_release_gate,
                     deployment.current_version_deployed_at or None,
+                    json.dumps(list(deployment.selected_module_ids)),
                 ),
             )
             row = cur.fetchone()
@@ -234,7 +243,7 @@ class PostgresControlPlaneStore:
                 SELECT version, git_sha, modules, migration_from, migration_to,
                     security_notes, rollback_plan, status, created_at, images, rollback_kind, signature, signing_key_id
                 FROM control_release_manifests
-                ORDER BY version
+                ORDER BY created_at DESC, version DESC
                 """
             )
             rows = cur.fetchall()
@@ -593,11 +602,11 @@ class PostgresControlPlaneStore:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO control_backups (id, deployment_id, status, detail)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO control_backups (id, deployment_id, status, detail, created_at)
+                VALUES (%s, %s, %s, %s, COALESCE(NULLIF(%s, '')::timestamptz, now()))
                 RETURNING id, deployment_id, status, detail, created_at
                 """,
-                (backup.id, backup.deployment_id, backup.status, backup.detail),
+                (backup.id, backup.deployment_id, backup.status, backup.detail, backup.created_at),
             )
             row = cur.fetchone()
             conn.commit()
@@ -804,7 +813,7 @@ class PostgresControlPlaneStore:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 f"SELECT {self._ROLLOUT_COLS} FROM control_rollouts "
-                "WHERE deployment_id = %s ORDER BY created_at, id",
+                "WHERE deployment_id = %s ORDER BY created_at DESC, id DESC",
                 (deployment_id,),
             )
             rows = cur.fetchall()
@@ -893,24 +902,24 @@ class PostgresControlPlaneStore:
 
     # --- fleet rollouts (Phase 2 orchestration) ---
     _FLEET_COLS = ("id, target_version, git_sha, status, ring_order, current_ring, "
-                   "failure_tolerance, started_by, notes, created_at, callback_url, dry_run, "
+                   "failure_tolerance, started_by, notes, created_at, updated_at, callback_url, dry_run, "
                    "ring_batch_size, only_deployment_ids, include_manual_pinned")
 
     def _fleet_rollout(self, row) -> FleetRolloutRun:
         ring_order = row[4]
         if isinstance(ring_order, str):
             ring_order = json.loads(ring_order) if ring_order else []
-        only_deployment_ids = row[13] if len(row) > 13 else []
+        only_deployment_ids = row[14] if len(row) > 14 else []
         if isinstance(only_deployment_ids, str):
             only_deployment_ids = json.loads(only_deployment_ids) if only_deployment_ids else []
         return FleetRolloutRun(
             id=row[0], target_version=row[1], git_sha=row[2] or "", status=row[3],
             ring_order=tuple(ring_order or ()), current_ring=row[5] or "",
             failure_tolerance=int(row[6]), started_by=row[7] or "", notes=row[8] or "",
-            created_at=_iso(row[9]), callback_url=row[10] or "", dry_run=bool(row[11]),
-            ring_batch_size=int(row[12]) if len(row) > 12 else 1,
+            created_at=_iso(row[9]), updated_at=_iso(row[10]), callback_url=row[11] or "", dry_run=bool(row[12]),
+            ring_batch_size=int(row[13]) if len(row) > 13 else 1,
             only_deployment_ids=tuple(only_deployment_ids or ()),
-            include_manual_pinned=bool(row[14]) if len(row) > 14 else False,
+            include_manual_pinned=bool(row[15]) if len(row) > 15 else False,
         )
 
     def create_fleet_rollout(self, fleet_run: FleetRolloutRun) -> FleetRolloutRun:
@@ -940,7 +949,7 @@ class PostgresControlPlaneStore:
 
     def list_fleet_rollouts(self) -> List[FleetRolloutRun]:
         with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(f"SELECT {self._FLEET_COLS} FROM control_fleet_rollouts ORDER BY created_at, id")
+            cur.execute(f"SELECT {self._FLEET_COLS} FROM control_fleet_rollouts ORDER BY updated_at DESC, id DESC")
             return [self._fleet_rollout(r) for r in cur.fetchall()]
 
     def update_fleet_rollout(self, fleet_rollout_id: str, **fields) -> FleetRolloutRun:
@@ -1061,6 +1070,7 @@ class PostgresControlPlaneStore:
             ),
             last_reported_version=(row[16] or "") if len(row) > 16 else "",
             last_reported_migration=(row[17] or "") if len(row) > 17 else "",
+            selected_module_ids=_json_list(row[18]) if len(row) > 18 else (),
         )
 
     def _promotion(self, row) -> ReleasePromotion:

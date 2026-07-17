@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { MetricStrip, Notice, PageHeader, Panel, Tabs } from "@/components/admin-ui";
+import { ExpandableCard } from "@/components/operational/expandable-card";
+import { StatusSummary } from "@/components/operational/status-summary";
+import { Timestamp } from "@/components/operational/timestamp";
 import {
   approveOperatorRelease,
   designateDevelopmentGate,
@@ -14,7 +17,7 @@ import {
   listOperatorDeployments,
   listOperatorReleases,
   listOperatorRollouts,
-  listProvisioningBundles,
+  getProvisioningModuleCatalog,
   listProvisioningRuns,
   provisionCustomer,
   readBootstrapSecret,
@@ -41,10 +44,12 @@ import type {
   OperatorRollout,
   OperatorUpdatePlan,
   ProvisionedCredential,
-  ProvisioningBundle,
+  ProvisioningModule,
+  ProvisioningModuleCatalog,
   ProvisioningRun,
   ServiceKeyInfo,
 } from "@/lib/onebrain-types";
+import { describeOperationalStatus, formatOperationalTimestamp } from "@/lib/operational";
 
 type DeploymentRow = {
   backup: OperatorBackup | null;
@@ -73,11 +78,19 @@ const HETZNER_REGION = "nbg1";
 
 const RELEASE_RINGS = [
   { label: "Manual", value: "manual" },
-  { label: "Internal", value: "internal" },
-  { label: "Pilot", value: "pilot" },
-  { label: "Early", value: "early" },
+  { label: "Internal pilot", value: "internal" },
+  { label: "Early pilot", value: "pilot" },
+  { label: "Early stable", value: "early" },
   { label: "Stable", value: "stable" },
 ];
+
+const RELEASE_RING_HELP: Record<string, string> = {
+  manual: "No automatic rollout. An operator explicitly chooses every update.",
+  internal: "Use for the internal team and development validation only.",
+  pilot: "Use for a small, agreed pilot group after internal validation.",
+  early: "Use for early stable customers after the pilot has proved healthy.",
+  stable: "Use for the standard customer rollout after release approval.",
+};
 
 const DEFAULT_BRAND_THEME: BrandThemeInput = {
   name: "Assad Dar",
@@ -107,45 +120,12 @@ const BRAND_COLOR_FIELDS: Array<{ key: keyof BrandThemeInput; label: string }> =
   { key: "danger_color", label: "Danger" },
 ];
 
-const RELEASE_DATE_FORMATTER = new Intl.DateTimeFormat("en-GB", {
-  day: "2-digit",
-  month: "short",
-  timeZone: "UTC",
-  year: "numeric",
-});
-
 function labelFor(value: string): string {
   return (value || "none").replace(/_/g, " ");
 }
 
 function activeCount(items: Array<{ status: string }> = []): number {
   return items.filter((item) => item.status === "active").length;
-}
-
-function readinessTone(readiness: string): string {
-  if (readiness === "healthy") {
-    return "success";
-  }
-  if (readiness === "updating") {
-    return "running";
-  }
-  if (["backup_failed", "health_failed", "rollout_failed"].includes(readiness)) {
-    return "failed";
-  }
-  return "";
-}
-
-function runTone(status = ""): string {
-  if (status === "success" || status === "succeeded") {
-    return "success";
-  }
-  if (status === "running" || status === "pending" || status === "paused" || status === "dispatched") {
-    return "running";
-  }
-  if (status === "failed" || status === "dispatch_failed" || status === "cancelled") {
-    return "failed";
-  }
-  return "";
 }
 
 function safeCredentialLabel(credential: ProvisionedCredential): string {
@@ -162,19 +142,44 @@ function releaseTimestamp(release: OperatorRelease): number {
 }
 
 function releaseOptionLabel(release: OperatorRelease): string {
-  const timestamp = releaseTimestamp(release);
-  return timestamp ? `${release.version} - ${RELEASE_DATE_FORMATTER.format(timestamp)}` : release.version;
+  const timestamp = formatOperationalTimestamp(release.created_at);
+  return timestamp.isMissing ? release.version : `${release.version} — ${timestamp.local}`;
+}
+
+function newestFirst(releases: OperatorRelease[]): OperatorRelease[] {
+  return [...releases].sort((left, right) => {
+    const timestampDifference = releaseTimestamp(right) - releaseTimestamp(left);
+    return timestampDifference || right.version.localeCompare(left.version, undefined, { numeric: true });
+  });
 }
 
 function customerApprovedReleases(releases: OperatorRelease[]): OperatorRelease[] {
   const promotionAware = releases.some((release) => release.promotion);
-  return releases.filter((release) => promotionAware
-    ? release.promotion?.state === "customer_approved"
-    : release.status === "active");
+  return releases
+    .filter((release) => promotionAware
+      ? release.promotion?.state === "customer_approved"
+      : release.status === "active")
+    .sort((left, right) => releaseTimestamp(right) - releaseTimestamp(left) || right.version.localeCompare(left.version, undefined, { numeric: true }));
+}
+
+function promotionStatus(state: string) {
+  if (state === "customer_approved") {
+    return { condition: "Customer ready", explanation: "The release has passed the required checks and can be selected for customers.", nextAction: "Choose a customer rollout when you are ready.", tone: "success" as const };
+  }
+  if (state === "dev_verified") {
+    return { condition: "Awaiting production signature", explanation: "Development validation passed; the release still needs its production signature.", nextAction: "Attach the offline production signature.", tone: "warning" as const };
+  }
+  if (state === "customer_paused") {
+    return { condition: "Customer rollout paused", explanation: "This release is not available for new customer rollout until it is reviewed.", nextAction: "Add a review note, then resume or yank the release.", tone: "warning" as const };
+  }
+  if (state === "dev_failed" || state === "yanked") {
+    return { condition: state === "yanked" ? "Release withdrawn" : "Development validation failed", explanation: "This release cannot be selected for customers in its current state.", nextAction: state === "yanked" ? "Create or select a newer release." : "Review the failure, then retry development validation.", tone: "danger" as const };
+  }
+  return { condition: "Preparing release", explanation: "This release is still progressing through its safety checks.", nextAction: "Wait for development validation to finish.", tone: "running" as const };
 }
 
 export function OperatorPanel() {
-  const [bundles, setBundles] = useState<ProvisioningBundle[]>([]);
+  const [moduleCatalog, setModuleCatalog] = useState<ProvisioningModuleCatalog | null>(null);
   const [customers, setCustomers] = useState<OperatorCustomer[]>([]);
   const [deployments, setDeployments] = useState<DeploymentRow[]>([]);
   const [releases, setReleases] = useState<OperatorRelease[]>([]);
@@ -186,6 +191,7 @@ export function OperatorPanel() {
   const [targetReleaseByDeployment, setTargetReleaseByDeployment] = useState<Record<string, string>>({});
   const [busyAction, setBusyAction] = useState<BusyAction>("");
   const [busyId, setBusyId] = useState("");
+  const [lastRefreshedAt, setLastRefreshedAt] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [activeTab, setActiveTab] = useState<OperatorTab>("customers");
@@ -197,7 +203,7 @@ export function OperatorPanel() {
 
   const [provisionName, setProvisionName] = useState("");
   const [provisionOwnerEmail, setProvisionOwnerEmail] = useState("");
-  const [provisionBundle, setProvisionBundle] = useState("full_stack");
+  const [selectedProvisionModuleIds, setSelectedProvisionModuleIds] = useState<string[]>([]);
   const [selectedProvisionVersion, setSelectedProvisionVersion] = useState("");
   const [provisionRing, setProvisionRing] = useState("manual");
   const [provisionAccountId, setProvisionAccountId] = useState("");
@@ -215,22 +221,33 @@ export function OperatorPanel() {
     return { activeKeys, attention, deployed, healthy };
   }, [customers]);
 
-  const selectedProvisionBundle = useMemo(
-    () => bundles.find((bundle) => bundle.id === provisionBundle) ?? null,
-    [bundles, provisionBundle],
+  const rolloutCount = useMemo(
+    () => deployments.reduce((total, row) => total + row.rollouts.length, 0),
+    [deployments],
+  );
+
+  const selectedProvisionModules = useMemo<ProvisioningModule[]>(() => {
+    if (!moduleCatalog) {
+      return [];
+    }
+    return [
+      moduleCatalog.core,
+      ...moduleCatalog.optional_modules.filter((module) => selectedProvisionModuleIds.includes(module.id)),
+    ];
+  }, [moduleCatalog, selectedProvisionModuleIds]);
+
+  const requiredProvisionServiceIds = useMemo(
+    () => [...new Set(selectedProvisionModules.flatMap((module) => module.modules))],
+    [selectedProvisionModules],
   );
 
   const eligibleProvisionReleases = useMemo(() => {
-    if (!selectedProvisionBundle) {
+    if (!moduleCatalog) {
       return [];
     }
     return customerApprovedReleases(releases)
-      .filter((release) => selectedProvisionBundle.modules.every((moduleId) => Boolean(release.images?.[moduleId])))
-      .sort((left, right) => {
-        const timestampDifference = releaseTimestamp(right) - releaseTimestamp(left);
-        return timestampDifference || right.version.localeCompare(left.version, undefined, { numeric: true });
-      });
-  }, [releases, selectedProvisionBundle]);
+      .filter((release) => requiredProvisionServiceIds.every((moduleId) => Boolean(release.images?.[moduleId])));
+  }, [moduleCatalog, releases, requiredProvisionServiceIds]);
 
   const approvedCustomerReleases = useMemo(
     () => customerApprovedReleases(releases),
@@ -250,8 +267,8 @@ export function OperatorPanel() {
     setBusyId("");
     setError("");
     try {
-      const [nextBundles, nextCustomers, nextDeployments, nextReleases, nextProvisioningRuns, nextGate] = await Promise.all([
-        listProvisioningBundles(),
+      const [nextModuleCatalog, nextCustomers, nextDeployments, nextReleases, nextProvisioningRuns, nextGate] = await Promise.all([
+        getProvisioningModuleCatalog(),
         listOperatorCustomers(),
         listOperatorDeployments(),
         listOperatorReleases(),
@@ -268,13 +285,16 @@ export function OperatorPanel() {
         return { backup, deployment, health, modules, rollouts };
       }));
 
-      setBundles(nextBundles);
+      setModuleCatalog(nextModuleCatalog);
       setCustomers(nextCustomers);
       setDeployments(nextRows);
-      setReleases(nextReleases);
+      setReleases(newestFirst(nextReleases));
       setProvisioningRuns(nextProvisioningRuns);
       setDevelopmentGate(nextGate);
-      setProvisionBundle((current) => nextBundles.some((bundle) => bundle.id === current) ? current : nextBundles[0]?.id ?? "");
+      setLastRefreshedAt(new Date().toISOString());
+      setSelectedProvisionModuleIds((current) => current.filter((moduleId) =>
+        nextModuleCatalog.optional_modules.some((module) => module.id === moduleId),
+      ));
       setTargetReleaseByDeployment((current) => {
         const approved = customerApprovedReleases(nextReleases);
         const next: Record<string, string> = {};
@@ -282,7 +302,7 @@ export function OperatorPanel() {
           const selected = current[row.deployment.id];
           next[row.deployment.id] = selected && approved.some((release) => release.version === selected)
             ? selected
-            : approved[approved.length - 1]?.version ?? "";
+            : approved[0]?.version ?? "";
         }
         return next;
       });
@@ -300,8 +320,8 @@ export function OperatorPanel() {
       setBusyAction("load");
       setError("");
       try {
-        const [nextBundles, nextCustomers, nextDeployments, nextReleases, nextProvisioningRuns, nextGate] = await Promise.all([
-          listProvisioningBundles(),
+        const [nextModuleCatalog, nextCustomers, nextDeployments, nextReleases, nextProvisioningRuns, nextGate] = await Promise.all([
+          getProvisioningModuleCatalog(),
           listOperatorCustomers(),
           listOperatorDeployments(),
           listOperatorReleases(),
@@ -320,19 +340,20 @@ export function OperatorPanel() {
         if (!active) {
           return;
         }
-        setBundles(nextBundles);
+        setModuleCatalog(nextModuleCatalog);
         setCustomers(nextCustomers);
         setDeployments(nextRows);
-        setReleases(nextReleases);
+        setReleases(newestFirst(nextReleases));
         setProvisioningRuns(nextProvisioningRuns);
         setDevelopmentGate(nextGate);
-        setProvisionBundle((current) => nextBundles.some((bundle) => bundle.id === current)
-          ? current
-          : nextBundles[0]?.id ?? "");
+        setLastRefreshedAt(new Date().toISOString());
+        setSelectedProvisionModuleIds((current) => current.filter((moduleId) =>
+          nextModuleCatalog.optional_modules.some((module) => module.id === moduleId),
+        ));
         const approved = customerApprovedReleases(nextReleases);
         setTargetReleaseByDeployment(Object.fromEntries(nextRows.map((row) => [
           row.deployment.id,
-          approved[approved.length - 1]?.version ?? "",
+          approved[0]?.version ?? "",
         ])));
       } catch (err) {
         if (active) {
@@ -352,7 +373,7 @@ export function OperatorPanel() {
 
   async function onProvision(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!provisionName.trim() || !provisionOwnerEmail.trim() || !provisionBundle
+    if (!provisionName.trim() || !provisionOwnerEmail.trim() || !moduleCatalog
       || !hasDeployableProvisionVersion || !provisionCallbackUrl.trim() || busyAction) {
       return;
     }
@@ -366,7 +387,7 @@ export function OperatorPanel() {
           ...provisionBrandTheme,
           name: provisionBrandTheme.name?.trim() || provisionName.trim(),
         },
-        bundle_id: provisionBundle,
+        module_ids: selectedProvisionModuleIds,
         customer_name: provisionName,
         deployment_type: HETZNER_DEPLOYMENT_TYPE,
         initial_version: provisionVersion,
@@ -403,7 +424,7 @@ export function OperatorPanel() {
   }
 
   async function onPlan(row: DeploymentRow) {
-    const targetVersion = targetReleaseByDeployment[row.deployment.id] || releases[releases.length - 1]?.version || "";
+    const targetVersion = targetReleaseByDeployment[row.deployment.id] || approvedCustomerReleases[0]?.version || "";
     if (!targetVersion || busyAction) {
       return;
     }
@@ -601,7 +622,7 @@ export function OperatorPanel() {
     { id: "customers", label: "Customers", meta: customers.length },
     { id: "provisioning", label: "Provisioning", meta: provisioningRuns.length },
     { id: "releases", label: "Releases", meta: releases.length },
-    { id: "rollouts", label: "Rollouts", meta: deployments.length },
+    { id: "rollouts", label: "Rollouts", meta: rolloutCount },
     { id: "credentials", label: "Credentials", meta: credentials.length },
   ] satisfies Array<{ id: OperatorTab; label: string; meta: number }>;
 
@@ -617,6 +638,7 @@ export function OperatorPanel() {
               {busyAction ? labelFor(busyAction) : "Live"}
             </span>
             <span className="scopePill">{deployments.length} deployments</span>
+            {lastRefreshedAt ? <Timestamp label="Last refreshed" value={lastRefreshedAt} /> : <span className="scopePill">Loading status</span>}
           </>
         )}
         actions={(
@@ -676,18 +698,17 @@ export function OperatorPanel() {
             actions={<button className="secondaryButton" type="button" onClick={() => setShowProvisionForm((current) => !current)}>{showProvisionForm ? "Close" : "Create customer"}</button>}
             eyebrow="Provisioning"
             title="Customer setup"
-            count={bundles.length}
+            count={moduleCatalog?.optional_modules.length ?? 0}
           >
-            <BundleList bundles={bundles} />
+            <p className="operatorMuted">OneBrain Core is included for every customer. Choose only the optional product modules needed for this customer.</p>
             {showProvisionForm ? (
               <form className="operatorForm compactWorkflow" onSubmit={(event) => void onProvision(event)}>
                 <TextField label="Customer name" required value={provisionName} onChange={setProvisionName} />
                 <TextField label="Owner email" required type="email" value={provisionOwnerEmail} onChange={setProvisionOwnerEmail} />
-                <SelectField
-                  label="Bundle"
-                  options={bundles.map((bundle) => ({ label: bundle.label, value: bundle.id }))}
-                  value={provisionBundle}
-                  onChange={setProvisionBundle}
+                <ModuleSelection
+                  catalog={moduleCatalog}
+                  onChange={setSelectedProvisionModuleIds}
+                  selectedIds={selectedProvisionModuleIds}
                 />
                 <div className="operatorFormGrid">
                   <SelectField
@@ -699,18 +720,18 @@ export function OperatorPanel() {
                     value={provisionVersion}
                     onChange={setSelectedProvisionVersion}
                   />
-                  <SelectField label="Release ring" options={RELEASE_RINGS} value={provisionRing} onChange={setProvisionRing} />
+                  <ReleaseRingField value={provisionRing} onChange={setProvisionRing} />
                   <ReadOnlyField label="Deployment type" value="Dedicated Hetzner server" />
                   <ReadOnlyField label="Region" value="Nuremberg (nbg1)" />
                 </div>
                 {eligibleProvisionReleases.length === 0 ? (
-                  <p className="mutedLine">No deployable release. Activate a release with images for every module in this bundle.</p>
+                  <p className="mutedLine">No deployable release. Approve a release with images for the selected services.</p>
                 ) : null}
                 <TextField label="Optional account id" value={provisionAccountId} onChange={setProvisionAccountId} />
                 <BrandThemeEditor value={provisionBrandTheme} onChange={setProvisionBrandTheme} />
                 <button
                   className="primaryButton"
-                  disabled={!provisionName.trim() || !provisionOwnerEmail.trim() || !provisionBundle
+                  disabled={!provisionName.trim() || !provisionOwnerEmail.trim() || !moduleCatalog
                     || !hasDeployableProvisionVersion || !provisionCallbackUrl.trim() || Boolean(busyAction)}
                   type="submit"
                 >
@@ -768,7 +789,7 @@ export function OperatorPanel() {
       ) : null}
 
       {activeTab === "rollouts" ? (
-        <Panel eyebrow="Rollouts" title="Deployments" count={deployments.length}>
+        <Panel eyebrow="Rollouts" title="Customer rollouts" count={rolloutCount}>
           <div className="operatorList">
             {deployments.length === 0 ? <p className="mutedLine">No deployments tracked yet.</p> : null}
             {deployments.map((row) => (
@@ -809,24 +830,63 @@ export function OperatorPanel() {
   );
 }
 
-function BundleList({ bundles }: { bundles: ProvisioningBundle[] }) {
-  if (!bundles.length) {
-    return <p className="mutedLine">No provisioning bundles registered.</p>;
+function ModuleSelection({
+  catalog,
+  onChange,
+  selectedIds,
+}: {
+  catalog: ProvisioningModuleCatalog | null;
+  onChange: (moduleIds: string[]) => void;
+  selectedIds: string[];
+}) {
+  if (!catalog) {
+    return <p className="mutedLine">Loading the available modules…</p>;
   }
+
+  function toggle(moduleId: string, selected: boolean) {
+    onChange(selected
+      ? [...selectedIds, moduleId]
+      : selectedIds.filter((current) => current !== moduleId));
+  }
+
   return (
-    <div className="operatorTokenList">
-      {bundles.map((bundle) => (
-        <article className="operatorToken" key={bundle.id}>
-          <strong>{bundle.label}</strong>
-          <span>{bundle.description}</span>
-          <div className="pillRail">
-            {bundle.apps.map((app) => <span key={app}>{labelFor(app)}</span>)}
-            {bundle.spaces.map((space) => <span key={space}>{labelFor(space)}</span>)}
-            <span>{bundle.modules.length} modules</span>
-          </div>
-        </article>
+    <fieldset className="moduleSelection">
+      <legend>Modules</legend>
+      <label className="moduleChoice coreModuleChoice">
+        <input checked disabled type="checkbox" />
+        <span>
+          <strong>{catalog.core.label}</strong>
+          <small>{catalog.core.description}</small>
+        </span>
+        <em>Required</em>
+      </label>
+      {catalog.optional_modules.map((module) => (
+        <label className="moduleChoice" key={module.id}>
+          <input
+            checked={selectedIds.includes(module.id)}
+            type="checkbox"
+            onChange={(event) => toggle(module.id, event.target.checked)}
+          />
+          <span>
+            <strong>{module.label}</strong>
+            <small>{module.description}</small>
+          </span>
+          {module.modules.length ? <em>{module.modules.length} service{module.modules.length === 1 ? "" : "s"}</em> : <em>Core service</em>}
+        </label>
       ))}
-    </div>
+    </fieldset>
+  );
+}
+
+function ReleaseRingField({ onChange, value }: { onChange: (value: string) => void; value: string }) {
+  return (
+    <label className="field releaseRingField">
+      <span className="fieldLabel">Release ring <button aria-label={RELEASE_RING_HELP[value] || "Release ring guidance"} className="infoHint" title={RELEASE_RING_HELP[value]} type="button">i</button></span>
+      <select className="select" value={value} onChange={(event) => onChange(event.target.value)}>
+        {RELEASE_RINGS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+      <small>{RELEASE_RING_HELP[value]}</small>
+    </label>
   );
 }
 
@@ -894,59 +954,61 @@ function ProvisioningRunList({
         {visibleRuns.map((run) => {
           const pendingModules = stringListPayload(run.result_payload?.module_services_pending_code);
           return (
-          <article className="operatorRow compactRow" key={run.id}>
-            <div className="operatorRowMain">
-              <div className="operatorRowTitle">
-                <strong>{run.account_id}</strong>
-                <span className={`statusPill ${runTone(run.status)}`}>{labelFor(run.status)}</span>
-              </div>
-              <p>{run.deployment_id}</p>
+            <ExpandableCard
+              className="provisioningRunCard"
+              key={run.id}
+              summary={(
+                <StatusSummary
+                  status={describeOperationalStatus(run.status)}
+                  updatedAt={run.updated_at || run.created_at}
+                  updatedLabel="Last updated"
+                >
+                  <span>{run.module_ids.length ? `${run.module_ids.length} optional module${run.module_ids.length === 1 ? "" : "s"}` : "Core only"}</span>
+                </StatusSummary>
+              )}
+              title={(
+                <div>
+                  <strong>{run.account_id}</strong>
+                  <span>{run.deployment_id}</span>
+                </div>
+              )}
+            >
               <div className="operatorMeta">
-                <span>{run.bundle_id}</span>
+                <span>Selected: {run.module_ids.length ? run.module_ids.map(labelFor).join(", ") : "OneBrain Core only"}</span>
                 {run.railway_project_id ? <span>{run.railway_project_id}</span> : null}
-                {run.external_run_url ? (
-                  <a href={run.external_run_url} rel="noreferrer" target="_blank">workflow</a>
-                ) : null}
-                {run.smoke_status ? <span>{labelFor(run.smoke_status)}</span> : null}
+                {run.external_run_url ? <a href={run.external_run_url} rel="noreferrer" target="_blank">Open workflow</a> : null}
+                {run.smoke_status ? <span>Smoke check: {labelFor(run.smoke_status)}</span> : null}
               </div>
+              <Timestamp label="Created" value={run.created_at} />
               {Object.entries(run.service_urls || {}).length ? (
                 <div className="operatorMeta">
                   {Object.entries(run.service_urls).map(([label, url]) => (
-                    url.startsWith("http") ? (
-                      <a href={url} key={label} rel="noreferrer" target="_blank">{labelFor(label)}</a>
-                    ) : (
-                      <span key={label}>{labelFor(label)}</span>
-                    )
+                    url.startsWith("http") ? <a href={url} key={label} rel="noreferrer" target="_blank">{labelFor(label)}</a> : <span key={label}>{labelFor(label)}</span>
                   ))}
                 </div>
               ) : null}
-              {pendingModules.length ? (
-                <div className="operatorMeta">
-                  {pendingModules.map((module) => <span key={module}>{module} pending image</span>)}
-                </div>
-              ) : null}
-              {run.failure_reason ? <p className="operatorMuted">{run.failure_reason}</p> : null}
+              {pendingModules.length ? <p className="operatorMuted">Waiting for images: {pendingModules.map(labelFor).join(", ")}.</p> : null}
+              {run.failure_reason ? <p className="promotionFailure">{run.failure_reason}</p> : null}
               {bootstrapSecrets[run.id] ? <code className="credentialSecret">{bootstrapSecrets[run.id]}</code> : null}
-            </div>
-            <div className="operatorButtonGrid">
-              <button
-                className="secondaryButton"
-                disabled={Boolean(busyAction) || !retryable.has(run.status)}
-                onClick={() => onRetry(run)}
-                type="button"
-              >
-                {busyAction === "retry" && busyId === run.id ? "Retrying" : "Retry"}
-              </button>
-              <button
-                className="secondaryButton"
-                disabled={Boolean(busyAction) || !run.bootstrap_secret_id || Boolean(bootstrapSecrets[run.id])}
-                onClick={() => onReadSecret(run)}
-                type="button"
-              >
-                {busyAction === "secret" && busyId === run.id ? "Reading" : "Secret"}
-              </button>
-            </div>
-          </article>
+              <div className="operatorButtonGrid">
+                <button
+                  className="secondaryButton"
+                  disabled={Boolean(busyAction) || !retryable.has(run.status)}
+                  onClick={() => onRetry(run)}
+                  type="button"
+                >
+                  {busyAction === "retry" && busyId === run.id ? "Retrying" : "Retry"}
+                </button>
+                <button
+                  className="secondaryButton"
+                  disabled={Boolean(busyAction) || !run.bootstrap_secret_id || Boolean(bootstrapSecrets[run.id])}
+                  onClick={() => onReadSecret(run)}
+                  type="button"
+                >
+                  {busyAction === "secret" && busyId === run.id ? "Reading" : "Show one-time secret"}
+                </button>
+              </div>
+            </ExpandableCard>
           );
         })}
       </div>
@@ -966,22 +1028,43 @@ function CustomerRow({
   onRevokeKey: (accountId: string, key: ServiceKeyInfo) => Promise<void>;
 }) {
   const deployment = customer.deployment;
+  const updatedAt = latestRecordedAt(
+    customer.latest_rollout?.completed_at,
+    customer.latest_rollout?.dispatched_at,
+    customer.latest_rollout?.created_at,
+    customer.health?.created_at,
+    customer.backup?.created_at,
+    deployment?.last_heartbeat_at,
+  );
   return (
-    <article className="operatorRow">
-      <div className="operatorRowMain">
+    <ExpandableCard
+      className="customerCard"
+      summary={(
+        <StatusSummary status={describeOperationalStatus(customer.readiness)} updatedAt={updatedAt} updatedLabel="Latest signal">
+          <span>{deployment?.current_version ? `Version ${deployment.current_version}` : "No version installed"}</span>
+          <span>{activeCount(customer.service_keys)} active key{activeCount(customer.service_keys) === 1 ? "" : "s"}</span>
+        </StatusSummary>
+      )}
+      title={(
         <div className="operatorRowTitle">
           <strong>{customer.account.name}</strong>
           <code>{customer.account.id}</code>
         </div>
-        <span>
-          {deployment
-            ? `${deployment.deployment_type} / ${deployment.release_ring} / ${deployment.current_version || "no version"}`
-            : `${customer.account.kind} / no deployment`}
-        </span>
+      )}
+    >
+      <div className="operatorRowMain">
+        <p className="operatorMuted">
+          {deployment ? `${labelFor(deployment.release_ring)} ring on ${labelFor(deployment.deployment_type)}` : `${labelFor(customer.account.kind)} account — not deployed yet`}
+        </p>
+        <div className="timestampRail">
+          <Timestamp label="Version active since" value={deployment?.current_version_deployed_at} />
+          <Timestamp label="Last backup" value={customer.backup?.created_at} />
+          <Timestamp label="Last health check" value={customer.health?.created_at} />
+          <Timestamp label="Last rollout" value={customer.latest_rollout?.completed_at || customer.latest_rollout?.created_at} />
+        </div>
         <div className="pillRail">
           <span>{customer.spaces.length} spaces</span>
           <span>{customer.apps.length} apps</span>
-          <span>{activeCount(customer.service_keys)} active keys</span>
           {customer.modules.slice(0, 5).map((module) => (
             <span key={`${module.module_id}-${module.version}`}>{module.module_id} {module.version}</span>
           ))}
@@ -1005,19 +1088,14 @@ function CustomerRow({
           </div>
         ) : null}
       </div>
-      <div className="operatorSignals">
-        <span className={`readinessChip ${readinessTone(customer.readiness)}`.trim()}>{labelFor(customer.readiness)}</span>
-        <span className={`readinessChip ${runTone(customer.backup?.status)}`.trim()}>backup {customer.backup?.status || "none"}</span>
-        <span className={`readinessChip ${runTone(customer.health?.status)}`.trim()}>health {customer.health?.status || "none"}</span>
-        <span>{customer.latest_rollout ? `${customer.latest_rollout.target_version} / ${customer.latest_rollout.status}` : "no rollout"}</span>
-      </div>
-    </article>
+    </ExpandableCard>
   );
 }
 
-function formattedDate(value: string): string {
-  const timestamp = Date.parse(value);
-  return Number.isNaN(timestamp) ? "not recorded" : RELEASE_DATE_FORMATTER.format(timestamp);
+function latestRecordedAt(...values: Array<string | null | undefined>): string {
+  return values
+    .filter((value): value is string => typeof value === "string" && !Number.isNaN(Date.parse(value)))
+    .sort((left, right) => Date.parse(right) - Date.parse(left))[0] || "";
 }
 
 function DevelopmentGateCard({
@@ -1060,12 +1138,19 @@ function DevelopmentGateCard({
             <span className={`statusPill ${gate?.ready ? "success" : "failed"}`}>{gate?.ready ? "ready" : "blocked"}</span>
           </div>
           <code>{deployment.id}</code>
+          <StatusSummary
+            status={describeOperationalStatus(gate?.ready ? "healthy" : "blocked")}
+            updatedAt={deployment.last_heartbeat_at}
+            updatedLabel="Last development report"
+          />
           <dl className="gateFacts">
-            <div><dt>Installed</dt><dd>{deployment.current_version || "none"}</dd></div>
-            <div><dt>Installed on</dt><dd>{formattedDate(deployment.current_version_deployed_at)}</dd></div>
-            <div><dt>Last seen</dt><dd>{formattedDate(deployment.last_heartbeat_at)}</dd></div>
+            <div><dt>Installed version</dt><dd>{deployment.current_version || "not installed"}</dd></div>
             <div><dt>Health</dt><dd>{deployment.last_heartbeat_healthy ? "healthy" : "not healthy"}</dd></div>
           </dl>
+          <div className="timestampRail">
+            <Timestamp label="Version active since" value={deployment.current_version_deployed_at} />
+            <Timestamp label="Last seen" value={deployment.last_heartbeat_at} />
+          </div>
           {gate?.blockers.length ? (
             <div className="pillRail">{gate.blockers.map((blocker) => <span key={blocker}>{labelFor(blocker)}</span>)}</div>
           ) : null}
@@ -1141,13 +1226,18 @@ function ReleasePromotionLedger({
           <article className={`promotionCard state-${state}`} key={release.version}>
             <div className="promotionHeader">
               <div>
-                <p className="eyebrow">{formattedDate(release.created_at)}</p>
                 <h3>{release.version}</h3>
+                <Timestamp label="Released" value={release.created_at} />
               </div>
               <span className={`statusPill ${state === "customer_approved" ? "success" : state.includes("failed") || state === "yanked" ? "failed" : "running"}`}>
                 {labelFor(state)}
               </span>
             </div>
+            <StatusSummary
+              status={promotionStatus(state)}
+              updatedAt={promotion?.customer_approved_at || promotion?.dev_verified_at || promotion?.dev_completed_at || release.created_at}
+              updatedLabel="Latest release change"
+            />
             <div className="promotionStages" aria-label={`Promotion status for ${release.version}`}>
               <span className={promotion ? "complete" : ""}>Candidate</span>
               <span className={promotion?.dev_verified_at ? "complete" : ""}>Dev verified</span>
@@ -1188,7 +1278,7 @@ function ReleasePromotionLedger({
               <details className="promotionHistory">
                 <summary>{promotion.events.length} audit events</summary>
                 {promotion.events.slice(-4).reverse().map((event) => (
-                  <p key={event.id}><span>{labelFor(event.action)}</span><time>{formattedDate(event.created_at)}</time></p>
+                  <p key={event.id}><span>{labelFor(event.action)}</span><Timestamp label="Recorded" value={event.created_at} /></p>
                 ))}
               </details>
             ) : null}
@@ -1300,44 +1390,60 @@ function DeploymentCard({
   targetRelease: string;
 }) {
   const activeBusy = Boolean(busyAction && busyId === row.deployment.id);
-  const latestRollouts = row.rollouts.slice(-3).reverse();
+  const latestRollouts = [...row.rollouts]
+    .sort((left, right) => Date.parse(right.created_at || "") - Date.parse(left.created_at || ""))
+    .slice(0, 3);
+  const latestRollout = latestRollouts[0];
   const canStart = Boolean(plan?.allowed && Object.keys(plan.modules_to_update || {}).length);
   return (
-    <article className="deploymentCard">
-      <div className="operatorRowTitle">
-        <strong>{row.deployment.customer_name}</strong>
-        <code>{row.deployment.id}</code>
+    <ExpandableCard
+      className="deploymentCard"
+      summary={(
+        <StatusSummary
+          status={describeOperationalStatus(latestRollout?.status || (row.deployment.last_heartbeat_healthy ? "healthy" : "pending"))}
+          updatedAt={latestRecordedAt(
+            latestRollout?.completed_at,
+            latestRollout?.dispatched_at,
+            latestRollout?.created_at,
+            row.health?.created_at,
+            row.deployment.last_heartbeat_at,
+          )}
+          updatedLabel="Latest rollout signal"
+        >
+          <span>{row.deployment.current_version ? `Current version ${row.deployment.current_version}` : "No version installed"}</span>
+          <span>{row.rollouts.length} rollout{row.rollouts.length === 1 ? "" : "s"} recorded</span>
+        </StatusSummary>
+      )}
+      title={(
+        <div className="operatorRowTitle">
+          <strong>{row.deployment.customer_name}</strong>
+          <code>{row.deployment.id}</code>
+        </div>
+      )}
+    >
+      <p className="operatorMuted">{labelFor(row.deployment.release_ring)} ring · {labelFor(row.deployment.deployment_type)}</p>
+      <div className="timestampRail">
+        <Timestamp label="Server created" value={row.deployment.created_at} />
+        <Timestamp label="Version active since" value={row.deployment.current_version_deployed_at} />
+        <Timestamp label="Last seen" value={row.deployment.last_heartbeat_at} />
+        <Timestamp label="Last backup" value={row.backup?.created_at} />
       </div>
-      <span className="operatorMuted">
-        {row.deployment.deployment_type} / {row.deployment.release_ring} / {row.deployment.current_version || "no version"}
-      </span>
-      <dl className="deploymentDates">
-        <div><dt>Server created</dt><dd>{formattedDate(row.deployment.created_at)}</dd></div>
-        <div><dt>Version installed</dt><dd>{formattedDate(row.deployment.current_version_deployed_at)}</dd></div>
-        <div><dt>Last seen</dt><dd>{formattedDate(row.deployment.last_heartbeat_at)}</dd></div>
-      </dl>
       {row.deployment.last_reported_version && row.deployment.last_reported_version !== row.deployment.current_version ? (
-        <p className="promotionFailure">Version drift: reports {row.deployment.last_reported_version}, expected {row.deployment.current_version}</p>
+        <p className="promotionFailure">Version drift: the server reports {row.deployment.last_reported_version}; the approved version is {row.deployment.current_version}.</p>
       ) : null}
       <div className="pillRail">
-        {row.modules.map((module) => (
-          <span key={module.module_id}>{module.module_id} {module.version}</span>
-        ))}
-      </div>
-      <div className="runSignals">
-        <span className={`readinessChip ${runTone(row.backup?.status)}`.trim()}>backup {row.backup?.status || "none"}</span>
-        <span className={`readinessChip ${runTone(row.health?.status)}`.trim()}>health {row.health?.status || "none"}</span>
+        {row.modules.map((module) => <span key={module.module_id}>{module.module_id} {module.version}</span>)}
       </div>
       <div className="deploymentControls">
         <SelectField
           label="Target release"
-          options={releases.map((release) => ({ label: release.version, value: release.version }))}
+          options={releases.map((release) => ({ label: releaseOptionLabel(release), value: release.version }))}
           value={targetRelease}
           onChange={(value) => onTargetReleaseChange(row.deployment.id, value)}
         />
         <div className="operatorButtonGrid">
           <button className="secondaryButton" disabled={!targetRelease || activeBusy} type="button" onClick={() => void onPlan(row)}>
-            {busyAction === "plan" && busyId === row.deployment.id ? "Planning" : "Plan"}
+            {busyAction === "plan" && busyId === row.deployment.id ? "Checking plan" : "Check plan"}
           </button>
           <button className="primaryButton" disabled={!canStart || activeBusy} type="button" onClick={() => void onStartRollout(row)}>
             {busyAction === "rollout" && busyId === row.deployment.id ? "Starting" : "Start rollout"}
@@ -1346,15 +1452,20 @@ function DeploymentCard({
       </div>
       {plan ? <PlanResult plan={plan} /> : null}
       <div className="rolloutList">
-        {latestRollouts.length === 0 ? <p className="operatorMuted">No rollouts.</p> : null}
+        {latestRollouts.length === 0 ? <p className="operatorMuted">No rollout has been requested for this customer.</p> : null}
         {latestRollouts.map((rollout) => (
-          <div className="rolloutLine" key={rollout.id}>
-            <span>{rollout.target_version} / {rollout.status}</span>
-            <small>Authenticated workflow or box reports control this status.</small>
-          </div>
+          <article className="rolloutLine" key={rollout.id}>
+            <div>
+              <strong>{rollout.target_version}</strong>
+              <p>{describeOperationalStatus(rollout.status).condition}</p>
+              {rollout.failure_reason ? <p className="promotionFailure">{rollout.failure_reason}</p> : null}
+            </div>
+            <Timestamp label="Requested" value={rollout.created_at} />
+            {rollout.external_run_url ? <a href={rollout.external_run_url} rel="noreferrer" target="_blank">Open run</a> : null}
+          </article>
         ))}
       </div>
-    </article>
+    </ExpandableCard>
   );
 }
 

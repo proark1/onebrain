@@ -14,7 +14,7 @@ import {
   listPlatformAccounts,
   listPlatformApps,
   listPlatformSpaces,
-  listProvisioningBundles,
+  listProvisioningModules,
   listReleases,
   listRollouts,
   provisionCustomer,
@@ -26,7 +26,7 @@ import {
 } from "./api.js";
 import { el, qs, toast } from "./dom.js";
 
-let bundles = [];
+let moduleCatalog = { core: null, optional_modules: [] };
 let releases = [];
 let deploymentRows = [];
 let accountRows = [];
@@ -34,7 +34,7 @@ let customerRows = [];
 let loaded = false;
 
 const text = (value) => value || "-";
-const moduleCount = (bundle) => `${bundle.modules.length} module${bundle.modules.length === 1 ? "" : "s"}`;
+const moduleCount = (module) => `${module.modules.length} deployable service${module.modules.length === 1 ? "" : "s"}`;
 
 function chip(label, tone = "") {
   return el("span", { class: `operator-chip ${tone}`.trim() }, label);
@@ -50,32 +50,35 @@ function setStatus(message, tone = "") {
   node.className = `operator-status ${tone}`.trim();
 }
 
-function populateBundleSelect() {
-  const select = qs("#provisionBundle");
-  const current = select.value || "full_stack";
-  select.replaceChildren(...bundles.map((bundle) =>
-    el("option", { value: bundle.id }, bundle.label)));
-  if (bundles.some((bundle) => bundle.id === current)) select.value = current;
+function renderModuleSelector() {
+  const selected = new Set([...document.querySelectorAll("#provisionModules input:checked")]
+    .map((input) => input.value));
+  const options = moduleCatalog.optional_modules || [];
+  qs("#provisionModules").replaceChildren(...options.map((module) => {
+    const input = el("input", { type: "checkbox", value: module.id, checked: selected.has(module.id) });
+    return el("label", { class: "operator-chip" }, input, ` ${module.label}`);
+  }));
 }
 
-function renderBundles() {
-  qs("#bundleCount").textContent = bundles.length;
-  populateBundleSelect();
+function renderModules() {
+  const modules = [moduleCatalog.core, ...(moduleCatalog.optional_modules || [])].filter(Boolean);
+  qs("#moduleCount").textContent = modules.length;
+  renderModuleSelector();
 
-  const list = qs("#bundleList");
-  if (!bundles.length) {
-    list.replaceChildren(emptyRow("No bundles registered."));
+  const list = qs("#moduleList");
+  if (!modules.length) {
+    list.replaceChildren(emptyRow("No modules registered."));
     return;
   }
 
-  list.replaceChildren(...bundles.map((bundle) =>
+  list.replaceChildren(...modules.map((module) =>
     el("article", { class: "bundle-item" },
       el("div", { class: "bundle-main" },
-        el("strong", {}, bundle.label),
-        el("span", {}, bundle.description)),
+        el("strong", {}, module.label),
+        el("span", {}, module.description)),
       el("div", { class: "operator-chip-row" },
-        ...bundle.spaces.map((space) => chip(space)),
-        chip(moduleCount(bundle), "muted")))));
+        ...module.spaces.map((space) => chip(space)),
+        chip(moduleCount(module), "muted")))));
 }
 
 function renderCredentials(credentials = []) {
@@ -587,8 +590,8 @@ async function loadOperator() {
   setStatus("Ready");
   renderCredentials();
   try {
-    [bundles] = await Promise.all([listProvisioningBundles()]);
-    renderBundles();
+    moduleCatalog = await listProvisioningModules();
+    renderModules();
     await Promise.all([loadCustomers(), loadAccounts(), loadDeployments()]);
     loaded = true;
   } catch (err) {
@@ -604,7 +607,7 @@ async function submitProvisionForm(event) {
   try {
     const payload = {
       customer_name: qs("#provisionName").value.trim(),
-      bundle_id: qs("#provisionBundle").value,
+      module_ids: [...document.querySelectorAll("#provisionModules input:checked")].map((input) => input.value),
       initial_version: qs("#provisionVersion").value.trim(),
       release_ring: qs("#provisionRing").value,
       deployment_type: qs("#provisionType").value,
@@ -617,7 +620,7 @@ async function submitProvisionForm(event) {
     const credentials = result.credentials || [];
     toast(`Provisioned ${result.account.name}`);
     qs("#provisionForm").reset();
-    qs("#provisionBundle").value = payload.bundle_id;
+    renderModuleSelector();
     qs("#provisionVersion").value = payload.initial_version;
     qs("#provisionRing").value = payload.release_ring;
     qs("#provisionType").value = payload.deployment_type;

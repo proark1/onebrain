@@ -84,6 +84,13 @@ class CustomerDeployment:
     last_heartbeat_healthy: Optional[bool] = None
     last_reported_version: str = ""
     last_reported_migration: str = ""
+    # Product choices made at provisioning time.  DeploymentModule records are
+    # the resolved container services; this preserves selected product modules
+    # such as KPI Dashboard and AI Employees that do not add a container today.
+    selected_module_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "selected_module_ids", tuple(self.selected_module_ids or ()))
 
 
 @dataclass(frozen=True)
@@ -349,6 +356,11 @@ def validate_deployment(deployment: CustomerDeployment) -> None:
         raise ValueError(f"Unknown release ring: {deployment.release_ring}")
     if deployment.update_policy not in UPDATE_POLICIES:
         raise ValueError(f"Unknown update policy: {deployment.update_policy}")
+    module_ids = deployment.selected_module_ids
+    if any(not isinstance(module_id, str) or not module_id.strip() for module_id in module_ids):
+        raise ValueError("Selected module ids must be non-empty strings.")
+    if len(set(module_ids)) != len(module_ids):
+        raise ValueError("Selected module ids must not contain duplicates.")
 
 
 def validate_module(module: DeploymentModule) -> None:

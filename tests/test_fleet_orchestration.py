@@ -181,11 +181,14 @@ def test_runner_pauses_when_ring_failures_exceed_tolerance():
 def test_fleet_rollout_store_crud():
     store = MemoryControlPlaneStore()
     fr = store.create_fleet_rollout(FleetRolloutRun(id="f1", target_version="v", status="pending",
-                                                    ring_order=("internal",), callback_url="cb", dry_run=True))
+                                                    ring_order=("internal",), callback_url="cb", dry_run=True,
+                                                    created_at="2026-07-17T10:00:00+00:00"))
     assert store.get_fleet_rollout("f1").target_version == "v"
+    assert store.get_fleet_rollout("f1").updated_at == "2026-07-17T10:00:00+00:00"
     assert [f.id for f in store.list_fleet_rollouts()] == ["f1"]
     updated = store.update_fleet_rollout("f1", status="running", current_ring="internal")
     assert updated.status == "running" and updated.current_ring == "internal"
+    assert updated.updated_at
     assert updated.callback_url == "cb"  # preserved
     with pytest.raises(ValueError, match="cannot update fleet rollout"):
         store.update_fleet_rollout("f1", target_version="nope")

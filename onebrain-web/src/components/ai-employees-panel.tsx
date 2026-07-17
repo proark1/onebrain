@@ -149,7 +149,7 @@ export function AiEmployeesPanel() {
   const pendingActions = actions.filter((action) => action.status === "proposed").length;
   const activeMissions = missions.filter((mission) => ["draft", "queued", "running", "paused"].includes(mission.status)).length;
   const tabs: { id: Tab; label: string; count?: number }[] = [
-    { id: "organization", label: "Organization", count: team?.agents.length },
+    { id: "organization", label: "Directory", count: team?.agents.length },
     { id: "chats", label: "Chats", count: conversations.length },
     { id: "missions", label: "Missions", count: activeMissions },
     { id: "work", label: "Work", count: work.length },
@@ -167,12 +167,12 @@ export function AiEmployeesPanel() {
       <header className="aiModuleHeader">
         <div>
           <span className="eyebrow">AI Employees · {activeWorkspace.space_name}</span>
-          <h1>Your company, assembled.</h1>
-          <p>Sixteen persistent specialists. Separate judgment. One governed operating system.</p>
+          <h1>AI Employees</h1>
+          <p>See the whole team at once. Expand an employee only when you need their working details.</p>
         </div>
         <div className="aiModulePosture">
           <span className={`aiLiveDot ${team.installation_status}`} />
-          <div><strong>{team.installation_status === "active" ? "Team live" : "Module paused"}</strong><small>{team.contract_version} · Gemini default</small></div>
+          <div><strong>{team.installation_status === "active" ? "Team live" : "Module paused"}</strong><small>Team contract {team.contract_version}</small></div>
         </div>
       </header>
 

@@ -75,7 +75,7 @@ export async function uploadDocument(formData, scope = {}) {
   return res.json();
 }
 
-export const listProvisioningBundles = () => requestJson("/api/provisioning/bundles");
+export const listProvisioningModules = () => requestJson("/api/provisioning/modules");
 
 export async function provisionCustomer(payload) {
   return requestJson("/api/provisioning/customers", {

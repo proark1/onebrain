@@ -42,6 +42,7 @@ class FleetRolloutRun:
     git_sha: str = ""
     notes: str = ""
     created_at: str = ""
+    updated_at: str = ""
     # Carried so later rings can be dispatched on advance without re-supplying them.
     callback_url: str = ""             # child callback template (with {rollout_id})
     dry_run: bool = True

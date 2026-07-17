@@ -16,6 +16,7 @@ from app.provisioning.runs import (
     OneTimeSecretCipher,
     OneTimeSecretEnvelope,
     ProvisioningRun,
+    create_run,
 )
 
 
@@ -159,6 +160,14 @@ def test_create_duplicate_bootstrap_token_raises():
 def test_memory_persist_round_trips_bundles_and_tokens(tmp_path):
     path = str(tmp_path / "provisioning.json")
     store = MemoryProvisioningRunStore(persist_path=path)
+    run = create_run(
+        store,
+        account_id="acct1",
+        deployment_id="dep1",
+        module_ids=["assistant", "communication"],
+        requested_by="admin",
+        payload={"module_ids": ["assistant", "communication"]},
+    )
     store.upsert_secret_bundle(BoxSecretBundle(deployment_id="dep1", account_id="a", ciphertext="ct"))
     store.bump_secrets_epoch("dep1")
     store.create_bootstrap_token(_token())
@@ -166,6 +175,7 @@ def test_memory_persist_round_trips_bundles_and_tokens(tmp_path):
     reloaded = MemoryProvisioningRunStore(persist_path=path)
     bundle = reloaded.get_secret_bundle("dep1")
     assert bundle is not None and bundle.secrets_epoch == 1
+    assert reloaded.get_run(run.id).module_ids == ("assistant", "communication")
     assert reloaded.get_bootstrap_token("sha256$deadbeef") is not None
 
 
@@ -178,7 +188,7 @@ def _bare_postgres_provisioning_store():
     return object.__new__(PostgresProvisioningRunStore)
 
 
-def test_postgres_bundle_and_token_mappers_positional():
+def test_postgres_secret_bundle_and_token_mappers_positional():
     store = _bare_postgres_provisioning_store()
     updated = datetime(2026, 7, 12, 1, 2, 3, tzinfo=timezone.utc)
     bundle = store._bundle(("dep0", "acct1", "ct2", "kv3", 4, updated))
@@ -232,7 +242,7 @@ def test_postgres_run_update_persists_external_provider():
                 else "github_actions"
             )
             return (
-                "prun_1", "acct_1", "dep_1", "bundle_1", "admin", "dispatched",
+                "prun_1", "acct_1", "dep_1", ["assistant"], "admin", "dispatched",
                 provider, "", "dev.example", {}, {}, "hetzner:123", "onebrain-dep-1",
                 {}, "", "", "", "", "", None, None, None, None,
             )
@@ -255,8 +265,8 @@ def test_postgres_run_update_persists_external_provider():
         id="prun_1",
         account_id="acct_1",
         deployment_id="dep_1",
-        bundle_id="bundle_1",
         requested_by="admin",
+        module_ids=("assistant",),
         status="dispatched",
         external_provider="hetzner",
         external_run_url="dev.example",
@@ -267,4 +277,41 @@ def test_postgres_run_update_persists_external_provider():
     updated = store.update_run(run)
 
     assert updated.external_provider == "hetzner"
+    assert updated.module_ids == ("assistant",)
     assert "external_provider = %s" in captured["sql"]
+
+
+def test_github_dispatch_passes_selected_optional_module_ids(monkeypatch):
+    from app.provisioning.runs import GitHubWorkflowDispatcher
+
+    captured = {}
+    settings = SimpleNamespace(
+        github_owner="onebrain",
+        github_repo="product",
+        github_workflow="provision-customer.yml",
+        github_ref="main",
+        github_dispatch_token="token",
+        provisioning_callback_key_id="callback-key",
+    )
+    run = ProvisioningRun(
+        id="prun_modules",
+        account_id="acct_modules",
+        deployment_id="dep_modules",
+        requested_by="admin",
+        module_ids=("assistant", "communication"),
+        request_payload={
+            "callback_url": "https://mc.example/runs/{run_id}/callback",
+            "module_versions": {"assistant-service": "1.0.0"},
+        },
+    )
+    def _dispatch(_settings, _workflow, _ref, inputs):
+        captured["inputs"] = inputs
+        return "https://gh.example"
+
+    monkeypatch.setattr("app.provisioning.runs.dispatch_workflow", _dispatch)
+
+    dispatched = GitHubWorkflowDispatcher(settings).dispatch(run)
+
+    assert dispatched.status == "dispatched"
+    assert captured["inputs"]["module_ids_json"] == '["assistant", "communication"]'
+    assert "bundle_id" not in captured["inputs"]

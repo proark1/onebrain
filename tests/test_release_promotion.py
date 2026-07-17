@@ -27,7 +27,7 @@ from app.fleet.heartbeat import ModuleReport, UpdateReport, build_heartbeat_v2
 from app.fleet.base import FleetKey
 from app.fleet.keys import hash_secret
 from app.fleet.memory import MemoryFleetStore
-from app.provisioning.bundles import BUNDLES
+from app.provisioning.bundles import resolve_module_composition
 from app.routers import operator as operator_router
 from app.trust.release import release_signature_fields, sign_release
 from app.trust.signing import generate_keypair
@@ -35,7 +35,9 @@ from app.trust.signing import generate_keypair
 
 DIGEST = "sha256:" + "a" * 64
 IMAGE = f"ghcr.io/proark1/onebrain-api@{DIGEST}"
-FULL_STACK_MODULES = BUNDLES["full_stack"].modules
+DEVELOPMENT_GATE_MODULES = resolve_module_composition(
+    operator_router.DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS
+).modules
 
 
 def _release(version: str = "2026.07.13.1") -> ReleaseManifest:
@@ -48,14 +50,14 @@ def _release(version: str = "2026.07.13.1") -> ReleaseManifest:
     )
 
 
-def _full_stack_release(version: str = "2026.07.13.1") -> ReleaseManifest:
+def _development_gate_release(version: str = "2026.07.13.1") -> ReleaseManifest:
     return ReleaseManifest(
         version=version,
         git_sha="a" * 40,
-        modules={module_id: f"{version}-{module_id}" for module_id in FULL_STACK_MODULES},
+        modules={module_id: f"{version}-{module_id}" for module_id in DEVELOPMENT_GATE_MODULES},
         images={
             module_id: f"ghcr.io/proark1/{module_id}@sha256:{format(index + 1, '064x')}"
-            for index, module_id in enumerate(FULL_STACK_MODULES)
+            for index, module_id in enumerate(DEVELOPMENT_GATE_MODULES)
         },
         rollback_kind="code_only",
     )
@@ -575,7 +577,7 @@ def test_gate_replacement_is_validated_before_atomic_marker_swap(monkeypatch):
     store = MemoryControlPlaneStore()
     fleet = MemoryFleetStore()
     production_private, production_public = generate_keypair()
-    baseline = replace(_full_stack_release("2026.07.12.1"), status="active")
+    baseline = replace(_development_gate_release("2026.07.12.1"), status="active")
     baseline = replace(
         baseline,
         signature=sign_release(release_signature_fields(baseline), production_private),
@@ -600,7 +602,7 @@ def test_gate_replacement_is_validated_before_atomic_marker_swap(monkeypatch):
     )
     store.create_deployment(old_gate)
     store.create_deployment(replacement)
-    for module_id in FULL_STACK_MODULES:
+    for module_id in DEVELOPMENT_GATE_MODULES:
         store.upsert_module(DeploymentModule(
             replacement.id, module_id, baseline.modules[module_id], status="active"))
     store.designate_release_gate(old_gate.id)
@@ -665,14 +667,14 @@ def test_development_provision_rejects_existing_normalized_deployment(monkeypatc
     assert "already exists" in exc.value.detail
 
 
-def test_development_gate_replacement_requires_full_stack_baseline_and_uses_generated_identity(monkeypatch):
+def test_development_gate_replacement_requires_module_complete_baseline_and_uses_generated_identity(monkeypatch):
     from types import SimpleNamespace
 
     import app.routers.provisioning as provisioning_router
 
     store = MemoryControlPlaneStore()
     production_private, production_public = generate_keypair()
-    baseline = replace(_full_stack_release(), status="active")
+    baseline = replace(_development_gate_release(), status="active")
     baseline = replace(
         baseline,
         signature=sign_release(release_signature_fields(baseline), production_private),
@@ -709,8 +711,8 @@ def test_development_gate_replacement_requires_full_stack_baseline_and_uses_gene
     )
 
     assert result is captured["body"]
-    assert result.bundle_id == "full_stack"
-    assert tuple(result.module_versions) == FULL_STACK_MODULES
+    assert result.module_ids == list(operator_router.DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS)
+    assert tuple(result.module_versions) == DEVELOPMENT_GATE_MODULES
     assert result.mint_integration_keys is True
     assert result.deployment_id.startswith(operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID + "-")
     assert result.deployment_id != old_gate.id
@@ -720,7 +722,7 @@ def test_development_gate_replacement_requires_full_stack_baseline_and_uses_gene
     assert result.external_provisioning is True
 
 
-def test_development_gate_full_stack_preflight_names_missing_modules(monkeypatch):
+def test_development_gate_preflight_names_missing_modules(monkeypatch):
     from types import SimpleNamespace
     from fastapi import HTTPException
 
@@ -740,7 +742,7 @@ def test_development_gate_full_stack_preflight_names_missing_modules(monkeypatch
     monkeypatch.setattr(operator_router, "get_settings", lambda: settings)
     monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
 
-    with pytest.raises(HTTPException, match="full-stack bundle") as exc:
+    with pytest.raises(HTTPException, match="development gate modules") as exc:
         operator_router.provision_development_gate(
             operator_router.DevelopmentGateProvisionIn(owner_email="owner@example.com", dry_run=True),
             principal,

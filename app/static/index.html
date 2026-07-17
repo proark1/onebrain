@@ -136,10 +136,11 @@
                 <input id="provisionName" class="text-input" name="customer_name" required maxlength="200" placeholder="Acme GmbH" />
               </label>
               <div class="operator-form-grid">
-                <label class="field">
-                  <span class="field-label">Bundle</span>
-                  <select id="provisionBundle" class="select" name="bundle_id"></select>
-                </label>
+                <fieldset class="field">
+                  <legend class="field-label">Modules</legend>
+                  <span class="operator-muted">OneBrain Core is always included.</span>
+                  <div id="provisionModules" class="operator-chip-row"></div>
+                </fieldset>
                 <label class="field">
                   <span class="field-label">Initial version</span>
                   <input id="provisionVersion" class="text-input" name="initial_version" value="0.1.0" required maxlength="80" />
@@ -185,10 +186,10 @@
 
           <section class="operator-panel">
             <div class="operator-panel-head">
-              <h2>Bundles</h2>
-              <span id="bundleCount" class="operator-count">0</span>
+              <h2>Available modules</h2>
+              <span id="moduleCount" class="operator-count">0</span>
             </div>
-            <div id="bundleList" class="bundle-list"></div>
+            <div id="moduleList" class="bundle-list"></div>
           </section>
 
           <section class="operator-panel operator-wide customer-dashboard-panel">

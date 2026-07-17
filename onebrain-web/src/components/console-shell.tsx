@@ -31,8 +31,10 @@ const ADMIN_NAV: NavItem[] = [
   { id: "operator", href: "/operator", label: "Control" },
   { id: "fleet", href: "/fleet", label: "Fleet" },
 ];
+const SETTINGS_NAV: NavItem = { id: "settings", href: "/settings", label: "Settings" };
 // Canonical full order (customer boxes) + label lookup for the command bar.
 const ALL_NAV: NavItem[] = [STATUS_NAV, ...CUSTOMER_NAV, ...ADMIN_NAV];
+const OPERATOR_NAV: NavItem[] = [STATUS_NAV, ...ADMIN_NAV, SETTINGS_NAV];
 
 export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
   if (session.must_change_password) {
@@ -41,8 +43,8 @@ export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
   const identity = session.display_name || session.email;
   // Mission Control: admin-only layout (Status / Control / Fleet). Customer boxes
   // keep the full nav in its canonical order.
-  const nav = session.operator_mode ? [STATUS_NAV, ...ADMIN_NAV] : ALL_NAV;
-  const homeHref = session.operator_mode ? "/fleet" : "/chat";
+  const nav = session.operator_mode ? OPERATOR_NAV : ALL_NAV;
+  const homeHref = session.operator_mode ? "/cockpit" : "/chat";
   const activeLabel = ALL_NAV.find((item) => item.id === active)?.label || "Console";
 
   return (
@@ -54,7 +56,6 @@ export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
               <span className="brandMark">AD</span>
               <span>OneBrain</span>
             </Link>
-            <p>{identity}</p>
           </div>
 
           <nav className="consoleNav" aria-label="Primary sections">
@@ -69,24 +70,19 @@ export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
               </Link>
             ))}
           </nav>
-
-          <div className="consoleIdentity">
-            <span>{session.role_label}</span>
-            <small>{session.location_label}</small>
-          </div>
         </aside>
 
         <div className="consoleFrame">
           <header className="commandBar">
             <div className="commandContext">
-              <span>Assad Dar</span>
+              <span>{identity}</span>
               <strong>{activeLabel}</strong>
             </div>
             {active === "kpis" ? <span /> : <WorkspaceSelector />}
-          <div className="commandIdentity">
-            <span>{session.role_label}</span>
-            <Link href="/settings">{identity}</Link>
-          </div>
+            <div className="commandIdentity">
+              <span>{session.role_label}</span>
+              <Link aria-label="Open account settings" href="/settings">Account settings</Link>
+            </div>
           </header>
 
           <section className="consoleContent">
