@@ -5,7 +5,7 @@ import { WorkspaceProvider } from "@/components/workspace-provider";
 import { WorkspaceSelector } from "@/components/workspace-selector";
 import type { SessionInfo } from "@/lib/onebrain-types";
 
-type ConsoleSection = "ai-employees" | "chat" | "cockpit" | "documents" | "kpis" | "spaces" | "privacy" | "operator" | "fleet";
+type ConsoleSection = "ai-employees" | "chat" | "cockpit" | "documents" | "kpis" | "spaces" | "privacy" | "settings" | "operator" | "fleet";
 
 type ConsoleShellProps = {
   active: ConsoleSection;
@@ -25,6 +25,7 @@ const CUSTOMER_NAV: NavItem[] = [
   { id: "ai-employees", href: "/ai-employees", label: "AI Employees" },
   { id: "spaces", href: "/spaces", label: "Apps" },
   { id: "privacy", href: "/privacy", label: "Privacy" },
+  { id: "settings", href: "/settings", label: "Settings" },
 ];
 const ADMIN_NAV: NavItem[] = [
   { id: "operator", href: "/operator", label: "Control" },
