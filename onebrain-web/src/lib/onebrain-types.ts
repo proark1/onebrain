@@ -6,6 +6,7 @@ export type SessionInfo = {
   tenant_id: string;
   display_name: string;
   email: string;
+  must_change_password: boolean;
   // Mission Control: operator_mode hides the customer surface (Ask/Knowledge/Apps/
   // Privacy) so the console reads as an admin-only overview.
   operator_mode: boolean;

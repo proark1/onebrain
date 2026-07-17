@@ -259,7 +259,8 @@ pre {
 
 .commandContext span,
 .commandIdentity span,
-.commandIdentity small {
+.commandIdentity small,
+.commandIdentity a {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -289,11 +290,14 @@ pre {
   font-weight: 730;
 }
 
-.commandIdentity small {
+.commandIdentity small,
+.commandIdentity a {
   max-width: 210px;
   color: var(--muted);
   font-size: 12px;
 }
+
+.commandIdentity a:hover { color: var(--brand-primary); }
 
 .consoleContent {
   min-width: 0;
@@ -3360,6 +3364,12 @@ button:disabled,
   .aiEmployeeTable article {
     grid-template-columns: 1fr;
   }
+}
+
+.inlineSuccess {
+  color: #176b45;
+  font-size: 14px;
+  margin: 0;
 }
 
 /* AI Employees — a live organizational dossier, scoped away from the core console. */

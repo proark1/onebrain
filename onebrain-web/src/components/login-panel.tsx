@@ -6,9 +6,10 @@ import type { FormEvent } from "react";
 
 type LoginPanelProps = {
   nextPath: string;
+  passwordChanged?: boolean;
 };
 
-export function LoginPanel({ nextPath }: LoginPanelProps) {
+export function LoginPanel({ nextPath, passwordChanged = false }: LoginPanelProps) {
   const router = useRouter();
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -35,7 +36,8 @@ export function LoginPanel({ nextPath }: LoginPanelProps) {
         return;
       }
 
-      router.replace(nextPath);
+      const result = await response.json() as { must_change_password?: boolean };
+      router.replace(result.must_change_password ? "/settings/password" : nextPath);
       router.refresh();
     } catch {
       setError("Could not reach OneBrain. Please try again.");
@@ -56,6 +58,7 @@ export function LoginPanel({ nextPath }: LoginPanelProps) {
           <h1>Sign in</h1>
           <p>Use your admin credentials to open the operational console.</p>
         </div>
+        {passwordChanged ? <p className="inlineSuccess" role="status">Password changed. Sign in with your new password.</p> : null}
         <form className="loginForm" onSubmit={submitLogin}>
           <label className="field">
             <span className="fieldLabel">Email</span>

@@ -5,7 +5,7 @@ import { getSession, onebrainApiBaseUrl } from "@/lib/onebrain-api";
 import { safeLoginRedirect } from "@/lib/login-redirect";
 
 type LoginPageProps = {
-  searchParams: Promise<{ next?: string | string[] }>;
+  searchParams: Promise<{ next?: string | string[]; passwordChanged?: string | string[] }>;
 };
 
 export default async function LoginPage({ searchParams }: LoginPageProps) {
@@ -24,5 +24,5 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
     redirect(nextPath);
   }
 
-  return <LoginPanel nextPath={nextPath} />;
+  return <LoginPanel nextPath={nextPath} passwordChanged={params.passwordChanged === "1"} />;
 }

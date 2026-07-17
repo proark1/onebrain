@@ -199,7 +199,7 @@ def test_resolve_principal_rejects_expired_session_even_with_live_token(monkeypa
     assert exc.value.status_code == 401
 
 
-def test_me_surfaces_operator_flags(monkeypatch):
+def test_me_surfaces_operator_and_password_change_flags(monkeypatch):
     # /api/session/me carries the Mission Control signals so the console can render
     # admin-only (operator_mode) and gate the Control/Fleet tabs (is_operator_surface).
     import app.routers.session as session_router
@@ -219,6 +219,13 @@ def test_me_surfaces_operator_flags(monkeypatch):
     assert customer.operator_mode is False and customer.is_operator_surface is False
     # Identity fields still flow through unchanged.
     assert customer.email == "alice@nftgym.de" and customer.role_id == "admin"
+
+    required_principal = principal_mod.principal_from_user(
+        User(id="u2", email="rotate@nftgym.de", display_name="Rotate",
+             password_hash=hash_password("pw"), tenant_id="nft_gym", role_id="admin",
+             location="", must_change_password=True)
+    )
+    assert session_router.me(principal=required_principal).must_change_password is True
 
 
 def test_session_is_expired_helper():

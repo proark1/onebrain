@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { redirect } from "next/navigation";
 import { WorkspaceProvider } from "@/components/workspace-provider";
 import { WorkspaceSelector } from "@/components/workspace-selector";
 import type { SessionInfo } from "@/lib/onebrain-types";
@@ -33,6 +34,9 @@ const ADMIN_NAV: NavItem[] = [
 const ALL_NAV: NavItem[] = [STATUS_NAV, ...CUSTOMER_NAV, ...ADMIN_NAV];
 
 export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
+  if (session.must_change_password) {
+    redirect("/settings/password");
+  }
   const identity = session.display_name || session.email;
   // Mission Control: admin-only layout (Status / Control / Fleet). Customer boxes
   // keep the full nav in its canonical order.
@@ -78,10 +82,10 @@ export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
               <strong>{activeLabel}</strong>
             </div>
             {active === "kpis" ? <span /> : <WorkspaceSelector />}
-            <div className="commandIdentity">
-              <span>{session.role_label}</span>
-              <small>{identity}</small>
-            </div>
+          <div className="commandIdentity">
+            <span>{session.role_label}</span>
+            <Link href="/settings/password">{identity}</Link>
+          </div>
           </header>
 
           <section className="consoleContent">

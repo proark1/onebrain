@@ -36,6 +36,7 @@ def me(principal: Principal = Depends(resolve_principal)):
         tenant_id=principal.tenant_id,
         display_name=principal.display_name,
         email=principal.email,
+        must_change_password=principal.must_change_password,
         operator_mode=settings.operator_mode,
         is_operator_surface=settings.is_operator_surface,
     )
