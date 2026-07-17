@@ -358,7 +358,7 @@ def reconcile_promotion_timeouts(
             continue
         reason = "dev_verification_timeout" if rollout.status == "success" else "dev_convergence_timeout"
         try:
-            changed.append(transition(
+            failed_promotion = transition(
                 store,
                 promotion.release_version,
                 to_state="dev_failed",
@@ -369,11 +369,26 @@ def reconcile_promotion_timeouts(
                     "dev_completed_at": clock.isoformat(),
                     "failure_reason": reason,
                 },
-            ))
+            )
         except ValueError:
             # A heartbeat/callback won the compare-and-set race. Its terminal
             # state is authoritative; a timeout tick must never revive or replace it.
             continue
+        if reason == "dev_convergence_timeout":
+            # A non-terminal pull rollout holds the deployment's concurrency lock.
+            # Once its promotion timeout wins the compare-and-set race, close that
+            # exact execution as failed as well so it cannot leave the UI in
+            # `updating` or block the next candidate forever.  Do not do this for
+            # a verification timeout: that rollout completed successfully and is
+            # only missing its follow-up heartbeat.
+            store.update_rollout_status(rollout.id, "failed", notes=reason)
+            store.update_rollout_exec(
+                rollout.id,
+                exec_status="failed",
+                failure_reason=reason,
+                completed_at=clock.isoformat(),
+            )
+        changed.append(failed_promotion)
     return changed
 
 

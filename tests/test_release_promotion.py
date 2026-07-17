@@ -313,6 +313,9 @@ def test_dev_success_without_verification_heartbeat_times_out_and_cannot_revive(
 
     assert changed[0].state == "dev_failed"
     assert changed[0].failure_reason == "dev_verification_timeout"
+    persisted_rollout = store.get_rollout(rollout.id)
+    assert persisted_rollout.status == "success"
+    assert persisted_rollout.exec_status == "succeeded"
     heartbeat = build_heartbeat_v2(
         deployment_id=gate.id,
         reported_at=now.isoformat(),
@@ -327,6 +330,59 @@ def test_dev_success_without_verification_heartbeat_times_out_and_cannot_revive(
     )
     assert reconcile_heartbeat_promotion(store, heartbeat, received_at=now.isoformat()) is None
     assert store.get_release_promotion(release.version).state == "dev_failed"
+
+
+def test_dev_convergence_timeout_finalizes_active_rollout():
+    store = MemoryControlPlaneStore()
+    now = datetime.now(timezone.utc)
+    gate = CustomerDeployment(
+        id="dev",
+        customer_name="Development",
+        environment="development",
+        deployment_type="dedicated_server",
+        release_ring="internal",
+        last_heartbeat_at=now.isoformat(),
+        last_heartbeat_healthy=True,
+    )
+    store.create_deployment(gate)
+    store.designate_release_gate(gate.id)
+    store.upsert_module(DeploymentModule(gate.id, "onebrain-api", "old"))
+    dev_private, dev_public = generate_keypair()
+    release = _release()
+    register_candidate(
+        store,
+        release,
+        dev_signature=sign_release(release_signature_fields(release), dev_private),
+        dev_signing_key_id="dev-1",
+        development_public_key=dev_public,
+    )
+    dispatched = (now - timedelta(minutes=20)).isoformat()
+    rollout = RolloutRun("roll-convergence-timeout", gate.id, release.version, "pending", "ci")
+    store.transition_release_promotion(
+        release.version,
+        frozenset({"dev_pending"}),
+        "dev_deploying",
+        actor="ci",
+        action="dev_rollout_started",
+        fields={"gate_deployment_id": gate.id, "dev_rollout_id": rollout.id},
+    )
+    store.start_rollout(rollout)
+    store.update_rollout_exec(
+        rollout.id,
+        exec_status="dispatched",
+        dispatched_at=dispatched,
+    )
+
+    changed = reconcile_promotion_timeouts(store, now=now, deadline_seconds=600)
+
+    assert changed[0].state == "dev_failed"
+    assert changed[0].failure_reason == "dev_convergence_timeout"
+    persisted_rollout = store.get_rollout(rollout.id)
+    assert persisted_rollout.status == "failed"
+    assert persisted_rollout.exec_status == "failed"
+    assert persisted_rollout.failure_reason == "dev_convergence_timeout"
+    assert persisted_rollout.completed_at == now.isoformat()
+    assert store.list_active_rollout(gate.id) is None
 
 
 def test_authenticated_customer_health_failure_pauses_approved_release():
