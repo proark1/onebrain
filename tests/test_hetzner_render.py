@@ -217,18 +217,32 @@ def test_full_stack_accepts_one_digest_pinned_communication_image_for_all_module
 _SECRET_KEYS = (
     "POSTGRES_PASSWORD", "REDIS_PASSWORD",
     "ONEBRAIN_LLM_API_KEY", "ONEBRAIN_SERVICE_KEY", "ONEBRAIN_ADMIN_PASSWORD",
+    "ONEBRAIN_ASSISTANT_SERVICE_KEY", "ONEBRAIN_COMMUNICATION_SERVICE_KEY",
     "ONEBRAIN_AUTH_SECRET",
 )
 
 
 def test_env_files_are_per_service_and_cover_requirements():
-    inp = _inputs(_ALL)
+    from app.provisioning.customer_bootstrap import CustomerBootstrapDescriptor, encode_customer_bootstrap
+
+    descriptor = encode_customer_bootstrap(CustomerBootstrapDescriptor(
+        account_id="acct_1", account_kind="organization", customer_name="Customer A",
+        bundle_id="full_stack",
+    ))
+    inp = _inputs(_ALL, customer_bootstrap=descriptor)
     env = render_env_files(inp)
     # one file per enabled service (+ infra + migrates)
     assert "env/communication-api.env" in env
     comm = env["env/communication-api.env"]
     assert "ONEBRAIN_SERVICE_KEY=" in comm and "ONEBRAIN_SPACE_ID=" in comm   # via MODULE_ENV_REQUIREMENTS
+    assert "ONEBRAIN_SERVICE_KEY=${ONEBRAIN_COMMUNICATION_SERVICE_KEY}" in comm
+    assert "ONEBRAIN_SPACE_ID=${ONEBRAIN_COMMUNICATION_SPACE_ID}" in comm
+    assistant = env["env/assistant-service.env"]
+    assert "ONEBRAIN_SERVICE_KEY=${ONEBRAIN_ASSISTANT_SERVICE_KEY}" in assistant
     api = env["env/onebrain-api.env"]
+    assert f"ONEBRAIN_CUSTOMER_BOOTSTRAP={descriptor}" in api
+    assert "ONEBRAIN_ASSISTANT_SERVICE_KEY=${ONEBRAIN_ASSISTANT_SERVICE_KEY}" in api
+    assert "ONEBRAIN_COMMUNICATION_SERVICE_KEY=${ONEBRAIN_COMMUNICATION_SERVICE_KEY}" in api
     assert "ONEBRAIN_MODULE_PROBES_ENABLED=true" in api
     assert "ONEBRAIN_LOCAL_MODULES=" in api
     assert "ONEBRAIN_DATA_DIR=/data" in api
@@ -252,7 +266,13 @@ def test_env_files_are_per_service_and_cover_requirements():
         for line in content.splitlines():
             key, _, value = line.partition("=")
             if key in _SECRET_KEYS:
-                assert value == "${" + key + "}", f"{key} is not a ${{VAR}} ref: {line!r}"
+                if key == "ONEBRAIN_SERVICE_KEY":
+                    assert value in {
+                        "${ONEBRAIN_ASSISTANT_SERVICE_KEY}",
+                        "${ONEBRAIN_COMMUNICATION_SERVICE_KEY}",
+                    }
+                else:
+                    assert value == "${" + key + "}", f"{key} is not a ${{VAR}} ref: {line!r}"
             if key in ("ONEBRAIN_DATABASE_URL", "DATABASE_URL"):
                 assert "${POSTGRES_PASSWORD}" in value    # password is a ref, never plaintext
             if key == "REDIS_URL":
@@ -339,6 +359,17 @@ def test_render_operator_overlay():
     assert "ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY" not in cust
     assert "ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS" not in cust
     assert "ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS" not in cust
+
+
+def test_operator_render_rejects_customer_bootstrap_descriptor():
+    from app.provisioning.customer_bootstrap import CustomerBootstrapDescriptor, encode_customer_bootstrap
+
+    descriptor = encode_customer_bootstrap(CustomerBootstrapDescriptor(
+        account_id="acct_1", account_kind="organization", customer_name="Customer A",
+        bundle_id="full_stack",
+    ))
+    with pytest.raises(ValueError, match="customer_bootstrap is only valid"):
+        render_env_files(_inputs(_ALL, role="operator", customer_bootstrap=descriptor))
 
 
 # --- BK3: offsite-backup config delivery -------------------------------------

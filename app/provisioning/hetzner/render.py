@@ -27,6 +27,7 @@ from pathlib import Path
 
 from app.controlplane.base import MODULE_IDS, validate_image_ref
 from app.module_manifest import MODULE_ENV_REQUIREMENTS, MODULE_HEALTH_PROBES
+from app.provisioning.customer_bootstrap import decode_customer_bootstrap
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DEPLOY_BOX = _REPO_ROOT / "deploy" / "box"
@@ -88,6 +89,9 @@ class SecretRefs:
     admin_email_env: str = "ONEBRAIN_ADMIN_EMAIL"   # paired with owner_bootstrap_env; seed.py needs BOTH to seed a loginable admin
     service_key_env: str = "ONEBRAIN_SERVICE_KEY"
     space_id_env: str = "ONEBRAIN_SPACE_ID"
+    assistant_service_key_env: str = "ONEBRAIN_ASSISTANT_SERVICE_KEY"
+    communication_service_key_env: str = "ONEBRAIN_COMMUNICATION_SERVICE_KEY"
+    communication_space_id_env: str = "ONEBRAIN_COMMUNICATION_SPACE_ID"
     backup_key_env: str = "UPDATE_BACKUP_KEY"   # A5: per-box client-side backup key; lives in box.env.
     # BK3: offsite-backup S3 credentials — SECRETS, so ${VAR} refs filled from the exchanged .env.
     backup_s3_access_key_env: str = "ONEBRAIN_BACKUP_S3_ACCESS_KEY"
@@ -127,6 +131,7 @@ class BoxRenderInputs:
                                                 # render_dotenv(mc_bundle) body (+ the operator-overlay ${VAR}
                                                 # values). Empty for a CUSTOMER box, which FETCHES /opt/onebrain/.env
                                                 # via the exchange (onebrain_bootstrap.sh) instead.
+    customer_bootstrap: str = ""                 # Non-secret, versioned customer topology descriptor.
     secret_refs: SecretRefs = field(default_factory=SecretRefs)
     # BK3: non-secret offsite-backup config, baked into box.env at render time (the two S3
     # credentials are secrets and ride the exchanged .env as ${VAR} refs, not these). All
@@ -173,6 +178,12 @@ def _validate(inp: BoxRenderInputs) -> None:
             raise ValueError("release_version is required and must be a safe metadata value")
         if "\n" in inp.release_migration or "\r" in inp.release_migration or len(inp.release_migration) > 64:
             raise ValueError("release_migration must be a safe metadata value")
+    if inp.customer_bootstrap:
+        if inp.role != "customer":
+            raise ValueError("customer_bootstrap is only valid for customer boxes")
+        descriptor = decode_customer_bootstrap(inp.customer_bootstrap)
+        if descriptor is None or descriptor.account_id != inp.account_id:
+            raise ValueError("customer_bootstrap account does not match the rendered box")
 
 
 def _ordered(enabled) -> list:
@@ -414,6 +425,9 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             # agent (not this Compose service) owns the fleet credential and
             # reports the release-gate heartbeat.
             pairs += [
+                ("ONEBRAIN_CUSTOMER_BOOTSTRAP", inp.customer_bootstrap),
+                (refs.assistant_service_key_env, "${" + refs.assistant_service_key_env + "}"),
+                (refs.communication_service_key_env, "${" + refs.communication_service_key_env + "}"),
                 ("ONEBRAIN_OPERATOR_MODE", "false"),
                 ("ONEBRAIN_OPERATOR_CONSOLE", "false"),
                 ("ONEBRAIN_FLEET_REPORTER_ENABLED", "false"),
@@ -423,15 +437,15 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
     if module_id == "assistant-service":
         pairs += [
             ("ONEBRAIN_API_BASE_URL", "http://onebrain-api:8000"),
-            (refs.service_key_env, "${" + refs.service_key_env + "}"),
+            (refs.service_key_env, "${" + refs.assistant_service_key_env + "}"),
             ("DATABASE_URL", _db_url("assistant")),
             ("REDIS_URL", _redis_url()),
         ]
     if module_id in ("communication-api", "communication-workers"):
         pairs += [
             ("ONEBRAIN_API_BASE_URL", "http://onebrain-api:8000"),
-            (refs.service_key_env, "${" + refs.service_key_env + "}"),
-            (refs.space_id_env, "${" + refs.space_id_env + "}"),
+            (refs.service_key_env, "${" + refs.communication_service_key_env + "}"),
+            (refs.space_id_env, "${" + refs.communication_space_id_env + "}"),
         ]
         if module_id == "communication-api":
             pairs += [("ONEBRAIN_ACCOUNT_ID", inp.account_id)]

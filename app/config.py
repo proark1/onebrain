@@ -182,6 +182,11 @@ class Settings(BaseSettings):
     # Set both to have a real admin account ensured on any stack, incl. production.
     admin_email: str = ""
     admin_password: str = ""
+    # Customer boxes receive a non-secret topology descriptor plus app-specific
+    # raw keys. Startup stores only the key hashes in the customer database.
+    customer_bootstrap: str = ""
+    assistant_service_key: str = ""
+    communication_service_key: str = ""
 
     # Shared-password demo accounts (email + "onebrain2026") are convenient for a
     # local demo but must NEVER auto-seed on a real deployment. They seed only on a

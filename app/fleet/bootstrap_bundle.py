@@ -32,7 +32,12 @@ BUNDLE_KEYS = (
     # are non-empty. Without the email the box comes up with no admin and — SSH being
     # closed — is permanently unreachable, so the email is a REQUIRED key (fail closed).
     "ONEBRAIN_ADMIN_EMAIL", "ONEBRAIN_ADMIN_PASSWORD",
+    # Legacy generic integration refs remain for older single-module boxes. New
+    # renders use distinct app credentials so Assistant and Communication never
+    # share an app-scoped service principal.
     "ONEBRAIN_SERVICE_KEY", "ONEBRAIN_SPACE_ID",
+    "ONEBRAIN_ASSISTANT_SERVICE_KEY",
+    "ONEBRAIN_COMMUNICATION_SERVICE_KEY", "ONEBRAIN_COMMUNICATION_SPACE_ID",
     "UPDATE_BACKUP_KEY",
     "UPDATE_DESIRED_STATE_PUBLIC_KEYS",   # P5-02: the accepted wrapper-key SET (csv)
     "ONEBRAIN_DNS_TOKEN",                 # §5 lists it; empty for a normal customer box

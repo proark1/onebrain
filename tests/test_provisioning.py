@@ -155,6 +155,14 @@ def test_full_stack_provisioning_mints_constrained_integration_keys():
     )
 
     assert {credential.app_id for credential in result.credentials} == {"assistant", "communication", "kpi_dashboard"}
+    integration_credentials = provisioning_router._box_integration_credentials(result)
+    assert integration_credentials["assistant"][0] == next(
+        credential.key for credential in result.credentials if credential.app_id == "assistant"
+    )
+    assert integration_credentials["communication"][0] == next(
+        credential.key for credential in result.credentials if credential.app_id == "communication"
+    )
+    assert integration_credentials["assistant"][0] != integration_credentials["communication"][0]
 
     assistant = next(credential for credential in result.credentials if credential.app_id == "assistant")
     stored_assistant = service_keys.get(assistant.id)

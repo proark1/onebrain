@@ -230,6 +230,15 @@ class MemoryPlatformStore:
             self._save()
             return account
 
+    def upsert_bootstrap_account(self, account: Account) -> Account:
+        validate_account(account)
+        with self._lock:
+            existing = self._accounts.get(account.id)
+            stored = replace(account, created_at=existing.created_at if existing else account.created_at)
+            self._accounts[account.id] = stored
+            self._save()
+            return stored
+
     def get_account(self, account_id: str) -> Optional[Account]:
         return self._accounts.get(account_id)
 
@@ -246,6 +255,19 @@ class MemoryPlatformStore:
             self._spaces[space.id] = space
             self._save()
             return space
+
+    def upsert_bootstrap_space(self, space: Space) -> Space:
+        validate_space(space)
+        with self._lock:
+            if space.account_id not in self._accounts:
+                raise ValueError(f"unknown account: {space.account_id}")
+            existing = self._spaces.get(space.id)
+            if existing and existing.account_id != space.account_id:
+                raise ValueError(f"space is not in this account: {space.id}")
+            stored = replace(space, created_at=existing.created_at if existing else space.created_at)
+            self._spaces[space.id] = stored
+            self._save()
+            return stored
 
     def get_space(self, space_id: str) -> Optional[Space]:
         return self._spaces.get(space_id)
@@ -277,6 +299,31 @@ class MemoryPlatformStore:
             self._installations[installation.id] = installation
             self._save()
             return installation
+
+    def upsert_bootstrap_installation(self, installation: AppInstallation) -> AppInstallation:
+        validate_installation(installation)
+        normalized = replace(
+            installation,
+            enabled_space_ids=normalize_unique(installation.enabled_space_ids),
+            allowed_purposes=normalize_unique(installation.allowed_purposes),
+        )
+        with self._lock:
+            if normalized.account_id not in self._accounts:
+                raise ValueError(f"unknown account: {normalized.account_id}")
+            for space_id in normalized.enabled_space_ids:
+                space = self._spaces.get(space_id)
+                if not space or space.account_id != normalized.account_id:
+                    raise ValueError(f"space is not in this account: {space_id}")
+            existing = self._installations.get(normalized.id)
+            if existing and existing.account_id != normalized.account_id:
+                raise ValueError(f"app installation is not in this account: {normalized.id}")
+            stored = replace(
+                normalized,
+                created_at=existing.created_at if existing else normalized.created_at,
+            )
+            self._installations[normalized.id] = stored
+            self._save()
+            return stored
 
     def get_app_installation(self, installation_id: str) -> Optional[AppInstallation]:
         return self._installations.get(installation_id)

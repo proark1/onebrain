@@ -69,6 +69,19 @@ class PostgresUserStore:
             raise KeyError(f"unknown user: {user_id}")
         return self._row(row)
 
+    def update_scope(self, user_id: str, *, tenant_id: str, role_id: str, location: str) -> User:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE users SET tenant_id = %s, role_id = %s, location = %s WHERE id = %s "
+                f"RETURNING {self._COLS}",
+                (tenant_id, role_id, location, user_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        if not row:
+            raise KeyError(f"unknown user: {user_id}")
+        return self._row(row)
+
     def delete_by_email(self, email: str) -> bool:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM users WHERE email = %s", (email.strip().lower(),))

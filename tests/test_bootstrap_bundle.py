@@ -22,6 +22,9 @@ def _full_bundle(**overrides) -> dict:
         "ONEBRAIN_ADMIN_PASSWORD": "owner-otp",
         "ONEBRAIN_SERVICE_KEY": "",
         "ONEBRAIN_SPACE_ID": "",
+        "ONEBRAIN_ASSISTANT_SERVICE_KEY": "",
+        "ONEBRAIN_COMMUNICATION_SERVICE_KEY": "",
+        "ONEBRAIN_COMMUNICATION_SPACE_ID": "",
         "UPDATE_BACKUP_KEY": "backup-secret",
         "UPDATE_DESIRED_STATE_PUBLIC_KEYS": "pub1,pub2",
         "ONEBRAIN_DNS_TOKEN": "",
@@ -44,6 +47,9 @@ def test_required_and_optional_partition_bundle_keys():
     # The two explicitly-optional keys named in the spec.
     assert "ONEBRAIN_DNS_TOKEN" in OPTIONAL_KEYS
     assert "ONEBRAIN_SPACE_ID" in OPTIONAL_KEYS
+    assert "ONEBRAIN_ASSISTANT_SERVICE_KEY" in OPTIONAL_KEYS
+    assert "ONEBRAIN_COMMUNICATION_SERVICE_KEY" in OPTIONAL_KEYS
+    assert "ONEBRAIN_COMMUNICATION_SPACE_ID" in OPTIONAL_KEYS
 
 
 def test_render_dotenv_emits_only_present_keys_in_canonical_order_lf():

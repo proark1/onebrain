@@ -3407,6 +3407,30 @@ button:disabled,
   color: var(--ai-ink);
 }
 
+.aiModuleToolbar {
+  display: flex;
+  min-height: 64px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid rgb(31 60 82 / 12%);
+  border-radius: 10px;
+  background: var(--ai-paper);
+  padding: 10px 14px;
+  box-shadow: var(--shadow-soft);
+}
+
+.aiModuleContext {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 6px 12px;
+  min-width: 0;
+}
+
+.aiModuleContext strong { color: var(--ai-ink); font-size: 17px; }
+.aiModuleContext small { overflow: hidden; color: var(--muted); font-size: 10px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }
+
 .aiModuleHeader {
   display: flex;
   align-items: end;
@@ -3521,6 +3545,27 @@ button:disabled,
 .aiSectionLead > p { max-width: 520px; color: #667683; font-size: 12px; font-weight: 620; line-height: 1.5; text-align: right; }
 
 .aiOrganization { display: grid; gap: 14px; }
+.aiOrganizationMap { display: grid; gap: 20px; }
+.aiOrgRoot {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  justify-self: center;
+  gap: 6px;
+  width: min(100%, 500px);
+  border: 1px solid rgb(194 96 61 / 28%);
+  border-top: 4px solid var(--ai-signal);
+  border-radius: 10px;
+  background: linear-gradient(110deg, #fff, rgb(194 96 61 / 5%));
+  padding: 9px;
+  box-shadow: var(--shadow-soft);
+}
+.aiOrgRoot::after { content: ""; position: absolute; z-index: -1; bottom: -21px; left: 50%; width: 1px; height: 21px; background: rgb(31 60 82 / 28%); }
+.aiOrgRootLabel { display: flex; align-items: center; gap: 8px; padding: 1px 2px 3px; }
+.aiOrgRootLabel span { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 6px; background: var(--ai-signal); color: #fff; font-size: 8px; font-weight: 850; letter-spacing: .08em; }
+.aiOrgRootLabel strong { font-size: 13px; }
+.aiOrgRoot .aiOrgPerson { grid-template-columns: 32px minmax(0, 1fr) auto; padding: 6px 8px; }
+.aiOrgRoot .aiPersonAvatar { width: 32px; height: 32px; }
 .aiChiefOffice {
   position: relative;
   display: grid;
@@ -3556,8 +3601,10 @@ button:disabled,
 .aiCouncilRail button:hover { background: var(--ai-mist); }
 .aiCouncilRail small { color: var(--muted); font-size: 9px; font-weight: 620; }
 
-.aiPodGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.aiOrgPod { min-width: 0; overflow: hidden; border: 1px solid rgb(31 60 82 / 13%); border-top: 4px solid var(--ai-navy); border-radius: 10px; background: var(--ai-paper); box-shadow: var(--shadow-soft); }
+.aiPodGrid { position: relative; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding-top: 18px; }
+.aiPodGrid::before { content: ""; position: absolute; top: 8px; right: 16.66%; left: 16.66%; height: 1px; background: rgb(31 60 82 / 28%); }
+.aiOrgPod { position: relative; min-width: 0; overflow: visible; border: 1px solid rgb(31 60 82 / 13%); border-top: 4px solid var(--ai-navy); border-radius: 10px; background: var(--ai-paper); box-shadow: var(--shadow-soft); }
+.aiOrgPod::before { content: ""; position: absolute; top: -14px; left: 50%; width: 1px; height: 10px; background: rgb(31 60 82 / 28%); }
 .aiOrgPod:nth-child(2) { border-top-color: #4f7387; }
 .aiOrgPod:nth-child(3) { border-top-color: #7b6654; }
 .aiOrgPod > header { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 10px; border-bottom: 1px solid rgb(31 60 82 / 9%); padding: 12px; }
@@ -3773,8 +3820,10 @@ button.danger, .aiApprovalControls button.danger, .aiConnectorEditor button.dang
   outline-offset: 2px;
 }
 
-@media (max-width: 1120px) {
+@media (max-width: 920px) {
   .aiPodGrid { grid-template-columns: 1fr; }
+  .aiPodGrid { padding-top: 0; }
+  .aiPodGrid::before, .aiOrgPod::before, .aiOrgRoot::after { display: none; }
   .aiOrgPod > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .aiConnectorEditor { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .aiCalendarAllowlist { grid-column: 1 / -1; }
@@ -3782,6 +3831,9 @@ button.danger, .aiApprovalControls button.danger, .aiConnectorEditor button.dang
 
 @media (max-width: 860px) {
   .aiModuleHeader, .aiSectionLead { align-items: start; flex-direction: column; }
+  .aiModuleToolbar { align-items: stretch; }
+  .aiModuleContext { grid-template-columns: auto minmax(0, 1fr); }
+  .aiModuleContext small { grid-column: 1 / -1; }
   .aiSectionLead > p { text-align: left; }
   .aiPulseStrip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .aiPulseStrip > div { border-bottom: 1px solid rgb(31 60 82 / 9%); }

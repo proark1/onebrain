@@ -164,25 +164,17 @@ export function AiEmployeesPanel() {
 
   return (
     <div className="aiEmployeesWorkspace">
-      <header className="aiModuleHeader">
-        <div>
-          <span className="eyebrow">AI Employees · {activeWorkspace.space_name}</span>
-          <h1>Your company, assembled.</h1>
-          <p>Sixteen persistent specialists. Separate judgment. One governed operating system.</p>
+      <header className="aiModuleToolbar">
+        <div className="aiModuleContext">
+          <span className="eyebrow">AI Employees</span>
+          <strong>{activeWorkspace.space_name}</strong>
+          <small>{team.agents.length} governed employees</small>
         </div>
         <div className="aiModulePosture">
           <span className={`aiLiveDot ${team.installation_status}`} />
-          <div><strong>{team.installation_status === "active" ? "Team live" : "Module paused"}</strong><small>{team.contract_version} · Gemini default</small></div>
+          <div><strong>{team.installation_status === "active" ? "Team live" : "Module paused"}</strong><small>{team.contract_version}</small></div>
         </div>
       </header>
-
-      <div className="aiPulseStrip" aria-label="AI employee module status">
-        <div><span>Team</span><strong>{team.agents.filter((agent) => agent.status === "active").length}/{team.agents.length}</strong><small>active employees</small></div>
-        <div><span>Mission rule</span><strong>≤ {team.max_mission_squad_size}</strong><small>people per squad</small></div>
-        <div><span>In motion</span><strong>{activeMissions}</strong><small>open missions</small></div>
-        <div className={pendingActions ? "attention" : ""}><span>Human queue</span><strong>{pendingActions}</strong><small>actions to review</small></div>
-        <div><span>Connected</span><strong>{bindings.filter((row) => row.status === "active").length}</strong><small>governed tools</small></div>
-      </div>
 
       {team.installation_status !== "active" ? <p className="notice warning">The module is paused. History remains readable; chats, missions, configuration, and actions stay locked.</p> : null}
       {error ? <p className="inlineError">{error}</p> : null}

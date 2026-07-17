@@ -379,18 +379,18 @@ def _run_out(run: ProvisioningRun) -> ProvisioningRunOut:
     )
 
 
-def _box_integration_credential(result: ProvisioningResult) -> tuple[str, str]:
-    """The (service_key, space_id) a Hetzner box's comm/assistant services need, drawn
-    from the first minted integration credential (its plaintext key + its first space).
-    ("", "") when the box runs no comm/assistant module — both are OPTIONAL bundle keys."""
-    for cred in result.credentials:
-        if cred.key:
-            return cred.key, (cred.space_ids[0] if cred.space_ids else "")
-    return "", ""
+def _box_integration_credentials(result: ProvisioningResult) -> dict[str, tuple[str, str]]:
+    """Return app-addressed credentials for services installed on the customer box."""
+    return {
+        cred.app_id: (cred.key, cred.space_ids[0] if cred.space_ids else "")
+        for cred in result.credentials
+        if cred.app_id in {"assistant", "communication"} and cred.key
+    }
 
 
 def _dispatch_run(run: ProvisioningRun, *, owner_otp: str = "",
-                  service_key: str = "", space_id: str = "", owner_email: str = "") -> ProvisioningRun:
+                  service_key: str = "", space_id: str = "", owner_email: str = "",
+                  integration_credentials: dict[str, tuple[str, str]] | None = None) -> ProvisioningRun:
     # H-1/H-9: backend switch. Default "github" is today's Railway behavior
     # exactly (dormancy); "hetzner" dispatches through the token-isolating broker.
     # An unknown value fails closed with a named reason — never a silent fallback.
@@ -409,7 +409,7 @@ def _dispatch_run(run: ProvisioningRun, *, owner_otp: str = "",
                 settings, build_hetzner_broker(settings), get_control_plane_store(),
                 prov_store=store, fleet_store=get_fleet_store(),
             ).dispatch(run, owner_otp=owner_otp, service_key=service_key, space_id=space_id,
-                       owner_email=owner_email)
+                       owner_email=owner_email, integration_credentials=integration_credentials)
         elif backend == "github":
             dispatched = GitHubWorkflowDispatcher(settings).dispatch(run)
         else:
@@ -536,6 +536,7 @@ def _provision_customer_impl(body: CustomerProvisionCreate, principal: Principal
     if body.external_provisioning:
         payload = {
             "customer_name": body.customer_name,
+            "account_kind": body.account_kind,
             "deployment_type": body.deployment_type,
             "region": body.region,
             "release_ring": body.release_ring,
@@ -559,9 +560,9 @@ def _provision_customer_impl(body: CustomerProvisionCreate, principal: Principal
         # visible inside HetznerProvisioner.dispatch. Thread them from the result here
         # (the seam where BOTH the run and the provision result are in scope). Empty for
         # a box with no owner/integration module; the github path ignores them.
-        service_key, space_id = _box_integration_credential(result)
+        integration_credentials = _box_integration_credentials(result)
         run = _dispatch_run(run, owner_otp=result.owner_one_time_password,
-                            service_key=service_key, space_id=space_id,
+                            integration_credentials=integration_credentials,
                             owner_email=body.owner_email)
     return _result_out(result, run)
 

@@ -3,9 +3,8 @@ import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
 import { WorkspaceProvider } from "@/components/workspace-provider";
 import { WorkspaceSelector } from "@/components/workspace-selector";
+import { ALL_NAV, consoleNavigation, type ConsoleSection } from "@/lib/console-navigation";
 import type { SessionInfo } from "@/lib/onebrain-types";
-
-type ConsoleSection = "ai-employees" | "chat" | "cockpit" | "documents" | "kpis" | "spaces" | "privacy" | "settings" | "operator" | "fleet";
 
 type ConsoleShellProps = {
   active: ConsoleSection;
@@ -13,35 +12,15 @@ type ConsoleShellProps = {
   session: SessionInfo;
 };
 
-type NavItem = { id: ConsoleSection; href: string; label: string };
-
-const STATUS_NAV: NavItem = { id: "cockpit", href: "/cockpit", label: "Status" };
-// Customer surface — hidden on Mission Control (operator_mode), where there is no
-// customer content to ask about, manage, or govern.
-const CUSTOMER_NAV: NavItem[] = [
-  { id: "chat", href: "/chat", label: "Ask" },
-  { id: "documents", href: "/documents", label: "Knowledge" },
-  { id: "kpis", href: "/kpis", label: "KPIs" },
-  { id: "ai-employees", href: "/ai-employees", label: "AI Employees" },
-  { id: "spaces", href: "/spaces", label: "Apps" },
-  { id: "privacy", href: "/privacy", label: "Privacy" },
-  { id: "settings", href: "/settings", label: "Settings" },
-];
-const ADMIN_NAV: NavItem[] = [
-  { id: "operator", href: "/operator", label: "Control" },
-  { id: "fleet", href: "/fleet", label: "Fleet" },
-];
-// Canonical full order (customer boxes) + label lookup for the command bar.
-const ALL_NAV: NavItem[] = [STATUS_NAV, ...CUSTOMER_NAV, ...ADMIN_NAV];
-
 export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
   if (session.must_change_password) {
     redirect("/settings/password");
   }
   const identity = session.display_name || session.email;
-  // Mission Control: admin-only layout (Status / Control / Fleet). Customer boxes
-  // keep the full nav in its canonical order.
-  const nav = session.operator_mode ? [STATUS_NAV, ...ADMIN_NAV] : ALL_NAV;
+  // Mission Control is admin-only. A customer box can never expose Control/Fleet
+  // merely because its user is an administrator; that requires the server-issued
+  // operator-surface capability.
+  const nav = consoleNavigation(session.operator_mode);
   const homeHref = session.operator_mode ? "/fleet" : "/chat";
   const activeLabel = ALL_NAV.find((item) => item.id === active)?.label || "Console";
 
@@ -70,10 +49,6 @@ export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
             ))}
           </nav>
 
-          <div className="consoleIdentity">
-            <span>{session.role_label}</span>
-            <small>{session.location_label}</small>
-          </div>
         </aside>
 
         <div className="consoleFrame">
@@ -83,10 +58,9 @@ export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
               <strong>{activeLabel}</strong>
             </div>
             {active === "kpis" ? <span /> : <WorkspaceSelector />}
-          <div className="commandIdentity">
-            <span>{session.role_label}</span>
-            <Link href="/settings">{identity}</Link>
-          </div>
+            <div className="commandIdentity">
+              <Link aria-label={`Account settings for ${identity}`} href="/settings">{identity}</Link>
+            </div>
           </header>
 
           <section className="consoleContent">

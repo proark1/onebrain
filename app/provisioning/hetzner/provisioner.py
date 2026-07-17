@@ -48,6 +48,7 @@ from app.provisioning.hetzner.client import (
     VolumeCreateRequest,
 )
 from app.provisioning.hetzner.render import BoxRenderInputs, enabled_product_dbs, render_cloud_init
+from app.provisioning.customer_bootstrap import CustomerBootstrapDescriptor, encode_customer_bootstrap
 from app.provisioning.runs import (
     STATUS_DISPATCHED,
     BoxBootstrapToken,
@@ -151,7 +152,8 @@ class HetznerProvisioner:
         return bool(self.settings.hetzner_api_token) and self.settings.hetzner_allow_inprocess_broker
 
     def dispatch(self, run: ProvisioningRun, *, owner_otp: str = "",
-                 service_key: str = "", space_id: str = "", owner_email: str = "") -> ProvisioningRun:
+                 service_key: str = "", space_id: str = "", owner_email: str = "",
+                 integration_credentials: dict[str, tuple[str, str]] | None = None) -> ProvisioningRun:
         # owner_otp / service_key / space_id / owner_email are threaded in from the
         # bundle-assembly seam (provision_customer, G3-3): they are minted/collected by
         # CustomerProvisioner and do NOT flow to dispatch on their own. They populate the
@@ -174,6 +176,12 @@ class HetznerProvisioner:
         deployment = self.control_store.get_deployment(run.deployment_id)
         if not deployment:
             raise RuntimeError(f"deployment {run.deployment_id} no longer exists")
+        customer_bootstrap = encode_customer_bootstrap(CustomerBootstrapDescriptor(
+            account_id=run.account_id,
+            account_kind=str(run.request_payload.get("account_kind", "organization")),
+            customer_name=deployment.customer_name,
+            bundle_id=run.bundle_id,
+        ))
 
         # Development candidates are signed by a CI-only key that customer boxes
         # must never trust. Select the baked release verifier from persisted
@@ -220,7 +228,8 @@ class HetznerProvisioner:
         if self.prov_store is not None and self.fleet_store is not None:
             bootstrap_token, callback_token = self._provision_box_secrets(
                 run, owner_otp=owner_otp, service_key=service_key, space_id=space_id,
-                owner_email=owner_email)
+                owner_email=owner_email, integration_credentials=integration_credentials,
+                enabled_modules=tuple(modules))
 
         # 4b. Render cloud-init (pure). A render ValueError (hostile id / a release
         #     image map that fails to cover an enabled module) becomes a
@@ -243,6 +252,7 @@ class HetznerProvisioner:
                 registry_allowlist=settings.release_registry_allowlist,
                 bootstrap_token=bootstrap_token,
                 callback_token=callback_token,
+                customer_bootstrap=customer_bootstrap,
                 # BK3: non-secret offsite-backup config baked into box.env (the two S3 creds ride
                 # the sealed bundle as ${VAR} refs). backup_dbs = the enabled products' DB names.
                 backup_enabled=bool(getattr(settings, "backup_enabled", False)),
@@ -345,7 +355,9 @@ class HetznerProvisioner:
 
     def _provision_box_secrets(self, run: ProvisioningRun, *, owner_otp: str,
                                service_key: str, space_id: str,
-                               owner_email: str = "") -> tuple[str, str]:
+                               owner_email: str = "",
+                               integration_credentials: dict[str, tuple[str, str]] | None = None,
+                               enabled_modules: tuple[str, ...] = ()) -> tuple[str, str]:
         """Mint the box's real secrets, seal the RE-READABLE bundle (G1-4 seal_bundle,
         never the one-time envelope), persist it + a single-use first-boot bootstrap
         token, and return (raw_bootstrap_token, raw_callback_token) for the renderer to
@@ -355,6 +367,17 @@ class HetznerProvisioner:
         so the owner OTP already baked into it is never re-minted — and only re-mints a
         fresh bootstrap token."""
         settings = self.settings
+        if integration_credentials is None:
+            assistant_key = service_key
+            communication_key = service_key
+            communication_space_id = space_id
+        else:
+            assistant_key = integration_credentials.get("assistant", ("", ""))[0]
+            communication_key, communication_space_id = integration_credentials.get(
+                "communication", ("", "")
+            )
+        legacy_key = communication_key or assistant_key or service_key
+        legacy_space_id = communication_space_id or space_id
         # G1-1: never ship a bundle whose accepted wrapper-key set excludes MC's active
         # signer (that would strand the box at envelope_signature_invalid). Skipped when
         # emission is off (no private key) — nothing to sign with, nothing to brick.
@@ -383,8 +406,11 @@ class HetznerProvisioner:
                 # bundle key, so an empty email fails validate_bundle -> dispatch_failed.
                 "ONEBRAIN_ADMIN_EMAIL": (owner_email or "").strip().lower(),
                 "ONEBRAIN_ADMIN_PASSWORD": owner_otp,
-                "ONEBRAIN_SERVICE_KEY": service_key,
-                "ONEBRAIN_SPACE_ID": space_id,
+                "ONEBRAIN_SERVICE_KEY": legacy_key,
+                "ONEBRAIN_SPACE_ID": legacy_space_id,
+                "ONEBRAIN_ASSISTANT_SERVICE_KEY": assistant_key,
+                "ONEBRAIN_COMMUNICATION_SERVICE_KEY": communication_key,
+                "ONEBRAIN_COMMUNICATION_SPACE_ID": communication_space_id,
                 "UPDATE_BACKUP_KEY": secrets.token_urlsafe(32),
                 "UPDATE_DESIRED_STATE_PUBLIC_KEYS": (
                     settings.fleet_desired_state_public_keys
@@ -409,6 +435,34 @@ class HetznerProvisioner:
                 key_version=cipher.key_version,
                 secrets_epoch=0,
             ))
+
+        stored = self.prov_store.get_secret_bundle(run.deployment_id)
+        if stored is None:
+            raise RuntimeError("secret bundle was not persisted")
+        try:
+            stored_bundle = json.loads(OneTimeSecretCipher(settings).open_bundle(stored.ciphertext))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("stored secret bundle cannot be opened") from exc
+        if "assistant-service" in enabled_modules and not stored_bundle.get("ONEBRAIN_ASSISTANT_SERVICE_KEY"):
+            raise RuntimeError(
+                "stored secret bundle lacks the Assistant credential; replace the legacy box"
+            )
+        if any(module in enabled_modules for module in ("communication-api", "communication-workers")):
+            if not stored_bundle.get("ONEBRAIN_COMMUNICATION_SERVICE_KEY"):
+                raise RuntimeError(
+                    "stored secret bundle lacks the Communication credential; replace the legacy box"
+                )
+            if not stored_bundle.get("ONEBRAIN_COMMUNICATION_SPACE_ID"):
+                raise RuntimeError(
+                    "stored secret bundle lacks the Communication space; replace the legacy box"
+                )
+        if (
+            "assistant-service" in enabled_modules
+            and any(module in enabled_modules for module in ("communication-api", "communication-workers"))
+            and stored_bundle["ONEBRAIN_ASSISTANT_SERVICE_KEY"]
+            == stored_bundle["ONEBRAIN_COMMUNICATION_SERVICE_KEY"]
+        ):
+            raise RuntimeError("Assistant and Communication credentials must be distinct")
 
         # Mint the single-use, short-TTL first-boot token (fresh on every dispatch, incl. a
         # retry). Only its hash is stored; the raw token is baked into user-data. Minting a

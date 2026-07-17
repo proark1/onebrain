@@ -483,6 +483,46 @@ def test_dispatch_mints_bundle_and_unconsumed_bootstrap_token():
     assert record is not None and not record.consumed_at and record.deployment_id == "dep_a"
 
 
+def test_full_stack_dispatch_seals_distinct_app_credentials_and_bootstrap_descriptor():
+    from app.servicekeys.base import generate_key
+    from tests.boot_config_helper import extract_cloud_init_file
+
+    modules = (
+        "onebrain-api", "onebrain-admin-ui", "onebrain-workers", "assistant-service",
+        "communication-api", "communication-widget", "communication-voice",
+        "communication-workers",
+    )
+    images = {module: f"ghcr.io/proark1/{module}@sha256:{_DIGEST}" for module in modules}
+    control = _control(modules=modules, images=images)
+    prov = MemoryProvisioningRunStore()
+    fake = FakeHetznerClient()
+    settings = _p5_settings()
+    assistant_key = generate_key()[2]
+    communication_key = generate_key()[2]
+
+    out = HetznerProvisioner(
+        settings, InProcessHetznerBroker(fake), control,
+        prov_store=prov, fleet_store=MemoryFleetStore(),
+    ).dispatch(
+        _run(prov), owner_otp="owner-otp", owner_email="owner@example.com",
+        integration_credentials={
+            "assistant": (assistant_key, "sp_assistant"),
+            "communication": (communication_key, "sp_communication"),
+        },
+    )
+
+    assert out.status == STATUS_DISPATCHED
+    bundle = _open_bundle(prov, settings)
+    assert bundle["ONEBRAIN_ASSISTANT_SERVICE_KEY"] == assistant_key
+    assert bundle["ONEBRAIN_COMMUNICATION_SERVICE_KEY"] == communication_key
+    assert bundle["ONEBRAIN_COMMUNICATION_SPACE_ID"] == "sp_communication"
+    assert assistant_key != communication_key
+    api_env = extract_cloud_init_file(fake.servers[0].user_data, "/opt/onebrain/env/onebrain-api.env")
+    assert "ONEBRAIN_CUSTOMER_BOOTSTRAP=" in api_env
+    assert "ONEBRAIN_ASSISTANT_SERVICE_KEY=${ONEBRAIN_ASSISTANT_SERVICE_KEY}" in api_env
+    assert "ONEBRAIN_COMMUNICATION_SERVICE_KEY=${ONEBRAIN_COMMUNICATION_SERVICE_KEY}" in api_env
+
+
 def test_dispatch_fails_closed_on_invalid_bundle(monkeypatch):
     # No owner email/OTP -> ONEBRAIN_ADMIN_EMAIL + ONEBRAIN_ADMIN_PASSWORD empty ->
     # validate_bundle fails -> the run dispatch-fails and NO server is created (never
