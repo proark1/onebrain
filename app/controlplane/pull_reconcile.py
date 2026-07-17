@@ -155,6 +155,23 @@ def _apply_child_status(control_store, child, status: str, update_report, *, now
     reconcile_rollout_promotion(control_store, control_store.get_rollout(child.id))
 
 
+def _reconcile_development_pull(control_store, latest_heartbeats: dict, *, now: datetime,
+                                deadline_seconds: int) -> None:
+    """Converge the standalone pull rollout used by the development gate."""
+    for promotion in control_store.list_release_promotions():
+        if promotion.state != "dev_deploying" or not promotion.dev_rollout_id:
+            continue
+        child = control_store.get_rollout(promotion.dev_rollout_id)
+        if (not child or child.status in _TERMINAL_ROLLOUT or child.fleet_rollout_id
+                or not (child.request_payload or {}).get("pull")):
+            continue
+        report = _report_from_heartbeat(latest_heartbeats.get(child.deployment_id))
+        materialize_backup_from_report(control_store, child.deployment_id, report)
+        status = synthesize_pull_status(child, report, now=now, deadline_seconds=deadline_seconds)
+        if status is not None:
+            _apply_child_status(control_store, child, status, report, now=now)
+
+
 def reconcile_pull_targets(control_store, fleet_store, latest_heartbeats: dict, *, now: datetime,
                            deadline_seconds: int, dispatch_child) -> List:
     """The tick. For each RUNNING fleet rollout, for each of its NON-TERMINAL children
@@ -166,6 +183,12 @@ def reconcile_pull_targets(control_store, fleet_store, latest_heartbeats: dict, 
       5. feed the UNCHANGED reconcile_fleet_rollout -> UNCHANGED advance_fleet_rollout.
     Returns the reconciled fleet runs. Railway children are left untouched (their
     workflow callback owns them). Pure of network; heartbeats + clock injected."""
+    # Development candidates are standalone pull rollouts, not fleet children.
+    # Consume their authenticated report before timeout evaluation so a success
+    # already received at the deadline cannot be incorrectly failed first.
+    _reconcile_development_pull(
+        control_store, latest_heartbeats, now=now, deadline_seconds=deadline_seconds,
+    )
     reconcile_promotion_timeouts(
         control_store,
         now=now,

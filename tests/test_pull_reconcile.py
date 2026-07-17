@@ -9,7 +9,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from app.controlplane.base import CustomerDeployment, DeploymentModule, ReleaseManifest, RolloutRun
+from app.controlplane.base import (
+    CustomerDeployment,
+    DeploymentModule,
+    ReleaseManifest,
+    ReleasePromotion,
+    ReleasePromotionEvent,
+    RolloutRun,
+)
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.controlplane.orchestration import FleetRolloutRun
 from app.controlplane.pull_reconcile import (
@@ -214,6 +221,47 @@ def test_reconcile_at_rest_is_noop():
     store = MemoryControlPlaneStore()   # no fleet rollouts
     assert reconcile_pull_targets(store, store, {}, now=NOW, deadline_seconds=DEADLINE,
                                   dispatch_child=_noop_dispatch) == []
+
+
+def test_reconcile_converges_standalone_development_pull_before_timeout():
+    store = MemoryControlPlaneStore()
+    gate = CustomerDeployment(
+        id="dev", customer_name="Development", environment="development",
+        deployment_type="dedicated_server", current_version="2026.07.0", current_migration="0041",
+    )
+    store.create_deployment(gate)
+    store.designate_release_gate(gate.id)
+    store.upsert_module(DeploymentModule(gate.id, "onebrain-api", "2026.07.0"))
+    version = "2026.07.1"
+    rollout_id = "roll-dev"
+    started = (NOW - timedelta(seconds=DEADLINE + 60)).isoformat()
+    store.create_release_candidate(
+        ReleaseManifest(version=version, git_sha="sha", modules={"onebrain-api": version},
+                        migration_from="0041", migration_to="0041"),
+        ReleasePromotion(version, state="dev_deploying", gate_deployment_id=gate.id,
+                         dev_rollout_id=rollout_id, dev_attempt_id=rollout_id,
+                         dev_started_at=started, created_at=started, updated_at=started),
+        ReleasePromotionEvent("event-dev", version, "dev_rollout_started", "dev_deploying"),
+    )
+    store.start_rollout(RolloutRun(
+        rollout_id, gate.id, version, "pending", "release-candidate:test",
+    ))
+    store.claim_rollout_dispatch(rollout_id)
+    store.update_rollout_exec(
+        rollout_id, dispatched_at=started, request_payload={"provider": "hetzner", "pull": True},
+    )
+
+    reconcile_pull_targets(
+        store, store,
+        {gate.id: _hb(gate.id, attempt_id=rollout_id, outcome="succeeded")},
+        now=NOW, deadline_seconds=DEADLINE, dispatch_child=_noop_dispatch,
+    )
+
+    rollout = store.get_rollout(rollout_id)
+    assert rollout.status == "success" and rollout.exec_status == "succeeded"
+    assert store.get_deployment(gate.id).current_version == version
+    assert store.get_release_promotion(version).state == "dev_deploying"
+    assert store.get_release_promotion(version).failure_reason == ""
 
 
 def test_reconcile_endpoint_drives_the_tick(monkeypatch):
