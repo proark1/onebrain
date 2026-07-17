@@ -44,9 +44,15 @@ format because that would require a wider provisioning and Compose migration.
    credential rotation.
 3. `onebrain-gate-agent.sh` uses the helper before it invokes the updater and
    sends its authenticated heartbeat.
-4. Cloud-init callback commands use the helper before they load `box.env`, so
-   callback authentication receives literal bootstrap values.
+4. The gate agent's cloud-init callback mode uses the helper before it loads
+   `box.env`, so callback authentication receives literal bootstrap values.
+   Callback payloads are JSON-encoded by Python rather than interpolated into a
+   shell JSON string. A custom callback URL is preflight-validated and passed as
+   a single-quoted invocation value, so URL query characters are never shell
+   syntax.
 5. Docker Compose continues to read `.env` directly and is unchanged.
+6. Operator-only Mission Control boxes omit the unused customer bootstrap
+   exchange while retaining the shared callback reporter.
 
 ## Error handling and safety
 
@@ -55,6 +61,10 @@ format because that would require a wider provisioning and Compose migration.
   execute shell text or mutate local images, Compose files, or data.
 - Literal values preserve spaces, hashes, equals signs, dollar signs, quotes, and
   command-substitution syntax as data.
+- Bootstrap validates a newer served bundle before atomically replacing the
+  current one or advancing its secrets epoch.
+- Bootstrap creates its response, pending bundle, and secrets-epoch work files
+  under owner-only modes from the start of the exchange.
 - The helper is root-owned through the existing cloud-init asset path and is not
   read by application containers.
 - No release-signing, desired-state verification, pull policy, or Compose image

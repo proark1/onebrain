@@ -19,21 +19,28 @@ set -euo pipefail
 
 ENV_FILE="${ENV_FILE:-/opt/onebrain/.env}"
 BOX_ENV="${BOX_ENV:-/opt/onebrain/box.env}"
-# .env (the exchanged secret bundle, P5-03) is sourced FIRST so box.env's ${VAR} refs
-# (ONEBRAIN_FLEET_KEY, UPDATE_BACKUP_KEY, UPDATE_DESIRED_STATE_PUBLIC_KEYS, ...) re-
-# expand to the delivered real values. Absent on a not-yet-exchanged box -> the refs
-# stay empty and the run holds harmlessly (the fetch below fails auth, non-destructive).
+DOTENV_LOADER="$(dirname "$0")/onebrain_dotenv.sh"
+# Load the exchanged bundle as data before trusted box.env expands its ${VAR} refs.
+if [ ! -r "$DOTENV_LOADER" ]; then
+  printf '%s\n' 'OneBrain updater: dotenv loader unavailable; holding' >&2
+  exit 0
+fi
 # shellcheck disable=SC1090
+. "$DOTENV_LOADER"
 if [ -f "$ENV_FILE" ]; then
-  set -a
-  . "$ENV_FILE"
-  set +a
+  if ! onebrain_load_dotenv "$ENV_FILE"; then
+    printf '%s\n' 'OneBrain updater: invalid dotenv; holding' >&2
+    exit 0
+  fi
 fi
 # shellcheck disable=SC1090
 if [ -f "$BOX_ENV" ]; then
+  # box.env is renderer-owned; relax nounset for unresolved first-boot refs.
+  set +u
   set -a
   . "$BOX_ENV"
   set +a
+  set -u
 fi
 
 # Command indirections: bare defaults for the dry-run harness; a real box may

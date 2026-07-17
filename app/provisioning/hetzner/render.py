@@ -1069,26 +1069,19 @@ def _initial_release_descriptor(inp: BoxRenderInputs) -> str:
 _META = "169.254.169.254"
 
 
-def _callback_curl(status: str, smoke: str, run_id: str, *, callback_url: str = "", extra: str = "") -> str:
-    body = f'{{\\"status\\":\\"{status}\\",\\"smoke_status\\":\\"{smoke}\\"{extra}}}'
-    # run_id is baked in at render time (the box can't self-substitute); ${ONEBRAIN_FLEET_URL}
-    # stays a shell ref resolved from box.env. Concatenated (not f-string) so the ${...}
-    # braces are not mistaken for format placeholders.
-    callback_url = (
-        callback_url.replace("{run_id}", run_id)
-        if callback_url
-        else "${ONEBRAIN_FLEET_URL}/api/provisioning/runs/" + run_id + "/callback"
-    )
-    # Source /opt/onebrain/.env (the exchanged bundle) FIRST so box.env's ${VAR} refs
-    # (e.g. ${ONEBRAIN_ADMIN_PASSWORD} in done_cb) re-expand to the delivered real
-    # values; the baked callback token in box.env authenticates fail_cb even before the
-    # exchange has written .env (G1-7). `|| true` keeps a missing .env non-fatal.
-    return (
-        "set -a; . /opt/onebrain/.env 2>/dev/null || true; . /opt/onebrain/box.env; set +a; "
-        'curl -sf -X POST -H "Authorization: Bearer ${ONEBRAIN_PROVISIONING_CALLBACK_TOKEN}" '
-        '-H "Content-Type: application/json" '
-        f'--data "{body}" '
-        f'"{callback_url}"'
+def _callback_curl(status: str, smoke: str, run_id: str, *, kind: str, callback_url: str = "") -> str:
+    if kind not in {"failure", "completion"}:
+        raise ValueError("callback kind is required")
+    override = ""
+    if callback_url:
+        # _validate_callback_url_template rejects quotes and shell syntax, so the
+        # preflighted URL remains one literal assignment even when it contains `&`.
+        override = "ONEBRAIN_CALLBACK_URL='" + callback_url.strip().replace("{run_id}", run_id) + "' "
+    return override + (
+        f'ONEBRAIN_CALLBACK_STATUS="{status}" '
+        f'ONEBRAIN_CALLBACK_SMOKE="{smoke}" '
+        f'ONEBRAIN_CALLBACK_KIND="{kind}" '
+        "/opt/onebrain/onebrain-gate-agent.sh --provision-callback"
     )
 
 
@@ -1105,6 +1098,7 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         ("/opt/onebrain/Caddyfile", caddy, "0644"),
         ("/opt/onebrain/installed-release.json", _initial_release_descriptor(inp), "0644"),
         ("/opt/onebrain/postgres-init.sh", _read_box_file("postgres-init.sh"), "0755"),
+        ("/opt/onebrain/onebrain_dotenv.sh", _read_box_file("onebrain_dotenv.sh"), "0644"),
         ("/opt/onebrain/update.sh", _read_box_file("update.sh"), "0755"),
         ("/opt/onebrain/onebrain-gate-agent.sh", _read_box_file("onebrain-gate-agent.sh"), "0755"),
         ("/opt/onebrain/onebrain_gate_report.py", _read_box_file("onebrain_gate_report.py"), "0755"),
@@ -1113,15 +1107,12 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         ("/etc/systemd/system/onebrain-update.timer", _read_box_file("onebrain-update.timer"), "0644"),
         ("/etc/systemd/system/onebrain-metadata-drop.service", _read_box_file("onebrain-metadata-drop.service"), "0644"),
     ]
-    # The operator box bakes its .env and never invokes the customer-only secret
-    # exchange. Do not ship an unused bootstrap helper into its size-constrained
-    # cloud-init archive.
+    # Operator Mission Control boxes bake their own bundle and never invoke the
+    # customer-only secret exchange.
     if inp.role != "operator":
-        assets.append((
-            "/opt/onebrain/onebrain_bootstrap.sh",
-            _read_box_file("onebrain_bootstrap.sh"),
-            "0755",
-        ))
+        assets.extend([
+            ("/opt/onebrain/onebrain_bootstrap.sh", _read_box_file("onebrain_bootstrap.sh"), "0755"),
+        ])
     # Rendered env files contain `${VAR}` references rather than secret values;
     # package them with the other non-secret assets. The real exchanged/baked
     # operator dotenv is in the separate MC-only secret archive below.
@@ -1159,12 +1150,11 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
     compose_cmd = (
         f"docker compose --project-name {inp.compose_project} -f {compose_file} {profile_flags}".strip()
     )
-    fail_cb = _callback_curl("failed", "failed", inp.run_id, callback_url=inp.callback_url,
-                             extra=',\\"failure_reason\\":\\"metadata_egress_block_failed\\"')
+    fail_cb = _callback_curl(
+        "failed", "failed", inp.run_id, kind="failure", callback_url=inp.callback_url
+    )
     done_cb = _callback_curl(
-        "${ST}", "${SMOKE}", inp.run_id, callback_url=inp.callback_url,
-        extra=',\\"bootstrap_password\\":\\"${ONEBRAIN_ADMIN_PASSWORD}\\"'
-              ',\\"external_run_url\\":\\"$(cat /opt/onebrain/box.instance 2>/dev/null)\\"',
+        "${ST}", "${SMOKE}", inp.run_id, kind="completion", callback_url=inp.callback_url
     )
     runcmd_items = [
         "mkdir -p /opt/onebrain/env /opt/onebrain/caddy-data /opt/onebrain/caddy-config /data /mnt/onebrain-data "

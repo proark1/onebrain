@@ -12,6 +12,7 @@ import base64
 import json
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -49,6 +50,8 @@ _CYGPATH = shutil.which("cygpath")
 _BOX_DIR = Path(__file__).resolve().parents[1] / "deploy" / "box"
 _UPDATE_SH = _BOX_DIR / "update.sh"
 _BOOTSTRAP_SH = _BOX_DIR / "onebrain_bootstrap.sh"
+_GATE_AGENT_SH = _BOX_DIR / "onebrain-gate-agent.sh"
+_DOTENV_SH = _BOX_DIR / "onebrain_dotenv.sh"
 _VERIFY_PY = _BOX_DIR / "onebrain_box_verify.py"
 
 pytestmark = pytest.mark.skipif(_BASH is None, reason="functional bash unavailable (harness needs /usr/bin/bash)")
@@ -435,6 +438,40 @@ def test_bootstrap_first_boot_writes_env_then_records_epoch(box):
     assert "up -d" not in box.stub_log()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode assertion")
+def test_bootstrap_secret_work_files_are_owner_only(box):
+    box.set_bootstrap_resp({"secrets_epoch": 0, "dotenv": "POSTGRES_PASSWORD=pg\n"})
+
+    result = box.run_bootstrap()
+
+    assert result.returncode == 0, result.stderr
+    work = box.data / "onebrain_update"
+    assert stat.S_IMODE(work.stat().st_mode) == 0o700
+    assert stat.S_IMODE((work / "bootstrap_resp.json").stat().st_mode) == 0o600
+    assert stat.S_IMODE((work / "secrets_epoch").stat().st_mode) == 0o600
+    assert stat.S_IMODE((box.root / ".env").stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode assertion")
+def test_bootstrap_tightens_existing_secret_work_files(box):
+    work = box.data / "onebrain_update"
+    work.mkdir(parents=True)
+    work.chmod(0o755)
+    for filename in ("bootstrap_resp.json", "env.new", "secrets_epoch"):
+        path = work / filename
+        path.write_text("old\n", encoding="utf-8")
+        path.chmod(0o644)
+    box.set_bootstrap_resp({"secrets_epoch": 1, "dotenv": "POSTGRES_PASSWORD=pg\n"})
+
+    result = box.run_bootstrap()
+
+    assert result.returncode == 0, result.stderr
+    assert stat.S_IMODE(work.stat().st_mode) == 0o700
+    assert stat.S_IMODE((work / "bootstrap_resp.json").stat().st_mode) == 0o600
+    assert stat.S_IMODE((work / "secrets_epoch").stat().st_mode) == 0o600
+    assert stat.S_IMODE((box.root / ".env").stat().st_mode) == 0o600
+
+
 def test_bootstrap_first_boot_accepts_unresolved_secret_placeholders(box):
     # The rendered first-boot box.env carries ${VAR} references until /bootstrap
     # returns the real secret bundle. Strict nounset must not abort while sourcing
@@ -484,15 +521,84 @@ def test_bootstrap_rotation_reapplies_only_on_higher_epoch(box):
     assert "compose" in box.stub_log() and "up -d" in box.stub_log()
 
 
-def test_update_sh_sources_env_before_box_env():
-    # Static: update.sh sources /opt/onebrain/.env (the exchanged secret bundle) BEFORE
-    # box.env, so box.env's ${VAR} refs re-expand to the delivered real values (P5-03).
+def test_bootstrap_invalid_served_dotenv_keeps_existing_bundle(box):
+    (box.root / ".env").write_text("ONEBRAIN_FLEET_KEY=fk_old\n", encoding="utf-8")
+    work = box.data / "onebrain_update"
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "secrets_epoch").write_text("0\n", encoding="utf-8")
+    box.set_bootstrap_resp({"secrets_epoch": 1, "dotenv": "1INVALID=do-not-install\n"})
+
+    result = box.run_bootstrap()
+
+    assert result.returncode == 0, result.stderr
+    assert box.env_content() == "ONEBRAIN_FLEET_KEY=fk_old\n"
+    assert box.applied_epoch() == "0"
+    assert "compose" not in box.stub_log()
+
+
+def test_update_literal_dotenv_is_not_evaluated_and_box_refs_expand(box):
+    marker = box.ctrl / "dotenv-executed"
+    literal = 'literal#=x$(touch "$CTRL/dotenv-executed")'
+    (box.root / ".env").write_text(f"ONEBRAIN_FLEET_KEY={literal}\n", encoding="utf-8")
+    box_env = box.root / "box.env"
+    box_env.write_text(
+        box_env.read_text(encoding="utf-8").replace(
+            "ONEBRAIN_FLEET_KEY=fk_test", "ONEBRAIN_FLEET_KEY=${ONEBRAIN_FLEET_KEY}"
+        ),
+        encoding="utf-8",
+    )
+    box.set_serve(signed_serve())
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    assert box.state()["outcome"] == "succeeded"
+    assert f"Authorization: Bearer {literal}" in box.stub_log()
+
+
+def test_bootstrap_rotation_loads_existing_dotenv_literally(box):
+    marker = box.ctrl / "bootstrap-dotenv-executed"
+    literal = 'literal#=x$(touch "$CTRL/bootstrap-dotenv-executed")'
+    (box.root / ".env").write_text(f"ONEBRAIN_FLEET_KEY={literal}\n", encoding="utf-8")
+    box.set_bootstrap_resp({"secrets_epoch": 1, "dotenv": "POSTGRES_PASSWORD=pg\n"})
+
+    result = box.run_bootstrap()
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    assert box.applied_epoch() == "1"
+    assert f"Authorization: Bearer {literal}" in box.stub_log()
+
+
+def test_invalid_dotenv_holds_before_network_or_docker_work(box):
+    (box.root / ".env").write_text("1INVALID=do-not-leak\n", encoding="utf-8")
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state() is None
+    assert box.stub_log() == ""
+    assert "do-not-leak" not in result.stdout + result.stderr
+
+
+def test_update_sh_loads_literal_env_before_box_env():
+    # The exchanged Docker Compose bundle is literal-loaded BEFORE renderer-owned
+    # box.env expands its ${VAR} references (P5-03).
     src = _UPDATE_SH.read_text(encoding="utf-8")
-    assert src.index('. "$ENV_FILE"') < src.index('. "$BOX_ENV"')
+    assert src.index('onebrain_load_dotenv "$ENV_FILE"') < src.index('. "$BOX_ENV"')
+    assert '. "$ENV_FILE"' not in src
+
+
+def test_gate_agent_loads_literal_env_before_box_env():
+    src = _GATE_AGENT_SH.read_text(encoding="utf-8")
+    assert src.index('onebrain_load_dotenv "$ENV_FILE"') < src.index('. "$BOX_ENV"')
+    assert '. "$ENV_FILE"' not in src
 
 
 def test_bootstrap_sh_has_no_crlf():
-    assert b"\r" not in _BOOTSTRAP_SH.read_bytes()
+    for script in (_BOOTSTRAP_SH, _GATE_AGENT_SH, _DOTENV_SH):
+        assert b"\r" not in script.read_bytes()
 
 
 # --- P5-07 7c: pg_dump -Fc + pg_restore share the SAME connection target -----
@@ -563,6 +669,6 @@ def test_shellcheck_clean():
     checker = shutil.which("shellcheck")
     if checker is None:
         pytest.skip("shellcheck absent (CI-only gate; not a local merge gate — A4)")
-    for script in (_UPDATE_SH, _BOOTSTRAP_SH):
+    for script in (_UPDATE_SH, _BOOTSTRAP_SH, _GATE_AGENT_SH, _DOTENV_SH):
         result = subprocess.run([checker, str(script)], capture_output=True, text=True)
         assert result.returncode == 0, result.stdout + result.stderr

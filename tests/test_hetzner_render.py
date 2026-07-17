@@ -8,8 +8,11 @@ from __future__ import annotations
 import base64
 import gzip
 import io
+import json
 import os
 import re
+import shutil
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -534,7 +537,7 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
     assets = _asset_entries(ci)
     for required in (
         "/opt/onebrain/docker-compose.yml", "/opt/onebrain/Caddyfile", "/opt/onebrain/box.env",
-        "/opt/onebrain/postgres-init.sh", "/opt/onebrain/update.sh",
+        "/opt/onebrain/postgres-init.sh", "/opt/onebrain/onebrain_dotenv.sh", "/opt/onebrain/update.sh",
         "/opt/onebrain/onebrain_box_verify.py", "/opt/onebrain/onebrain-gate-agent.sh",
         "/opt/onebrain/onebrain_gate_report.py", "/opt/onebrain/installed-release.json",
         "/etc/systemd/system/onebrain-update.service", "/etc/systemd/system/onebrain-update.timer",
@@ -542,6 +545,8 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
         assert required in assets
     assert "/opt/onebrain/env/onebrain-api.env" in assets
     assert "set -euo pipefail" in assets["/opt/onebrain/update.sh"][1]
+    assert assets["/opt/onebrain/onebrain_dotenv.sh"][0] == "0644"
+    assert "onebrain_load_dotenv()" in assets["/opt/onebrain/onebrain_dotenv.sh"][1]
     assert "verify_desired_state" in assets["/opt/onebrain/onebrain_box_verify.py"][1]
     assert "set -euo pipefail" not in wf                             # NOT present as plaintext (compressed)
     assert "ExecStart=/opt/onebrain/onebrain-gate-agent.sh" in assets["/etc/systemd/system/onebrain-update.service"][1]
@@ -549,11 +554,12 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
     rc = _runcmd_section(ci)
     assert "iptables -w -I DOCKER-USER -d 169.254.169.254 -j DROP" in rc
     assert "iptables -w -I OUTPUT -d 169.254.169.254 -j DROP" in rc
-    # run_id is baked at render time (no literal placeholder survives), in both the
-    # callback URL and box.env — else the box POSTs to /runs/{run_id}/callback and 404s.
-    assert "/api/provisioning/runs/prun_fixture/callback" in ci
+    # The default target comes from trusted box.env; a preflighted custom URL is
+    # single-quoted at the cloud-init call site so ordinary URL syntax is safe.
+    callback = assets["/opt/onebrain/onebrain-gate-agent.sh"][1]
+    assert "/api/provisioning/runs/${ONEBRAIN_RUN_ID:-}/callback" in callback
     assert "ONEBRAIN_RUN_ID=prun_fixture" in assets["/opt/onebrain/box.env"][1]
-    assert "{run_id}" not in ci
+    assert "{run_id}" not in callback
     assert assets["/opt/onebrain/onebrain_gate_report.py"][0] == "0755"
     assert "tar -xf /opt/onebrain/onebrain-assets.tar -C /" in rc
 
@@ -561,10 +567,11 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
 def test_cloud_init_uses_the_preflighted_callback_url_template():
     ci = render_cloud_init(_inputs(
         _ONEBRAIN,
-        callback_url="https://callbacks.example/provisioning/runs/{run_id}/callback?source=box",
+        callback_url="https://callbacks.example/provisioning/runs/{run_id}/callback?source=box&channel=agent",
     ))
-    assert "https://callbacks.example/provisioning/runs/prun_fixture/callback?source=box" in ci
-    assert "${ONEBRAIN_FLEET_URL}/api/provisioning/runs/prun_fixture/callback" not in ci
+    runcmd = _runcmd_section(ci)
+    assert "ONEBRAIN_CALLBACK_URL=" in runcmd
+    assert "https://callbacks.example/provisioning/runs/prun_fixture/callback?source=box&channel=agent" in runcmd
 
 
 def test_cloud_init_requires_run_id():
@@ -608,8 +615,10 @@ def test_cloud_init_metadata_block_is_fail_soft_before_compose_up():
         line = runcmd[start:runcmd.index("\n", start)]
         assert "exit 1" not in line
         assert "|| true" in line          # report-and-continue, not fail-closed
-    # The failure callback (operator signal) is STILL emitted on an insert failure.
-    assert "metadata_egress_block_failed" in runcmd
+    # The failure callback (operator signal) is STILL emitted on an insert failure;
+    # its fixed reason is JSON-encoded by the root-only reporter callback mode.
+    assert 'ONEBRAIN_CALLBACK_KIND="failure"' in runcmd
+    assert "metadata_egress_block_failed" in _asset_entries(ci)["/opt/onebrain/onebrain_gate_report.py"][1]
 
 
 # --- Hetzner 32768-byte user_data limit (gz+b64 large-entry encoding) ---------
@@ -738,27 +747,99 @@ def test_cloud_init_embeds_bootstrap_helper_and_metadata_drop_unit():
     assert "/etc/systemd/system/onebrain-metadata-drop.service" in assets
 
 
-def test_cloud_init_bootstrap_runcmd_order_and_env_first_source():
-    rc = _runcmd_section(render_cloud_init(_inputs(_ALL, bootstrap_token="bt_x_y", callback_token="cb")))
+def test_cloud_init_bootstrap_runcmd_order_and_literal_env_first_load():
+    ci = render_cloud_init(_inputs(_ALL, bootstrap_token="bt_x_y", callback_token="cb"))
+    rc = _runcmd_section(ci)
     # Order: immediate DROP -> persist across reboots (G1-6) -> secret exchange -> compose up.
     drop = rc.index("iptables -w -I OUTPUT -d 169.254.169.254 -j DROP")
     persist = rc.index("systemctl enable --now onebrain-metadata-drop.service")
     exchange = rc.index("bash /opt/onebrain/onebrain_bootstrap.sh")
     up = rc.index("up -d")
     assert drop < persist < exchange < up
-    # .env-first sourcing so the callbacks' ${VAR} refs re-expand to exchanged secrets.
-    assert ". /opt/onebrain/.env 2>/dev/null || true; . /opt/onebrain/box.env" in rc
+    # The gate agent's callback mode literal-loads .env before renderer-owned
+    # box.env expands its ${VAR} references; it must never source exchanged values as code.
+    assert "/opt/onebrain/onebrain-gate-agent.sh --provision-callback" in rc
+    callback = _asset_entries(ci)["/opt/onebrain/onebrain-gate-agent.sh"][1]
+    helper = callback.index('. "$DOTENV_LOADER"')
+    dotenv = callback.index('onebrain_load_dotenv "$ENV_FILE"')
+    box_env = callback.index('. "$BOX_ENV"')
+    assert helper < dotenv < box_env
+    assert '. "$ENV_FILE"' not in callback
+    assert '"$GATE_REPORTER" --provision-callback' in callback
+    reporter = _asset_entries(ci)["/opt/onebrain/onebrain_gate_report.py"][1]
+    assert "json.dumps" in reporter
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("sh") is None or shutil.which("python3") is None,
+    reason="callback command runtime test requires POSIX sh and python3",
+)
+def test_callback_json_encodes_literal_password_with_quotes_and_backslashes(tmp_path):
+    from app.provisioning.hetzner.render import _read_box_file
+
+    root = tmp_path / "onebrain"
+    root.mkdir()
+    password = 'new"password\\with\\slashes'
+    (root / "onebrain_dotenv.sh").write_text(_read_box_file("onebrain_dotenv.sh"), encoding="utf-8")
+    callback = root / "onebrain-gate-agent.sh"
+    callback.write_text(_read_box_file("onebrain-gate-agent.sh"), encoding="utf-8")
+    callback.chmod(0o755)
+    reporter = root / "onebrain_gate_report.py"
+    reporter.write_text(_read_box_file("onebrain_gate_report.py"), encoding="utf-8")
+    reporter.chmod(0o755)
+    (root / ".env").write_text(f"ONEBRAIN_ADMIN_PASSWORD={password}\n", encoding="utf-8")
+    (root / "box.env").write_text(
+        "ONEBRAIN_FLEET_URL=https://mc.test\n"
+        "ONEBRAIN_RUN_ID=prun_fixture\n"
+        "ONEBRAIN_PROVISIONING_CALLBACK_TOKEN=callback-token\n"
+        "ONEBRAIN_ADMIN_PASSWORD=${ONEBRAIN_ADMIN_PASSWORD}\n",
+        encoding="utf-8",
+    )
+    callback_url = "https://callbacks.test/provisioning/prun_fixture?source=box&channel=agent"
+    (root / "box.instance").write_text("https://dep.test\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    body_path = tmp_path / "callback.json"
+    args_path = tmp_path / "callback.args"
+    curl = bin_dir / "curl"
+    curl.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$CALLBACK_ARGS"\ncat > "$CALLBACK_BODY"\n',
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "CALLBACK_BODY": str(body_path),
+        "CALLBACK_ARGS": str(args_path),
+        "ONEBRAIN_CALLBACK_URL": callback_url,
+        "ONEBRAIN_CALLBACK_STATUS": "succeeded",
+        "ONEBRAIN_CALLBACK_SMOKE": "passed",
+        "ONEBRAIN_CALLBACK_KIND": "completion",
+    }
+
+    result = subprocess.run([str(callback), "--provision-callback"], env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(body_path.read_text(encoding="utf-8")) == {
+        "status": "succeeded",
+        "smoke_status": "passed",
+        "bootstrap_password": password,
+        "external_run_url": "https://dep.test",
+    }
+    assert args_path.read_text(encoding="utf-8").splitlines()[-1] == callback_url
 
 
 def test_operator_cloud_init_omits_exchange_but_keeps_drop_persistence():
     # G3-1: the MC box render carries NO exchange step (it bakes .env), but G1-6's
     # metadata-drop persistence still applies to it.
-    rc = _runcmd_section(render_cloud_init(_inputs(_ALL, role="operator")))
+    ci = render_cloud_init(_inputs(_ALL, role="operator"))
+    rc = _runcmd_section(ci)
     assert "onebrain_bootstrap.sh" not in rc
-    assert "/opt/onebrain/onebrain_bootstrap.sh" not in _asset_entries(
-        render_cloud_init(_inputs(_ALL, role="operator"))
-    )
     assert "systemctl enable --now onebrain-metadata-drop.service" in rc
+    assets = _asset_entries(ci)
+    assert "/opt/onebrain/onebrain_bootstrap.sh" not in assets
+    assert "/opt/onebrain/onebrain_gate_report.py" in assets
 
 
 def test_metadata_drop_unit_runs_before_docker_and_precreates_chain():

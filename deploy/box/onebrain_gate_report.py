@@ -208,8 +208,30 @@ def send_heartbeat(env: Mapping[str, str], heartbeat: dict) -> bool:
         return False
 
 
+def provision_callback_payload(env: Mapping[str, str]) -> dict | None:
+    kind = env.get("ONEBRAIN_CALLBACK_KIND") or "completion"
+    if kind not in {"failure", "completion"}:
+        return None
+    payload = {
+        "status": env.get("ONEBRAIN_CALLBACK_STATUS") or "",
+        "smoke_status": env.get("ONEBRAIN_CALLBACK_SMOKE") or "",
+    }
+    if kind == "failure":
+        payload["failure_reason"] = "metadata_egress_block_failed"
+    else:
+        payload["bootstrap_password"] = env.get("ONEBRAIN_ADMIN_PASSWORD") or ""
+        payload["external_run_url"] = env.get("ONEBRAIN_CALLBACK_INSTANCE") or ""
+    return payload
+
+
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
+    if "--provision-callback" in args:
+        payload = provision_callback_payload(os.environ)
+        if payload is None:
+            return 2
+        print(json.dumps(payload, separators=(",", ":")))
+        return 0
     heartbeat = build_heartbeat(os.environ)
     if "--print" in args:
         print(json.dumps(heartbeat, sort_keys=True))
