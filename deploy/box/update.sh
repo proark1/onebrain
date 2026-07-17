@@ -262,8 +262,11 @@ override_path = sys.argv[2]
 images = target.get("images", {})
 local = [m.strip() for m in os.environ.get("UPDATE_LOCAL_MODULES", "").split(",") if m.strip()]
 selected = {m: images[m] for m in local if m in images} if local else dict(images)
+service_images = dict(selected)
+if "onebrain-api" in selected:
+    service_images["onebrain-migrate"] = selected["onebrain-api"]
 lines = ["services:"]
-for m, ref in sorted(selected.items()):
+for m, ref in sorted(service_images.items()):
     lines.append("  %s:" % m)
     lines.append("    image: %s" % ref)
 with open(override_path, "w") as fh:

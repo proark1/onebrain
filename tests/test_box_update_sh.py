@@ -271,6 +271,9 @@ def test_pulled_digests_equal_verifier_output(box):
     assert result.returncode == 0, result.stderr
     assert box.pulled() == [GOOD_IMG]
     assert ("f" * 64) not in "\n".join(box.pulled())
+    override = (box.root / "images.override.yml").read_text(encoding="utf-8")
+    assert "onebrain-migrate:" in override
+    assert override.count(GOOD_IMG) == 2
 
 
 def test_verify_failure_holds(box):
@@ -504,6 +507,11 @@ def test_migration_backup_keeps_postgres_up_and_recovers_failed_backup():
     failure = src[src.index('log "backup FAILED; restoring current stack'):
                   src.index('# --- 5. PULL + UP')]
     assert "resume_current_stack" in failure
+
+
+def test_verified_api_digest_also_pins_migration_service():
+    src = _UPDATE_SH.read_text(encoding="utf-8")
+    assert 'service_images["onebrain-migrate"] = selected["onebrain-api"]' in src
 
 
 # --- P5-07 7d: box records a well-formed backup_manifest (A17 gate) -----------
