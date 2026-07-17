@@ -32,6 +32,7 @@ class LiteLLMAgentBackend:
             "stream_options": {"include_usage": True},
             "max_tokens": request.max_output_tokens,
             "temperature": request.temperature,
+            "timeout": request.timeout_seconds,
         }
         if request.tools:
             kwargs["tools"] = list(request.tools)

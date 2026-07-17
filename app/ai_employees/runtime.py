@@ -5,10 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from time import monotonic
 from uuid import uuid4
 
 from app.ai_employees.backends.base import AgentBackendRequest, BackendUnavailableError
 from app.ai_employees.base import (
+    AI_AGENT_RUN_LEASE_EXPIRED_ERROR,
     AiAgentRun,
     AiEmployeeConversation,
     AiEmployeeMessage,
@@ -20,6 +23,10 @@ from app.ai_employees.memory_service import active_approved_memories
 from app.security.policy import Classification
 
 
+class _TurnLeaseLost(RuntimeError):
+    """The stream no longer owns the persisted AI turn lease."""
+
+
 class AiEmployeeRuntime:
     def __init__(
         self,
@@ -28,11 +35,23 @@ class AiEmployeeRuntime:
         retrieval_service,
         backend_registry,
         max_output_tokens: int = 2_048,
+        run_lease_seconds: float = 120,
+        run_heartbeat_seconds: float = 15,
+        provider_timeout_seconds: float = 60.0,
     ):
         self.store = store
         self.retrieval_service = retrieval_service
         self.backend_registry = backend_registry
         self.max_output_tokens = max(1, min(int(max_output_tokens), 32_768))
+        self.run_lease_seconds = float(run_lease_seconds)
+        self.run_heartbeat_seconds = float(run_heartbeat_seconds)
+        self.provider_timeout_seconds = float(provider_timeout_seconds)
+        if not 1 <= self.run_lease_seconds <= 900:
+            raise ValueError("AI employee run lease must be between 1 and 900 seconds.")
+        if not 0.01 <= self.run_heartbeat_seconds < self.run_lease_seconds:
+            raise ValueError("AI employee run heartbeat must be shorter than its lease.")
+        if not 0.01 <= self.provider_timeout_seconds <= self.run_lease_seconds - self.run_heartbeat_seconds:
+            raise ValueError("AI employee provider timeout must leave time for a run lease heartbeat.")
 
     def create_conversation(
         self,
@@ -118,12 +137,15 @@ class AiEmployeeRuntime:
             account_id=account_id,
             space_id=space_id,
         )
+        # Terminal results are immutable replays, independent of current model
+        # availability. A running turn still goes through atomic begin-or-get so
+        # a stale lease can be terminalized safely.
         if existing:
             if existing.input_hash != input_hash or existing.conversation_id != conversation.id:
                 raise ValueError("AI employee turn idempotency key conflicts with a different request.")
-            yield from self._replay(conversation, existing)
-            return
-
+            if existing.status != "running" or self._lease_is_live(existing):
+                yield from self._replay(conversation, existing)
+                return
         policy = self.store.get_model_policy(
             conversation.employee_id,
             tenant_id=principal.tenant_id,
@@ -169,7 +191,9 @@ class AiEmployeeRuntime:
             token_budget=max(1, int(policy.cost_limit_usd * 20_000)),
             cost_budget_usd=policy.cost_limit_usd,
         )
-        run = self.store.save_run(AiAgentRun(
+        lease_token = uuid4().hex
+        heartbeat_at, lease_expires_at = self._new_lease_window()
+        run = AiAgentRun(
             id=f"air_{uuid4().hex}",
             tenant_id=principal.tenant_id,
             account_id=account_id,
@@ -182,9 +206,12 @@ class AiEmployeeRuntime:
             idempotency_key=idempotency_key,
             status="running",
             input_hash=input_hash,
-            started_at=now_iso(),
-        ))
-        self.store.save_message(AiEmployeeMessage(
+            heartbeat_at=heartbeat_at,
+            lease_expires_at=lease_expires_at,
+            lease_token=lease_token,
+            started_at=heartbeat_at,
+        )
+        human_message = AiEmployeeMessage(
             id=f"aim_{uuid4().hex}",
             tenant_id=principal.tenant_id,
             account_id=account_id,
@@ -195,16 +222,15 @@ class AiEmployeeRuntime:
             visibility="shared",
             content=question,
             run_id=run.id,
-        ))
-        yield {
-            "type": "run",
-            "run_id": run.id,
-            "employee_id": conversation.employee_id,
-            "provider": backend.provider,
-            "model": model,
-            "replayed": False,
-        }
-
+        )
+        claim = self.store.begin_or_get_run(run, human_message=human_message)
+        if not claim.acquired:
+            existing = claim.run
+            if existing.input_hash != input_hash or existing.conversation_id != conversation.id:
+                raise ValueError("AI employee turn idempotency key conflicts with a different request.")
+            yield from self._replay(conversation, existing)
+            return
+        run = claim.run
         answer_parts: list[str] = []
         usage = {
             "prompt_tokens": 0,
@@ -213,13 +239,45 @@ class AiEmployeeRuntime:
             "provider_session_ref": "",
         }
         warning = ""
+        terminalized = False
+        provider_events = None
+        last_heartbeat = monotonic()
+
+        def heartbeat_if_due(*, force: bool = False) -> None:
+            nonlocal last_heartbeat
+            if not force and monotonic() - last_heartbeat < self.run_heartbeat_seconds:
+                return
+            renewed = self.store.heartbeat_run(
+                run.id,
+                tenant_id=run.tenant_id,
+                account_id=run.account_id,
+                space_id=run.space_id,
+                lease_token=lease_token,
+                lease_expires_at=self._lease_expiry(),
+            )
+            if not renewed:
+                raise _TurnLeaseLost()
+            last_heartbeat = monotonic()
+
         try:
+            yield {
+                "type": "run",
+                "run_id": run.id,
+                "employee_id": conversation.employee_id,
+                "provider": backend.provider,
+                "model": model,
+                "replayed": False,
+            }
             request = AgentBackendRequest(
                 model=model,
                 messages=messages,
                 max_output_tokens=self.max_output_tokens,
+                timeout_seconds=self.provider_timeout_seconds,
             )
-            for event in backend.stream(request):
+            heartbeat_if_due(force=True)
+            provider_events = backend.stream(request)
+            for event in provider_events:
+                heartbeat_if_due()
                 if event.type == "text":
                     answer_parts.append(event.text)
                     yield {"type": "text", "text": event.text}
@@ -236,59 +294,102 @@ class AiEmployeeRuntime:
                     warning = event.text[:500]
                 elif event.type == "error":
                     raise RuntimeError("Normalized backend error")
-        except Exception:
-            self.store.save_run(replace(
-                run,
-                status="failed",
-                warning=warning,
-                error="AI employee backend failed.",
-                completed_at=now_iso(),
-            ))
+            answer = "".join(answer_parts).strip()
+            if not answer:
+                answer = "I could not produce a safe response for this turn."
+            citations = tuple(dict.fromkeys(hit.chunk.doc_id for hit in hits))
+            heartbeat_if_due(force=True)
+            completed = self.store.finalize_owned_run(
+                replace(
+                    run,
+                    status="completed",
+                    provider_session_ref=str(usage["provider_session_ref"] or ""),
+                    prompt_tokens=int(usage["prompt_tokens"] or 0),
+                    completion_tokens=int(usage["completion_tokens"] or 0),
+                    cost_usd=float(usage["cost_usd"] or 0.0),
+                    warning=warning,
+                    completed_at=now_iso(),
+                ),
+                lease_token=lease_token,
+                assistant_message=AiEmployeeMessage(
+                    id=f"aim_{uuid4().hex}",
+                    tenant_id=principal.tenant_id,
+                    account_id=account_id,
+                    space_id=space_id,
+                    conversation_id=conversation.id,
+                    speaker_type="employee",
+                    speaker_id=conversation.employee_id,
+                    visibility="shared",
+                    content=answer,
+                    citations=citations,
+                    run_id=run.id,
+                ),
+            )
+            if not completed:
+                raise _TurnLeaseLost()
+            terminalized = True
+            sources = self._sources(hits)
+            yield {"type": "sources", "sources": sources}
             yield {
-                "type": "error",
-                "code": "backend_failed",
-                "message": "The AI employee could not complete this turn.",
+                "type": "usage",
+                "prompt_tokens": completed.prompt_tokens,
+                "completion_tokens": completed.completion_tokens,
+                "cost_usd": completed.cost_usd,
+                "provider_session_ref": completed.provider_session_ref,
             }
             yield {"type": "done", "run_id": run.id, "replayed": False}
-            return
-
-        answer = "".join(answer_parts).strip()
-        if not answer:
-            answer = "I could not produce a safe response for this turn."
-        citations = tuple(dict.fromkeys(hit.chunk.doc_id for hit in hits))
-        self.store.save_message(AiEmployeeMessage(
-            id=f"aim_{uuid4().hex}",
-            tenant_id=principal.tenant_id,
-            account_id=account_id,
-            space_id=space_id,
-            conversation_id=conversation.id,
-            speaker_type="employee",
-            speaker_id=conversation.employee_id,
-            visibility="shared",
-            content=answer,
-            citations=citations,
-            run_id=run.id,
-        ))
-        completed = self.store.save_run(replace(
-            run,
-            status="completed",
-            provider_session_ref=str(usage["provider_session_ref"] or ""),
-            prompt_tokens=int(usage["prompt_tokens"] or 0),
-            completion_tokens=int(usage["completion_tokens"] or 0),
-            cost_usd=float(usage["cost_usd"] or 0.0),
-            warning=warning,
-            completed_at=now_iso(),
-        ))
-        sources = self._sources(hits)
-        yield {"type": "sources", "sources": sources}
-        yield {
-            "type": "usage",
-            "prompt_tokens": completed.prompt_tokens,
-            "completion_tokens": completed.completion_tokens,
-            "cost_usd": completed.cost_usd,
-            "provider_session_ref": completed.provider_session_ref,
-        }
-        yield {"type": "done", "run_id": run.id, "replayed": False}
+        except _TurnLeaseLost:
+            yield {
+                "type": "error",
+                "code": "turn_lease_lost",
+                "message": "This AI employee turn could not be completed safely.",
+            }
+            yield {"type": "done", "run_id": run.id, "replayed": False}
+        except Exception:
+            failed = self.store.finalize_owned_run(
+                replace(
+                    run,
+                    status="failed",
+                    warning=warning,
+                    error="AI employee backend failed.",
+                    completed_at=now_iso(),
+                ),
+                lease_token=lease_token,
+            )
+            if failed:
+                terminalized = True
+                yield {
+                    "type": "error",
+                    "code": "backend_failed",
+                    "message": "The AI employee could not complete this turn.",
+                }
+            else:
+                yield {
+                    "type": "error",
+                    "code": "turn_lease_lost",
+                    "message": "This AI employee turn could not be completed safely.",
+                }
+            yield {"type": "done", "run_id": run.id, "replayed": False}
+        finally:
+            try:
+                close = getattr(provider_events, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                pass
+            if not terminalized:
+                try:
+                    self.store.finalize_owned_run(
+                        replace(
+                            run,
+                            status="cancelled",
+                            error="AI employee turn cancelled before completion.",
+                            completed_at=now_iso(),
+                        ),
+                        lease_token=lease_token,
+                    )
+                except Exception:
+                    pass
 
     def _replay(self, conversation, run):
         messages = self.store.list_messages(
@@ -325,8 +426,24 @@ class AiEmployeeRuntime:
         elif run.status == "failed":
             yield {
                 "type": "error",
-                "code": "backend_failed",
-                "message": "The AI employee could not complete this turn.",
+                "code": "turn_expired" if run.error == AI_AGENT_RUN_LEASE_EXPIRED_ERROR else "backend_failed",
+                "message": (
+                    "This AI employee turn expired before it could be completed."
+                    if run.error == AI_AGENT_RUN_LEASE_EXPIRED_ERROR
+                    else "The AI employee could not complete this turn."
+                ),
+            }
+        elif run.status == "cancelled":
+            yield {
+                "type": "error",
+                "code": "turn_cancelled",
+                "message": "This AI employee turn was cancelled before completion.",
+            }
+        elif run.status == "blocked":
+            yield {
+                "type": "error",
+                "code": "turn_blocked",
+                "message": "This AI employee turn is blocked.",
             }
         else:
             yield {
@@ -335,6 +452,28 @@ class AiEmployeeRuntime:
                 "message": "This AI employee turn has not completed yet.",
             }
         yield {"type": "done", "run_id": run.id, "replayed": True}
+
+    def _new_lease_window(self) -> tuple[str, str]:
+        heartbeat_at = datetime.now(timezone.utc)
+        return (
+            heartbeat_at.isoformat(),
+            (heartbeat_at + timedelta(seconds=self.run_lease_seconds)).isoformat(),
+        )
+
+    def _lease_expiry(self) -> str:
+        return (datetime.now(timezone.utc) + timedelta(seconds=self.run_lease_seconds)).isoformat()
+
+    @staticmethod
+    def _lease_is_live(run: AiAgentRun) -> bool:
+        if not run.lease_token or not run.lease_expires_at:
+            return False
+        try:
+            expiry = datetime.fromisoformat(run.lease_expires_at.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if expiry.tzinfo is None:
+            return False
+        return expiry.astimezone(timezone.utc) > datetime.now(timezone.utc)
 
     @staticmethod
     def _sources(hits) -> list[dict]:

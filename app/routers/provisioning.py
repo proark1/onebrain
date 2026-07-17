@@ -6,7 +6,7 @@ import re
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.auth.account_access import authorized_account_ids, is_account_admin
 from app.auth.principal import Principal, resolve_principal
@@ -24,7 +24,6 @@ from app.provisioning.bundles import BUNDLES, ProvisioningBundle
 from app.provisioning.hetzner.broker import build_hetzner_broker
 from app.provisioning.hetzner.provisioner import HetznerProvisioner
 from app.provisioning.runs import (
-    GitHubWorkflowDispatcher,
     ProvisioningCallback,
     ProvisioningRun,
     STATUS_CANCELLED,
@@ -43,18 +42,14 @@ from app.schemas import BrandThemeOut
 router = APIRouter(prefix="/api/provisioning", tags=["provisioning"])
 
 # Structural provisioning inputs (versions, slugs, module ids, hex colors) are
-# interpolated into the provision-customer GitHub Actions workflow's shell/python
-# steps. Constrain them to a shell/python-inert charset at the trust boundary so a
-# value like "1.0'; curl evil #" can never break out of a quote and run code in a
-# job that holds RAILWAY_TOKEN and the callback key. Free-text fields (customer/
-# brand names, logo URLs) legitimately contain quotes/spaces and are NOT charset-
-# constrained here — those must instead be passed to the workflow via env vars,
-# never via ${{ }} interpolation (tracked follow-up).
-_WORKFLOW_SAFE = re.compile(r"^[A-Za-z0-9._:/+#-]*$")
+# passed to the infrastructure renderer and signed release machinery. Constrain
+# them at the trust boundary; customer and brand names remain free text because
+# they are persisted data rather than shell or cloud-init identifiers.
+_STRUCTURAL_SAFE = re.compile(r"^[A-Za-z0-9._:/+#-]*$")
 
 
 def _reject_unsafe(value: str, field: str) -> str:
-    if value and not _WORKFLOW_SAFE.match(value):
+    if value and not _STRUCTURAL_SAFE.match(value):
         raise ValueError(
             f"{field} may only contain letters, digits, and . _ : / + # - "
             "(no quotes, whitespace, or shell metacharacters)."
@@ -105,9 +100,13 @@ class CustomerProvisionCreate(BaseModel):
     # mints the owner with a one-time password; that OTP is ONEBRAIN_ADMIN_PASSWORD, a
     # REQUIRED Hetzner bundle key — without it a hetzner-backend provision fails validate_bundle
     # and dispatch_fails. Free-text (an email carries @/./+, so it is NOT charset-constrained
-    # like the workflow-interpolated structural fields); the OTP, not the email, reaches the box.
+    # like structural identifiers); the OTP, not the email, reaches the box.
     owner_email: str = Field(default="", max_length=320)
-    deployment_type: str = Field(default="dedicated_railway", max_length=80)
+    deployment_type: str = Field(
+        default="dedicated_server",
+        max_length=80,
+        pattern="^(dedicated_server|customer_owned)$",
+    )
     environment: str = Field(default="production", max_length=80)
     region: str = Field(default="", max_length=80)
     release_ring: str = Field(default="manual", max_length=80)
@@ -139,12 +138,14 @@ class CustomerProvisionCreate(BaseModel):
 
 
 class ProvisioningCallbackIn(BaseModel):
+    # A box only reports its own status; it never selects or overwrites the
+    # provisioned target. Reject retired provider-coordinate fields explicitly.
+    model_config = ConfigDict(extra="forbid")
+
     status: str = Field(max_length=40)
     external_run_id: str = Field(default="", max_length=200)
     external_run_url: str = Field(default="", max_length=500)
     result_payload: dict = Field(default_factory=dict)
-    railway_project_id: str = Field(default="", max_length=200)
-    railway_environment_id: str = Field(default="", max_length=200)
     service_urls: dict[str, str] = Field(default_factory=dict)
     migration_revision: str = Field(default="", max_length=120)
     smoke_status: str = Field(default="", max_length=80)
@@ -224,8 +225,11 @@ class ProvisioningRunOut(BaseModel):
     external_provider: str = ""
     external_run_id: str = ""
     external_run_url: str = ""
-    railway_project_id: str = ""
-    railway_environment_id: str = ""
+    # The persistent store retains its legacy column names during the database
+    # migration window.  The public API is provider-neutral: only a Hetzner
+    # provisioning dispatch may establish these target coordinates.
+    target_id: str = ""
+    target_environment: str = ""
     service_urls: dict[str, str] = Field(default_factory=dict)
     migration_revision: str = ""
     smoke_status: str = ""
@@ -264,23 +268,34 @@ def _require_admin(principal: Principal) -> None:
         raise HTTPException(status_code=403, detail="Only admin can provision customers.")
 
 
-def _validate_callback_url(url: str) -> None:
-    """The workflow sends the provisioning callback KEY as a bearer token to this
-    URL, so an attacker-chosen host would exfiltrate the fleet callback secret.
-    Require https, and — when an allowlist is configured — require a known host."""
+def _validate_callback_url(url: str, *, placeholder: str = "{run_id}") -> None:
+    """Validate a token-bearing callback URL and its required ID placeholder.
+
+    Reject attacker-controlled destinations that could exfiltrate that token.
+    Require HTTPS and, when configured, an allowlisted host. Provisioning runs
+    use ``{run_id}``; rollout delivery uses ``{rollout_id}``.
+    """
     from urllib.parse import urlsplit
 
     cleaned = url.strip()
-    # Defense in depth alongside the workflow's env-var indirection: reject the
-    # shell metacharacters that enable command substitution or quote breakout
+    # Defense in depth alongside cloud-init rendering: reject shell
+    # metacharacters that enable command substitution or quote breakout
     # (path/query included). '&', '?', '=' are intentionally allowed so a
-    # legitimate multi-parameter query string still passes, as does the {run_id}
+    # legitimate multi-parameter query string still passes, as does the ID
     # placeholder braces (harmless with '$' already rejected).
     if any(c in cleaned for c in "$`()|;<>\\'\" \t\n\r"):
         raise HTTPException(status_code=400, detail="callback_url contains invalid characters.")
-    parts = urlsplit(cleaned)
-    if parts.scheme != "https" or not parts.hostname:
+    try:
+        parts = urlsplit(cleaned)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="callback_url must be a valid absolute https URL.") from exc
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
         raise HTTPException(status_code=400, detail="callback_url must be an absolute https URL.")
+    # The run/rollout does not exist until after this preflight. Requiring its
+    # literal template prevents a box from posting a bearer token to an
+    # ambiguous or caller-selected identifier once it boots.
+    if placeholder not in cleaned:
+        raise HTTPException(status_code=400, detail=f"callback_url must contain the {placeholder} placeholder.")
     allowed = [h.strip().lower() for h in get_settings().provisioning_callback_allowed_hosts.split(",") if h.strip()]
     if allowed and parts.hostname.lower() not in allowed:
         raise HTTPException(status_code=400, detail="callback_url host is not allowed.")
@@ -363,8 +378,8 @@ def _run_out(run: ProvisioningRun) -> ProvisioningRunOut:
         external_provider=run.external_provider,
         external_run_id=run.external_run_id,
         external_run_url=run.external_run_url,
-        railway_project_id=run.railway_project_id,
-        railway_environment_id=run.railway_environment_id,
+        target_id=run.railway_project_id,
+        target_environment=run.railway_environment_id,
         service_urls=run.service_urls,
         migration_revision=run.migration_revision,
         smoke_status=run.smoke_status,
@@ -379,41 +394,37 @@ def _run_out(run: ProvisioningRun) -> ProvisioningRunOut:
     )
 
 
-def _box_integration_credential(result: ProvisioningResult) -> tuple[str, str]:
-    """The (service_key, space_id) a Hetzner box's comm/assistant services need, drawn
-    from the first minted integration credential (its plaintext key + its first space).
-    ("", "") when the box runs no comm/assistant module — both are OPTIONAL bundle keys."""
-    for cred in result.credentials:
-        if cred.key:
-            return cred.key, (cred.space_ids[0] if cred.space_ids else "")
-    return "", ""
+def _box_integration_credentials(result: ProvisioningResult) -> dict[str, tuple[str, str]]:
+    """Return app-addressed credentials for services installed on the customer box."""
+    return {
+        cred.app_id: (cred.key, cred.space_ids[0] if cred.space_ids else "")
+        for cred in result.credentials
+        if cred.app_id in {"assistant", "communication"} and cred.key
+    }
 
 
 def _dispatch_run(run: ProvisioningRun, *, owner_otp: str = "",
-                  service_key: str = "", space_id: str = "", owner_email: str = "") -> ProvisioningRun:
-    # H-1/H-9: backend switch. Default "github" is today's Railway behavior
-    # exactly (dormancy); "hetzner" dispatches through the token-isolating broker.
-    # An unknown value fails closed with a named reason — never a silent fallback.
-    # owner_otp/service_key/space_id/owner_email (G3-3) are threaded from provision_customer
-    # into the Hetzner box secret bundle; the github path ignores them. owner_email + owner_otp
-    # are the ONEBRAIN_ADMIN_EMAIL/PASSWORD pair the box needs to seed a loginable admin. A
-    # retry re-dispatch passes none — the Hetzner path then reuses the stored bundle.
+                  service_key: str = "", space_id: str = "", owner_email: str = "",
+                  integration_credentials: dict[str, tuple[str, str]] | None = None) -> ProvisioningRun:
+    # H-1/H-9: Hetzner is the only supported external provisioning backend. A
+    # non-Hetzner setting fails closed; it never falls back to a secondary provider.
+    # owner_otp/service_key/space_id/owner_email (G3-3) are threaded from
+    # provision_customer into the box secret bundle. owner_email + owner_otp are
+    # the ONEBRAIN_ADMIN_EMAIL/PASSWORD pair the box needs to seed a loginable admin.
+    # A retry re-dispatch passes none; the Hetzner path then reuses the stored bundle.
     store = get_provisioning_run_store()
     settings = get_settings()
-    # getattr default keeps pre-P4 settings fakes (SimpleNamespace) on the github
-    # path — the dormant default is today's Railway behavior exactly.
-    backend = getattr(settings, "provisioner_backend", "github")
+    # getattr keeps pre-P4 settings fakes fail-closed until their test fixture
+    # explicitly selects the supported backend.
+    backend = getattr(settings, "provisioner_backend", "disabled")
     try:
-        if backend == "hetzner":
-            dispatched = HetznerProvisioner(
-                settings, build_hetzner_broker(settings), get_control_plane_store(),
-                prov_store=store, fleet_store=get_fleet_store(),
-            ).dispatch(run, owner_otp=owner_otp, service_key=service_key, space_id=space_id,
-                       owner_email=owner_email)
-        elif backend == "github":
-            dispatched = GitHubWorkflowDispatcher(settings).dispatch(run)
-        else:
-            return mark_dispatch_failed(store, run, f"unknown provisioner_backend: {backend}")
+        if backend != "hetzner":
+            return mark_dispatch_failed(store, run, "Hetzner provisioning is required.")
+        dispatched = HetznerProvisioner(
+            settings, build_hetzner_broker(settings), get_control_plane_store(),
+            prov_store=store, fleet_store=get_fleet_store(),
+        ).dispatch(run, owner_otp=owner_otp, service_key=service_key, space_id=space_id,
+                   owner_email=owner_email, integration_credentials=integration_credentials)
     except (RuntimeError, OSError) as exc:
         return mark_dispatch_failed(store, run, str(exc))
     return store.update_run(dispatched)
@@ -487,13 +498,23 @@ def provision_customer(body: CustomerProvisionCreate, principal: Principal = Dep
 def _provision_customer_impl(body: CustomerProvisionCreate, principal: Principal):
     _require_admin(principal)
     if body.external_provisioning:
+        settings = get_settings()
+        # Check the entire production Mission Control contract before creating
+        # platform rows or a provisioning-run record. A configuration error must
+        # not leave a half-created customer that no secure executor can serve.
+        preflight = getattr(settings, "assert_production_mission_control_ready", None)
+        if callable(preflight):
+            try:
+                preflight()
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         if not body.callback_url.strip():
             raise HTTPException(status_code=400, detail="External provisioning requires a callback URL.")
         _validate_callback_url(body.callback_url)
         # A Hetzner box cannot come up without the owner OTP (ONEBRAIN_ADMIN_PASSWORD is a
         # REQUIRED bundle key). Fail FAST with a clear reason rather than letting the box
         # secret bundle fail validate_bundle later and surface as an opaque dispatch_failed.
-        if getattr(get_settings(), "provisioner_backend", "github") == "hetzner" and not body.owner_email.strip():
+        if getattr(settings, "provisioner_backend", "disabled") == "hetzner" and not body.owner_email.strip():
             raise HTTPException(
                 status_code=400,
                 detail="A Hetzner provision requires owner_email: the owner one-time password "
@@ -536,6 +557,7 @@ def _provision_customer_impl(body: CustomerProvisionCreate, principal: Principal
     if body.external_provisioning:
         payload = {
             "customer_name": body.customer_name,
+            "account_kind": body.account_kind,
             "deployment_type": body.deployment_type,
             "region": body.region,
             "release_ring": body.release_ring,
@@ -558,10 +580,10 @@ def _provision_customer_impl(body: CustomerProvisionCreate, principal: Principal
         # service key + its space id — all minted by CustomerProvisioner above, NOT
         # visible inside HetznerProvisioner.dispatch. Thread them from the result here
         # (the seam where BOTH the run and the provision result are in scope). Empty for
-        # a box with no owner/integration module; the github path ignores them.
-        service_key, space_id = _box_integration_credential(result)
+        # a box with no owner/integration module.
+        integration_credentials = _box_integration_credentials(result)
         run = _dispatch_run(run, owner_otp=result.owner_one_time_password,
-                            service_key=service_key, space_id=space_id,
+                            integration_credentials=integration_credentials,
                             owner_email=body.owner_email)
     return _result_out(result, run)
 
@@ -612,36 +634,19 @@ def retry_provisioning_run(run_id: str, principal: Principal = Depends(resolve_p
     return _run_out(_dispatch_run(retry))
 
 
-def _require_callback_auth(authorization: str, callback_key_id: str) -> None:
-    settings = get_settings()
-    if not settings.provisioning_callback_key_hash:
-        raise HTTPException(status_code=401, detail="Provisioning callback authentication is not configured.")
-    if settings.provisioning_callback_key_id and callback_key_id != settings.provisioning_callback_key_id:
-        raise HTTPException(status_code=401, detail="Invalid provisioning callback key.")
-    prefix = "Bearer "
-    if not authorization.startswith(prefix):
-        raise HTTPException(status_code=401, detail="Missing provisioning callback bearer token.")
-    token = authorization[len(prefix):].strip()
-    if not verify_callback_secret(token, settings.provisioning_callback_key_hash):
-        raise HTTPException(status_code=401, detail="Invalid provisioning callback token.")
+def _require_run_callback_auth(run, authorization: str) -> None:
+    """Authenticate only the callback token minted for this Hetzner run.
 
-
-def _require_run_callback_auth(run, authorization: str, callback_key_id: str) -> None:
-    """Callback auth for a SPECIFIC provisioning run (G1-7). A Hetzner box bakes a PER-RUN
-    ONEBRAIN_PROVISIONING_CALLBACK_TOKEN — minted and hash-stored on the run by
-    HetznerProvisioner — which cannot match MC's single global provisioning_callback_key_hash,
-    so accept a bearer that verifies against the run's own stored hash (no key-id: the box bakes
-    only the bearer, so its done_cb/fail_cb never sends X-OneBrain-Callback-Key-Id). Every other
-    case (the Railway/GitHub-Actions path, or a run with no per-run hash) falls back to the global
-    mechanism — preserving today's behavior AND the no-run-enumeration property: a missing run
-    has no per-run hash, so global auth still gates the request identically to an existing run."""
+    A missing run or missing per-run token returns the same 401 response, so the
+    callback endpoint does not reveal whether a run ID exists.
+    """
     prefix = "Bearer "
     per_run_hash = (run.result_payload or {}).get("callback_token_hash", "") if run is not None else ""
-    if per_run_hash and authorization.startswith(prefix):
-        token = authorization[len(prefix):].strip()
-        if verify_callback_secret(token, per_run_hash):
-            return
-    _require_callback_auth(authorization, callback_key_id)
+    if not per_run_hash or not authorization.startswith(prefix):
+        raise HTTPException(status_code=401, detail="Invalid provisioning callback token.")
+    token = authorization[len(prefix):].strip()
+    if not verify_callback_secret(token, per_run_hash):
+        raise HTTPException(status_code=401, detail="Invalid provisioning callback token.")
 
 
 @router.post("/runs/{run_id}/callback", response_model=ProvisioningRunOut)
@@ -649,12 +654,10 @@ def provisioning_callback(
     run_id: str,
     body: ProvisioningCallbackIn,
     authorization: str = Header(default=""),
-    x_onebrain_callback_key_id: str = Header(default=""),
 ):
     store = get_provisioning_run_store()
-    # Load the run FIRST so a Hetzner box's per-run callback token can be verified against the
-    # hash stored on the run (the box's token cannot match MC's single global callback hash).
-    _require_run_callback_auth(store.get_run(run_id), authorization, x_onebrain_callback_key_id)
+    # Load the run first so its token hash is the only accepted callback credential.
+    _require_run_callback_auth(store.get_run(run_id), authorization)
     try:
         run = apply_callback(
             store,

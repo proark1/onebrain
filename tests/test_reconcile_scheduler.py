@@ -6,6 +6,7 @@ exactly as `start_reporter` / `start_fleet_retention` are tested.
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 from app.controlplane import reconcile_scheduler
@@ -55,6 +56,52 @@ def test_reconcile_once_never_raises_when_store_throws():
 
     assert runs == []
     # The store failed before any child was touched — nothing was driven terminal.
+    assert store.get_rollout("c_dep").status == "pending"
+
+
+def test_reconcile_once_skips_when_another_postgres_replica_is_leader(monkeypatch):
+    class Cursor:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=None):
+            self.calls.append((sql, params))
+
+        def fetchone(self):
+            return (False,)
+
+        def close(self):
+            pass
+
+    class Connection:
+        def __init__(self):
+            self.cursor_value = Cursor()
+            self.closed = False
+
+        def cursor(self):
+            return self.cursor_value
+
+        def close(self):
+            self.closed = True
+
+    class Psycopg:
+        def __init__(self):
+            self.connection = Connection()
+            self.calls = []
+
+        def connect(self, dsn, autocommit=False):
+            self.calls.append((dsn, autocommit))
+            return self.connection
+
+    psycopg = Psycopg()
+    monkeypatch.setitem(sys.modules, "psycopg", psycopg)
+    store = _store_with_offered_child()
+    fleet = SimpleNamespace(latest_heartbeats=lambda: {"dep_p": _hb("dep_p", attempt_id="c_dep", outcome="succeeded")})
+    settings = _settings(vector_store="pgvector", pg_operator_database_url="postgresql://leader-test")
+
+    assert reconcile_scheduler.reconcile_once(settings, store, fleet) == []
+    assert psycopg.calls == [("postgresql://leader-test", True)]
+    assert "pg_try_advisory_lock" in psycopg.connection.cursor_value.calls[0][0]
     assert store.get_rollout("c_dep").status == "pending"
 
 

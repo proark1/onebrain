@@ -5,9 +5,10 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from app.auth.login_limits import client_ip_from_request
 from app.auth.passwords import DUMMY_HASH, hash_password, verify_password
 from app.auth.principal import SESSION_COOKIE, Principal, resolve_principal
 from app.auth.tokens import make_session_token, read_session_token
@@ -21,13 +22,30 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 @router.post("/login")
-def login(body: LoginRequest, response: Response):
+def login(body: LoginRequest, response: Response, request: Request = None):
     settings = get_settings()
     throttle = get_login_throttle()
-    key = "email:" + body.email.strip().lower()
+    account_key = "account:" + body.email.strip().lower()
+    client_ip = client_ip_from_request(
+        request,
+        trusted_proxy_cidrs=getattr(settings, "trusted_proxy_cidrs", ""),
+        trusted_proxy_hops=getattr(settings, "trusted_proxy_hops", 0),
+    )
+    ip_key = "ip:" + client_ip
 
-    # Lock out repeated failures for this account before touching the password.
-    wait = throttle.retry_after(key)
+    # Reserve both budgets before expensive password verification. PostgreSQL
+    # throttles make this atomic across replicas; local throttles retain the
+    # same semantics for development/tests. The address comes from the peer
+    # unless an explicit trusted proxy policy says otherwise.
+    wait = throttle.reserve(account_key)
+    if wait == 0:
+        wait = throttle.reserve(ip_key)
+        if wait > 0:
+            # The account reservation succeeded, but the request was rejected
+            # before any password work because this address is already locked.
+            # Return that one reservation so a blocked IP cannot consume
+            # arbitrary accounts' budgets and cause a denial of service.
+            throttle.release_success(account_key)
     if wait > 0:
         record_auth_failure("login_locked")
         raise HTTPException(
@@ -41,11 +59,13 @@ def login(body: LoginRequest, response: Response):
     # doesn't reveal whether an email exists.
     ok = verify_password(body.password, user.password_hash if user else DUMMY_HASH)
     if not user or user.status != "active" or not ok:
-        throttle.record_failure(key)
         record_auth_failure("login_invalid")
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
-    throttle.record_success(key)
+    throttle.record_success(account_key)
+    # Keep other failures from this address, but return this verified user's
+    # one reservation so successful traffic does not consume the IP budget.
+    throttle.release_success(ip_key)
     ttl = settings.session_days * 86400
 
     # Create the server-side session first, then sign a token bound to it. The

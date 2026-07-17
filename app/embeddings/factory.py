@@ -10,5 +10,5 @@ def build_embedder(settings: Settings):
     if settings.embeddings_provider == "litellm":
         from app.embeddings.litellm_embedder import LiteLLMEmbedder
 
-        return LiteLLMEmbedder(settings.litellm_embedding_model)
+        return LiteLLMEmbedder(settings.litellm_embedding_model, dim=settings.embedding_dim)
     return LocalEmbedder(dim=settings.embedding_dim)

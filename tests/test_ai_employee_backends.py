@@ -9,6 +9,7 @@ from app.ai_employees.backends.base import (
     BackendEvent,
     BackendUnavailableError,
 )
+from app.ai_employees.backends.litellm import LiteLLMAgentBackend
 from app.ai_employees.backends.registry import BackendRegistry
 from app.ai_employees.base import AiEmployeeModelPolicy
 from app.security.policy import Classification
@@ -102,3 +103,33 @@ def test_backend_request_rejects_unbounded_or_empty_input():
             messages=({"role": "system", "content": "policy"},),
             max_output_tokens=0,
         )
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        AgentBackendRequest(
+            model="gemini/gemini-2.5-flash",
+            messages=({"role": "system", "content": "policy"},),
+            max_output_tokens=100,
+            timeout_seconds=0,
+        )
+
+
+def test_litellm_backend_forwards_the_bounded_provider_timeout():
+    class _Client:
+        def __init__(self):
+            self.calls = []
+
+        def completion(self, **kwargs):
+            self.calls.append(kwargs)
+            return iter(())
+
+    client = _Client()
+    backend = LiteLLMAgentBackend("gemini", available=True, client=client)
+
+    events = list(backend.stream(AgentBackendRequest(
+        model="gemini/gemini-2.5-flash",
+        messages=({"role": "system", "content": "policy"},),
+        max_output_tokens=100,
+        timeout_seconds=19,
+    )))
+
+    assert [event.type for event in events] == ["done"]
+    assert client.calls[0]["timeout"] == 19

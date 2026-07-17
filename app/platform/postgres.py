@@ -158,6 +158,26 @@ class PostgresPlatformStore:
             conn.commit()
         return account
 
+    def upsert_bootstrap_account(self, account: Account) -> Account:
+        validate_account(account)
+        with self._conn(admin=True) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_accounts (id, kind, name, owner_user_id, status)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    kind = EXCLUDED.kind,
+                    name = EXCLUDED.name,
+                    owner_user_id = EXCLUDED.owner_user_id,
+                    status = EXCLUDED.status
+                RETURNING id, kind, name, owner_user_id, status, created_at
+                """,
+                (account.id, account.kind, account.name, account.owner_user_id, account.status),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return self._account_row(row)
+
     def get_account(self, account_id: str) -> Optional[Account]:
         with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
             cur.execute("SELECT id, kind, name, owner_user_id, status, created_at FROM platform_accounts WHERE id = %s",
@@ -180,6 +200,28 @@ class PostgresPlatformStore:
             )
             conn.commit()
         return space
+
+    def upsert_bootstrap_space(self, space: Space) -> Space:
+        validate_space(space)
+        with self._conn(account_id=space.account_id) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_spaces (id, account_id, kind, name, status)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    kind = EXCLUDED.kind,
+                    name = EXCLUDED.name,
+                    status = EXCLUDED.status
+                WHERE platform_spaces.account_id = EXCLUDED.account_id
+                RETURNING id, account_id, kind, name, status, created_at
+                """,
+                (space.id, space.account_id, space.kind, space.name, space.status),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        if not row:
+            raise ValueError(f"space is not in this account: {space.id}")
+        return self._space_row(row)
 
     def get_space(self, space_id: str) -> Optional[Space]:
         with self._conn(admin=True) as conn, conn.cursor() as cur:
@@ -214,6 +256,44 @@ class PostgresPlatformStore:
             )
             conn.commit()
         return installation
+
+    def upsert_bootstrap_installation(self, installation: AppInstallation) -> AppInstallation:
+        validate_installation(installation)
+        for space_id in installation.enabled_space_ids:
+            space = self.get_space(space_id)
+            if not space or space.account_id != installation.account_id:
+                raise ValueError(f"space is not in this account: {space_id}")
+        with self._conn(account_id=installation.account_id) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_app_installations
+                    (id, account_id, app_id, enabled_space_ids, allowed_purposes, display_name, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    app_id = EXCLUDED.app_id,
+                    enabled_space_ids = EXCLUDED.enabled_space_ids,
+                    allowed_purposes = EXCLUDED.allowed_purposes,
+                    display_name = EXCLUDED.display_name,
+                    status = EXCLUDED.status
+                WHERE platform_app_installations.account_id = EXCLUDED.account_id
+                RETURNING id, account_id, app_id, enabled_space_ids, allowed_purposes,
+                          display_name, status, created_at
+                """,
+                (
+                    installation.id,
+                    installation.account_id,
+                    installation.app_id,
+                    _join(installation.enabled_space_ids),
+                    _join(installation.allowed_purposes),
+                    installation.display_name,
+                    installation.status,
+                ),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        if not row:
+            raise ValueError(f"app installation is not in this account: {installation.id}")
+        return self._installation_row(row)
 
     def get_app_installation(self, installation_id: str) -> Optional[AppInstallation]:
         with self._conn(admin=True) as conn, conn.cursor() as cur:

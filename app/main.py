@@ -10,9 +10,21 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
-from app.deps import get_pipeline, get_store, get_user_store
-from app.deploy.runtime import validate_runtime_safety
+from app.deps import (
+    get_pipeline,
+    get_platform_store,
+    get_service_key_store,
+    get_session_store,
+    get_store,
+    get_user_store,
+)
+from app.deploy.runtime import validate_embedding_runtime_contract, validate_runtime_safety
+from app.http_limits import RequestBodyTooLargeError, limited_receive
 from app.monitoring import record_api_error
+from app.provisioning.customer_bootstrap import (
+    decode_customer_bootstrap,
+    reconcile_customer_bootstrap,
+)
 from app.routers import ai_employees, assistant, auth, chat, conversations, documents, fleet, jobs, kpis, operator, platform, privacy, provisioning, rollouts, service, session
 from app.seed import seed_if_empty
 from app.users.seed import seed_admin_from_env, seed_users_if_empty
@@ -27,7 +39,12 @@ def _route_template(request) -> str:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    customer_bootstrap = decode_customer_bootstrap(settings.customer_bootstrap)
+    if customer_bootstrap and settings.operator_mode:
+        raise RuntimeError("Customer bootstrap cannot run on Mission Control.")
     validate_runtime_safety(settings)
+    validate_embedding_runtime_contract(settings)
+    settings.assert_production_mission_control_ready()
 
     # Fail closed: a weak/default cookie-signing secret means anyone can forge a
     # session token for any user. Refuse to start rather than run insecurely.
@@ -45,8 +62,11 @@ def create_app() -> FastAPI:
         cl = request.headers.get("content-length")
         if cl and cl.isdigit() and int(cl) > settings.max_body_bytes:
             return JSONResponse({"detail": "Payload too large"}, status_code=413)
+        request._receive = limited_receive(request._receive, max_body_bytes=settings.max_body_bytes)
         try:
             response = await call_next(request)
+        except RequestBodyTooLargeError:
+            return JSONResponse({"detail": "Payload too large"}, status_code=413)
         except Exception:
             record_api_error(route=_route_template(request), status_code=500)
             raise
@@ -155,10 +175,33 @@ def create_app() -> FastAPI:
 
     # The safe login path on any stack: a real admin from ONEBRAIN_ADMIN_*.
     try:
-        if seed_admin_from_env(get_user_store(), settings):
+        if seed_admin_from_env(
+            get_user_store(), settings,
+            tenant=customer_bootstrap.account_id if customer_bootstrap else "nft_gym",
+        ):
             logging.getLogger("onebrain").info("Admin account bootstrapped from ONEBRAIN_ADMIN_*.")
     except Exception as exc:
+        if customer_bootstrap:
+            raise
         logging.getLogger("onebrain").warning("Admin bootstrap skipped: %s", exc)
+
+    if customer_bootstrap:
+        result = reconcile_customer_bootstrap(
+            customer_bootstrap,
+            platform_store=get_platform_store(),
+            service_key_store=get_service_key_store(),
+            user_store=get_user_store(),
+            session_store=get_session_store(),
+            administrator_email=settings.admin_email,
+            integration_keys={
+                "assistant": settings.assistant_service_key,
+                "communication": settings.communication_service_key,
+            },
+        )
+        logging.getLogger("onebrain").info(
+            "Customer bootstrap reconciled account=%s spaces=%s apps=%s integration_keys=%s.",
+            result.account_id, result.spaces, result.apps, result.integration_keys,
+        )
 
     # A deployment configured with a Mission Control URL + fleet key reports its
     # own metadata-only heartbeat on a timer. Never fatal — a reporting failure

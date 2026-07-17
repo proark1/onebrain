@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import subprocess
 import sys
@@ -9,7 +10,11 @@ import time
 from collections.abc import Iterable
 
 from app.config import Settings, get_settings
-from app.db.rls import validate_rls_enabled
+from app.db.rls import (
+    validate_job_role_configuration,
+    validate_restricted_runtime_role,
+    validate_rls_enabled,
+)
 from app.db.schema import REQUIRED_ALEMBIC_REVISION, validate_postgres_schema
 
 
@@ -48,6 +53,63 @@ def validate_runtime_safety(settings: Settings | None = None) -> None:
             "Production-like OneBrain environments must set "
             "ONEBRAIN_RLS_ENFORCED=true."
         )
+    # Job queue policies distinguish a request-only application login from the
+    # worker login that is allowed to claim work across tenants.  The API never
+    # needs the worker password, but both identities must be named explicitly.
+    validate_job_role_configuration(settings)
+    process = deployment_process()
+    if process == "api" and settings.worker_database_url.strip():
+        raise RuntimeError(
+            "API replicas must not set ONEBRAIN_WORKER_DATABASE_URL; "
+            "only the worker service may receive the cross-tenant queue login."
+        )
+    if process == "worker":
+        validate_job_role_configuration(settings, require_worker_dsn=True)
+    if len(settings.login_rate_limit_secret) < 32:
+        raise RuntimeError(
+            "Production-like OneBrain environments must set a dedicated "
+            "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET of at least 32 characters."
+        )
+    if settings.trusted_proxy_hops < 0:
+        raise RuntimeError("ONEBRAIN_TRUSTED_PROXY_HOPS cannot be negative.")
+    if settings.trusted_proxy_hops and not settings.trusted_proxy_cidrs.strip():
+        raise RuntimeError(
+            "ONEBRAIN_TRUSTED_PROXY_HOPS requires ONEBRAIN_TRUSTED_PROXY_CIDRS; "
+            "forwarded client headers are otherwise ignored."
+        )
+    try:
+        for cidr in filter(None, (value.strip() for value in settings.trusted_proxy_cidrs.split(","))):
+            ipaddress.ip_network(cidr, strict=False)
+    except ValueError as exc:
+        raise RuntimeError("ONEBRAIN_TRUSTED_PROXY_CIDRS must contain valid CIDR ranges.") from exc
+
+
+def validate_embedding_runtime_contract(settings: Settings | None = None) -> None:
+    """Fail closed before serving with an incompatible live embedding stack.
+
+    Local and development stacks intentionally remain keyless.  A
+    production-like LiteLLM + pgvector deployment must prove that the provider
+    honours the configured dimension and that the migrated column uses the same
+    dimension.  Neither check may change persisted data or mutate configuration.
+    """
+    settings = settings or get_settings()
+    if not (
+        settings.is_production_like
+        and settings.embeddings_provider == "litellm"
+        and is_postgres_mode(settings)
+    ):
+        return
+
+    from app.embeddings.factory import build_embedder
+    from app.store.factory import build_store
+
+    embedder = build_embedder(settings)
+    probe = getattr(embedder, "probe", None)
+    if not callable(probe):
+        raise RuntimeError("Configured production embedding provider does not support provider preflight.")
+    probe()
+    # PgVectorStore validates the migrated column dimension without changing it.
+    build_store(settings, dim=embedder.dim)
 
 
 def run_migrations_if_needed(settings: Settings | None = None) -> None:
@@ -77,6 +139,10 @@ def wait_for_schema_if_needed(
     poll_seconds: float | None = None,
 ) -> None:
     settings = settings or get_settings()
+    # Workers previously skipped the API startup safety guard entirely.  Run it
+    # here too before the schema wait so a production worker cannot start with a
+    # weak/non-RLS configuration.
+    validate_runtime_safety(settings)
     if not is_postgres_mode(settings):
         print("Skipping Postgres schema wait; ONEBRAIN_VECTOR_STORE is not pgvector.", flush=True)
         return
@@ -99,13 +165,21 @@ def wait_for_schema_if_needed(
                 validate_postgres_schema(conn, required_tables)
                 if settings.rls_enforced:
                     validate_rls_enabled(conn)
-            print(
-                f"Postgres schema is ready at Alembic revision {REQUIRED_ALEMBIC_REVISION}.",
-                flush=True,
-            )
-            return
+                # The worker uses this regular application connection for
+                # tenant-scoped reads and writes before it switches to its
+                # separate queue-only login.  Validate it here as well, so a
+                # worker cannot accidentally receive an owner/BYPASSRLS DSN
+                # and still pass the later worker-role check.
+                if settings.is_production_like and settings.rls_enforced:
+                    validate_restricted_runtime_role(
+                        conn,
+                        settings.postgres_app_role,
+                        purpose="application",
+                    )
         except Exception as exc:  # database may still be booting or migrating
             last_error = exc
+        else:
+            break
 
         if time.monotonic() >= deadline:
             raise RuntimeError(
@@ -115,6 +189,23 @@ def wait_for_schema_if_needed(
 
         print(f"Waiting for Postgres schema: {last_error}", flush=True)
         time.sleep(max(0.1, poll_seconds))
+
+    # A provider/configuration failure is not a transient schema error. Surface
+    # it immediately rather than retrying it until the schema timeout expires.
+    if settings.is_production_like and settings.rls_enforced:
+        validate_job_role_configuration(settings, require_worker_dsn=True)
+        with psycopg.connect(settings.pg_worker_database_url) as worker_conn:
+            validate_rls_enabled(worker_conn, ("jobs", "job_files"))
+            validate_restricted_runtime_role(
+                worker_conn,
+                settings.postgres_worker_role,
+                purpose="job worker",
+            )
+    validate_embedding_runtime_contract(settings)
+    print(
+        f"Postgres schema is ready at Alembic revision {REQUIRED_ALEMBIC_REVISION}.",
+        flush=True,
+    )
 
 
 def enforce_rls_if_needed(settings: Settings | None = None) -> None:
@@ -129,6 +220,13 @@ def enforce_rls_if_needed(settings: Settings | None = None) -> None:
 
     with psycopg.connect(database_url) as conn:
         validate_rls_enabled(conn)
+        if settings.is_production_like:
+            validate_job_role_configuration(settings)
+            validate_restricted_runtime_role(
+                conn,
+                settings.postgres_app_role,
+                purpose="application",
+            )
     print("Postgres RLS enforcement check passed.", flush=True)
 
 

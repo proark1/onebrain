@@ -52,8 +52,19 @@ class MemoryStore:
     # --- api -------------------------------------------------------------
     def add(self, chunks: List[Chunk]) -> None:
         with self._lock:
-            self._chunks.extend(chunks)
-            self._save()
+            # PgVector already uses ON CONFLICT(id) DO NOTHING. Match that
+            # property locally so a recovered at-least-once job cannot create
+            # duplicate chunks when it reuses its deterministic output id.
+            known_ids = {chunk.id for chunk in self._chunks}
+            new_chunks = []
+            for chunk in chunks:
+                if chunk.id in known_ids:
+                    continue
+                known_ids.add(chunk.id)
+                new_chunks.append(chunk)
+            if new_chunks:
+                self._chunks.extend(new_chunks)
+                self._save()
 
     def search(self, query: np.ndarray, k: int, access: AccessFilter) -> List[Hit]:
         with self._lock:

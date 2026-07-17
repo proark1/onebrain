@@ -28,7 +28,7 @@ export function PasswordChangePanel() {
 
     setIsSubmitting(true);
     try {
-      const response = await fetch("/api/onebrain/auth/change-password", {
+      const response = await fetch("/api/auth/change-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
@@ -38,7 +38,7 @@ export function PasswordChangePanel() {
         setError(typeof body.detail === "string" ? body.detail : "Could not change your password.");
         return;
       }
-      await fetch("/api/onebrain/auth/logout", { method: "POST" });
+      await fetch("/api/auth/logout", { method: "POST" });
       router.replace("/login?passwordChanged=1");
       router.refresh();
     } catch {

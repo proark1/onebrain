@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import timedelta
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +11,7 @@ from fastapi import HTTPException
 import app.deps
 import app.routers.jobs as jobs_router
 import app.routers.service as service_router
+import app.workers.service as worker_service
 from app.auth.principal import Principal
 from app.auth.roles import ROLES
 from app.embeddings.local import LocalEmbedder
@@ -20,12 +23,16 @@ from app.jobs.base import (
     JOB_RETENTION_RUN,
     JOB_SERVICE_CAPTURE,
     JOB_SERVICE_INTAKE,
+    LEASE_EXPIRED_ERROR,
     STATUS_FAILED,
     STATUS_RUNNING,
     STATUS_SUCCEEDED,
     STATUS_QUEUED,
+    JobLeaseLostError,
     JobFileInput,
+    utcnow,
 )
+from app.jobs.handlers import handle_job
 from app.jobs.memory import MemoryJobStore
 from app.platform.base import Account, AppInstallation, RetentionPolicy, Space
 from app.platform.memory import MemoryPlatformStore
@@ -97,7 +104,7 @@ def test_memory_job_store_lifecycle_with_file_payload():
     assert claimed[0].status == STATUS_RUNNING
     assert claimed[0].attempts == 1
 
-    done = store.mark_succeeded(job.id, {"ok": True})
+    done = store.mark_succeeded(job.id, {"ok": True}, lease_token=claimed[0].lease_token)
 
     assert done.status == STATUS_SUCCEEDED
     assert done.result == {"ok": True}
@@ -115,8 +122,8 @@ def test_memory_job_store_summary_is_sanitized():
         file=JobFileInput("secret.txt", "text/plain", b"not returned"),
     )
     queued = store.enqueue(type=JOB_SERVICE_CAPTURE, tenant_id="nft_gym")
-    store.claim("worker_a")
-    store.mark_failed(failed.id, "provider timeout")
+    claimed = store.claim("worker_a")
+    store.mark_failed(failed.id, "provider timeout", lease_token=claimed[0].lease_token)
 
     summary = store.summary(recent_failures_limit=1)
 
@@ -131,6 +138,203 @@ def test_memory_job_store_summary_is_sanitized():
     assert not hasattr(summary.recent_failures[0], "result")
     assert store.get_file(failed.id).data == b"not returned"
     assert store.get(queued.id).status == STATUS_QUEUED
+
+
+def test_memory_job_store_reclaims_expired_lease_with_a_new_fencing_token():
+    store = MemoryJobStore()
+    job = store.enqueue(type=JOB_SERVICE_CAPTURE, tenant_id="nft_gym", max_attempts=2)
+    first = store.claim("worker_a", lease_seconds=60)[0]
+    store._jobs[job.id] = replace(
+        first,
+        lease_expires_at=(utcnow() - timedelta(seconds=1)).isoformat(),
+    )
+
+    second = store.claim("worker_b", lease_seconds=60)[0]
+
+    assert second.status == STATUS_RUNNING
+    assert second.attempts == 2
+    assert second.lease_token
+    assert second.lease_token != first.lease_token
+    assert second.lease_expires_at > utcnow().isoformat()
+
+
+def test_memory_job_store_fences_stale_lease_updates_and_heartbeat():
+    store = MemoryJobStore()
+    job = store.enqueue(type=JOB_SERVICE_CAPTURE, tenant_id="nft_gym", max_attempts=2)
+    first = store.claim("worker_a")[0]
+    store._jobs[job.id] = replace(
+        first,
+        lease_expires_at=(utcnow() - timedelta(seconds=1)).isoformat(),
+    )
+    second = store.claim("worker_b")[0]
+
+    with pytest.raises(JobLeaseLostError):
+        store.renew_lease(job.id, first.lease_token, 60)
+    with pytest.raises(JobLeaseLostError):
+        store.mark_succeeded(job.id, {"stale": True}, lease_token=first.lease_token)
+    with pytest.raises(JobLeaseLostError):
+        store.mark_failed(job.id, "stale", lease_token=first.lease_token)
+    with pytest.raises(JobLeaseLostError):
+        store.mark_retry(
+            job.id,
+            "stale",
+            utcnow() + timedelta(seconds=1),
+            lease_token=first.lease_token,
+        )
+
+    done = store.mark_succeeded(job.id, {"ok": True}, lease_token=second.lease_token)
+    assert done.status == STATUS_SUCCEEDED
+
+
+def test_memory_job_store_terminalizes_expired_last_attempt_without_reclaiming():
+    store = MemoryJobStore()
+    job = store.enqueue(type=JOB_SERVICE_CAPTURE, tenant_id="nft_gym", max_attempts=1)
+    claimed = store.claim("worker_a")[0]
+    store._jobs[job.id] = replace(
+        claimed,
+        lease_expires_at=(utcnow() - timedelta(seconds=1)).isoformat(),
+    )
+
+    assert store.claim("worker_b") == []
+    failed = store.get(job.id)
+    assert failed.status == STATUS_FAILED
+    assert failed.error == LEASE_EXPIRED_ERROR
+    assert failed.completed_at
+    assert failed.lease_token == ""
+    assert failed.lease_expires_at == ""
+
+
+def test_worker_heartbeats_active_job_lease(monkeypatch):
+    class ObservingStore(MemoryJobStore):
+        def __init__(self):
+            super().__init__()
+            self.renewals = []
+
+        def renew_lease(self, job_id, lease_token, lease_seconds):
+            self.renewals.append((job_id, lease_token, lease_seconds))
+            return super().renew_lease(job_id, lease_token, lease_seconds)
+
+    store = ObservingStore()
+    store.enqueue(type=JOB_SERVICE_CAPTURE, tenant_id="nft_gym")
+    monkeypatch.setattr(
+        worker_service,
+        "handle_job",
+        lambda *_args: (time.sleep(0.08), {"ok": True})[1],
+    )
+    worker = Worker(store, worker_id="worker_test")
+    worker.settings = SimpleNamespace(
+        worker_batch_size=1,
+        job_lease_seconds=1,
+        job_lease_heartbeat_seconds=0.01,
+    )
+
+    assert worker.run_once() == 1
+    assert store.renewals
+    assert store.get(next(iter(store._jobs))).status == STATUS_SUCCEEDED
+
+
+def test_worker_does_not_prefetch_leases_for_sequential_batch_work(monkeypatch):
+    class ObservingStore(MemoryJobStore):
+        def __init__(self):
+            super().__init__()
+            self.claim_limits: list[int] = []
+
+        def claim(self, worker_id, limit=1, lease_seconds=60):
+            self.claim_limits.append(limit)
+            return super().claim(worker_id, limit=limit, lease_seconds=lease_seconds)
+
+    store = ObservingStore()
+    first = store.enqueue(type=JOB_SERVICE_CAPTURE, tenant_id="nft_gym")
+    second = store.enqueue(type=JOB_SERVICE_CAPTURE, tenant_id="nft_gym")
+    handled: list[str] = []
+
+    def slow_handler(job, _store):
+        handled.append(job.id)
+        # The later job remains queued while this one runs; it has no lease to
+        # expire and therefore cannot be reclaimed by another worker.
+        if job.id == first.id:
+            assert store.get(second.id).status == STATUS_QUEUED
+        return {"ok": True}
+
+    monkeypatch.setattr(worker_service, "handle_job", slow_handler)
+    worker = Worker(store, worker_id="worker_test")
+    worker.settings = SimpleNamespace(
+        worker_batch_size=2,
+        job_lease_seconds=1,
+        job_lease_heartbeat_seconds=0.01,
+    )
+
+    assert worker.run_once() == 2
+    assert handled == [first.id, second.id]
+    assert store.claim_limits == [1, 1]
+    assert store.get(first.id).status == STATUS_SUCCEEDED
+    assert store.get(second.id).status == STATUS_SUCCEEDED
+
+
+def test_worker_shutdown_stops_new_claims():
+    store = MemoryJobStore()
+    job = store.enqueue(type=JOB_SERVICE_CAPTURE, tenant_id="nft_gym")
+    worker = Worker(store, worker_id="worker_test")
+
+    worker.stop_claiming()
+
+    assert worker.run_once() == 0
+    assert store.get(job.id).status == STATUS_QUEUED
+
+
+def test_ingestion_job_handlers_reuse_outputs_after_a_recovered_attempt(monkeypatch):
+    vector_store = MemoryStore()
+    pipeline = IngestPipeline(LocalEmbedder(), vector_store)
+    job_store = MemoryJobStore()
+    monkeypatch.setattr(app.deps, "get_pipeline", lambda: pipeline)
+    document = job_store.enqueue(
+        type=JOB_DOCUMENT_INGEST,
+        tenant_id="nft_gym",
+        payload={"classification": "internal"},
+        file=JobFileInput("policy.txt", "text/plain", b"Support is open from 9 to 6."),
+    )
+    capture = job_store.enqueue(
+        type=JOB_SERVICE_CAPTURE,
+        tenant_id="nft_gym",
+        payload={"text": "A customer asked about memberships."},
+    )
+
+    document_first = handle_job(document, job_store)
+    document_second = handle_job(document, job_store)
+    capture_first = handle_job(capture, job_store)
+    capture_second = handle_job(capture, job_store)
+
+    assert document_second == document_first
+    assert capture_second == capture_first
+    assert vector_store.count() == document_first["chunks"] + capture_first["chunks"]
+
+
+def test_intake_job_handler_reuses_output_after_a_recovered_attempt(monkeypatch):
+    intake_store = MemoryIntakeStore()
+    pipeline = IntakePipeline(
+        intake_store,
+        SimpleNamespace(pii_phase="dpia_signed", require_approval=False),
+    )
+    job_store = MemoryJobStore()
+    monkeypatch.setattr(app.deps, "get_intake_pipeline", lambda: pipeline)
+    job = job_store.enqueue(
+        type=JOB_SERVICE_INTAKE,
+        tenant_id="nft_gym",
+        account_id="nft_gym",
+        space_id="sp_customer",
+        payload={
+            "app_id": "communication",
+            "purpose": "customer_service_inbox",
+            "content": "Customer wants to reschedule a booking.",
+            "source": "communication",
+        },
+    )
+
+    first = handle_job(job, job_store)
+    second = handle_job(job, job_store)
+
+    assert second == first
+    assert intake_store.count() == 1
 
 
 def test_worker_processes_document_ingest_job(monkeypatch):

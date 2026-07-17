@@ -6,6 +6,8 @@ from app.fleet.bootstrap_bundle import (
     BUNDLE_KEYS,
     OPTIONAL_KEYS,
     REQUIRED_KEYS,
+    RUNTIME_DB_PASSWORD_KEYS,
+    backfill_runtime_db_passwords,
     render_dotenv,
     validate_bundle,
 )
@@ -14,14 +16,22 @@ from app.fleet.bootstrap_bundle import (
 def _full_bundle(**overrides) -> dict:
     bundle = {
         "POSTGRES_PASSWORD": "pg-secret",
+        "POSTGRES_APP_PASSWORD": "app-secret",
+        "POSTGRES_WORKER_PASSWORD": "worker-secret",
+        "POSTGRES_ASSISTANT_PASSWORD": "assistant-secret",
+        "POSTGRES_COMMUNICATION_PASSWORD": "communication-secret",
         "REDIS_PASSWORD": "redis-secret",
         "ONEBRAIN_FLEET_KEY": "fk_abc_def",
         "ONEBRAIN_LLM_API_KEY": "",
         "ONEBRAIN_AUTH_SECRET": "a" * 64,   # >= MIN_KEY_LENGTHS floor (32); token_hex(32) in prod
+        "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET": "b" * 64,
         "ONEBRAIN_ADMIN_EMAIL": "owner@example.com",
         "ONEBRAIN_ADMIN_PASSWORD": "owner-otp",
         "ONEBRAIN_SERVICE_KEY": "",
         "ONEBRAIN_SPACE_ID": "",
+        "ONEBRAIN_ASSISTANT_SERVICE_KEY": "",
+        "ONEBRAIN_COMMUNICATION_SERVICE_KEY": "",
+        "ONEBRAIN_COMMUNICATION_SPACE_ID": "",
         "UPDATE_BACKUP_KEY": "backup-secret",
         "UPDATE_DESIRED_STATE_PUBLIC_KEYS": "pub1,pub2",
         "ONEBRAIN_DNS_TOKEN": "",
@@ -44,6 +54,9 @@ def test_required_and_optional_partition_bundle_keys():
     # The two explicitly-optional keys named in the spec.
     assert "ONEBRAIN_DNS_TOKEN" in OPTIONAL_KEYS
     assert "ONEBRAIN_SPACE_ID" in OPTIONAL_KEYS
+    assert "ONEBRAIN_ASSISTANT_SERVICE_KEY" in OPTIONAL_KEYS
+    assert "ONEBRAIN_COMMUNICATION_SERVICE_KEY" in OPTIONAL_KEYS
+    assert "ONEBRAIN_COMMUNICATION_SPACE_ID" in OPTIONAL_KEYS
 
 
 def test_render_dotenv_emits_only_present_keys_in_canonical_order_lf():
@@ -123,6 +136,21 @@ def test_auth_secret_is_a_required_bundle_key():
     assert any("ONEBRAIN_AUTH_SECRET" in e for e in validate_bundle(_full_bundle(ONEBRAIN_AUTH_SECRET="")))
 
 
+def test_login_rate_limit_secret_is_a_distinct_required_bundle_key():
+    from app.fleet.bootstrap_bundle import MIN_KEY_LENGTHS
+
+    assert "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET" in REQUIRED_KEYS
+    assert "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET" in BUNDLE_KEYS
+    assert MIN_KEY_LENGTHS["ONEBRAIN_LOGIN_RATE_LIMIT_SECRET"] == 32
+    missing = _full_bundle()
+    del missing["ONEBRAIN_LOGIN_RATE_LIMIT_SECRET"]
+    assert any("ONEBRAIN_LOGIN_RATE_LIMIT_SECRET" in e for e in validate_bundle(missing))
+    assert any(
+        "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET" in error
+        for error in validate_bundle(_full_bundle(ONEBRAIN_LOGIN_RATE_LIMIT_SECRET="short"))
+    )
+
+
 def test_validate_bundle_flags_weak_auth_secret_below_floor():
     # Present-but-too-short is as fatal as missing: app/main.py's >=32 guard would boot-loop
     # the box, so a <32-char ONEBRAIN_AUTH_SECRET must fail closed here.
@@ -144,3 +172,22 @@ def test_backup_s3_keys_are_optional_and_dotenv_ordered():
         ONEBRAIN_BACKUP_S3_ACCESS_KEY="AK", ONEBRAIN_BACKUP_S3_SECRET_KEY="SK"))
     assert "ONEBRAIN_BACKUP_S3_ACCESS_KEY=AK" in body and "ONEBRAIN_BACKUP_S3_SECRET_KEY=SK" in body
     assert body.index("ONEBRAIN_BACKUP_S3_ACCESS_KEY") < body.index("ONEBRAIN_BACKUP_S3_SECRET_KEY")
+
+
+def test_runtime_database_password_backfill_is_idempotent_and_never_replaces_existing_values():
+    legacy = _full_bundle()
+    for key in RUNTIME_DB_PASSWORD_KEYS:
+        legacy.pop(key)
+
+    values = iter(("a" * 32, "b" * 32, "c" * 32, "d" * 32))
+    updated, added = backfill_runtime_db_passwords(legacy, password_factory=lambda: next(values))
+    assert added == RUNTIME_DB_PASSWORD_KEYS
+    assert updated["POSTGRES_APP_PASSWORD"] == "a" * 32
+    assert updated["POSTGRES_WORKER_PASSWORD"] == "b" * 32
+    assert updated["POSTGRES_ASSISTANT_PASSWORD"] == "c" * 32
+    assert updated["POSTGRES_COMMUNICATION_PASSWORD"] == "d" * 32
+
+    retried, added_again = backfill_runtime_db_passwords(
+        updated, password_factory=lambda: (_ for _ in ()).throw(AssertionError("must not mint")))
+    assert added_again == ()
+    assert retried == updated

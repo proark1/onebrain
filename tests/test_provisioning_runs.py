@@ -31,6 +31,14 @@ def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
 
+def test_new_provisioning_runs_default_to_hetzner():
+    run = ProvisioningRun(
+        id="prun_1", account_id="acct_1", deployment_id="dep_1",
+        bundle_id="full_stack", requested_by="admin",
+    )
+    assert run.external_provider == "hetzner"
+
+
 # --- re-readable bundle cipher (G1-4 / G2-1) ----------------------------------
 
 def test_seal_open_bundle_round_trips():
@@ -209,8 +217,7 @@ def test_postgres_bundle_token_cols_arity_matches_mapper():
 
 
 def test_postgres_run_update_persists_external_provider():
-    """A provider dispatcher may reclassify a newly-created run (for example,
-    github_actions -> hetzner); the Postgres update must persist that field."""
+    """The Postgres update must persist the run's provider classification."""
     store = _bare_postgres_provisioning_store()
     captured = {}
 
@@ -229,7 +236,7 @@ def test_postgres_run_update_persists_external_provider():
             provider = (
                 captured["params"][1]
                 if "external_provider = %s" in captured["sql"]
-                else "github_actions"
+                else "hetzner"
             )
             return (
                 "prun_1", "acct_1", "dep_1", "bundle_1", "admin", "dispatched",

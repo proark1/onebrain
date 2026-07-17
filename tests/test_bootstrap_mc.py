@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import base64
+import datetime as dt
 import gzip
 import io
 import json
@@ -18,10 +19,16 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from cryptography import x509
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 from app.config import Settings
 from app.provisioning.hetzner.fake import FakeHetznerClient
 from app.trust.signing import generate_keypair
+from tests.boot_config_helper import extract_cloud_init_file, resolve_box_api_settings
 
 # Load the non-package script by path (mirrors tests/test_box_verify.py).
 _MC_PATH = Path(__file__).resolve().parents[1] / "scripts" / "bootstrap_mc.py"
@@ -52,6 +59,108 @@ def _asset_text(cloud_init: str, path: str) -> str:
         return handle.read().decode("utf-8")
 
 
+def _tls_asset(cloud_init: str, path: str) -> tuple[str, int]:
+    """Read one MC-only broker TLS asset from its redaction-friendly archive."""
+    match = re.search(
+        r"  - path: /opt/onebrain/mc-broker-tls\.tar\n"
+        r"    permissions: '[0-7]+'\n"
+        r"    encoding: gz\+b64\n"
+        r"    content: (?P<blob>\S+)\n",
+        cloud_init,
+    )
+    assert match
+    archive = gzip.decompress(base64.b64decode(match.group("blob")))
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+        member = tar.getmember(path.lstrip("/"))
+        handle = tar.extractfile(member)
+        assert handle is not None
+        return handle.read().decode("utf-8"), member.mode
+
+
+def _write_mtls_files(tmp_path):
+    """Small, real P-256 mTLS material (valid for ssl.load_cert_chain)."""
+    now = dt.datetime.now(dt.timezone.utc)
+    ca_key = ec.generate_private_key(ec.SECP256R1())
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "OneBrain test broker CA")])
+    ca = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - dt.timedelta(days=1))
+        .not_valid_after(now + dt.timedelta(days=30))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(ca_key, hashes.SHA256())
+    )
+    client_key = ec.generate_private_key(ec.SECP256R1())
+    client_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "onebrain-mc")])
+    client = (
+        x509.CertificateBuilder()
+        .subject_name(client_name)
+        .issuer_name(ca_name)
+        .public_key(client_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - dt.timedelta(days=1))
+        .not_valid_after(now + dt.timedelta(days=30))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .sign(ca_key, hashes.SHA256())
+    )
+    cert = tmp_path / "mc-client.crt"
+    key = tmp_path / "mc-client.key"
+    ca_path = tmp_path / "broker-ca.crt"
+    cert.write_bytes(client.public_bytes(serialization.Encoding.PEM))
+    key.write_bytes(client_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ))
+    ca_path.write_bytes(ca.public_bytes(serialization.Encoding.PEM))
+    return cert, key, ca_path
+
+
+def _production_mc_settings(tmp_path, **overrides):
+    cert, key, ca = _write_mtls_files(tmp_path)
+    desired_private, desired_public = generate_keypair()
+    _release_private, release_public = generate_keypair()
+    values = {
+        "environment": "production",
+        "admin_email": "mc-admin@example.com",
+        # The one-time bootstrap workstation has this token. The rendered MC
+        # must prove it did NOT receive it and uses the remote broker instead.
+        "hetzner_api_token": "initial-hcloud-token",
+        "hetzner_firewall_id": "fw-existing",
+        "fleet_dns_provider": "hetzner",
+        "fleet_dns_zone_id": "zone-1",
+        "fleet_base_domain": "example.com",
+        "provisioner_backend": "hetzner",
+        "hetzner_allow_inprocess_broker": False,
+        "hetzner_broker_url": "https://broker.example.com",
+        "hetzner_broker_credential": "broker-credential-secret",
+        "hetzner_broker_client_certificate_file": str(cert),
+        "hetzner_broker_client_key_file": str(key),
+        "hetzner_broker_ca_file": str(ca),
+        "secret_encryption_key": Fernet.generate_key().decode("ascii"),
+        "provisioning_callback_allowed_hosts": "mc.example.com",
+        "fleet_desired_state_private_key": desired_private,
+        "fleet_desired_state_public_keys": desired_public,
+        "fleet_desired_state_ttl_seconds": 900,
+        "fleet_reconcile_seconds": 60,
+        "release_verify_public_key": release_public,
+        "release_registry_allowlist": "ghcr.io/proark1",
+        "release_require_signature": True,
+        "release_require_signed_images": True,
+        "release_require_rollback_kind": True,
+        "release_promotion_required": True,
+        "postgres_app_role": "onebrain_app",
+        "postgres_worker_role": "onebrain_worker",
+        "postgres_assistant_role": "assistant_app",
+        "postgres_communication_role": "communication_app",
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
 def _args(argv):
     return mc._build_parser().parse_args(argv)
 
@@ -77,19 +186,21 @@ def test_dry_run_bakes_operator_env_and_omits_bootstrap_token():
     settings = _mc_settings()
     art = mc.build_mc_artifacts(_args(_base_argv("--fqdn", "mc.example.com")), settings)
     ci = art.cloud_init
+    api_env = _asset_text(ci, "/opt/onebrain/env/onebrain-api.env")
 
     # Operator overlay (A14) + the desired-state PRIVATE key as a ${VAR} ref.
-    assert "ONEBRAIN_IS_OPERATOR_SURFACE=true" in ci
+    assert "ONEBRAIN_IS_OPERATOR_SURFACE=true" in api_env
     # The MC box is actually armed as Mission Control: operator_mode is baked BOTH as the
     # onebrain-api env literal (the settable field is_operator_surface does NOT set) and in
     # the baked /opt/onebrain/.env overlay — without it the whole fleet surface is dormant.
-    assert "ONEBRAIN_OPERATOR_MODE=true" in ci
-    assert ci.count("ONEBRAIN_OPERATOR_MODE=true") >= 2      # onebrain-api.env literal + baked .env overlay
-    assert "ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY=${ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY}" in ci
+    assert "ONEBRAIN_OPERATOR_MODE=true" in api_env
+    dotenv = extract_cloud_init_file(ci, "/opt/onebrain/.env")
+    assert "ONEBRAIN_OPERATOR_MODE=true" in dotenv            # baked .env overlay
+    assert "ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY=${ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY}" in api_env
     # The baked /opt/onebrain/.env carries the foundational secrets with REAL values.
-    assert "/opt/onebrain/.env" in ci
-    assert f"POSTGRES_PASSWORD={art.bundle['POSTGRES_PASSWORD']}" in ci
-    assert f"ONEBRAIN_FLEET_KEY={art.fleet_token}" in ci
+    assert "POSTGRES_PASSWORD=" in dotenv
+    assert f"POSTGRES_PASSWORD={art.bundle['POSTGRES_PASSWORD']}" in dotenv
+    assert f"ONEBRAIN_FLEET_KEY={art.fleet_token}" in dotenv
     # G3-1: the MC box is BAKED, never exchanged — no first-boot token is baked, and no
     # /bootstrap exchange step runs in the runcmd.
     assert "ONEBRAIN_BOOTSTRAP_TOKEN=" not in ci
@@ -115,10 +226,11 @@ def test_dry_run_main_exit_zero_no_client_and_redacts_secrets(capsys):
 
 
 def _last_env_value(ci: str, key: str):
-    """The LAST `KEY=value` in the rendered cloud-init. The baked /opt/onebrain/.env is
-    written AFTER env/onebrain-api.env, so the last occurrence is the real baked value
-    (the earlier one is the onebrain-api.env ${VAR} ref)."""
-    matches = re.findall(rf"(?m)^\s*{re.escape(key)}=(.*)$", ci)
+    """The `KEY=value` in the MC's baked /opt/onebrain/.env asset."""
+    matches = re.findall(
+        rf"(?m)^\s*{re.escape(key)}=(.*)$",
+        extract_cloud_init_file(ci, "/opt/onebrain/.env"),
+    )
     return matches[-1] if matches else None
 
 
@@ -131,9 +243,10 @@ def test_signing_mc_bakes_public_key_set_so_g1_1_startup_passes():
     priv, pub = generate_keypair()
     settings = _mc_settings(fleet_desired_state_private_key=priv, fleet_desired_state_public_keys=pub)
     ci = mc.build_mc_artifacts(_args(_base_argv()), settings).cloud_init
+    api_env = _asset_text(ci, "/opt/onebrain/env/onebrain-api.env")
 
     # onebrain-api.env references it as a ${VAR}; the baked .env supplies the real value.
-    assert "ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS=${ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS}" in ci
+    assert "ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS=${ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS}" in api_env
     assert _last_env_value(ci, "ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS") == pub
     assert _last_env_value(ci, "ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY") == priv
     assert _last_env_value(ci, "ONEBRAIN_OPERATOR_MODE") == "true"
@@ -149,6 +262,118 @@ def test_signing_mc_bakes_public_key_set_so_g1_1_startup_passes():
     assert box.operator_mode is True
     assert active_wrapper_public_key(box) == pub
     assert active_signer_in_served_set(box) is True
+
+
+def test_production_mc_render_passes_its_own_preflight_and_isolates_mtls(tmp_path):
+    """The go-live artifact, not merely the source workstation, is bootable.
+
+    The workstation has a short-lived direct HCloud token so it can create the
+    first box. The rendered API must instead contain only remote-broker config,
+    scoped mTLS material, and the complete production-preflight configuration.
+    """
+    source = _production_mc_settings(tmp_path)
+    art = mc.build_mc_artifacts(
+        _args(_base_argv("--fqdn", "mc.example.com")), source)
+    assert len(art.cloud_init.encode("utf-8")) < 32_768
+    assert "initial-hcloud-token" not in art.cloud_init
+    assert art.bundle["ONEBRAIN_DNS_TOKEN"] == ""
+
+    api_env = _asset_text(art.cloud_init, "/opt/onebrain/env/onebrain-api.env")
+    dotenv = extract_cloud_init_file(art.cloud_init, "/opt/onebrain/.env")
+    assert "ONEBRAIN_PROVISIONER_BACKEND=hetzner" in api_env
+    assert "ONEBRAIN_HETZNER_ALLOW_INPROCESS_BROKER=false" in api_env
+    assert "ONEBRAIN_HETZNER_BROKER_URL=https://broker.example.com" in api_env
+    assert "ONEBRAIN_HETZNER_BROKER_CREDENTIAL=${ONEBRAIN_HETZNER_BROKER_CREDENTIAL}" in api_env
+    assert "ONEBRAIN_SECRET_ENCRYPTION_KEY=${ONEBRAIN_SECRET_ENCRYPTION_KEY}" in api_env
+    assert "ONEBRAIN_RELEASE_PROMOTION_REQUIRED=true" in api_env
+    assert "ONEBRAIN_FLEET_RECONCILE_SECONDS=60" in api_env
+    assert f"ONEBRAIN_HETZNER_BROKER_CREDENTIAL={source.hetzner_broker_credential}" in dotenv
+    assert f"ONEBRAIN_SECRET_ENCRYPTION_KEY={source.secret_encryption_key}" in dotenv
+
+    # The MC key/cert/CA are packaged with 0400 modes and the rendered API is
+    # the only service that bind-mounts the directory read-only.
+    emitted = tmp_path / "rendered-tls"
+    emitted.mkdir()
+    tls_paths = {
+        "mc-client.crt": "/opt/onebrain/broker-tls/mc-client.crt",
+        "mc-client.key": "/opt/onebrain/broker-tls/mc-client.key",
+        "broker-ca.crt": "/opt/onebrain/broker-tls/broker-ca.crt",
+    }
+    local_paths = {}
+    for name, cloud_path in tls_paths.items():
+        content, mode = _tls_asset(art.cloud_init, cloud_path)
+        assert mode == 0o400
+        local = emitted / name
+        local.write_text(content, encoding="utf-8")
+        local.chmod(0o400)
+        local_paths[name] = str(local)
+
+    compose = _asset_text(art.cloud_init, "/opt/onebrain/docker-compose.yml")
+    assert compose.count("/opt/onebrain/broker-tls:/run/onebrain/broker-tls:ro") == 1
+    resolved = resolve_box_api_settings(api_env, dotenv).model_copy(update={
+        "hetzner_broker_client_certificate_file": local_paths["mc-client.crt"],
+        "hetzner_broker_client_key_file": local_paths["mc-client.key"],
+        "hetzner_broker_ca_file": local_paths["broker-ca.crt"],
+    })
+    assert resolved.hetzner_api_token == ""
+    resolved.assert_production_mission_control_ready()
+
+
+def test_production_mc_bootstrap_uses_initial_client_but_never_bakes_its_token(tmp_path, capsys):
+    source = _production_mc_settings(tmp_path)
+    fake = FakeHetznerClient()
+
+    rc = mc.main(
+        _base_argv("--fqdn", "mc.example.com", "--no-dry-run"),
+        settings=source,
+        client=fake,
+    )
+
+    assert rc == 0
+    assert "create_server" in fake.calls
+    assert "initial-hcloud-token" not in fake.servers[0].user_data
+    # The create path prints no user-data regardless of the MC-only tls archive.
+    out = capsys.readouterr().out
+    assert fake.servers[0].user_data not in out
+
+
+def test_production_mc_dry_run_redacts_reversible_tls_archive(tmp_path, capsys):
+    source = _production_mc_settings(tmp_path)
+    certificate = Path(source.hetzner_broker_client_certificate_file).read_text(encoding="utf-8")
+    private_key = Path(source.hetzner_broker_client_key_file).read_text(encoding="utf-8")
+
+    assert mc.main(_base_argv("--fqdn", "mc.example.com", "--dry-run"), settings=source) == 0
+    out = capsys.readouterr().out
+    assert certificate not in out and private_key not in out
+    assert source.hetzner_broker_credential not in out
+    assert source.secret_encryption_key not in out
+    assert re.search(
+        r"path: /opt/onebrain/mc-broker-tls\.tar\n"
+        r"    permissions: '[0-7]+'\n"
+        r"    encoding: gz\+b64\n"
+        r"    content: \*\*\*REDACTED\*\*\*",
+        out,
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "overrides", "marker"),
+    [
+        (("--fqdn", "mc_bad.example.com"), {}, "RFC1123"),
+        (("--fleet-public-url", "https://other.example.com"), {}, "hostname must exactly match"),
+        ((), {"fleet_dns_provider": ""}, "FLEET_DNS_PROVIDER=hetzner"),
+        ((), {"hetzner_firewall_id": ""}, "HETZNER_FIREWALL_ID"),
+    ],
+)
+def test_production_mc_bootstrap_requires_public_dns_and_precreated_firewall(
+    tmp_path, extra_args, overrides, marker,
+):
+    source = _production_mc_settings(tmp_path, **overrides)
+    with pytest.raises(ValueError, match=marker):
+        mc.build_mc_artifacts(
+            _args(_base_argv("--fqdn", "mc.example.com", *extra_args)),
+            source,
+        )
 
 
 # --- create path: injected client, default-deny firewall, secret hygiene -----
@@ -167,14 +392,18 @@ def test_create_path_drives_injected_client_and_hides_secrets(capsys):
     assert ports == {"80", "443"}
     # The server carries the OPERATOR cloud-init as user_data, with the firewall attached in-create.
     server = fake.servers[0]
-    assert "ONEBRAIN_IS_OPERATOR_SURFACE=true" in server.user_data
+    assert "ONEBRAIN_IS_OPERATOR_SURFACE=true" in _asset_text(
+        server.user_data, "/opt/onebrain/env/onebrain-api.env")
     assert server.firewall_ids and server.firewall_ids[-1] == "fw_1"
     # Secret hygiene: the create path prints ONLY the shape — the cloud-init (with every
     # baked secret) is NEVER dumped, and a real baked secret never appears in the capture.
     combined = capsys.readouterr()
     text = combined.out + combined.err
     assert server.user_data not in text
-    baked_pw = re.search(r"POSTGRES_PASSWORD=([A-Za-z0-9_-]{20,})", server.user_data).group(1)
+    baked_pw = re.search(
+        r"POSTGRES_PASSWORD=([A-Za-z0-9_-]{20,})",
+        extract_cloud_init_file(server.user_data, "/opt/onebrain/.env"),
+    ).group(1)
     assert baked_pw not in text
 
 
@@ -330,7 +559,8 @@ def test_build_mc_artifacts_bundle_carries_admin_login():
     assert art.admin_password == "env-set-pw-xyz"
     assert art.admin_password_generated is False
     # onebrain-api.env references both as ${VAR}; the baked .env supplies the real values.
-    assert "ONEBRAIN_ADMIN_EMAIL=${ONEBRAIN_ADMIN_EMAIL}" in art.cloud_init
+    assert "ONEBRAIN_ADMIN_EMAIL=${ONEBRAIN_ADMIN_EMAIL}" in _asset_text(
+        art.cloud_init, "/opt/onebrain/env/onebrain-api.env")
     assert _last_env_value(art.cloud_init, "ONEBRAIN_ADMIN_EMAIL") == "ops@onlyonebrain.com"
     assert _last_env_value(art.cloud_init, "ONEBRAIN_ADMIN_PASSWORD") == "env-set-pw-xyz"
 
@@ -355,7 +585,10 @@ def test_create_surfaces_admin_login_out_of_band_and_never_dumps_cloud_init(caps
     out = capsys.readouterr().out
 
     server = fake.servers[0]
-    baked_pw = re.search(r"ONEBRAIN_ADMIN_PASSWORD=([A-Za-z0-9_-]{20,})", server.user_data).group(1)
+    baked_pw = re.search(
+        r"ONEBRAIN_ADMIN_PASSWORD=([A-Za-z0-9_-]{20,})",
+        extract_cloud_init_file(server.user_data, "/opt/onebrain/.env"),
+    ).group(1)
     # The generated password is surfaced out-of-band alongside the email...
     assert f"SAVE THIS - Mission Control admin login: ops@onlyonebrain.com / {baked_pw}" in out
     # ...but the full cloud-init (carrying every baked secret) is NEVER printed.

@@ -9,7 +9,7 @@ labels, sort files into folders and run this once per folder, e.g.:
 
 Target the deployed app with --url or the ONEBRAIN_URL environment variable:
 
-    ONEBRAIN_URL=https://onebrain-production-0a16.up.railway.app \\
+    ONEBRAIN_URL=https://onebrain.example \\
         python scripts/bulk_import.py ./docs --classification internal --category ops
 """
 

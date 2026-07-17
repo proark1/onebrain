@@ -11,7 +11,7 @@ import os
 import sys
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -89,6 +89,39 @@ def _guard_pytest_dsn(dsn: str) -> None:
     )
 
 
+def _is_https_url(value: str) -> bool:
+    """Whether ``value`` is a safe HTTPS base URL for an internal control link.
+
+    Query strings, fragments, and embedded credentials have no legitimate use in
+    broker or fleet base URLs. Rejecting them here keeps a misconfigured control
+    plane from leaking a credential or silently downgrading its transport.
+    """
+    try:
+        parsed = urlsplit((value or "").strip())
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme == "https"
+        and parsed.hostname
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def _is_readable_file(value: str) -> bool:
+    """Check a TLS path without exposing its contents in an error or log."""
+    path = Path((value or "").strip())
+    if not value or not path.is_file():
+        return False
+    try:
+        with path.open("rb"):
+            return True
+    except OSError:
+        return False
+
+
 _load_dotenv()
 
 
@@ -127,6 +160,9 @@ class Settings(BaseSettings):
     # AI Employees is provider-neutral, while the first live roster is Gemini.
     # Anthropic remains fail-closed until all three gates and its credential are present.
     ai_employees_max_output_tokens: int = 2048
+    ai_employees_run_lease_seconds: int = 120
+    ai_employees_run_heartbeat_seconds: int = 15
+    ai_employees_provider_timeout_seconds: float = 60.0
     ai_employees_anthropic_enabled: bool = False
     ai_employees_anthropic_processing_approved: bool = False
     ai_employees_code_sandbox_enabled: bool = False
@@ -143,16 +179,11 @@ class Settings(BaseSettings):
     # pending queues, dashboards). Must authenticate as a role that owns the
     # platform tables / bypasses RLS. Falls back to the migration then app DSN.
     operator_database_url: str = ""
+    # A worker-only DSN for cross-tenant durable-job claims. It must authenticate
+    # as the narrowly privileged worker login, not the app or owner/operator role.
+    # Do not inject this secret into API containers.
+    worker_database_url: str = ""
 
-    # External customer provisioning through GitHub Actions.
-    github_owner: str = ""
-    github_repo: str = ""
-    github_workflow: str = "provision-customer.yml"
-    github_update_workflow: str = "update-customer.yml"   # fleet rollout executor
-    github_ref: str = "main"
-    github_dispatch_token: str = ""
-    provisioning_callback_key_id: str = ""
-    provisioning_callback_key_hash: str = ""
     # If set (comma-separated hostnames), a provisioning callback_url must be
     # https and its host must be in this allowlist. The workflow sends the
     # callback key as a bearer to this URL, so an unvalidated host is a secret-
@@ -161,7 +192,14 @@ class Settings(BaseSettings):
     secret_encryption_key: str = ""
     secret_encryption_key_version: str = "v1"
     bootstrap_secret_ttl_seconds: int = 3600
+    # Explicit non-owner product logins. The OneBrain app/worker split is
+    # enforced by 0029_job_queue_rls_roles; assistant and communication use
+    # their own database-only credentials rendered by the fleet bootstrap.
+    # `postgres_service_role` remains a legacy generic setting.
     postgres_app_role: str = ""
+    postgres_worker_role: str = ""
+    postgres_assistant_role: str = ""
+    postgres_communication_role: str = ""
     postgres_service_role: str = ""
     rls_enforced: bool = False
 
@@ -182,6 +220,11 @@ class Settings(BaseSettings):
     # Set both to have a real admin account ensured on any stack, incl. production.
     admin_email: str = ""
     admin_password: str = ""
+    # Customer boxes receive a non-secret topology descriptor plus app-specific
+    # raw keys. Startup stores only the key hashes in the customer database.
+    customer_bootstrap: str = ""
+    assistant_service_key: str = ""
+    communication_service_key: str = ""
 
     # Shared-password demo accounts (email + "onebrain2026") are convenient for a
     # local demo but must NEVER auto-seed on a real deployment. They seed only on a
@@ -205,8 +248,13 @@ class Settings(BaseSettings):
     sovereign_required: bool = False           # fail closed if sensitive + no sovereign endpoint
 
     # Login throttle — per-account brute-force / credential-stuffing lockout.
+    # The secret domain-separates login, service-key, and fleet counters so
+    # PostgreSQL-backed limits are shared by every API replica.
     login_max_attempts: int = 5
     login_lockout_seconds: int = 900
+    login_rate_limit_secret: str = ""
+    trusted_proxy_cidrs: str = ""              # csv; headers ignored unless this is set
+    trusted_proxy_hops: int = 0                 # trusted X-Forwarded-For hops including direct peer
 
     # --- Mission Control (fleet control plane) ---
     # operator_mode: this deployment IS Mission Control — it ingests fleet
@@ -216,7 +264,7 @@ class Settings(BaseSettings):
     # state). A deployment reports to Mission Control when fleet_url + fleet_key
     # are set.
     operator_mode: bool = False
-    operator_console: bool = True
+    operator_console: bool = False
     deployment_id: str = ""              # this deployment's control-plane id (for its heartbeat)
     fleet_url: str = ""                  # Mission Control base URL the reporter POSTs to
     fleet_key: str = ""                  # this deployment's fleet heartbeat key (fk_...)
@@ -254,10 +302,13 @@ class Settings(BaseSettings):
     # --- Ground-truth reporter ---
     build_version: str = ""                    # CI-stamped running version (ONEBRAIN_BUILD_VERSION); "" -> app.__version__
     module_probes_enabled: bool = False        # probe co-located module /health endpoints for the heartbeat
-    local_modules: str = ""                    # csv of MODULE_IDS running on this box (compose sets it; Railway leaves "")
+    local_modules: str = ""                    # csv of MODULE_IDS running on this box (customer compose sets it)
 
     # --- Hetzner provisioner (P1; dormant until provisioner_backend="hetzner") ---
-    provisioner_backend: str = "github"        # github | hetzner  (default keeps the Railway/GitHub path)
+    # Provisioning is deliberately OFF by default. Production Mission Control
+    # may explicitly opt into only the dedicated Hetzner broker path; the legacy
+    # The retired workflow dispatcher is not a supported backend anymore.
+    provisioner_backend: Literal["disabled", "hetzner"] = "disabled"
     hetzner_api_token: str = ""                # broker-only secret; MC must leave this empty for remote provisioning
     hetzner_broker_url: str = ""               # HTTPS origin of the dedicated remote broker
     hetzner_broker_credential: str = ""        # MC-only broker bearer credential; never the Hetzner token
@@ -381,6 +432,114 @@ class Settings(BaseSettings):
     def is_production_like(self) -> bool:
         return self.environment.strip().lower() in {"prod", "production", "staging"}
 
+    def assert_production_mission_control_ready(self) -> None:
+        """Fail closed when a production-like Mission Control is incomplete.
+
+        Local development and customer data-plane deployments retain their
+        lightweight defaults. Any production-like operator surface (including
+        ``operator_console``) can invoke write-capable deployment endpoints, so
+        it must have the fully isolated Hetzner/mTLS control path and every
+        release, RLS, and reconcile guard armed before it serves traffic.
+        """
+        if not (self.is_production_like and self.is_operator_surface):
+            return
+
+        errors: list[str] = []
+
+        if self.provisioner_backend != "hetzner":
+            errors.append("set ONEBRAIN_PROVISIONER_BACKEND=hetzner")
+        if self.hetzner_allow_inprocess_broker:
+            errors.append("ONEBRAIN_HETZNER_ALLOW_INPROCESS_BROKER must be false (in-process broker is forbidden)")
+        if self.hetzner_api_token.strip():
+            errors.append("ONEBRAIN_HETZNER_API_TOKEN must be empty on Mission Control")
+        if not _is_https_url(self.hetzner_broker_url):
+            errors.append("set ONEBRAIN_HETZNER_BROKER_URL to an HTTPS broker URL")
+        if not self.hetzner_broker_credential.strip():
+            errors.append("set ONEBRAIN_HETZNER_BROKER_CREDENTIAL")
+
+        for name, value in (
+            ("ONEBRAIN_HETZNER_BROKER_CLIENT_CERTIFICATE_FILE", self.hetzner_broker_client_certificate_file),
+            ("ONEBRAIN_HETZNER_BROKER_CLIENT_KEY_FILE", self.hetzner_broker_client_key_file),
+        ):
+            if not _is_readable_file(value):
+                errors.append(f"set {name} to a readable mTLS file")
+        if self.hetzner_broker_ca_file.strip() and not _is_readable_file(self.hetzner_broker_ca_file):
+            errors.append("set ONEBRAIN_HETZNER_BROKER_CA_FILE to a readable CA file")
+
+        for name, value in (
+            ("ONEBRAIN_FLEET_URL", self.fleet_url),
+            ("ONEBRAIN_FLEET_PUBLIC_URL", self.fleet_public_url),
+        ):
+            if not _is_https_url(value):
+                errors.append(f"set {name} to an HTTPS URL")
+        if not self.fleet_key.strip():
+            errors.append("set ONEBRAIN_FLEET_KEY")
+        if not self.deployment_id.strip():
+            errors.append("set ONEBRAIN_DEPLOYMENT_ID")
+
+        if not self.fleet_desired_state_private_key.strip():
+            errors.append("set ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY")
+        if not (self.fleet_desired_state_public_keys.strip() or self.fleet_desired_state_public_key.strip()):
+            errors.append("set ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS (or the singular public key)")
+        elif self.fleet_desired_state_private_key.strip():
+            try:
+                from app.controlplane.desired_state import active_signer_in_served_set
+
+                if not active_signer_in_served_set(self):
+                    errors.append("the active desired-state signer must be in ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS")
+            except Exception:
+                errors.append("ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY must be a valid signing key")
+        if int(self.fleet_desired_state_ttl_seconds) <= 0:
+            errors.append("ONEBRAIN_FLEET_DESIRED_STATE_TTL_SECONDS must be positive")
+
+        if not self.release_verify_public_key.strip():
+            errors.append("set ONEBRAIN_RELEASE_VERIFY_PUBLIC_KEY")
+        if not self.release_registry_allowlist.strip():
+            errors.append("set ONEBRAIN_RELEASE_REGISTRY_ALLOWLIST")
+        for attribute, name in (
+            ("release_require_signature", "ONEBRAIN_RELEASE_REQUIRE_SIGNATURE=true"),
+            ("release_require_signed_images", "ONEBRAIN_RELEASE_REQUIRE_SIGNED_IMAGES=true"),
+            ("release_require_rollback_kind", "ONEBRAIN_RELEASE_REQUIRE_ROLLBACK_KIND=true"),
+            ("release_promotion_required", "ONEBRAIN_RELEASE_PROMOTION_REQUIRED=true"),
+        ):
+            if not getattr(self, attribute):
+                errors.append(f"set {name}")
+
+        if self.vector_store != "pgvector":
+            errors.append("set ONEBRAIN_VECTOR_STORE=pgvector")
+        if not self.database_url.strip():
+            errors.append("set ONEBRAIN_DATABASE_URL")
+        if not self.rls_enforced:
+            errors.append("set ONEBRAIN_RLS_ENFORCED=true")
+        try:
+            # Do not duplicate the provisioning cipher's parsing rules here. An
+            # invalid key must fail before startup or a write-capable provisioning
+            # endpoint can create a bundle encrypted with an unusable key.
+            from app.provisioning.runs import OneTimeSecretCipher
+
+            OneTimeSecretCipher(self, require_encoded_key=True)
+        except (TypeError, ValueError) as exc:
+            errors.append(str(exc))
+        try:
+            from app.db.rls import PostgresRoleError, validate_job_role_configuration
+
+            validate_job_role_configuration(self)
+        except PostgresRoleError as exc:
+            errors.append(str(exc))
+        if len(self.login_rate_limit_secret) < 32:
+            errors.append("set ONEBRAIN_LOGIN_RATE_LIMIT_SECRET to a distinct 32+ character secret")
+        if not any(host.strip() for host in self.provisioning_callback_allowed_hosts.split(",")):
+            errors.append("set ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS to the approved callback hostnames")
+        if self.trusted_proxy_hops < 0:
+            errors.append("ONEBRAIN_TRUSTED_PROXY_HOPS cannot be negative")
+        if self.trusted_proxy_hops and not self.trusted_proxy_cidrs.strip():
+            errors.append("set ONEBRAIN_TRUSTED_PROXY_CIDRS when ONEBRAIN_TRUSTED_PROXY_HOPS is enabled")
+        if int(self.fleet_reconcile_seconds) <= 0:
+            errors.append("set ONEBRAIN_FLEET_RECONCILE_SECONDS to a positive interval")
+
+        if errors:
+            raise RuntimeError("Production Mission Control configuration is incomplete: " + "; ".join(errors))
+
     @property
     def backup_object_store_configured(self) -> bool:
         """True when an offsite backup target is FULLY specified (endpoint + bucket + both creds)."""
@@ -416,6 +575,20 @@ class Settings(BaseSettings):
         this at a distinct privileged role to close the RLS admin bypass."""
         dsn = self.operator_database_url.strip() or self.migration_database_url.strip() or self.database_url
         _guard_pytest_dsn(dsn)
+        return dsn
+
+    @property
+    def pg_worker_database_url(self) -> str:
+        """Worker-only durable-job DSN, with no privileged fallback.
+
+        An API process intentionally receives an empty value, so calling a
+        worker-only job method there fails rather than silently borrowing the
+        owner or app role.  The deployment worker validates the non-empty DSN
+        before it begins claiming work.
+        """
+        dsn = self.worker_database_url.strip()
+        if dsn:
+            _guard_pytest_dsn(dsn)
         return dsn
 
 

@@ -12,6 +12,7 @@ import {
   listPlatformSpaces,
 } from "@/lib/onebrain-client";
 import { MetricStrip, Notice, PageHeader, Panel, Tabs } from "@/components/admin-ui";
+import { summaryValue, type LoadState } from "@/lib/platform-summary";
 import type {
   PlatformAccessCheckResult,
   PlatformAccount,
@@ -135,6 +136,8 @@ export function SpacesPanel() {
   const [showCreateSpace, setShowCreateSpace] = useState(false);
   const [showInstallApp, setShowInstallApp] = useState(false);
   const [busyAction, setBusyAction] = useState<BusyAction>("");
+  const [accountsState, setAccountsState] = useState<LoadState>("loading");
+  const [detailsState, setDetailsState] = useState<LoadState>("loading");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -156,20 +159,24 @@ export function SpacesPanel() {
     setAccessResult(null);
     setNotice("");
     setError("");
+    setDetailsState("loading");
   }, []);
 
   const loadAccounts = useCallback(async (preferredAccountId = selectedAccountId) => {
     setBusyAction("accounts");
+    setAccountsState("loading");
     setError("");
     try {
       const nextAccounts = await listPlatformAccounts();
       setAccounts(nextAccounts);
+      setAccountsState("ready");
       const nextSelectedAccountId = preferredAccountId && nextAccounts.some((account) => account.id === preferredAccountId)
         ? preferredAccountId
         : nextAccounts[0]?.id ?? "";
       chooseAccount(nextSelectedAccountId);
     } catch (err) {
       setAccounts([]);
+      setAccountsState("error");
       chooseAccount("");
       setError(err instanceof Error ? err.message : "Could not load accounts.");
     } finally {
@@ -182,6 +189,7 @@ export function SpacesPanel() {
       return;
     }
     setBusyAction("details");
+    setDetailsState("loading");
     setError("");
     try {
       const [nextSpaces, nextApps, nextAudit] = await Promise.all([
@@ -192,11 +200,13 @@ export function SpacesPanel() {
       setSpaces(nextSpaces);
       setApps(nextApps);
       setAudit(nextAudit);
+      setDetailsState("ready");
       setInstallSpaceIds((current) => current.filter((space) => nextSpaces.some((item) => item.id === space)));
       setCheckSpaceId((current) => current && nextSpaces.some((space) => space.id === current)
         ? current
         : nextSpaces[0]?.id ?? "");
     } catch (err) {
+      setDetailsState("error");
       setError(err instanceof Error ? err.message : "Could not load account details.");
     } finally {
       setBusyAction("");
@@ -207,6 +217,7 @@ export function SpacesPanel() {
     let active = true;
     async function loadInitialAccounts() {
       setBusyAction("accounts");
+      setAccountsState("loading");
       setError("");
       try {
         const nextAccounts = await listPlatformAccounts();
@@ -214,12 +225,14 @@ export function SpacesPanel() {
           return;
         }
         setAccounts(nextAccounts);
+        setAccountsState("ready");
         chooseAccount(nextAccounts[0]?.id ?? "");
       } catch (err) {
         if (!active) {
           return;
         }
         setAccounts([]);
+        setAccountsState("error");
         chooseAccount("");
         setError(err instanceof Error ? err.message : "Could not load accounts.");
       } finally {
@@ -241,6 +254,7 @@ export function SpacesPanel() {
         return;
       }
       setBusyAction("details");
+      setDetailsState("loading");
       setError("");
       try {
         const [nextSpaces, nextApps, nextAudit] = await Promise.all([
@@ -254,12 +268,14 @@ export function SpacesPanel() {
         setSpaces(nextSpaces);
         setApps(nextApps);
         setAudit(nextAudit);
+        setDetailsState("ready");
         setInstallSpaceIds((current) => current.filter((space) => nextSpaces.some((item) => item.id === space)));
         setCheckSpaceId((current) => current && nextSpaces.some((space) => space.id === current)
           ? current
           : nextSpaces[0]?.id ?? "");
       } catch (err) {
         if (active) {
+          setDetailsState("error");
           setError(err instanceof Error ? err.message : "Could not load account details.");
         }
       } finally {
@@ -402,10 +418,10 @@ export function SpacesPanel() {
 
       <MetricStrip
         metrics={[
-          { label: "accounts", value: accounts.length },
-          { label: "spaces", value: spaces.length },
-          { label: "apps", value: apps.length },
-          { label: "audit", value: audit.length },
+          { label: "accounts", value: summaryValue(accountsState, accounts.length) },
+          { label: "spaces", value: summaryValue(selectedAccountId ? detailsState : "loading", spaces.length) },
+          { label: "apps", value: summaryValue(selectedAccountId ? detailsState : "loading", apps.length) },
+          { label: "audit", value: summaryValue(selectedAccountId ? detailsState : "loading", audit.length) },
         ]}
       />
 
@@ -417,7 +433,7 @@ export function SpacesPanel() {
           title="Tenants"
         >
           <div className="accountList">
-            {accounts.length === 0 ? (
+            {accountsState === "ready" && accounts.length === 0 ? (
               <div className="emptyPanel">
                 <h3>No accounts</h3>
                 <p>Create the first account to organize spaces and app access.</p>

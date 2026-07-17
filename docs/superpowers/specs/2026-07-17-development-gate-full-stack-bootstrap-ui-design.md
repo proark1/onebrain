@@ -168,8 +168,8 @@ five spaces, five installed apps, and at least the bootstrap audit event.
 The selected visual direction is the compact organization map.
 
 - Replace the oversized hero with a slim module header containing workspace,
-  installation state, active employee count, open missions, and pending
-  approvals.
+  installation state, and employee count. Keep mission, approval, work, chat,
+  and connector counts in the existing tab badges instead of duplicating them.
 - Remove the duplicate leadership-council rail.
 - Show the Chief of Staff office as the hierarchy root.
 - Show Operations & corporate, Product/technology/security, and Market/customer
@@ -202,6 +202,20 @@ The development gate still reports all eight runtime modules from the
 
 The five platform app installations and eight runtime modules are related but
 different inventories; the UI and tests must not conflate their counts.
+
+## Integration Credential Bootstrap
+
+Assistant and Communication use different app-scoped service principals. The
+sealed box bundle therefore carries distinct Assistant and Communication raw
+keys plus Communication's selected space. The renderer maps each module's
+legacy `ONEBRAIN_SERVICE_KEY` input to its app-specific secret reference.
+
+The customer API receives both app-specific references only so startup can
+store their hashes and scopes in the isolated customer database. It never
+persists either raw key. A full-stack provision fails closed if either key is
+missing, if the Communication space is missing, or if both apps receive the
+same raw key. The generic service-key bundle fields remain optional for older
+single-module contracts but are no longer the full-stack source of truth.
 
 ## Verification
 
@@ -248,9 +262,11 @@ The change is complete when a newly provisioned or upgraded development gate:
 
 ## Rollout
 
-Ship the reconciler and renderer changes together. The next development-gate
-release supplies the descriptor and repairs the existing empty topology during
-startup. Verify Apps, AI Employees, customer navigation, and Mission Control
-isolation before marking that release dev-verified. Customer releases receive
-the same bundle-scoped bootstrap behavior only when their renderer supplies a
-descriptor; no existing deployment without one changes automatically.
+Ship the reconciler, credential bundle, and renderer changes together. Replace
+or reprovision a legacy development-gate box so it receives the new descriptor
+and both app-specific credentials; an image-only rollout cannot invent the raw
+keys missing from an old sealed bundle. Startup then reconciles the empty local
+topology. Verify Apps, AI Employees, customer navigation, and Mission Control
+isolation before marking that release dev-verified. Customer deployments
+receive the same bundle-scoped bootstrap behavior only when newly rendered with
+a descriptor; no existing deployment without one changes automatically.

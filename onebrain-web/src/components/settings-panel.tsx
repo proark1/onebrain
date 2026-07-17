@@ -13,7 +13,7 @@ export function SettingsPanel() {
     setError("");
     setIsLoggingOut(true);
     try {
-      const response = await fetch("/api/onebrain/auth/logout", { method: "POST" });
+      const response = await fetch("/api/auth/logout", { method: "POST" });
       if (!response.ok) {
         setError("Could not log out. Please try again.");
         return;

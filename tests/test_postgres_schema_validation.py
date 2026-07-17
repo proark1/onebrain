@@ -469,6 +469,26 @@ def _kpi_dashboard_module():
     return _load_migration_module("0023_kpi_dashboard_data.py", "kpi_dashboard_migration")
 
 
+def _job_leases_module():
+    return _load_migration_module("0025_job_leases.py", "job_leases_migration")
+
+
+def _ai_agent_run_leases_module():
+    return _load_migration_module("0026_ai_agent_run_leases.py", "ai_agent_run_leases_migration")
+
+
+def _customer_teardown_module():
+    return _load_migration_module("0027_customer_teardown_protocol.py", "customer_teardown_migration")
+
+
+def _auth_rate_limits_module():
+    return _load_migration_module("0028_auth_rate_limits.py", "auth_rate_limits_migration")
+
+
+def _job_queue_rls_module():
+    return _load_migration_module("0029_job_queue_rls_roles.py", "job_queue_rls_migration")
+
+
 def test_trust_primitives_migration_structure_and_chain():
     migration = _trust_primitives_module()
 
@@ -537,7 +557,44 @@ def test_required_revision_matches_single_alembic_head():
     heads = ScriptDirectory.from_config(config).get_heads()
 
     assert heads == [REQUIRED_ALEMBIC_REVISION]
-    assert REQUIRED_ALEMBIC_REVISION == "0024_ai_employees_runtime"
+    assert REQUIRED_ALEMBIC_REVISION == "0029_job_queue_rls_roles"
+
+
+def test_job_leases_migration_precedes_the_current_head():
+    migration = _job_leases_module()
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "versions"
+        / "0025_job_leases.py"
+    ).read_text()
+
+    assert migration.revision == "0025_job_leases"
+    assert migration.down_revision == "0024_ai_employees_runtime"
+    assert set(migration.JOB_LEASE_COLUMNS) == {"lease_token", "lease_expires_at"}
+    assert "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lease_token" in source
+    assert "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lease_expires_at" in source
+    assert "jobs_lease_claim_idx" in source
+
+
+def test_recovery_auth_and_job_queue_migrations_form_one_additive_chain():
+    job_leases = _job_leases_module()
+    ai_leases = _ai_agent_run_leases_module()
+    teardown = _customer_teardown_module()
+    auth_limits = _auth_rate_limits_module()
+    job_queue_rls = _job_queue_rls_module()
+
+    assert ai_leases.revision == "0026_ai_agent_run_leases"
+    assert ai_leases.down_revision == job_leases.revision
+    assert teardown.revision == "0027_customer_teardown_protocol"
+    assert teardown.down_revision == ai_leases.revision
+    assert auth_limits.revision == "0028_auth_rate_limits"
+    assert auth_limits.down_revision == teardown.revision
+    assert job_queue_rls.revision == REQUIRED_ALEMBIC_REVISION
+    assert job_queue_rls.down_revision == auth_limits.revision
+    source = Path(auth_limits.__file__).read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS auth_rate_limits" in source
+    assert "subject_hash" in source and "auth_rate_limits_expiry_idx" in source
 
 
 def test_kpi_dashboard_migration_is_scoped_and_forced_rls():
@@ -563,13 +620,38 @@ def test_kpi_dashboard_migration_is_scoped_and_forced_rls():
 # Ground rule 3 (append-only positional columns) is arithmetic — grepping the
 # migration source alone cannot catch an off-by-one, and there is no live
 # Postgres harness, so a swapped index would first manifest on production
-# Railway. These tests feed synthetic row tuples straight through the mappers.
+# a production database. These tests feed synthetic row tuples straight through the mappers.
 
 def _bare_postgres_store():
     from app.controlplane.postgres import PostgresControlPlaneStore
 
     # Skip __init__ (DSN + schema validation) — the mappers are pure.
     return object.__new__(PostgresControlPlaneStore)
+
+
+def _bare_postgres_job_store():
+    from app.jobs.postgres import PostgresJobStore
+
+    return object.__new__(PostgresJobStore)
+
+
+def test_postgres_job_mapper_includes_fenced_lease_columns():
+    from datetime import datetime, timezone
+
+    from app.jobs.postgres import PostgresJobStore
+
+    store = _bare_postgres_job_store()
+    at = datetime(2026, 7, 17, 1, 2, 3, tzinfo=timezone.utc)
+    job = store._job((
+        "job0", "service_capture", "running", "tenant3", "account4", "space5", "requester6",
+        {"payload": 7}, None, "", 1, 3, at, "worker13", at, "lease15", at, at, at, None,
+    ))
+
+    assert len(PostgresJobStore._JOB_COLS.split(",")) == 20
+    assert job.locked_by == "worker13"
+    assert job.lease_token == "lease15"
+    assert job.lease_expires_at == at.isoformat()
+    assert job.completed_at == ""
 
 
 def test_postgres_row_mappers_positional():

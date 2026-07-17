@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   python:
     name: Python tests
@@ -11,32 +14,48 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
-      - name: Install system OCR dependency
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends tesseract-ocr
+          sudo apt-get install -y --no-install-recommends tesseract-ocr shellcheck
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: |
+            requirements.in
             requirements.txt
+            requirements-dev.in
             requirements-dev.txt
 
       - name: Install Python dependencies
+        run: python -m pip install --require-hashes -r requirements-dev.txt
+
+      - name: Verify dependency locks
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-dev.txt
+          python scripts/verify_requirements_lock.py
+          python -m pip check
+
+      - name: Audit production dependencies
+        run: |
+          pip-audit --disable-pip --progress-spinner off --strict -r requirements.txt
+          pip-audit --disable-pip --progress-spinner off --strict -r requirements-dev.txt
 
       - name: Run tests
         env:
           ONEBRAIN_AUTH_SECRET: ci-test-secret-ci-test-secret-ci-test-secret
           ONEBRAIN_COOKIE_SECURE: "false"
         run: python -m pytest -q
+
+      - name: Verify checked-in OpenAPI contract
+        env:
+          ONEBRAIN_AUTH_SECRET: ci-test-secret-ci-test-secret-ci-test-secret
+          ONEBRAIN_COOKIE_SECURE: "false"
+        run: python scripts/export_openapi.py onebrain-web/src/lib/openapi.json --check
 
   frontend:
     name: Frontend checks
@@ -48,10 +67,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24"
           cache: npm
@@ -60,11 +79,17 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Audit frontend dependencies
+        run: npm audit --audit-level=moderate
+
       - name: Lint
         run: npm run lint
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Run focused web boundary tests
+        run: npm run test
 
       - name: Build
         run: npm run build
@@ -75,33 +100,68 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
-      - name: Validate provisioning workflow contract
+      - name: Require immutable third-party action references
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          invalid = []
+          pattern = re.compile(r"^\s*uses:\s*([^@\s]+)@([^\s#]+)")
+          for path in Path(".github/workflows").glob("*.yml"):
+              for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                  match = pattern.match(line)
+                  if not match or match.group(1).startswith("./"):
+                      continue
+                  if not re.fullmatch(r"[0-9a-f]{40}", match.group(2)):
+                      invalid.append(f"{path}:{number} ({match.group(1)}@{match.group(2)})")
+          if invalid:
+              raise SystemExit("external actions must be pinned to a full commit SHA:\n" + "\n".join(invalid))
+          PY
+
+      - name: Require immutable container image references
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          invalid = []
+          dockerfiles = (Path("Dockerfile"), Path("Dockerfile.worker"), Path("onebrain-web/Dockerfile"))
+          for path in dockerfiles:
+              stages = set()
+              for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                  match = re.match(r"^FROM\s+([^\s]+)(?:\s+AS\s+([^\s]+))?\s*$", line, re.IGNORECASE)
+                  if not match:
+                      continue
+                  image, stage = match.groups()
+                  if image not in stages and not re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", image):
+                      invalid.append(f"{path}:{number} ({image})")
+                  if stage:
+                      stages.add(stage)
+
+          image_pattern = re.compile(r"^\s*image:\s*([^\s#]+)")
+          for path in Path(".github/workflows").glob("*.yml"):
+              for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                  match = image_pattern.match(line)
+                  if match and not re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", match.group(1)):
+                      invalid.append(f"{path}:{number} ({match.group(1)})")
+          if invalid:
+              raise SystemExit("container image references must be pinned to a sha256 digest:\n" + "\n".join(invalid))
+          PY
+
+      - name: Reject retired Railway workflows
         run: |
           python - <<'PY'
           from pathlib import Path
-          text = Path(".github/workflows/provision-customer.yml").read_text()
-          required = [
-              "workflow_dispatch",
-              "run_id",
-              "callback_url",
-              "dry_run",
-              "ONEBRAIN_PROVISIONING_CALLBACK_KEY",
-              "RAILWAY_TOKEN",
-              "Send running callback",
-              "Dry-run provisioning",
-              "Provision Railway stack",
-              "add --database postgres",
-              "onebrain-api",
-              "onebrain-workers",
-              "onebrain-admin-ui",
-              "module_services_pending_code",
-              "core_smoke_passed",
+          retired = [
+              Path(".github/workflows/provision-customer.yml"),
+              Path(".github/workflows/update-customer.yml"),
           ]
-          missing = [item for item in required if item not in text]
-          if missing:
-              raise SystemExit(f"workflow missing expected contract markers: {missing}")
+          present = [str(path) for path in retired if path.exists()]
+          if present:
+              raise SystemExit("retired Railway workflows are present: " + ", ".join(present))
           PY
 
       - name: Secret pattern scan
@@ -119,11 +179,7 @@ jobs:
           ]
           ignored_dirs = {".git", ".next", "node_modules", ".pytest_cache", "__pycache__", ".onebrain_data"}
           ignored_parts = {"tests", "scripts"}
-          allowed_files = {
-              ".github/workflows/provision-customer.yml",
-              ".github/workflows/update-customer.yml",
-              "app/users/seed.py",
-          }
+          allowed_files = {"app/users/seed.py"}
           findings = []
           for path in Path(".").rglob("*"):
               if not path.is_file() or any(part in ignored_dirs for part in path.parts):
@@ -144,9 +200,130 @@ jobs:
               raise SystemExit("possible committed secret patterns in: " + ", ".join(sorted(findings)))
           PY
 
+  postgres-migration-smoke:
+    name: PostgreSQL / pgvector migration smoke
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
+        env:
+          POSTGRES_DB: onebrain_ci
+          POSTGRES_USER: onebrain
+          POSTGRES_PASSWORD: onebrain
+        options: >-
+          --health-cmd "pg_isready -U onebrain -d onebrain_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.in
+            requirements.txt
+
+      - name: Install production dependencies
+        run: python -m pip install --require-hashes -r requirements.txt
+
+      - name: Apply and verify production schema
+        env:
+          ONEBRAIN_DATABASE_URL: postgresql://onebrain:onebrain@localhost:5432/onebrain_ci
+          ONEBRAIN_EMBEDDING_DIM: "256"
+          ONEBRAIN_POSTGRES_APP_ROLE: onebrain_app
+          ONEBRAIN_POSTGRES_WORKER_ROLE: onebrain_worker
+        run: |
+          python - <<'PY'
+          import os
+
+          import psycopg
+
+          # Migration 0029 validates that production's independently
+          # authenticated application and worker roles already exist. Mirror
+          # that prerequisite here so CI verifies the migration instead of
+          # silently exercising an owner-only database.
+          with psycopg.connect(os.environ["ONEBRAIN_DATABASE_URL"], autocommit=True) as conn:
+              with conn.cursor() as cur:
+                  cur.execute("""
+                      DO $$
+                      BEGIN
+                          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'onebrain_app') THEN
+                              CREATE ROLE onebrain_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+                                  NOINHERIT NOBYPASSRLS NOREPLICATION;
+                          END IF;
+                          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'onebrain_worker') THEN
+                              CREATE ROLE onebrain_worker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+                                  NOINHERIT NOBYPASSRLS NOREPLICATION;
+                          END IF;
+                      END
+                      $$;
+                  """)
+          PY
+          python -m alembic upgrade head
+          python - <<'PY'
+          import os
+
+          import psycopg
+
+          from app.db.schema import REQUIRED_ALEMBIC_REVISION, validate_postgres_schema
+
+          required = (
+              "chunks",
+              "jobs",
+              "ai_agent_runs",
+              "control_customer_teardown_requests",
+              "auth_rate_limits",
+          )
+          with psycopg.connect(os.environ["ONEBRAIN_DATABASE_URL"]) as conn:
+              validate_postgres_schema(conn, required)
+              with conn.cursor() as cur:
+                  cur.execute("SELECT extname FROM pg_extension WHERE extname = 'vector'")
+                  assert cur.fetchone() == ("vector",)
+                  cur.execute(
+                      "SELECT relrowsecurity AND relforcerowsecurity "
+                      "FROM pg_class WHERE relname = 'platform_accounts'"
+                  )
+                  assert cur.fetchone() == (True,)
+                  cur.execute("SELECT version_num FROM alembic_version")
+                  assert cur.fetchone() == (REQUIRED_ALEMBIC_REVISION,)
+          PY
+
+  container-build-smoke:
+    name: Container build smoke (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            context: .
+            file: Dockerfile
+          - name: worker
+            context: .
+            file: Dockerfile.worker
+          - name: admin-ui
+            context: onebrain-web
+            file: onebrain-web/Dockerfile
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Build immutable container context
+        run: docker build --pull --tag onebrain/${{ matrix.name }}:ci --file ${{ matrix.file }} ${{ matrix.context }}
+
   publish-images:
     name: Publish images
-    needs: [python, frontend, workflow-and-secrets]
+    needs: [python, frontend, workflow-and-secrets, postgres-migration-smoke, container-build-smoke]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
@@ -164,17 +341,17 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
-      - name: Install signing dependency
-        run: python -m pip install cryptography
+      - name: Install locked release dependencies
+        run: python -m pip install --require-hashes -r requirements.txt
 
       - name: Register exact published digests
         env:

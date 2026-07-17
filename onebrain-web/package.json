@@ -1,6 +1,7 @@
 {
   "name": "onebrain-web",
   "private": true,
+  "type": "module",
   "version": "0.1.0",
   "scripts": {
     "dev": "next dev",
@@ -8,6 +9,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test",
     "openapi": "python ../scripts/export_openapi.py src/lib/openapi.json"
   },
   "dependencies": {

@@ -1,7 +1,6 @@
-"""The real Hetzner Cloud client (P4-01) — the ONLY module that talks to
-api.hetzner.cloud. stdlib `urllib`, an injectable `opener(request, timeout)` so
-tests need no network (the exact seam as `app.provisioning.runs.dispatch_workflow`
-and `app.fleet.reporter.send_heartbeat`). The token is passed IN at construction
+"""The real Hetzner Cloud client (P4-01) — the only module that talks to
+api.hetzner.cloud. It uses stdlib `urllib` with an injectable
+`opener(request, timeout)` so tests need no network. The token is passed in at construction
 by the broker; this class NEVER imports `get_settings` or reads a global.
 
 Phase 4 wires this up but exercises it only via an injected opener (request-SHAPE
@@ -39,7 +38,7 @@ _TIMEOUT_SECONDS = 20
 
 class UrllibHetznerClient:
     """The ONLY module that talks to api.hetzner.cloud. stdlib urllib, injectable
-    opener (tests need no network — same seam as dispatch_workflow/send_heartbeat).
+    opener (tests need no network).
     The token is passed IN by the broker; this class never imports get_settings.
 
     ONE Bearer token covers everything — servers, firewalls, volumes AND DNS. DNS was

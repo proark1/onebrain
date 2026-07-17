@@ -77,6 +77,7 @@ def _handle_document_ingest(job: Job, store: JobStore) -> dict:
         pii_phase=payload.get("pii_phase", "dpia_signed"),
         account_id=job.account_id,
         space_id=job.space_id,
+        idempotency_key=job.id,
     )
     return _document_summary(result, job.account_id, job.space_id)
 
@@ -98,6 +99,7 @@ def _handle_service_capture(job: Job) -> dict:
         pii_phase=payload.get("pii_phase", "dpia_signed"),
         account_id=job.account_id,
         space_id=job.space_id,
+        idempotency_key=job.id,
     )
     return {"captured": result.doc_id, "chunks": result.chunks}
 
@@ -119,6 +121,7 @@ def _handle_service_intake(job: Job) -> dict:
         record_type=payload.get("record_type", ""),
         intent=payload.get("intent", ""),
         metadata=payload.get("metadata") or {},
+        idempotency_key=job.id,
     ))
     return {"record": _intake_record(record)}
 

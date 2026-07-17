@@ -675,18 +675,23 @@ def stream_ai_employee_turn(
     scoped = _runtime_principal(principal, body.account_id, body.space_id)
 
     def event_stream():
+        turn_events = None
         try:
-            for event in get_ai_employee_runtime().stream_turn(
+            turn_events = get_ai_employee_runtime().stream_turn(
                 principal=scoped,
                 conversation_id=conversation_id,
                 question=body.question,
                 idempotency_key=body.idempotency_key,
-            ):
+            )
+            for event in turn_events:
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:
             message, code = _runtime_error_payload(exc)
             yield f"data: {json.dumps({'type': 'error', 'code': code, 'message': message})}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'replayed': False})}\n\n"
+        finally:
+            if turn_events is not None:
+                turn_events.close()
 
     return StreamingResponse(
         event_stream(),

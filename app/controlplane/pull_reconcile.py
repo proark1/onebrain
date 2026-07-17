@@ -4,7 +4,7 @@ A Hetzner/pull box converges on its OWN signed desired-state (P4-05) and reports
 outcome in its fleet.v2 UpdateReport; Mission Control never dispatches a workflow to
 it. This module turns those box-authored reports into child-rollout terminal statuses
 and feeds the UNCHANGED advance_fleet_rollout via the UNCHANGED reconcile_fleet_rollout
-— so a pull rollout rides the exact same ring-by-ring reducer as a Railway rollout.
+— so a pull rollout rides the exact same ring-by-ring reducer as a workflow-backed rollout.
 
 PURE of network: the control/fleet stores, the latest-heartbeats snapshot, and the
 clock are injected. No scheduler in P4 (a manual operator endpoint drives it, exactly
@@ -23,7 +23,7 @@ from pydantic import ValidationError
 from app.controlplane.base import BackupRun
 from app.controlplane.fleet_runner import reconcile_fleet_rollout
 from app.controlplane.promotion import reconcile_promotion_timeouts, reconcile_rollout_promotion
-from app.fleet.heartbeat import UpdateReport
+from app.fleet.heartbeat import FleetHeartbeatV2, UpdateReport
 
 _TERMINAL_ROLLOUT = frozenset({"success", "failed"})
 
@@ -62,13 +62,83 @@ def _past_deadline(child, now: datetime, deadline_seconds: int) -> bool:
     return (now - dispatched).total_seconds() > deadline_seconds
 
 
-def synthesize_pull_status(child, update_report, *, now: datetime, deadline_seconds: int) -> Optional[str]:
+def _heartbeat_from_stored(heartbeat) -> Optional[FleetHeartbeatV2]:
+    """Return a fully validated v2 heartbeat or None.
+
+    Pull acknowledgement is a release-attestation boundary, not merely an
+    update-state parser.  A valid ``UpdateReport`` nested in an otherwise
+    malformed or v1 heartbeat is therefore insufficient to complete a rollout.
+    """
+    payload = getattr(heartbeat, "payload", None) or {}
+    try:
+        return FleetHeartbeatV2.model_validate(payload)
+    except ValidationError:
+        return None
+
+
+def pull_acknowledgement_matches(control_store, child, heartbeat) -> bool:
+    """True only for the exact healthy, fully converged pull acknowledgement.
+
+    The box's outcome is advisory until every independently observable fact
+    agrees with the rollout it was offered.  Any mismatch remains non-terminal
+    and is converted into a timeout only by ``synthesize_pull_status``.
+    """
+    body = _heartbeat_from_stored(heartbeat)
+    release = control_store.get_release(child.target_version)
+    deployment = control_store.get_deployment(child.deployment_id)
+    if not body or not release or not deployment:
+        return False
+    if body.deployment_id != child.deployment_id or not body.healthy:
+        return False
+
+    update = body.update
+    if update.attempt_id != child.id or update.outcome != "succeeded":
+        return False
+    if update.last_target_version != release.version or body.onebrain.version != release.version:
+        return False
+
+    # A release without a schema transition must still attest the deployment's
+    # current revision.  This prevents an empty migration_to from weakening the
+    # acknowledgement check.
+    expected_migration = release.migration_to or deployment.current_migration
+    if expected_migration and (
+        update.migration_reached != expected_migration
+        or body.onebrain.migration_revision != expected_migration
+    ):
+        return False
+
+    reported_modules = {}
+    for report in body.modules:
+        if report.module_id in reported_modules:
+            return False
+        reported_modules[report.module_id] = report
+    for module in control_store.list_modules(child.deployment_id):
+        if module.status != "active":
+            continue
+        expected_version = release.modules.get(module.module_id)
+        report = reported_modules.get(module.module_id)
+        if not expected_version or not report:
+            return False
+        if not report.healthy or report.version != expected_version:
+            return False
+    return True
+
+
+def synthesize_pull_status(
+    child,
+    update_report,
+    *,
+    now: datetime,
+    deadline_seconds: int,
+    success_verified: bool = False,
+) -> Optional[str]:
     """Pure. Returns 'success' | 'failed' | None(keep waiting) for one OFFERED pull child.
 
     - attempt_id != child.id  -> the box has not acted on THIS offer yet:
           past deadline (now - dispatched_at > deadline) -> 'failed' (silent box); else None.
     - attempt_id == child.id:
-          outcome 'succeeded'                 -> 'success'
+          outcome 'succeeded' + verified facts -> 'success'
+          outcome 'succeeded' + any mismatch  -> wait, then timeout-fail
           outcome 'failed' | 'rolled_back'    -> 'failed'
           outcome 'none' | 'in_progress'      -> None, unless past deadline -> 'failed'.
 
@@ -78,7 +148,9 @@ def synthesize_pull_status(child, update_report, *, now: datetime, deadline_seco
         return "failed" if overdue else None
     outcome = update_report.outcome
     if outcome == "succeeded":
-        return "success"
+        if success_verified:
+            return "success"
+        return "failed" if overdue else None
     if outcome in ("failed", "rolled_back"):
         return "failed"
     return "failed" if overdue else None   # none | in_progress before deadline -> keep waiting
@@ -128,18 +200,14 @@ def _report_from_heartbeat(heartbeat) -> UpdateReport:
     an empty UpdateReport (outcome 'none') for a v1 box / no heartbeat / malformed
     update — a box that has never reported for THIS offer keeps waiting until its
     deadline, never synthesized failed on the strength of an absent report alone."""
-    payload = getattr(heartbeat, "payload", None) or {}
-    update = payload.get("update") or {}
-    try:
-        return UpdateReport.model_validate(update)
-    except ValidationError:
-        return UpdateReport()
+    body = _heartbeat_from_stored(heartbeat)
+    return body.update if body is not None else UpdateReport()
 
 
 def _apply_child_status(control_store, child, status: str, update_report, *, now: datetime) -> None:
     """Drive the child to its synthesized terminal status. A 'success' goes through the
-    UNCHANGED update_rollout_status apply path — the SAME plan_update gate the Railway
-    callback uses (apply_rollout_callback) — so a pull success applies the release
+    UNCHANGED update_rollout_status apply path — the SAME plan_update gate every verified
+    terminal transition uses — so a pull success applies the release
     irreversibly under the identical safety gate, never a parallel apply path."""
     if status == "success":
         control_store.update_rollout_status(child.id, "success")
@@ -165,9 +233,16 @@ def _reconcile_development_pull(control_store, latest_heartbeats: dict, *, now: 
         if (not child or child.status in _TERMINAL_ROLLOUT or child.fleet_rollout_id
                 or not (child.request_payload or {}).get("pull")):
             continue
-        report = _report_from_heartbeat(latest_heartbeats.get(child.deployment_id))
+        heartbeat = latest_heartbeats.get(child.deployment_id)
+        report = _report_from_heartbeat(heartbeat)
         materialize_backup_from_report(control_store, child.deployment_id, report)
-        status = synthesize_pull_status(child, report, now=now, deadline_seconds=deadline_seconds)
+        status = synthesize_pull_status(
+            child,
+            report,
+            now=now,
+            deadline_seconds=deadline_seconds,
+            success_verified=pull_acknowledgement_matches(control_store, child, heartbeat),
+        )
         if status is not None:
             _apply_child_status(control_store, child, status, report, now=now)
 
@@ -181,8 +256,8 @@ def reconcile_pull_targets(control_store, fleet_store, latest_heartbeats: dict, 
       3. status = synthesize_pull_status(...); None -> keep waiting (skip).
       4. drive the child to that terminal status (success applies via the existing gate).
       5. feed the UNCHANGED reconcile_fleet_rollout -> UNCHANGED advance_fleet_rollout.
-    Returns the reconciled fleet runs. Railway children are left untouched (their
-    workflow callback owns them). Pure of network; heartbeats + clock injected."""
+    Returns the reconciled fleet runs. Workflow-dispatched children are left untouched
+    because their callback owns them. Pure of network; heartbeats + clock injected."""
     # Development candidates are standalone pull rollouts, not fleet children.
     # Consume their authenticated report before timeout evaluation so a success
     # already received at the deadline cannot be incorrectly failed first.
@@ -202,10 +277,17 @@ def reconcile_pull_targets(control_store, fleet_store, latest_heartbeats: dict, 
             if child.status in _TERMINAL_ROLLOUT:
                 continue
             if not (child.request_payload or {}).get("pull"):
-                continue  # a Railway child — the workflow callback path owns it
-            report = _report_from_heartbeat(latest_heartbeats.get(child.deployment_id))
+                continue  # a workflow child — the callback path owns it
+            heartbeat = latest_heartbeats.get(child.deployment_id)
+            report = _report_from_heartbeat(heartbeat)
             materialize_backup_from_report(control_store, child.deployment_id, report)
-            status = synthesize_pull_status(child, report, now=now, deadline_seconds=deadline_seconds)
+            status = synthesize_pull_status(
+                child,
+                report,
+                now=now,
+                deadline_seconds=deadline_seconds,
+                success_verified=pull_acknowledgement_matches(control_store, child, heartbeat),
+            )
             if status is None:
                 continue
             _apply_child_status(control_store, child, status, report, now=now)

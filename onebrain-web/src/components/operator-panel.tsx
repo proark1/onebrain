@@ -202,7 +202,7 @@ export function OperatorPanel() {
   const [provisionRing, setProvisionRing] = useState("manual");
   const [provisionAccountId, setProvisionAccountId] = useState("");
   const [provisionCallbackUrl] = useState(() =>
-    typeof window === "undefined" ? "" : `${window.location.origin}/api/onebrain/provisioning/runs/{run_id}/callback`,
+    typeof window === "undefined" ? "" : `${window.location.origin}/api/provisioning/runs/{run_id}/callback`,
   );
   const [provisionBrandTheme, setProvisionBrandTheme] = useState<BrandThemeInput>(DEFAULT_BRAND_THEME);
 
@@ -903,9 +903,9 @@ function ProvisioningRunList({
               <p>{run.deployment_id}</p>
               <div className="operatorMeta">
                 <span>{run.bundle_id}</span>
-                {run.railway_project_id ? <span>{run.railway_project_id}</span> : null}
+                {run.target_id ? <span>{run.target_id}</span> : null}
                 {run.external_run_url ? (
-                  <a href={run.external_run_url} rel="noreferrer" target="_blank">workflow</a>
+                  <a href={run.external_run_url} rel="noreferrer" target="_blank">deployment</a>
                 ) : null}
                 {run.smoke_status ? <span>{labelFor(run.smoke_status)}</span> : null}
               </div>

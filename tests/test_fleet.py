@@ -53,7 +53,7 @@ def _minted_key(store: MemoryFleetStore, deployment_id: str = "dep_a") -> str:
 def _control_with(deployment_id: str = "dep_a") -> MemoryControlPlaneStore:
     store = MemoryControlPlaneStore()
     store.create_deployment(CustomerDeployment(
-        id=deployment_id, customer_name="Customer A", deployment_type="dedicated_railway",
+        id=deployment_id, customer_name="Customer A", deployment_type="dedicated_server",
         release_ring="pilot", current_version="2026.07.0",
     ))
     return store
@@ -1133,6 +1133,56 @@ def test_rotate_deployment_secrets_404s_then_bumps(monkeypatch):
     assert out.deployment_id == "dep_a" and out.secrets_epoch == 1
 
 
+def test_backfill_runtime_db_credentials_reseals_legacy_bundle_and_bumps_epoch(monkeypatch):
+    """New runtime passwords are minted only inside MC, never by a customer box."""
+    import json
+
+    from app.provisioning.runs import BoxSecretBundle, MemoryProvisioningRunStore, OneTimeSecretCipher
+
+    settings = _boot_settings()
+    cipher = OneTimeSecretCipher(settings)
+    legacy = {
+        "POSTGRES_PASSWORD": "owner-password",
+        "REDIS_PASSWORD": "redis-password",
+    }
+    prov = MemoryProvisioningRunStore()
+    prov.upsert_secret_bundle(BoxSecretBundle(
+        deployment_id="dep_a", account_id="acct_a",
+        ciphertext=cipher.seal_bundle(json.dumps(legacy)),
+    ))
+    control = _control_with("dep_a")
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(fleet_router, "get_provisioning_run_store", lambda: prov)
+    monkeypatch.setattr(fleet_router, "get_settings", lambda: settings)
+
+    out = fleet_router.backfill_runtime_db_credentials("dep_a", principal=_principal("admin"))
+    assert out.deployment_id == "dep_a"
+    assert out.updated is True and out.secrets_epoch == 1
+    stored = prov.get_secret_bundle("dep_a")
+    assert stored is not None and stored.secrets_epoch == 1
+    updated = json.loads(cipher.open_bundle(stored.ciphertext))
+    for key in (
+        "POSTGRES_APP_PASSWORD",
+        "POSTGRES_WORKER_PASSWORD",
+        "POSTGRES_ASSISTANT_PASSWORD",
+        "POSTGRES_COMMUNICATION_PASSWORD",
+    ):
+        assert isinstance(updated[key], str) and len(updated[key]) >= 32
+
+    # Retrying after a completed backfill never rotates or replaces either
+    # password; it is safe for an operator to re-run after checking a heartbeat.
+    retried = fleet_router.backfill_runtime_db_credentials("dep_a", principal=_principal("admin"))
+    assert retried.updated is False and retried.secrets_epoch == 1
+    reread = json.loads(cipher.open_bundle(prov.get_secret_bundle("dep_a").ciphertext))
+    for key in (
+        "POSTGRES_APP_PASSWORD",
+        "POSTGRES_WORKER_PASSWORD",
+        "POSTGRES_ASSISTANT_PASSWORD",
+        "POSTGRES_COMMUNICATION_PASSWORD",
+    ):
+        assert reread[key] == updated[key]
+
+
 def test_rotation_endpoints_are_operator_admin_only():
     non_admin = _principal("front_desk")
     with pytest.raises(HTTPException) as ei:
@@ -1141,6 +1191,9 @@ def test_rotation_endpoints_are_operator_admin_only():
     with pytest.raises(HTTPException) as ei2:
         fleet_router.rotate_deployment_secrets("dep_a", principal=non_admin)
     assert ei2.value.status_code == 403
+    with pytest.raises(HTTPException) as ei3:
+        fleet_router.backfill_runtime_db_credentials("dep_a", principal=non_admin)
+    assert ei3.value.status_code == 403
 
 
 def test_overview_surfaces_applied_secrets_epoch(monkeypatch):
@@ -1224,7 +1277,7 @@ def _seed_bundle(prov, settings, *, dep="dep_a", epoch=0, pubs="pub-from-seal", 
     import json
     from app.provisioning.runs import BoxSecretBundle, OneTimeSecretCipher
     if ciphertext is None:
-        bundle = {"POSTGRES_PASSWORD": "pg", "REDIS_PASSWORD": "rd", "ONEBRAIN_FLEET_KEY": "fk_x_y",
+        bundle = {"POSTGRES_PASSWORD": "pg", "POSTGRES_APP_PASSWORD": "app", "POSTGRES_WORKER_PASSWORD": "worker", "REDIS_PASSWORD": "rd", "ONEBRAIN_FLEET_KEY": "fk_x_y",
                   "ONEBRAIN_ADMIN_PASSWORD": "otp", "UPDATE_BACKUP_KEY": "bk",
                   "UPDATE_DESIRED_STATE_PUBLIC_KEYS": pubs}
         ciphertext = OneTimeSecretCipher(settings).seal_bundle(json.dumps(bundle))

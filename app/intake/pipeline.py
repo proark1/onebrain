@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from app.intake.base import INTENTS, RECORD_TYPES, IntakeRecord
 from app.security.pii import scan_pii
@@ -49,6 +49,7 @@ class IntakeInput:
     record_type: str = ""
     intent: str = ""
     metadata: dict = field(default_factory=dict)
+    idempotency_key: str = ""
 
 
 class IntakePipeline:
@@ -60,6 +61,20 @@ class IntakePipeline:
         content = data.content.strip()
         if not content:
             raise ValueError("Intake content is required.")
+
+        tenant_id = data.tenant_id.strip()
+        account_id = data.account_id.strip()
+        space_id = data.space_id.strip()
+        idempotency_key = (data.idempotency_key or "").strip()
+        record_id = (
+            f"rec_{uuid5(NAMESPACE_URL, f'onebrain:intake:{idempotency_key}').hex}"
+            if idempotency_key
+            else f"rec_{uuid4().hex}"
+        )
+        if idempotency_key:
+            existing = self.store.get(record_id, tenant_id, account_id, space_id)
+            if existing is not None:
+                return existing
 
         pii_findings = scan_pii(content)
         if pii_findings and self.settings.pii_phase == "synthetic":
@@ -73,11 +88,14 @@ class IntakePipeline:
         summary = self._summary(content)
         extracted_facts = self._facts(content, pii_findings, record_type, intent)
 
+        metadata = dict(data.metadata or {})
+        if idempotency_key:
+            metadata["job_idempotency_key"] = idempotency_key
         record = IntakeRecord(
-            id=f"rec_{uuid4().hex}",
-            tenant_id=data.tenant_id.strip(),
-            account_id=data.account_id.strip(),
-            space_id=data.space_id.strip(),
+            id=record_id,
+            tenant_id=tenant_id,
+            account_id=account_id,
+            space_id=space_id,
             app_id=data.app_id.strip(),
             purpose=data.purpose.strip(),
             source=(data.source or "service").strip(),
@@ -91,10 +109,18 @@ class IntakePipeline:
             content=content,
             summary=summary,
             extracted_facts=extracted_facts,
-            metadata=dict(data.metadata or {}),
+            metadata=metadata,
             created_at=datetime.now(timezone.utc).isoformat(),
         )
-        return self.store.create(record)
+        try:
+            return self.store.create(record)
+        except Exception:
+            if not idempotency_key:
+                raise
+            existing = self.store.get(record_id, tenant_id, account_id, space_id)
+            if existing and existing.metadata.get("job_idempotency_key") == idempotency_key:
+                return existing
+            raise
 
     def _record_type(self, explicit: str, source: str, content: str, title: str) -> tuple[str, float]:
         explicit = (explicit or "").strip()

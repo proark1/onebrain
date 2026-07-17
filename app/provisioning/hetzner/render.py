@@ -3,7 +3,7 @@
 
 Pure functions, golden-file tested, dependency-free (no PyYAML/Jinja — strings are
 assembled directly). Ports come from `app.module_manifest.MODULE_HEALTH_PROBES`
-(H-4), NEVER Railway's :8080. One compose file for all products, gated by PROFILES
+(H-4), never a legacy :8080 port mask. One compose file for all products, gated by PROFILES
 keyed to the enabled modules (H-5). One-shot migrate services gate the long-running
 services (H-6). Per-product databases on one Postgres (A13). Per-service env files
 (no inline secrets). The renderer ONLY ever emits `${VAR}` references for secrets, so
@@ -24,9 +24,11 @@ import re
 import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from app.controlplane.base import MODULE_IDS, validate_image_ref
 from app.module_manifest import MODULE_ENV_REQUIREMENTS, MODULE_HEALTH_PROBES
+from app.provisioning.customer_bootstrap import decode_customer_bootstrap
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DEPLOY_BOX = _REPO_ROOT / "deploy" / "box"
@@ -38,6 +40,7 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 # box.env and flow into a shell/URL sink; secrets.token_urlsafe(...) and the
 # bt_<id>_<secret> grammar both stay within this set.
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_PG_ROLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,62}$")
 
 # Canonical module order (golden determinism).
 MODULE_ORDER = (
@@ -61,6 +64,26 @@ _MIGRATE = {
 }
 _DB_OF = {"onebrain": "onebrain", "assistant": "assistant", "communication": "communication"}
 _PG_USER = "onebrain"
+_DEFAULT_APP_ROLE = "onebrain_app"
+_DEFAULT_WORKER_ROLE = "onebrain_worker"
+_DEFAULT_ASSISTANT_ROLE = "assistant_app"
+_DEFAULT_COMMUNICATION_ROLE = "communication_app"
+# Support images are part of the trusted release surface too: do not let a
+# later pull of a mutable infrastructure tag change a provisioned box.
+_CADDY_IMAGE = "caddy:2@sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9"
+_PGVECTOR_IMAGE = "pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb"
+_REDIS_IMAGE = "redis:7@sha256:a8f08480e1f88f2647fed492d1178c06abb0d0c1fbf02c682a61e2f483fb3954"
+# The API trusts forwarded client addresses only from Caddy on this small,
+# private network. The static address prevents a default-network container from
+# spoofing the trusted proxy when the API is scaled horizontally.
+_EDGE_NETWORK = "edge"
+_EDGE_SUBNET = "172.30.0.0/24"
+_CADDY_EDGE_IP = "172.30.0.2"
+_API_EDGE_ALIAS = "api-edge"
+# The MC API runs as uid 10001. Its broker client key is written outside the
+# general asset archive and bind-mounted read-only only into that container.
+_OPERATOR_TLS_HOST_DIR = "/opt/onebrain/broker-tls"
+_OPERATOR_TLS_CONTAINER_DIR = "/run/onebrain/broker-tls"
 # Assad Dar AI Communication deliberately ships one immutable image that starts a
 # particular service according to SERVICE. Keep the release manifest module IDs
 # separate for health, version, and rollout accounting, while selecting the
@@ -82,12 +105,25 @@ class SecretRefs:
     fleet_key_env: str = "ONEBRAIN_FLEET_KEY"
     llm_key_env: str = "ONEBRAIN_LLM_API_KEY"
     db_password_env: str = "POSTGRES_PASSWORD"
+    app_db_password_env: str = "POSTGRES_APP_PASSWORD"
+    worker_db_password_env: str = "POSTGRES_WORKER_PASSWORD"
+    assistant_db_password_env: str = "POSTGRES_ASSISTANT_PASSWORD"
+    communication_db_password_env: str = "POSTGRES_COMMUNICATION_PASSWORD"
     redis_password_env: str = "REDIS_PASSWORD"
     auth_secret_env: str = "ONEBRAIN_AUTH_SECRET"   # session-cookie signing secret; app/main.py refuses to boot without a strong one
+    login_rate_limit_secret_env: str = "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET"
+    # Mission Control-only secrets. They deliberately stay out of the shared
+    # customer bootstrap-bundle contract: a customer box must never receive a
+    # broker credential or the MC's bundle-encryption key.
+    broker_credential_env: str = "ONEBRAIN_HETZNER_BROKER_CREDENTIAL"
+    secret_encryption_key_env: str = "ONEBRAIN_SECRET_ENCRYPTION_KEY"
     owner_bootstrap_env: str = "ONEBRAIN_ADMIN_PASSWORD"
     admin_email_env: str = "ONEBRAIN_ADMIN_EMAIL"   # paired with owner_bootstrap_env; seed.py needs BOTH to seed a loginable admin
     service_key_env: str = "ONEBRAIN_SERVICE_KEY"
     space_id_env: str = "ONEBRAIN_SPACE_ID"
+    assistant_service_key_env: str = "ONEBRAIN_ASSISTANT_SERVICE_KEY"
+    communication_service_key_env: str = "ONEBRAIN_COMMUNICATION_SERVICE_KEY"
+    communication_space_id_env: str = "ONEBRAIN_COMMUNICATION_SPACE_ID"
     backup_key_env: str = "UPDATE_BACKUP_KEY"   # A5: per-box client-side backup key; lives in box.env.
     # BK3: offsite-backup S3 credentials — SECRETS, so ${VAR} refs filled from the exchanged .env.
     backup_s3_access_key_env: str = "ONEBRAIN_BACKUP_S3_ACCESS_KEY"
@@ -106,13 +142,13 @@ class BoxRenderInputs:
     run_id: str = ""                     # provisioning run id baked into the box's callback URL + box.env
                                          # (required to render cloud-init; the box POSTs its smoke result +
                                          # bootstrap_password to /api/provisioning/runs/<run_id>/callback)
+    callback_url: str = ""               # validated per-run HTTPS template, with a literal {run_id}
     fleet_public_desired_state_key: str = ""   # baked so the box verifies the wrapper (H-7)
     release_public_key: str = ""               # baked so the box verifies the offline release sig
     release_version: str = ""                  # provision-time metadata for the root-only reporter
     release_migration: str = ""                # expected initial migration (metadata only)
     module_versions: dict = field(default_factory=dict)
     registry_allowlist: str = ""               # baked box-local allowlist (B2) — never envelope-supplied
-    trust_proxy: int = 1                        # TRUST_PROXY hop count for the box's real proxy (Caddy = 1)
     role: str = "customer"                      # A14: "customer" | "operator" (operator overlay is dormant in P4)
     bootstrap_token: str = ""                   # P5-03: the single-use first-boot token, baked in box.env; the box
                                                 # exchanges it ONCE for /opt/onebrain/.env. Empty for the MC box
@@ -121,12 +157,25 @@ class BoxRenderInputs:
                                                 # ${VAR} ref) so the metadata-egress-block FAILURE callback
                                                 # authenticates BEFORE the bundle exchange runs.
     dotenv: str = ""                            # P5-06 (G3-1): the MC box (role=operator) BAKES its full
-                                                # /opt/onebrain/.env directly into cloud-init — it boots with an
+                                                # /opt/onebrain/.env into its MC-only secret archive — it boots with an
                                                 # EMPTY DB and cannot self-exchange (a self-served /bootstrap 404s,
                                                 # so its own Postgres would never come up). This is the
                                                 # render_dotenv(mc_bundle) body (+ the operator-overlay ${VAR}
                                                 # values). Empty for a CUSTOMER box, which FETCHES /opt/onebrain/.env
                                                 # via the exchange (onebrain_bootstrap.sh) instead.
+    customer_bootstrap: str = ""                 # Non-secret, versioned customer topology descriptor.
+    postgres_app_role: str = _DEFAULT_APP_ROLE
+    postgres_worker_role: str = _DEFAULT_WORKER_ROLE
+    postgres_assistant_role: str = _DEFAULT_ASSISTANT_ROLE
+    postgres_communication_role: str = _DEFAULT_COMMUNICATION_ROLE
+    # MC-only remote broker configuration. The credential itself remains a
+    # dotenv reference; PEM material is emitted as root-owned cloud-init assets
+    # and mounted read-only only into the API container.
+    operator_broker_url: str = ""
+    operator_broker_client_certificate: str = ""
+    operator_broker_client_key: str = ""
+    operator_broker_ca: str = ""
+    operator_fleet_reconcile_seconds: int = 0
     secret_refs: SecretRefs = field(default_factory=SecretRefs)
     # BK3: non-secret offsite-backup config, baked into box.env at render time (the two S3
     # credentials are secrets and ride the exchanged .env as ${VAR} refs, not these). All
@@ -150,6 +199,51 @@ def _validate(inp: BoxRenderInputs) -> None:
     # held to the same charset guard when present (render_cloud_init also requires it).
     if inp.run_id and not _ID_RE.match(inp.run_id):
         raise ValueError(f"invalid run_id (charset ^[a-z0-9][a-z0-9._-]*$): {inp.run_id!r}")
+    if inp.callback_url:
+        _validate_callback_url_template(inp.callback_url)
+    for label, role in (
+        ("postgres_app_role", inp.postgres_app_role),
+        ("postgres_worker_role", inp.postgres_worker_role),
+        ("postgres_assistant_role", inp.postgres_assistant_role),
+        ("postgres_communication_role", inp.postgres_communication_role),
+    ):
+        if not _PG_ROLE_RE.fullmatch(role or ""):
+            raise ValueError(f"invalid {label}: expected a simple PostgreSQL login role name")
+    runtime_roles = (
+        inp.postgres_app_role,
+        inp.postgres_worker_role,
+        inp.postgres_assistant_role,
+        inp.postgres_communication_role,
+    )
+    if len(set(runtime_roles)) != len(runtime_roles):
+        raise ValueError("PostgreSQL runtime roles must all differ")
+    if _PG_USER in runtime_roles:
+        raise ValueError("PostgreSQL runtime roles must not use the owner login")
+    if inp.customer_bootstrap:
+        if inp.role != "customer":
+            raise ValueError("customer_bootstrap is only valid for customer boxes")
+        descriptor = decode_customer_bootstrap(inp.customer_bootstrap)
+        if descriptor is None or descriptor.account_id != inp.account_id:
+            raise ValueError("customer_bootstrap account does not match the rendered box")
+    if inp.role != "operator" and any((
+        inp.operator_broker_url,
+        inp.operator_broker_client_certificate,
+        inp.operator_broker_client_key,
+        inp.operator_broker_ca,
+    )):
+        raise ValueError("operator broker configuration is only valid for operator boxes")
+    if inp.role == "operator":
+        has_certificate = bool(inp.operator_broker_client_certificate)
+        has_key = bool(inp.operator_broker_client_key)
+        if has_certificate != has_key:
+            raise ValueError("operator broker certificate and key must be supplied together")
+        for label, value in (
+            ("operator_broker_client_certificate", inp.operator_broker_client_certificate),
+            ("operator_broker_client_key", inp.operator_broker_client_key),
+            ("operator_broker_ca", inp.operator_broker_ca),
+        ):
+            if "\x00" in value:
+                raise ValueError(f"{label} must not contain NUL bytes")
     # The baked short-lived tokens also flow into box.env / a shell sink (P5-03 · G1-7).
     for label, tok in (("bootstrap_token", inp.bootstrap_token), ("callback_token", inp.callback_token)):
         if tok and not _TOKEN_RE.match(tok):
@@ -173,6 +267,21 @@ def _validate(inp: BoxRenderInputs) -> None:
             raise ValueError("release_version is required and must be a safe metadata value")
         if "\n" in inp.release_migration or "\r" in inp.release_migration or len(inp.release_migration) > 64:
             raise ValueError("release_migration must be a safe metadata value")
+
+
+def _validate_callback_url_template(value: str) -> None:
+    """Defend the cloud-init shell sink even when dispatch bypasses HTTP validation."""
+    cleaned = value.strip()
+    if any(char in cleaned for char in "$`()|;<>\\'\" \t\n\r"):
+        raise ValueError("callback_url contains unsafe shell characters")
+    try:
+        parts = urlsplit(cleaned)
+    except ValueError as exc:
+        raise ValueError("callback_url must be a valid absolute https URL") from exc
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+        raise ValueError("callback_url must be an absolute https URL without credentials")
+    if "{run_id}" not in cleaned:
+        raise ValueError("callback_url must contain the {run_id} placeholder")
 
 
 def _ordered(enabled) -> list:
@@ -201,6 +310,10 @@ def _db_url(product: str) -> str:
     return f"postgresql://{_PG_USER}:${{POSTGRES_PASSWORD}}@postgres:5432/{_DB_OF[product]}"
 
 
+def _role_db_url(role: str, password_env: str, product: str = "onebrain") -> str:
+    return f"postgresql://{role}:${{{password_env}}}@postgres:5432/{_DB_OF[product]}"
+
+
 def _redis_url() -> str:
     return "redis://:${REDIS_PASSWORD}@redis:6379"
 
@@ -216,11 +329,16 @@ def _is_http(module_id: str) -> bool:
 
 # --- compose -----------------------------------------------------------------
 def _compose_service(name, *, image, profiles=None, command=None, env_file=None, expose=None,
-                     ports=None, volumes=None, depends=None, restart="unless-stopped", healthcheck=None) -> str:
+                     ports=None, volumes=None, depends=None, restart="unless-stopped", healthcheck=None,
+                     runtime_hardening_anchor=None, tmpfs_override=None, networks=None) -> str:
     lines = [f"  {name}:", f"    image: {image}"]
     if profiles:
         lines.append(f"    profiles: [{', '.join(profiles)}]")
+    if runtime_hardening_anchor:
+        lines.append(f"    <<: *{runtime_hardening_anchor}")
     lines.append(f"    restart: {restart}")
+    if tmpfs_override:
+        lines.append("    tmpfs: [" + ", ".join(f'\"{mount}\"' for mount in tmpfs_override) + "]")
     if command is not None:
         # JSON-array form; escape embedded double quotes so a shell -c argument that
         # itself quotes an env ref (redis) renders as valid YAML/JSON.
@@ -241,6 +359,10 @@ def _compose_service(name, *, image, profiles=None, command=None, env_file=None,
         lines.append("    volumes:")
         for vol in volumes:
             lines.append(f"      - {vol}")
+    if networks:
+        lines.append("    networks:")
+        for network, config in networks:
+            lines.append(f"      {network}: {config}" if config else f"      {network}: {{}}")
     if depends:
         lines.append("    depends_on:")
         for dep_name, condition in depends:
@@ -253,11 +375,45 @@ def _compose_service(name, *, image, profiles=None, command=None, env_file=None,
     return "\n".join(lines)
 
 
+_ONEBRAIN_RUNTIME_TMPFS = ("/tmp:mode=1777,size=64m",)
+_ONEBRAIN_WEB_RUNTIME_TMPFS = _ONEBRAIN_RUNTIME_TMPFS + (
+    "/app/.next/cache:mode=1777,size=64m",
+)
+_ONEBRAIN_RUNTIME_CAP_DROP = ("ALL",)
+_ONEBRAIN_RUNTIME_SECURITY_OPT = ("no-new-privileges:true",)
+# Kept short because this alias is embedded in Hetzner's size-limited cloud-init.
+_ONEBRAIN_RUNTIME_ANCHOR = "x"
+
+
+def _onebrain_runtime_hardening() -> dict:
+    """Compose restrictions for the images maintained in this repository.
+
+    The images themselves declare the non-root runtime identity. Only API/worker
+    services bind-mount the persistent `/data` state directory; every other
+    filesystem write must use the explicit per-container `/tmp` tmpfs.
+    """
+
+    return {"runtime_hardening_anchor": _ONEBRAIN_RUNTIME_ANCHOR}
+
+
+def _onebrain_runtime_hardening_yaml() -> str:
+    """A shared YAML merge anchor keeps Hetzner user-data comfortably bounded."""
+
+    return (
+        f"x-{_ONEBRAIN_RUNTIME_ANCHOR}: &{_ONEBRAIN_RUNTIME_ANCHOR} "
+        "{read_only: true, "
+        "tmpfs: [" + ", ".join(f'\"{mount}\"' for mount in _ONEBRAIN_RUNTIME_TMPFS) + "], "
+        f"cap_drop: [{', '.join(_ONEBRAIN_RUNTIME_CAP_DROP)}], "
+        f"security_opt: [{', '.join(_ONEBRAIN_RUNTIME_SECURITY_OPT)}]}}"
+    )
+
+
 def render_compose(inp: BoxRenderInputs) -> str:
     _validate(inp)
     ordered = _ordered(inp.enabled_modules)
     products = _enabled_products(inp.enabled_modules)
-    blocks = ["services:"]
+    api_enabled = "onebrain-api" in ordered
+    blocks = [_onebrain_runtime_hardening_yaml(), "services:"]
 
     # Ingress: Caddy is the ONE public entrypoint. It PUBLISHES 80/443 (the only service
     # that does — everything else is `expose`-only), terminates TLS (auto-HTTPS via Let's
@@ -270,13 +426,17 @@ def render_compose(inp: BoxRenderInputs) -> str:
     # until they resolve, so it never blocks on (profiled) app services being up first.
     blocks.append(_compose_service(
         "caddy",
-        image="caddy:2",
+        image=_CADDY_IMAGE,
         ports=["80:80", "443:443"],
         volumes=[
             "/opt/onebrain/Caddyfile:/etc/caddy/Caddyfile:ro",
             "/opt/onebrain/caddy-data:/data",
             "/opt/onebrain/caddy-config:/config",
         ],
+        networks=(
+            ("default", ""),
+            (_EDGE_NETWORK, f"{{ipv4_address: {_CADDY_EDGE_IP}}}"),
+        ) if api_enabled else None,
     ))
 
     # Infra: one postgres (no profile, one data volume, three product DBs via
@@ -287,7 +447,7 @@ def render_compose(inp: BoxRenderInputs) -> str:
         # pgvector-enabled Postgres 16 (drop-in superset of postgres:16): migration 0001 runs
         # `CREATE EXTENSION vector`, which the stock postgres:16 image lacks (initdb has no
         # vector.control) -> migrate would exit 1 and the whole app never starts.
-        image="pgvector/pgvector:pg16",
+        image=_PGVECTOR_IMAGE,
         env_file="env/postgres.env",
         expose="5432",
         volumes=[
@@ -305,9 +465,22 @@ def render_compose(inp: BoxRenderInputs) -> str:
             "retries: 5",
         ],
     ))
+    # The entrypoint init hook only executes on a brand-new volume. Run the
+    # same idempotent role normalizer after Postgres is healthy so an upgraded
+    # box also gets the restricted product logins and database ACLs before any
+    # migration or long-running service can connect.
+    blocks.append(_compose_service(
+        "postgres-roles",
+        image=_PGVECTOR_IMAGE,
+        command=["sh", "-ec", "PGHOST=postgres exec /opt/onebrain/postgres-init.sh"],
+        env_file="env/postgres.env",
+        volumes=["/opt/onebrain/postgres-init.sh:/opt/onebrain/postgres-init.sh:ro"],
+        depends=[("postgres", "service_healthy")],
+        restart='"no"',
+    ))
     blocks.append(_compose_service(
         "redis",
-        image="redis:7",
+        image=_REDIS_IMAGE,
         # requirepass MUST resolve from the in-container REDIS_PASSWORD (env_file), not a
         # compose-time ${REDIS_PASSWORD} interpolation (which reads the shell/.env — empty
         # here, so redis would boot passwordless while clients AUTH). The doubled $$ escapes
@@ -335,8 +508,9 @@ def render_compose(inp: BoxRenderInputs) -> str:
                 profiles=[product],
                 command=command,
                 env_file=f"env/{migrate_name}.env",
-                depends=[("postgres", "service_healthy")],
+                depends=[("postgres-roles", "service_completed_successfully")],
                 restart='"no"',
+                **(_onebrain_runtime_hardening() if product == "onebrain" else {}),
             ))
         for module_id in ordered:
             if _PRODUCT_OF[module_id] != product:
@@ -344,7 +518,22 @@ def render_compose(inp: BoxRenderInputs) -> str:
             probe = MODULE_HEALTH_PROBES.get(module_id)
             expose = str(probe.port) if (probe and probe.kind == "http") else None
             volumes = ["/data:/data"] if module_id in ("onebrain-api", "onebrain-workers") else None
-            depends = [("postgres", "service_healthy")]
+            if (
+                module_id == "onebrain-api"
+                and inp.role == "operator"
+                and inp.operator_broker_client_certificate
+            ):
+                # Only the MC API calls the remote provisioning broker. Do not
+                # expose its client certificate/key to workers, migration jobs,
+                # the UI, Caddy, or any customer-shaped box.
+                volumes = (volumes or []) + [
+                    f"{_OPERATOR_TLS_HOST_DIR}:{_OPERATOR_TLS_CONTAINER_DIR}:ro"
+                ]
+            # Every application profile waits for the role normalizer, even
+            # when its module set does not include a migration container. This
+            # prevents a worker-only/external-product profile from receiving a
+            # restricted DSN before its login and database ACLs exist.
+            depends = [("postgres-roles", "service_completed_successfully")]
             if _needs_redis(module_id):
                 depends.append(("redis", "service_healthy"))
             if migrate_present:
@@ -357,7 +546,20 @@ def render_compose(inp: BoxRenderInputs) -> str:
                 expose=expose,
                 volumes=volumes,
                 depends=depends,
+                **(_onebrain_runtime_hardening() if product == "onebrain" else {}),
+                tmpfs_override=(
+                    _ONEBRAIN_WEB_RUNTIME_TMPFS
+                    if module_id == "onebrain-admin-ui" else None
+                ),
+                networks=(
+                    ("default", ""),
+                    (_EDGE_NETWORK, f"{{aliases: [{_API_EDGE_ALIAS}]}}"),
+                ) if module_id == "onebrain-api" else None,
             ))
+    if api_enabled:
+        blocks.append(
+            f"networks:\n  {_EDGE_NETWORK}: {{internal: true, ipam: {{config: [{{subnet: {_EDGE_SUBNET}}}]}}}}"
+        )
     return "\n".join(blocks) + "\n"
 
 
@@ -374,7 +576,10 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
     pairs: list = []
     if module_id in ("onebrain-api", "onebrain-workers"):
         pairs += [("ONEBRAIN_VECTOR_STORE", "pgvector"),
-                  ("ONEBRAIN_DATABASE_URL", _db_url("onebrain")),
+                  ("ONEBRAIN_DATABASE_URL", _role_db_url(
+                      inp.postgres_app_role, refs.app_db_password_env)),
+                  ("ONEBRAIN_POSTGRES_APP_ROLE", inp.postgres_app_role),
+                  ("ONEBRAIN_POSTGRES_WORKER_ROLE", inp.postgres_worker_role),
                   ("ONEBRAIN_DATA_DIR", "/data"),
                   # Production-boot essentials, baked on BOTH the api and the worker (they open
                   # the same tenant Postgres). ONEBRAIN_ENVIRONMENT=production makes
@@ -386,6 +591,13 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
                   # literals (not per-box secrets), so they live in the render, not the bundle.
                   ("ONEBRAIN_ENVIRONMENT", "production"),
                   ("ONEBRAIN_RLS_ENFORCED", "true")]
+        if module_id == "onebrain-workers":
+            pairs.append(("ONEBRAIN_WORKER_DATABASE_URL", _role_db_url(
+                inp.postgres_worker_role, refs.worker_db_password_env)))
+            # Worker startup validates a distinct queue-only login. Mark this
+            # container explicitly so deployment safety never mistakes it for
+            # an API replica merely because ONEBRAIN_PROCESS defaults to api.
+            pairs.append(("ONEBRAIN_PROCESS", "worker"))
     if module_id == "onebrain-api":
         pairs += [
             ("ONEBRAIN_DEPLOYMENT_ID", inp.deployment_id),
@@ -397,6 +609,9 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             # ONEBRAIN_ADMIN_PASSWORD. Only onebrain-api validates/signs with it, so it is NOT
             # baked on the worker (whose entrypoint never constructs the app).
             (f"{refs.auth_secret_env}", "${" + refs.auth_secret_env + "}"),
+            # Separate key used to HMAC account/address subjects before the
+            # shared PostgreSQL login-limit store persists them.
+            (f"{refs.login_rate_limit_secret_env}", "${" + refs.login_rate_limit_secret_env + "}"),
             # The admin seed pair. seed.py (seed_admin_from_env) creates a loginable admin
             # at container start ONLY when BOTH are non-empty; the box fills them from the
             # exchanged (customer) / baked (MC) /opt/onebrain/.env. Without the email the box
@@ -405,6 +620,11 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             (f"{refs.owner_bootstrap_env}", "${" + refs.owner_bootstrap_env + "}"),
             # Every box is fronted by Caddy TLS, so session cookies must carry the Secure flag.
             ("ONEBRAIN_COOKIE_SECURE", "true"),
+            # Caddy is the only peer on the private edge network. It overwrites
+            # X-Forwarded-For from the socket peer before proxying, so this trust
+            # cannot be forged by another application container.
+            ("ONEBRAIN_TRUSTED_PROXY_CIDRS", f"{_CADDY_EDGE_IP}/32"),
+            ("ONEBRAIN_TRUSTED_PROXY_HOPS", "1"),
             ("ONEBRAIN_MODULE_PROBES_ENABLED", "true"),
             ("ONEBRAIN_LOCAL_MODULES", ",".join(_ordered(inp.enabled_modules))),
         ]
@@ -414,6 +634,9 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             # agent (not this Compose service) owns the fleet credential and
             # reports the release-gate heartbeat.
             pairs += [
+                ("ONEBRAIN_CUSTOMER_BOOTSTRAP", inp.customer_bootstrap),
+                (refs.assistant_service_key_env, "${" + refs.assistant_service_key_env + "}"),
+                (refs.communication_service_key_env, "${" + refs.communication_service_key_env + "}"),
                 ("ONEBRAIN_OPERATOR_MODE", "false"),
                 ("ONEBRAIN_OPERATOR_CONSOLE", "false"),
                 ("ONEBRAIN_FLEET_REPORTER_ENABLED", "false"),
@@ -423,28 +646,31 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
     if module_id == "assistant-service":
         pairs += [
             ("ONEBRAIN_API_BASE_URL", "http://onebrain-api:8000"),
-            (refs.service_key_env, "${" + refs.service_key_env + "}"),
-            ("DATABASE_URL", _db_url("assistant")),
+            (refs.service_key_env, "${" + refs.assistant_service_key_env + "}"),
+            ("DATABASE_URL", _role_db_url(
+                inp.postgres_assistant_role, refs.assistant_db_password_env, "assistant")),
             ("REDIS_URL", _redis_url()),
         ]
     if module_id in ("communication-api", "communication-workers"):
         pairs += [
             ("ONEBRAIN_API_BASE_URL", "http://onebrain-api:8000"),
-            (refs.service_key_env, "${" + refs.service_key_env + "}"),
-            (refs.space_id_env, "${" + refs.space_id_env + "}"),
+            (refs.service_key_env, "${" + refs.communication_service_key_env + "}"),
+            (refs.space_id_env, "${" + refs.communication_space_id_env + "}"),
         ]
         if module_id == "communication-api":
             pairs += [("ONEBRAIN_ACCOUNT_ID", inp.account_id)]
-        pairs += [("DATABASE_URL", _db_url("communication")), ("REDIS_URL", _redis_url())]
+        pairs += [("DATABASE_URL", _role_db_url(
+            inp.postgres_communication_role, refs.communication_db_password_env, "communication")),
+                  ("REDIS_URL", _redis_url())]
     if module_id == "communication-voice":
-        pairs += [("DATABASE_URL", _db_url("communication")), ("REDIS_URL", _redis_url())]
+        pairs += [("DATABASE_URL", _role_db_url(
+            inp.postgres_communication_role, refs.communication_db_password_env, "communication")),
+                  ("REDIS_URL", _redis_url())]
     if module_id == "communication-widget":
         pairs += [("ONEBRAIN_API_BASE_URL", "http://onebrain-api:8000")]
     selector = _COMMUNICATION_SERVICE_SELECTORS.get(module_id)
     if selector:
         pairs.append(("SERVICE", selector))
-    if _is_http(module_id):
-        pairs += [("TRUST_PROXY", str(inp.trust_proxy))]
     # A14 operator overlay (dormant in P4; only onebrain-api carries it).
     if module_id == "onebrain-api" and inp.role == "operator":
         pairs += [
@@ -462,8 +688,22 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             ("ONEBRAIN_FLEET_URL", inp.fleet_url),
             (f"{refs.fleet_key_env}", "${" + refs.fleet_key_env + "}"),
             ("ONEBRAIN_FLEET_PUBLIC_URL", inp.fleet_url),
+            # The MC API is the intentionally privileged control-plane surface.
+            # Customer API containers never receive the owner connection.
+            ("ONEBRAIN_OPERATOR_DATABASE_URL", _db_url("onebrain")),
+            # Production MC is deliberately remote-broker-only. The initial
+            # bootstrap CLI may hold a one-time Hetzner token, but this API
+            # container never does: it gets only the scoped broker credential
+            # plus the read-only mTLS files mounted below.
+            ("ONEBRAIN_PROVISIONER_BACKEND", "hetzner"),
+            ("ONEBRAIN_HETZNER_ALLOW_INPROCESS_BROKER", "false"),
+            ("ONEBRAIN_HETZNER_BROKER_URL", inp.operator_broker_url),
+            (refs.broker_credential_env, "${" + refs.broker_credential_env + "}"),
             ("ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS",
              "${ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS}"),
+            # MC stores customer secret bundles. This is its own escrowed Fernet
+            # key, not a customer-bundle value.
+            (refs.secret_encryption_key_env, "${" + refs.secret_encryption_key_env + "}"),
             ("ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY",
              "${ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY}"),
             # G1-1 interlock input: the APP-level accepted wrapper-key SET the box verifies
@@ -474,14 +714,35 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             # the value, which its preflight already asserts contains the derived active signer).
             ("ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS",
              "${ONEBRAIN_FLEET_DESIRED_STATE_PUBLIC_KEYS}"),
+            ("ONEBRAIN_RELEASE_VERIFY_PUBLIC_KEY", inp.release_public_key),
+            ("ONEBRAIN_RELEASE_REGISTRY_ALLOWLIST", inp.registry_allowlist),
+            ("ONEBRAIN_RELEASE_REQUIRE_SIGNATURE", "true"),
+            ("ONEBRAIN_RELEASE_REQUIRE_SIGNED_IMAGES", "true"),
+            ("ONEBRAIN_RELEASE_REQUIRE_ROLLBACK_KIND", "true"),
+            ("ONEBRAIN_RELEASE_PROMOTION_REQUIRED", "true"),
+            ("ONEBRAIN_FLEET_RECONCILE_SECONDS", str(inp.operator_fleet_reconcile_seconds)),
         ]
+        if inp.operator_broker_client_certificate:
+            pairs += [
+                ("ONEBRAIN_HETZNER_BROKER_CLIENT_CERTIFICATE_FILE",
+                 f"{_OPERATOR_TLS_CONTAINER_DIR}/mc-client.crt"),
+                ("ONEBRAIN_HETZNER_BROKER_CLIENT_KEY_FILE",
+                 f"{_OPERATOR_TLS_CONTAINER_DIR}/mc-client.key"),
+            ]
+            if inp.operator_broker_ca:
+                pairs.append((
+                    "ONEBRAIN_HETZNER_BROKER_CA_FILE",
+                    f"{_OPERATOR_TLS_CONTAINER_DIR}/broker-ca.crt",
+                ))
     return pairs
 
 
-def _migrate_env(product: str) -> list:
+def _migrate_env(product: str, inp: BoxRenderInputs) -> list:
     if product == "onebrain":
         return [("ONEBRAIN_VECTOR_STORE", "pgvector"),
                 ("ONEBRAIN_DATABASE_URL", _db_url("onebrain")),
+                ("ONEBRAIN_POSTGRES_APP_ROLE", inp.postgres_app_role),
+                ("ONEBRAIN_POSTGRES_WORKER_ROLE", inp.postgres_worker_role),
                 ("ONEBRAIN_DATA_DIR", "/data")]
     return [("DATABASE_URL", _db_url(product))]
 
@@ -493,6 +754,14 @@ def render_env_files(inp: BoxRenderInputs) -> dict:
     out["env/postgres.env"] = _kv([
         ("POSTGRES_USER", _PG_USER),
         ("POSTGRES_PASSWORD", "${" + inp.secret_refs.db_password_env + "}"),
+        ("POSTGRES_APP_ROLE", inp.postgres_app_role),
+        ("POSTGRES_APP_PASSWORD", "${" + inp.secret_refs.app_db_password_env + "}"),
+        ("POSTGRES_WORKER_ROLE", inp.postgres_worker_role),
+        ("POSTGRES_WORKER_PASSWORD", "${" + inp.secret_refs.worker_db_password_env + "}"),
+        ("POSTGRES_ASSISTANT_ROLE", inp.postgres_assistant_role),
+        ("POSTGRES_ASSISTANT_PASSWORD", "${" + inp.secret_refs.assistant_db_password_env + "}"),
+        ("POSTGRES_COMMUNICATION_ROLE", inp.postgres_communication_role),
+        ("POSTGRES_COMMUNICATION_PASSWORD", "${" + inp.secret_refs.communication_db_password_env + "}"),
         ("POSTGRES_INITDB_ARGS", "--auth-host=scram-sha-256"),
         # The data volume is a fresh ext4 mount whose root holds a `lost+found`, so pointing
         # PGDATA at the mount root makes initdb refuse ("directory exists but is not empty").
@@ -502,7 +771,7 @@ def render_env_files(inp: BoxRenderInputs) -> dict:
     out["env/redis.env"] = _kv([("REDIS_PASSWORD", "${" + inp.secret_refs.redis_password_env + "}")])
     for product in _enabled_products(inp.enabled_modules):
         if _migrate_included(inp, product):
-            out[f"env/{product}-migrate.env"] = _kv(_migrate_env(product))
+            out[f"env/{product}-migrate.env"] = _kv(_migrate_env(product, inp))
     for module_id in _ordered(inp.enabled_modules):
         out[f"env/{module_id}.env"] = _kv(_module_env(module_id, inp))
     return out
@@ -512,14 +781,8 @@ def render_env_files(inp: BoxRenderInputs) -> dict:
 # publicly reverse-proxied HTTP modules -> (port, path matcher). Order matters
 # (specific before the catch-all). Workers are internal (never public).
 _CADDY_ROUTES = (
-    # The admin-ui (Next.js) owns the BROWSER API namespace `/api/onebrain/*`: its
-    # app/api/onebrain/[...path] route proxies each call to onebrain-api at `/api/<path>`
-    # (forwarding the session cookie). This MUST be matched before the bare `/api/*` rule
-    # below, or the browser's `/api/onebrain/auth/login` reaches onebrain-api verbatim and
-    # 404s (onebrain-api serves `/api/auth/login`, not `/api/onebrain/...`).
-    ("onebrain-admin-ui", 3000, "/api/onebrain/*"),
-    # Bare `/api/*` is the SERVER-TO-SERVER surface (box reporters heartbeating to
-    # `/api/fleet/heartbeat`, provisioning callbacks) — straight to onebrain-api, no proxy.
+    # Browser, box, and server calls use Caddy's direct API route. Caddy replaces
+    # inbound X-Forwarded-For with the socket peer before reaching the API edge.
     ("onebrain-api", 8000, "/api/*"),
     ("onebrain-api", 8000, "/health*"),
     ("assistant-service", 8000, "/assistant/*"),
@@ -554,16 +817,52 @@ def render_caddyfile(inp: BoxRenderInputs) -> str:
             f'    handle {path} {{\n        respond "Not Found" 404\n    }}'
             for path in _CADDY_DENY_PATHS
         )
+    if "onebrain-api" in present:
+        # Keep existing callback/browser URLs working during the proxy cutover,
+        # but rewrite directly at Caddy instead of passing through Next.js.
+        blocks.append(
+            "    handle /api/onebrain/* {\n"
+            "        uri replace /api/onebrain /api\n"
+            "        reverse_proxy {\n"
+            f"            dynamic a {_API_EDGE_ALIAS} 8000 {{\n"
+            "                refresh 5s\n"
+            "            }\n"
+            "            header_up X-Forwarded-For {remote_host}\n"
+            "        }\n"
+            "    }"
+        )
     for module_id, port, path in _CADDY_ROUTES:
         if module_id in present:
-            blocks.append(f"    handle {path} {{\n        reverse_proxy {module_id}:{port}\n    }}")
+            if module_id == "onebrain-api":
+                blocks.append(
+                    f"    handle {path} {{\n"
+                    "        reverse_proxy {\n"
+                    f"            dynamic a {_API_EDGE_ALIAS} {port} {{\n"
+                    "                refresh 5s\n"
+                    "            }\n"
+                    "            header_up X-Forwarded-For {remote_host}\n"
+                    "        }\n"
+                    "    }"
+                )
+            else:
+                blocks.append(f"    handle {path} {{\n        reverse_proxy {module_id}:{port}\n    }}")
     default = None
     if "onebrain-admin-ui" in present:
         default = ("onebrain-admin-ui", 3000)
     elif "onebrain-api" in present:
-        default = ("onebrain-api", 8000)
+        default = (_API_EDGE_ALIAS, 8000)
     if default:
-        blocks.append(f"    handle {{\n        reverse_proxy {default[0]}:{default[1]}\n    }}")
+        if default[0] == _API_EDGE_ALIAS:
+            blocks.append(
+                f"    handle {{\n        reverse_proxy {{\n"
+                f"            dynamic a {default[0]} {default[1]} {{\n"
+                "                refresh 5s\n"
+                "            }\n"
+                "            header_up X-Forwarded-For {remote_host}\n"
+                "        }\n    }"
+            )
+        else:
+            blocks.append(f"    handle {{\n        reverse_proxy {default[0]}:{default[1]}\n    }}")
     template = (_DEPLOY_TEMPLATES / "Caddyfile.tmpl").read_text(encoding="utf-8")
     return template.replace("{{SITE_ADDRESS}}", site).replace("{{SERVICE_BLOCKS}}", "\n".join(blocks))
 
@@ -591,8 +890,10 @@ def _yaml_block(content: str, indent: str = "      ") -> str:
 # (below it gzip's header + base64's 33% inflation swamp the savings, AND small config —
 # Caddyfile, per-service env, the small units — stays plain so it's greppable in the rendered
 # user_data); eligible entries still fall back to plain if gz+b64 somehow isn't smaller, and
-# SECRET-bearing entries are forced plain regardless (compressible=False). The gate sits above
-# the largest small-config entry (~900B) and below the metadata-drop unit (~1.8KB).
+# Non-secret large entries are eligible for compression. MC-only secret
+# material is packed into its own opaque archive so bootstrap dry-runs can
+# redact it atomically. The gate sits above the largest small-config entry
+# (~900B) and below the metadata-drop unit (~1.8KB).
 _GZB64_THRESHOLD = 1024
 
 
@@ -609,10 +910,11 @@ def _write_file_entry(path: str, content: str, permissions: str = "0644",
     permissions — is byte-identical to the plain form. gzip mtime is pinned to 0 (+ a
     platform-independent OS byte) so the render is byte-for-byte reproducible across dev/CI.
 
-    ``compressible=False`` FORCES plain text for the SECRET-bearing entries (env/*.env,
-    box.env, the MC-baked .env): bootstrap_mc._redact greps their plaintext ${VAR} refs /
-    baked values to mask them before printing the runbook, and the boot-config tests resolve
-    them — both need the values readable in the rendered user_data, not inside a gz+b64 blob."""
+    ``compressible=False`` keeps an entry in normal YAML form when needed.
+    MC-only secret material instead uses the dedicated opaque archive created
+    below, which ``bootstrap_mc._redact`` masks as one unit. Customer
+    ``box.env`` remains a 0600 member of the normal asset archive to meet
+    Hetzner's size limit."""
     plain = (
         f"  - path: {path}\n"
         f"    permissions: '{permissions}'\n"
@@ -639,8 +941,10 @@ def _asset_archive(entries: list[tuple[str, str, str]]) -> bytes:
 
     A full stack otherwise crosses Hetzner's 32 KiB cloud-init limit once the
     root-only release agent is added. The archive contains only scripts, rendered
-    configuration, metadata, and `${VAR}` placeholders; root-owned `box.env` and
-    the optional real-secret `.env` remain separate plain 0600 files.
+    configuration, metadata, and `${VAR}` placeholders. For customer boxes it also
+    carries the root-only short-lived bootstrap/callback `box.env`; the file remains
+    mode 0600 after extraction. Operator secrets deliberately use the separate
+    MC-only archive so dry-run diagnostics can redact the reversible blob atomically.
     """
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w", format=tarfile.GNU_FORMAT) as archive:
@@ -667,6 +971,24 @@ def _write_asset_archive(path: str, contents: bytes, permissions: str = "0600") 
         "    encoding: gz+b64\n"
         f"    content: {blob}\n"
     )
+
+
+def _operator_broker_tls_assets(inp: BoxRenderInputs) -> list[tuple[str, str, str]]:
+    """The MC's mTLS client material, kept out of normal Compose env files.
+
+    A separate archive lets dry-run diagnostics redact one opaque secret-bearing
+    entry without hiding the normal rendered assets. ``render_cloud_init``
+    later fixes ownership to uid 10001, the API image's non-root runtime user.
+    """
+    if not inp.operator_broker_client_certificate:
+        return []
+    entries = [
+        (f"{_OPERATOR_TLS_HOST_DIR}/mc-client.crt", inp.operator_broker_client_certificate, "0400"),
+        (f"{_OPERATOR_TLS_HOST_DIR}/mc-client.key", inp.operator_broker_client_key, "0400"),
+    ]
+    if inp.operator_broker_ca:
+        entries.append((f"{_OPERATOR_TLS_HOST_DIR}/broker-ca.crt", inp.operator_broker_ca, "0400"))
+    return entries
 
 
 def _yaml_sq(value: str) -> str:
@@ -741,12 +1063,16 @@ def _initial_release_descriptor(inp: BoxRenderInputs) -> str:
 _META = "169.254.169.254"
 
 
-def _callback_curl(status: str, smoke: str, run_id: str, *, extra: str = "") -> str:
+def _callback_curl(status: str, smoke: str, run_id: str, *, callback_url: str = "", extra: str = "") -> str:
     body = f'{{\\"status\\":\\"{status}\\",\\"smoke_status\\":\\"{smoke}\\"{extra}}}'
     # run_id is baked in at render time (the box can't self-substitute); ${ONEBRAIN_FLEET_URL}
     # stays a shell ref resolved from box.env. Concatenated (not f-string) so the ${...}
     # braces are not mistaken for format placeholders.
-    callback_url = "${ONEBRAIN_FLEET_URL}/api/provisioning/runs/" + run_id + "/callback"
+    callback_url = (
+        callback_url.replace("{run_id}", run_id)
+        if callback_url
+        else "${ONEBRAIN_FLEET_URL}/api/provisioning/runs/" + run_id + "/callback"
+    )
     # Source /opt/onebrain/.env (the exchanged bundle) FIRST so box.env's ${VAR} refs
     # (e.g. ${ONEBRAIN_ADMIN_PASSWORD} in done_cb) re-expand to the delivered real
     # values; the baked callback token in box.env authenticates fail_cb even before the
@@ -776,38 +1102,47 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         ("/opt/onebrain/update.sh", _read_box_file("update.sh"), "0755"),
         ("/opt/onebrain/onebrain-gate-agent.sh", _read_box_file("onebrain-gate-agent.sh"), "0755"),
         ("/opt/onebrain/onebrain_gate_report.py", _read_box_file("onebrain_gate_report.py"), "0755"),
-        ("/opt/onebrain/onebrain_bootstrap.sh", _read_box_file("onebrain_bootstrap.sh"), "0755"),
         ("/opt/onebrain/onebrain_box_verify.py", _read_box_file("onebrain_box_verify.py"), "0644"),
         ("/etc/systemd/system/onebrain-update.service", _read_box_file("onebrain-update.service"), "0644"),
         ("/etc/systemd/system/onebrain-update.timer", _read_box_file("onebrain-update.timer"), "0644"),
         ("/etc/systemd/system/onebrain-metadata-drop.service", _read_box_file("onebrain-metadata-drop.service"), "0644"),
     ]
+    # The operator box bakes its .env and never invokes the customer-only secret
+    # exchange. Do not ship an unused bootstrap helper into its size-constrained
+    # cloud-init archive.
+    if inp.role != "operator":
+        assets.append((
+            "/opt/onebrain/onebrain_bootstrap.sh",
+            _read_box_file("onebrain_bootstrap.sh"),
+            "0755",
+        ))
     # Rendered env files contain `${VAR}` references rather than secret values;
-    # package them with the other non-secret assets. The real exchanged/baked .env
-    # remains a separate 0600 write below.
+    # package them with the other non-secret assets. The real exchanged/baked
+    # operator dotenv is in the separate MC-only secret archive below.
     assets.extend(
         (f"/opt/onebrain/{rel_path}", content, "0600")
         for rel_path, content in env_files.items()
-        if not (inp.role == "operator" and rel_path == "env/onebrain-api.env")
     )
+    # Customer user-data must stay below Hetzner's 32 KiB limit. Its short-lived
+    # callback/bootstrap token is already delivered in that confidential channel;
+    # placing the root-only file in the compressed archive saves enough overhead
+    # without changing on-box content or permissions. Operator-only secret
+    # configuration instead goes in the separately redacted archive below.
+    if inp.role != "operator":
+        assets.append(("/opt/onebrain/box.env", _box_env(inp), "0600"))
     entries = [_write_asset_archive("/opt/onebrain/onebrain-assets.tar", _asset_archive(assets))]
-    entries.append(_write_file_entry("/opt/onebrain/box.env", _box_env(inp), "0600", compressible=False))
-    # Keep the operator API environment visible in the dry-run artifact. It
-    # contains only `${VAR}` references, while retaining the Mission Control
-    # bootstrap diagnostics operators already rely on.
+    operator_tls_assets = _operator_broker_tls_assets(inp)
+    operator_secret_assets: list[tuple[str, str, str]] = []
     if inp.role == "operator":
-        entries.append(_write_file_entry(
-            "/opt/onebrain/env/onebrain-api.env", env_files["env/onebrain-api.env"],
-            "0600", compressible=False))
-    entries.append(_write_file_entry(
-        "/opt/onebrain/installed-release.json", _initial_release_descriptor(inp)))
-    # P5-06 (G3-1): the MC box (role=operator) bakes its full /opt/onebrain/.env (0600 —
-    # it carries every foundational secret) directly, because it cannot exchange for it
-    # (empty DB at boot). A customer box leaves dotenv empty and fetches .env via the
-    # bootstrap exchange, so nothing is baked here for it.
-    if inp.dotenv:
-        # The MC-baked .env holds every foundational secret -> FORCE plain (redaction + tests).
-        entries.append(_write_file_entry("/opt/onebrain/.env", inp.dotenv, "0600", compressible=False))
+        # The MC must bake its dotenv because it cannot self-exchange from an
+        # empty DB. Keep all operator-only secrets in one compact archive: this
+        # is encoding, not encryption, so bootstrap_mc redacts the whole entry.
+        operator_secret_assets = [("/opt/onebrain/box.env", _box_env(inp), "0600")]
+        if inp.dotenv:
+            operator_secret_assets.append(("/opt/onebrain/.env", inp.dotenv, "0600"))
+        operator_secret_assets.extend(operator_tls_assets)
+        entries.append(_write_asset_archive(
+            "/opt/onebrain/mc-broker-tls.tar", _asset_archive(operator_secret_assets)))
     write_files = "".join(entries).rstrip("\n")
 
     profile_flags = " ".join(f"--profile {p}" for p in _enabled_products(inp.enabled_modules))
@@ -818,16 +1153,26 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
     compose_cmd = (
         f"docker compose --project-name {inp.compose_project} -f {compose_file} {profile_flags}".strip()
     )
-    fail_cb = _callback_curl("failed", "failed", inp.run_id,
+    fail_cb = _callback_curl("failed", "failed", inp.run_id, callback_url=inp.callback_url,
                              extra=',\\"failure_reason\\":\\"metadata_egress_block_failed\\"')
     done_cb = _callback_curl(
-        "${ST}", "${SMOKE}", inp.run_id,
+        "${ST}", "${SMOKE}", inp.run_id, callback_url=inp.callback_url,
         extra=',\\"bootstrap_password\\":\\"${ONEBRAIN_ADMIN_PASSWORD}\\"'
               ',\\"external_run_url\\":\\"$(cat /opt/onebrain/box.instance 2>/dev/null)\\"',
     )
     runcmd_items = [
-        "mkdir -p /opt/onebrain/env /opt/onebrain/caddy-data /opt/onebrain/caddy-config /data /mnt/onebrain-data",
+        "mkdir -p /opt/onebrain/env /opt/onebrain/caddy-data /opt/onebrain/caddy-config /data /mnt/onebrain-data "
+        "&& chown -Rh 10001:10001 /data && chmod 750 /data",
         "tar -xf /opt/onebrain/onebrain-assets.tar -C / && rm -f /opt/onebrain/onebrain-assets.tar",
+        *([
+            *([f"install -d -o 10001 -g 10001 -m 0700 {_OPERATOR_TLS_HOST_DIR}"] if operator_tls_assets else []),
+            f"tar -xf /opt/onebrain/mc-broker-tls.tar -C / && rm -f /opt/onebrain/mc-broker-tls.tar"
+            + (
+                f" && chown -R 10001:10001 {_OPERATOR_TLS_HOST_DIR} && chmod 0700 {_OPERATOR_TLS_HOST_DIR} "
+                f"&& chmod 0400 {_OPERATOR_TLS_HOST_DIR}/*"
+                if operator_tls_assets else ""
+            ),
+        ] if operator_secret_assets else []),
         # Mount the attached data volume so Postgres survives a rebuild (device id
         # is assigned by Hetzner; the real mount executes on the live box, P5).
         'for dev in /dev/disk/by-id/scsi-0HC_Volume_*; do [ -b "$dev" ] || continue; '
@@ -856,8 +1201,11 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         # failure we still POST the failure callback (keep the operator signal), then CONTINUE so
         # the box serves. `-w` makes the insert wait for the xtables lock (dockerd may hold it
         # briefly at startup) so a lock race is not mistaken for a real failure.
-        f"iptables -w -I DOCKER-USER -d {_META} -j DROP || {{ {fail_cb} || true; }}",
-        f"iptables -w -I OUTPUT -d {_META} -j DROP || {{ {fail_cb} || true; }}",
+        # Attempt BOTH insertions before reporting a failure. Keeping the callback
+        # once makes the bootstrap artifact fit under Hetzner's user-data limit
+        # without changing the fail-soft security semantics.
+        f"F=; iptables -w -I DOCKER-USER -d {_META} -j DROP || F=1; "
+        f"iptables -w -I OUTPUT -d {_META} -j DROP || F=1; [ -z \"$F\" ] || {{ {fail_cb} || true; }}",
         # G1-6: persist BOTH drops across reboots (the -I rules above are in-memory only) AND
         # apply them NOW via the authoritative oneshot, so the egress block is enforced this boot
         # even when the fast inserts above failed soft.

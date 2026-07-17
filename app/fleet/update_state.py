@@ -2,7 +2,7 @@
 <data_dir>/update_state.json with exactly the UpdateReport fields
 ({"last_target_version","outcome","migration_reached","attempt_id","ts"});
 the reporter reads it every beat. Absent/invalid file -> the default report
-(outcome='none') — on Railway the file never exists, so this is dormant."""
+(outcome='none') — on stacks without exchanged state the file never exists, so this is dormant."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ UPDATE_STATE_FILENAME = "update_state.json"
 # SUCCESSFULLY applied (wrote /opt/onebrain/.env for) to this file, a sibling of
 # update_state.json in the box's work dir. The reporter reads it every beat and emits
 # it as UpdateReport.applied_secrets_epoch so the operator can watch rotation
-# convergence. Absent (never exchanged, or Railway) -> 0, the inert default.
+# convergence. Absent (never exchanged) -> 0, the inert default.
 SECRETS_EPOCH_FILENAME = "secrets_epoch"
 
 

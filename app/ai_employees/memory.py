@@ -6,9 +6,11 @@ import json
 import os
 import threading
 from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from typing import Optional
 
 from app.ai_employees.base import (
+    AI_AGENT_RUN_LEASE_EXPIRED_ERROR,
     CHARACTER_VERSION_STATES,
     CONNECTOR_STATUSES,
     CONVERSATION_STATUSES,
@@ -16,8 +18,10 @@ from app.ai_employees.base import (
     MISSION_STATUSES,
     PROFILE_STATUSES,
     RUN_STATUSES,
+    RUN_TERMINAL_STATUSES,
     AiActionProposalRecord,
     AiAgentRun,
+    AiAgentRunClaim,
     AiConnectorBinding,
     AiEmployeeCharacterVersion,
     AiEmployeeConversation,
@@ -140,6 +144,70 @@ class MemoryAiEmployeeStore:
         self._tables[table][record.id] = record
         self._save()
         return record
+
+    @staticmethod
+    def _parse_lease_timestamp(value: str, *, field: str) -> datetime:
+        try:
+            parsed = datetime.fromisoformat((value or "").replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"AI employee run {field} must be an ISO-8601 timestamp.") from exc
+        if parsed.tzinfo is None:
+            raise ValueError(f"AI employee run {field} must include a timezone.")
+        return parsed.astimezone(timezone.utc)
+
+    @classmethod
+    def _validate_new_run_lease(cls, run: AiAgentRun) -> None:
+        if run.status != "running":
+            raise ValueError("AI employee run leases can only start running turns.")
+        if not run.lease_token:
+            raise ValueError("AI employee running turns require a lease token.")
+        if not run.heartbeat_at or not run.lease_expires_at:
+            raise ValueError("AI employee running turns require lease heartbeat and expiry timestamps.")
+        if cls._parse_lease_timestamp(run.lease_expires_at, field="lease_expires_at") <= datetime.now(timezone.utc):
+            raise ValueError("AI employee run lease expiry must be in the future.")
+
+    @classmethod
+    def _lease_is_expired(cls, run: AiAgentRun) -> bool:
+        if not run.lease_token or not run.lease_expires_at:
+            # Older mission-run records are intentionally not treated as direct
+            # chat leases. They retain their existing execution semantics.
+            return False
+        try:
+            return cls._parse_lease_timestamp(
+                run.lease_expires_at, field="lease_expires_at",
+            ) <= datetime.now(timezone.utc)
+        except ValueError:
+            return True
+
+    @staticmethod
+    def _validate_owned_message(run: AiAgentRun, message: AiEmployeeMessage, *, speaker_type: str) -> None:
+        if (
+            message.tenant_id != run.tenant_id
+            or message.account_id != run.account_id
+            or message.space_id != run.space_id
+            or message.conversation_id != run.conversation_id
+            or message.run_id != run.id
+            or message.speaker_type != speaker_type
+        ):
+            raise ValueError("AI employee run message does not match the leased turn.")
+        if speaker_type == "employee" and message.speaker_id != run.employee_id:
+            raise ValueError("AI employee run assistant message has the wrong employee.")
+
+    def _prepare_owned_message(self, run: AiAgentRun, message: AiEmployeeMessage, *, speaker_type: str) -> AiEmployeeMessage:
+        self._validate_owned_message(run, message, speaker_type=speaker_type)
+        if not self.get_conversation(
+            message.conversation_id,
+            tenant_id=message.tenant_id,
+            account_id=message.account_id,
+            space_id=message.space_id,
+        ):
+            raise ValueError("Message conversation is not in scope.")
+        current = self._tables["messages"].get(message.id)
+        if current:
+            if replace(message, created_at=current.created_at) == current:
+                return current
+            raise ValueError("AI employee messages are immutable.")
+        return replace(message, created_at=message.created_at or now_iso())
 
     def seed_defaults(
         self,
@@ -503,6 +571,8 @@ class MemoryAiEmployeeStore:
         get_ai_employee(run.employee_id)
         if run.status not in RUN_STATUSES:
             raise ValueError("Unknown AI employee run status.")
+        if run.lease_token:
+            raise ValueError("Leased AI employee runs must start through atomic begin-or-get.")
         with self._lock:
             duplicate = next((
                 row for row in self._list(
@@ -514,8 +584,143 @@ class MemoryAiEmployeeStore:
                     return duplicate
                 raise ValueError("AI employee run idempotency key conflicts with a different input.")
             current = self._tables["runs"].get(run.id)
+            if current and current.status == "running" and current.lease_token and current != run:
+                raise ValueError("Leased AI employee runs must be updated through lease ownership.")
             stored = replace(run, created_at=(current.created_at if current else run.created_at) or now_iso())
             return self._put("runs", stored)
+
+    def begin_or_get_run(
+        self,
+        run: AiAgentRun,
+        *,
+        human_message: Optional[AiEmployeeMessage] = None,
+    ) -> AiAgentRunClaim:
+        """Create one direct-turn run/message pair or return the existing run.
+
+        The lock covers idempotency lookup, insert, and the human message write so
+        concurrent HTTP streams cannot create duplicate provider turns.
+        """
+        get_ai_employee(run.employee_id)
+        self._validate_new_run_lease(run)
+        with self._lock:
+            existing = next((
+                row for row in self._list(
+                    "runs", tenant_id=run.tenant_id, account_id=run.account_id, space_id=run.space_id,
+                ) if row.idempotency_key == run.idempotency_key
+            ), None)
+            if existing:
+                if (
+                    existing.input_hash == run.input_hash
+                    and existing.conversation_id == run.conversation_id
+                    and (
+                        self._lease_is_expired(existing)
+                        or (
+                            not existing.mission_id
+                            and existing.status == "running"
+                            and not existing.lease_token
+                        )
+                    )
+                ):
+                    existing = replace(
+                        existing,
+                        status="failed",
+                        error=AI_AGENT_RUN_LEASE_EXPIRED_ERROR,
+                        completed_at=now_iso(),
+                        lease_token="",
+                        lease_expires_at="",
+                    )
+                    self._tables["runs"][existing.id] = existing
+                    self._save()
+                return AiAgentRunClaim(run=existing, acquired=False)
+
+            prepared_message = (
+                self._prepare_owned_message(run, human_message, speaker_type="human")
+                if human_message else None
+            )
+            stored = replace(run, created_at=run.created_at or now_iso())
+            self._tables["runs"][stored.id] = stored
+            if prepared_message:
+                self._tables["messages"][prepared_message.id] = prepared_message
+            self._save()
+            return AiAgentRunClaim(run=stored, acquired=True)
+
+    def heartbeat_run(
+        self,
+        run_id: str,
+        *,
+        tenant_id: str,
+        account_id: str,
+        space_id: str,
+        lease_token: str,
+        lease_expires_at: str,
+    ) -> Optional[AiAgentRun]:
+        if not lease_token:
+            raise ValueError("AI employee run lease token is required.")
+        if self._parse_lease_timestamp(lease_expires_at, field="lease_expires_at") <= datetime.now(timezone.utc):
+            raise ValueError("AI employee run lease expiry must be in the future.")
+        with self._lock:
+            current = self._get(
+                "runs", run_id, tenant_id=tenant_id, account_id=account_id, space_id=space_id,
+            )
+            if (
+                not current
+                or current.status != "running"
+                or current.lease_token != lease_token
+                or self._lease_is_expired(current)
+            ):
+                return None
+            stored = replace(
+                current,
+                heartbeat_at=now_iso(),
+                lease_expires_at=lease_expires_at,
+            )
+            self._tables["runs"][stored.id] = stored
+            self._save()
+            return stored
+
+    def finalize_owned_run(
+        self,
+        run: AiAgentRun,
+        *,
+        lease_token: str,
+        assistant_message: Optional[AiEmployeeMessage] = None,
+    ) -> Optional[AiAgentRun]:
+        """Atomically persist a terminal result while the caller still owns it."""
+        if run.status not in RUN_TERMINAL_STATUSES:
+            raise ValueError("Only terminal AI employee run states can be finalized.")
+        if not lease_token:
+            raise ValueError("AI employee run lease token is required.")
+        with self._lock:
+            current = self._get("runs", run.id, **self._scope(run))
+            if (
+                not current
+                or current.status != "running"
+                or current.lease_token != lease_token
+                or self._lease_is_expired(current)
+            ):
+                return None
+            prepared_message = (
+                self._prepare_owned_message(current, assistant_message, speaker_type="employee")
+                if assistant_message else None
+            )
+            stored = replace(
+                current,
+                status=run.status,
+                provider_session_ref=run.provider_session_ref,
+                prompt_tokens=run.prompt_tokens,
+                completion_tokens=run.completion_tokens,
+                cost_usd=run.cost_usd,
+                warning=run.warning,
+                error=run.error,
+                completed_at=run.completed_at or now_iso(),
+                lease_token="",
+                lease_expires_at="",
+            )
+            self._tables["runs"][stored.id] = stored
+            if prepared_message:
+                self._tables["messages"][prepared_message.id] = prepared_message
+            self._save()
+            return stored
 
     def get_run(self, run_id: str, *, tenant_id: str, account_id: str, space_id: str) -> Optional[AiAgentRun]:
         return self._get("runs", run_id, tenant_id=tenant_id, account_id=account_id, space_id=space_id)
@@ -649,9 +854,12 @@ class MemoryAiEmployeeStore:
     def export_scope(self, *, tenant_id: str, account_id: str, space_id: str = "") -> dict:
         with self._lock:
             return {
-                name: [asdict(row) for row in self._list(
-                    name, tenant_id=tenant_id, account_id=account_id, space_id=space_id,
-                )]
+                name: [
+                    asdict(replace(row, lease_token="")) if name == "runs" else asdict(row)
+                    for row in self._list(
+                        name, tenant_id=tenant_id, account_id=account_id, space_id=space_id,
+                    )
+                ]
                 for name in _TABLE_TYPES
             }
 

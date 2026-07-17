@@ -24,7 +24,7 @@ export function LoginPanel({ nextPath, passwordChanged = false }: LoginPanelProp
     const password = String(form.get("password") || "");
 
     try {
-      const response = await fetch("/api/onebrain/auth/login", {
+      const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
