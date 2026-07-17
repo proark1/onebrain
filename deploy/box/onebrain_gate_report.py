@@ -132,11 +132,8 @@ def _migration_revision(env: Mapping[str, str], runner: Callable) -> tuple[str, 
 
 
 def _http_healthy(url: str) -> bool:
-    try:
-        with urllib.request.urlopen(url, timeout=5) as response:
-            return (getattr(response, "status", 0) or response.getcode()) < 500
-    except Exception:
-        return False
+    result = _run(["curl", "-sf", url])
+    return bool(result and result.returncode == 0)
 
 
 def build_heartbeat(

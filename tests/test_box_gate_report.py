@@ -138,6 +138,16 @@ def test_host_reporter_uses_verified_last_applied_images_as_release_modules(tmp_
     }
 
 
+def test_host_reporter_health_probe_matches_updater_curl(monkeypatch):
+    report = _load_report()
+    monkeypatch.setattr(report, "_run", lambda args: SimpleNamespace(
+        returncode=0 if args == ["curl", "-sf", "http://127.0.0.1/health"] else 22,
+    ))
+
+    assert report._http_healthy("http://127.0.0.1/health") is True
+    assert report._http_healthy("http://127.0.0.1/missing") is False
+
+
 def test_host_reporter_fails_closed_for_missing_migration_or_module(tmp_path):
     report = _load_report()
 
