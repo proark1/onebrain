@@ -4533,6 +4533,46 @@
         "title": "DevelopmentGateOut",
         "type": "object"
       },
+      "DevelopmentGatePreparationOut": {
+        "properties": {
+          "applied_secrets_epoch": {
+            "title": "Applied Secrets Epoch",
+            "type": "integer"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "deployment_id": {
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "secrets_epoch": {
+            "title": "Secrets Epoch",
+            "type": "integer"
+          },
+          "updated": {
+            "title": "Updated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "updated",
+          "secrets_epoch",
+          "applied_secrets_epoch",
+          "ready"
+        ],
+        "title": "DevelopmentGatePreparationOut",
+        "type": "object"
+      },
       "DevelopmentGateProvisionIn": {
         "properties": {
           "dry_run": {
@@ -9382,6 +9422,11 @@
           },
           "status": {
             "title": "Status",
+            "type": "string"
+          },
+          "target_source": {
+            "default": "",
+            "title": "Target Source",
             "type": "string"
           },
           "target_version": {
@@ -16510,6 +16555,50 @@
           }
         },
         "summary": "Get Development Gate",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/development-gate/prepare-existing": {
+      "post": {
+        "description": "Prepare the designated enrolled gate in place; never provision a server.",
+        "operationId": "prepare_existing_development_gate_api_operator_development_gate_prepare_existing_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevelopmentGatePreparationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepare Existing Development Gate",
         "tags": [
           "operator"
         ]

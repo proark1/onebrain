@@ -2237,6 +2237,41 @@ button:disabled,
   font-weight: 700;
 }
 
+.gateEpochRail {
+  align-items: center;
+  background: color-mix(in srgb, var(--amber) 9%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--amber) 32%, var(--line));
+  border-radius: 12px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  margin: 14px 0 10px;
+  padding: 12px 14px;
+}
+
+.gateEpochRail.ready {
+  background: color-mix(in srgb, var(--green) 8%, var(--surface));
+  border-color: color-mix(in srgb, var(--green) 30%, var(--line));
+}
+
+.gateEpochRail span {
+  display: grid;
+  gap: 2px;
+}
+
+.gateEpochRail span:last-child {
+  text-align: right;
+}
+
+.gateEpochRail small {
+  color: var(--muted);
+}
+
+.gateEpochRail i {
+  color: var(--muted);
+  font-style: normal;
+}
+
 .gateCandidate,
 .promotionHeader,
 .promotionActions,

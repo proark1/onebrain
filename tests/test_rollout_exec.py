@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -15,9 +16,12 @@ from app.auth.roles import ROLES
 from app.controlplane.base import CustomerDeployment, DeploymentModule, ReleaseManifest, RolloutRun
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.controlplane.rollout_exec import (
+    resolve_pull_target,
     resolve_provisioned_target,
     target_provider,
 )
+from app.fleet.base import FleetKey, Heartbeat
+from app.fleet.memory import MemoryFleetStore
 
 
 def _principal(role_id: str = "admin", user_id: str = "op@onebrain") -> Principal:
@@ -27,11 +31,15 @@ def _principal(role_id: str = "admin", user_id: str = "op@onebrain") -> Principa
     return p
 
 
-def _control(schema_change: bool = False, backed_up: bool = False) -> MemoryControlPlaneStore:
+def _control(
+    schema_change: bool = False,
+    backed_up: bool = False,
+    environment: str = "production",
+) -> MemoryControlPlaneStore:
     store = MemoryControlPlaneStore()
     store.create_deployment(CustomerDeployment(
         id="dep_a", customer_name="A", account_id="acct_a", release_ring="pilot",
-        current_version="2026.07.0", current_migration="0041"))
+        current_version="2026.07.0", current_migration="0041", environment=environment))
     store.upsert_module(DeploymentModule("dep_a", "onebrain-api", "0.7.0"))
     store.create_release(ReleaseManifest(
         version="2026.07.1", git_sha="abc123", modules={"onebrain-api": "0.8.0"},
@@ -54,11 +62,17 @@ def test_legacy_rollout_callback_route_is_not_exposed():
 # --- Hetzner target resolver -------------------------------------------------
 
 class _FakeProvStore:
-    def __init__(self, runs):
+    def __init__(self, runs, bundle=None):
         self._runs = runs
+        self._bundle = bundle
 
     def list_runs(self, account_id="", deployment_id=""):
         return [r for r in self._runs if not deployment_id or r.deployment_id == deployment_id]
+
+    def get_secret_bundle(self, deployment_id):
+        if self._bundle and self._bundle.deployment_id == deployment_id:
+            return self._bundle
+        return None
 
 
 def test_resolve_provisioned_target_picks_latest_succeeded():
@@ -109,6 +123,107 @@ def test_target_provider_rejects_non_hetzner_targets():
     assert target_provider({}) == "unknown"  # resolver already fail-closes empties upstream
 
 
+def _enrolled_gate(*, healthy=True, age_seconds=0, key_status="active"):
+    control = MemoryControlPlaneStore()
+    control.create_deployment(CustomerDeployment(
+        id="gate", customer_name="Gate", environment="development",
+        deployment_type="dedicated_server",
+    ))
+    control.designate_release_gate("gate")
+    fleet = MemoryFleetStore()
+    fleet.create_key(FleetKey("fk", "hash", "gate", status=key_status))
+    now = datetime.now(timezone.utc)
+    fleet.record_heartbeat(Heartbeat(
+        id="hb", deployment_id="gate", contract_version="fleet.v2",
+        reported_at=now.isoformat(), received_at=(now - timedelta(seconds=age_seconds)).isoformat(),
+        healthy=healthy,
+    ))
+    return control, fleet, now
+
+
+def test_pull_target_uses_successful_provisioning_run():
+    control = MemoryControlPlaneStore()
+    control.create_deployment(CustomerDeployment(id="dep_a", customer_name="A"))
+
+    result = resolve_pull_target(
+        _FakeProvStore([_hetzner_prov_run()]), control, MemoryFleetStore(), "dep_a")
+
+    assert result.allowed is True
+    assert result.provider == "hetzner"
+    assert result.source == "provisioning_run"
+    assert result.target["target_id"] == "hetzner:2481632"
+
+
+def test_pull_target_adopts_only_enrolled_fresh_healthy_designated_gate():
+    control, fleet, now = _enrolled_gate()
+
+    result = resolve_pull_target(_FakeProvStore([]), control, fleet, "gate", now=now)
+
+    assert result.allowed is True
+    assert result.provider == "hetzner"
+    assert result.source == "enrolled_development_gate"
+    assert result.target == {}
+
+
+@pytest.mark.parametrize(
+    ("healthy", "age_seconds", "key_status", "reason"),
+    [
+        (False, 0, "active", "unhealthy"),
+        (True, 601, "active", "stale"),
+        (True, 0, "revoked", "no active fleet key"),
+    ],
+)
+def test_pull_target_rejects_unproven_gate(healthy, age_seconds, key_status, reason):
+    control, fleet, now = _enrolled_gate(
+        healthy=healthy, age_seconds=age_seconds, key_status=key_status)
+
+    result = resolve_pull_target(
+        _FakeProvStore([]), control, fleet, "gate", heartbeat_max_age_seconds=600, now=now)
+
+    assert result.allowed is False
+    assert reason in result.reason
+
+
+def test_pull_target_waits_for_expected_secrets_epoch():
+    control, fleet, now = _enrolled_gate()
+    heartbeat = fleet.latest_heartbeat("gate")
+    fleet.record_heartbeat(Heartbeat(
+        **{
+            **heartbeat.__dict__,
+            "payload": {"update": {"applied_secrets_epoch": 3}},
+        }
+    ))
+    bundle = SimpleNamespace(deployment_id="gate", secrets_epoch=4)
+
+    blocked = resolve_pull_target(_FakeProvStore([], bundle), control, fleet, "gate", now=now)
+    assert blocked.allowed is False
+    assert blocked.reason == "development gate has not applied the expected secrets epoch"
+
+    fleet.record_heartbeat(Heartbeat(
+        **{
+            **heartbeat.__dict__,
+            "payload": {"update": {"applied_secrets_epoch": 4}},
+        }
+    ))
+    ready = resolve_pull_target(_FakeProvStore([], bundle), control, fleet, "gate", now=now)
+    assert ready.allowed is True
+
+
+def test_pull_target_never_adopts_customer_or_undesignated_development_server():
+    control = MemoryControlPlaneStore()
+    control.create_deployment(CustomerDeployment(id="customer", customer_name="Customer"))
+    control.create_deployment(CustomerDeployment(
+        id="dev", customer_name="Dev", environment="development",
+        deployment_type="dedicated_server",
+    ))
+    fleet = MemoryFleetStore()
+
+    for deployment_id in ("customer", "dev"):
+        result = resolve_pull_target(_FakeProvStore([]), control, fleet, deployment_id)
+        assert result.allowed is False
+        assert result.reason == f"no successful Hetzner provisioning target for {deployment_id}"
+
+
 # --- store methods -----------------------------------------------------------
 
 def test_store_list_active_rollout_and_update_exec():
@@ -125,6 +240,26 @@ def test_store_list_active_rollout_and_update_exec():
     store.update_rollout_status("roll1", "success")
     store.update_rollout_exec("roll1", exec_status="succeeded", completed_at="now")
     assert store.list_active_rollout("dep_a") is None  # terminal, no longer active
+
+
+def test_rollout_output_surfaces_only_the_audited_target_source():
+    rollout = RolloutRun(
+        id="roll",
+        deployment_id="gate",
+        target_version="2026.07.1",
+        status="pending",
+        started_by="operator",
+        request_payload={
+            "provider": "hetzner",
+            "pull": True,
+            "target_source": "enrolled_development_gate",
+            "internal_detail": "not-for-ui",
+        },
+    )
+
+    output = operator_router._rollout_out(rollout)
+    assert output.target_source == "enrolled_development_gate"
+    assert "request_payload" not in output.model_dump()
 
 
 # --- dispatch endpoint (guards) ----------------------------------------------
@@ -211,7 +346,36 @@ def test_dispatch_offers_hetzner_target(monkeypatch):
     assert out.id == "roll1"  # 200 — RolloutOut returned, no HTTPException
     rollout = store.get_rollout("roll1")
     assert rollout.exec_status == "dispatched" and rollout.dispatched_at
-    assert rollout.request_payload == {"provider": "hetzner", "pull": True}
+    assert rollout.request_payload == {
+        "provider": "hetzner", "pull": True, "target_source": "provisioning_run"}
+
+
+def test_dispatch_offers_enrolled_existing_development_gate(monkeypatch):
+    store = _control(environment="development")
+    store.designate_release_gate("dep_a")
+    _started(store)
+    fleet = MemoryFleetStore()
+    now = datetime.now(timezone.utc).isoformat()
+    fleet.create_key(FleetKey("fk", "hash", "dep_a"))
+    fleet.record_heartbeat(Heartbeat(
+        id="hb", deployment_id="dep_a", contract_version="fleet.v2",
+        reported_at=now, received_at=now, healthy=True,
+    ))
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
+    monkeypatch.setattr(provisioning_router, "get_settings", _operator_settings)
+    monkeypatch.setattr(operator_router, "get_provisioning_run_store", lambda: _FakeProvStore([]))
+    monkeypatch.setattr(operator_router, "get_fleet_store", lambda: fleet)
+
+    out = operator_router.dispatch_rollout(
+        "dep_a", "roll1", _dispatch_body(), principal=_principal("admin"))
+
+    assert out.exec_status == "dispatched"
+    assert store.get_rollout("roll1").request_payload == {
+        "provider": "hetzner",
+        "pull": True,
+        "target_source": "enrolled_development_gate",
+    }
 
 
 def test_fleet_child_offers_hetzner_target(monkeypatch):
@@ -230,7 +394,8 @@ def test_fleet_child_offers_hetzner_target(monkeypatch):
     assert len(children) == 1
     assert children[0].status == "pending"          # non-terminal, awaiting box convergence
     assert children[0].exec_status == "dispatched"  # offered, not dispatch_failed
-    assert children[0].request_payload == {"provider": "hetzner", "pull": True}
+    assert children[0].request_payload == {
+        "provider": "hetzner", "pull": True, "target_source": "provisioning_run"}
 
 
 def test_fleet_child_rejects_non_hetzner_target(monkeypatch):

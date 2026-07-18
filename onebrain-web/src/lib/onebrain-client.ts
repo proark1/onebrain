@@ -55,6 +55,7 @@ import type {
   MintedFleetKey,
   DeploymentEnrollment,
   DevelopmentGate,
+  DevelopmentGatePreparation,
   AiActionProposal,
   AiCharacterVersion,
   AiConnectorBinding,
@@ -608,6 +609,12 @@ export function getDevelopmentGate(): Promise<DevelopmentGate> {
 export function designateDevelopmentGate(deploymentId: string): Promise<DevelopmentGate> {
   return requestJson<DevelopmentGate>(`/operator/development-gate/${encodeURIComponent(deploymentId)}`, {
     method: "PUT",
+  });
+}
+
+export function prepareExistingDevelopmentGate(): Promise<DevelopmentGatePreparation> {
+  return requestJson<DevelopmentGatePreparation>("/operator/development-gate/prepare-existing", {
+    method: "POST",
   });
 }
 

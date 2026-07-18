@@ -1394,7 +1394,11 @@ def test_dispatch_requires_ack_for_restore_required(monkeypatch):
     out = operator_router.dispatch_rollout("dep_a", "roll_acked", body, principal=_admin())
     assert out.ack_restore_required is True
     assert store.get_rollout("roll_acked").exec_status == "dispatched"
-    assert store.get_rollout("roll_acked").request_payload == {"provider": "hetzner", "pull": True}
+    assert store.get_rollout("roll_acked").request_payload == {
+        "provider": "hetzner",
+        "pull": True,
+        "target_source": "provisioning_run",
+    }
 
     # Ack-less (A5 construction — do not improvise another path).
     store2 = _restore_required_store()

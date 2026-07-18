@@ -597,6 +597,15 @@ export type DevelopmentGate = {
   blockers: string[];
 };
 
+export type DevelopmentGatePreparation = {
+  deployment_id: string;
+  updated: boolean;
+  secrets_epoch: number;
+  applied_secrets_epoch: number;
+  ready: boolean;
+  blockers: string[];
+};
+
 export type OperatorBackup = {
   id: string;
   deployment_id: string;
@@ -630,6 +639,7 @@ export type OperatorRollout = {
   dispatched_at: string;
   completed_at: string;
   fleet_rollout_id: string;
+  target_source: string;
 };
 
 export type OperatorUpdatePlan = {
