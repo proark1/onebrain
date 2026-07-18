@@ -41,6 +41,7 @@ ONEBRAIN_VECTOR_STORE=pgvector
 ONEBRAIN_RLS_ENFORCED=true
 ONEBRAIN_DATABASE_URL=<shared-postgres-app-dsn>
 ONEBRAIN_MIGRATION_DATABASE_URL=<postgres-owner-dsn>
+ONEBRAIN_OPERATOR_DATABASE_URL=<postgres-owner-or-dedicated-operator-dsn>
 ONEBRAIN_AUTH_SECRET=<unique-32-plus-character-session-secret>
 ONEBRAIN_COOKIE_SECURE=true
 ONEBRAIN_LOGIN_RATE_LIMIT_SECRET=<unique-32-plus-character-secret>

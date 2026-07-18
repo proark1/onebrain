@@ -661,6 +661,10 @@ class Settings(BaseSettings):
             errors.append("set ONEBRAIN_VECTOR_STORE=pgvector")
         if not self.database_url.strip():
             errors.append("set ONEBRAIN_DATABASE_URL")
+        if not self.operator_database_url.strip():
+            errors.append("set ONEBRAIN_OPERATOR_DATABASE_URL")
+        elif self.operator_database_url.strip() == self.database_url.strip():
+            errors.append("ONEBRAIN_OPERATOR_DATABASE_URL must differ from ONEBRAIN_DATABASE_URL")
         if not self.rls_enforced:
             errors.append("set ONEBRAIN_RLS_ENFORCED=true")
         try:
