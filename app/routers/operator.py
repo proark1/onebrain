@@ -47,8 +47,10 @@ from app.controlplane.rollout_exec import (
     resolve_pull_target,
 )
 from app.controlplane.development_gate import (
+    DEVELOPMENT_GATE_CORE_MODULE_IDS,
     DEVELOPMENT_GATE_MODULE_IDS,
     DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS,
+    is_current_replacement_bootstrap_failure,
     validate_module_transition,
 )
 from app.controlplane.desired_state import active_signer_in_served_set
@@ -1453,6 +1455,110 @@ def _latest_approved_release(store) -> ReleaseManifest | None:
     return trusted[0] if trusted else None
 
 
+def _release_covers_development_gate(
+    release: ReleaseManifest | None,
+    module_ids,
+    *,
+    registry_allowlist: str,
+    exact: bool,
+) -> bool:
+    if not release:
+        return False
+    required = frozenset(module_ids)
+    modules = frozenset((release.modules or {}).keys())
+    images = frozenset((release.images or {}).keys())
+    if exact:
+        if modules != required or images != required:
+            return False
+    elif not required.issubset(modules) or not required.issubset(images):
+        return False
+    selected_images = {module_id: release.images[module_id] for module_id in required}
+    return not verify_images(selected_images, parse_registry_allowlist(registry_allowlist))
+
+
+def _replacement_development_gate_baseline(
+    store,
+    module_ids,
+    *,
+    settings,
+) -> ReleaseManifest | None:
+    """Select a failed dev candidate solely to seed a replacement gate."""
+    required = frozenset(module_ids)
+    gate = store.get_release_gate()
+    if (
+        required != DEVELOPMENT_GATE_MODULE_IDS
+        or gate is None
+        or gate.environment != "development"
+        or gate.deployment_type != "dedicated_server"
+        or gate.status != "active"
+    ):
+        return None
+    active_modules = {
+        module.module_id
+        for module in store.list_modules(gate.id)
+        if module.status == "active"
+    }
+    if active_modules != DEVELOPMENT_GATE_CORE_MODULE_IDS:
+        return None
+    development_key = getattr(settings, "dev_release_verify_public_key", "")
+    if not development_key:
+        return None
+
+    candidates: list[tuple[str, str, ReleaseManifest]] = []
+    for promotion in store.list_release_promotions():
+        if not is_current_replacement_bootstrap_failure(
+            promotion,
+            store.list_release_promotion_events(promotion.release_version),
+            gate_deployment_id=gate.id,
+        ):
+            continue
+        release = store.get_release(promotion.release_version)
+        if (
+            not release
+            or release.status == "yanked"
+            or not _release_covers_development_gate(
+                release,
+                required,
+                registry_allowlist=settings.release_registry_allowlist,
+                exact=True,
+            )
+            or not promotion.dev_signature
+            or not verify_release_signature(
+                release_signature_fields(release),
+                promotion.dev_signature,
+                development_key,
+            )
+        ):
+            continue
+        candidates.append((promotion.updated_at, promotion.release_version, release))
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates[0][2] if candidates else None
+
+
+def _development_gate_provisioning_baseline(
+    store,
+    module_ids,
+    *,
+    settings,
+) -> tuple[ReleaseManifest | None, str]:
+    approved = _latest_approved_release(store)
+    if _release_covers_development_gate(
+        approved,
+        module_ids,
+        registry_allowlist=settings.release_registry_allowlist,
+        exact=False,
+    ):
+        return approved, "approved_release"
+    replacement = _replacement_development_gate_baseline(
+        store,
+        module_ids,
+        settings=settings,
+    )
+    if replacement:
+        return replacement, "development_replacement_candidate"
+    return approved, "approved_release" if approved else ""
+
+
 def _development_attempt_note(
     release: ReleaseManifest,
     *,
@@ -1989,14 +2095,18 @@ def provision_development_gate(
         deployment_id, account_id = _development_gate_identity(store)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    baseline = _latest_approved_release(store)
-    if not baseline:
-        raise HTTPException(status_code=409, detail="A trusted approved baseline release is required first.")
     from app.provisioning.bundles import resolve_module_composition
     from app.routers.provisioning import CustomerProvisionCreate, _provision_customer_impl
 
     composition = resolve_module_composition(DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS)
     deployable_module_ids = composition.modules
+    baseline, baseline_source = _development_gate_provisioning_baseline(
+        store,
+        deployable_module_ids,
+        settings=settings,
+    )
+    if not baseline:
+        raise HTTPException(status_code=409, detail="A trusted approved baseline release is required first.")
     missing = sorted(module_id for module_id in deployable_module_ids if module_id not in baseline.modules)
     if missing:
         raise HTTPException(
@@ -2024,6 +2134,7 @@ def provision_development_gate(
             "environment": "development",
             "deployment_type": "dedicated_server",
             "region": body.region.strip(),
+            "baseline_source": baseline_source,
             "initial_version": baseline.version,
             "modules": {module_id: baseline.modules[module_id] for module_id in deployable_module_ids},
             "images": {module_id: baseline.images[module_id] for module_id in deployable_module_ids},

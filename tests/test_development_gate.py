@@ -8,6 +8,7 @@ from app.controlplane.development_gate import (
     DEVELOPMENT_GATE_MODULE_IDS,
     LEGACY_CORE_GATE_REPLACEMENT_REQUIRED,
     TARGET_MODULE_SET_INVALID,
+    is_current_replacement_bootstrap_failure,
     validate_module_transition,
     verify_reported_modules,
 )
@@ -54,6 +55,72 @@ def test_module_transition_requires_exact_full_target():
         )
         == TARGET_MODULE_SET_INVALID
     )
+
+
+def _replacement_promotion(**overrides):
+    values = {
+        "release_version": "candidate-1",
+        "state": "dev_failed",
+        "gate_deployment_id": "gate-1",
+        "failure_reason": "dev_preflight_failed",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _replacement_event(**overrides):
+    values = {
+        "release_version": "candidate-1",
+        "action": "dev_preflight_failed",
+        "from_state": "dev_deploying",
+        "to_state": "dev_failed",
+        "note": LEGACY_CORE_GATE_REPLACEMENT_REQUIRED,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_current_replacement_bootstrap_failure_requires_exact_latest_event():
+    assert is_current_replacement_bootstrap_failure(
+        _replacement_promotion(),
+        [_replacement_event()],
+        gate_deployment_id="gate-1",
+    ) is True
+
+    assert is_current_replacement_bootstrap_failure(
+        _replacement_promotion(),
+        [
+            _replacement_event(),
+            _replacement_event(note="restore_required_ack_needed"),
+        ],
+        gate_deployment_id="gate-1",
+    ) is False
+
+
+@pytest.mark.parametrize(
+    ("promotion_overrides", "event_overrides", "gate_id"),
+    [
+        ({"state": "dev_verified"}, {}, "gate-1"),
+        ({"gate_deployment_id": "other"}, {}, "gate-1"),
+        ({"failure_reason": "dev_rollout_failed"}, {}, "gate-1"),
+        ({}, {"release_version": "other"}, "gate-1"),
+        ({}, {"action": "dev_rollout_failed"}, "gate-1"),
+        ({}, {"from_state": "dev_pending"}, "gate-1"),
+        ({}, {"to_state": "dev_verified"}, "gate-1"),
+        ({}, {"note": "development_gate_current_module_set_invalid"}, "gate-1"),
+        ({}, {}, ""),
+    ],
+)
+def test_replacement_bootstrap_failure_rejects_ambiguous_evidence(
+    promotion_overrides,
+    event_overrides,
+    gate_id,
+):
+    assert is_current_replacement_bootstrap_failure(
+        _replacement_promotion(**promotion_overrides),
+        [_replacement_event(**event_overrides)],
+        gate_deployment_id=gate_id,
+    ) is False
 
 
 def _heartbeat(modules, *, onebrain_version="core-v1"):
