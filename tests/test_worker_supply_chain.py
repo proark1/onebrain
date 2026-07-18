@@ -477,7 +477,13 @@ def _publication_value() -> publication.PublicationInput:
     )
 
 
-def _publication_asset(value: publication.PublicationInput, *, asset_id: int = 7):
+def _publication_asset(
+    value: publication.PublicationInput,
+    *,
+    asset_id: int = 7,
+    draft: bool = False,
+):
+    release_name = "untagged-deadbeef" if draft else value.tag
     return {
         "id": asset_id,
         "name": value.artifact.name,
@@ -486,7 +492,7 @@ def _publication_asset(value: publication.PublicationInput, *, asset_id: int = 7
         "state": "uploaded",
         "browser_download_url": (
             "https://github.com/proark1/onebrain/releases/download/"
-            f"{value.tag}/{value.artifact.name}"
+            f"{release_name}/{value.artifact.name}"
         ),
     }
 
@@ -660,6 +666,7 @@ def test_publication_state_machine_validates_draft_before_id_bound_publish(
     value = _publication_value()
     target = "a" * 40
     asset = _publication_asset(value)
+    draft_asset = _publication_asset(value, draft=True)
     draft = _publication_release(
         value,
         target=target,
@@ -672,7 +679,7 @@ def test_publication_state_machine_validates_draft_before_id_bound_publish(
         target=target,
         draft=True,
         immutable=False,
-        assets=[asset],
+        assets=[draft_asset],
     )
     # GitHub may freeze the release in the PATCH response immediately.
     patched = _publication_release(
@@ -691,7 +698,7 @@ def test_publication_state_machine_validates_draft_before_id_bound_publish(
                 "POST",
                 "https://uploads.github.com/repos/proark1/onebrain/releases/42/"
                 f"assets?name={value.artifact.name}",
-                asset,
+                draft_asset,
             ),
             ("GET", "repos/proark1/onebrain/releases/42", verified_draft),
             ("PATCH", "repos/proark1/onebrain/releases/42", patched),
@@ -725,8 +732,8 @@ def test_publication_state_machine_validates_draft_before_id_bound_publish(
     )
     monkeypatch.setattr(
         publication,
-        "_existing_release_id",
-        lambda _value: events.append("identity-absent") or None,
+        "_existing_publication",
+        lambda _value, **_kwargs: events.append("identity-absent") or None,
     )
     monkeypatch.setattr(
         publication,
@@ -751,6 +758,82 @@ def test_publication_state_machine_validates_draft_before_id_bound_publish(
     assert events[-2:] == ["attest:verify", "attest:verify-asset"]
     with pytest.raises(StopIteration):
         next(expected_api)
+
+
+def test_exact_uploaded_draft_resume_skips_duplicate_upload(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    value = _publication_value()
+    target = "a" * 40
+    draft_asset = _publication_asset(value, draft=True)
+    final_asset = _publication_asset(value)
+    verified_draft = _publication_release(
+        value,
+        target=target,
+        draft=True,
+        immutable=False,
+        assets=[draft_asset],
+    )
+    published = _publication_release(
+        value,
+        target=target,
+        draft=False,
+        immutable=True,
+        assets=[final_asset],
+    )
+    responses = iter(
+        (
+            {"enabled": True},
+            verified_draft,
+            published,
+            published,
+            {"object": {"type": "commit", "sha": target}},
+        )
+    )
+    calls: list[tuple[str, str]] = []
+
+    def fake_api(method: str, endpoint: str, **_kwargs):
+        calls.append((method, endpoint))
+        return next(responses)
+
+    monkeypatch.setattr(publication.shutil, "which", lambda _name: "gh")
+    monkeypatch.setattr(publication, "_require_gh_attestation_support", lambda: None)
+    monkeypatch.setattr(publication, "_api_json", fake_api)
+    monkeypatch.setattr(
+        publication,
+        "_verify_protected_generator_inputs",
+        lambda *_args, **_kwargs: "f" * 64,
+    )
+    monkeypatch.setattr(
+        publication,
+        "_existing_publication",
+        lambda _value, **_kwargs: publication.ExistingPublication(
+            release_id=42,
+            draft=True,
+            asset_id=7,
+            upload_url=(
+                "https://uploads.github.com/repos/proark1/onebrain/releases/42/"
+                f"assets?name={value.artifact.name}"
+            ),
+        ),
+    )
+    monkeypatch.setattr(publication, "_retry_attestation", lambda *_args, **_kwargs: None)
+
+    publication.publish(
+        value,
+        supply_chain_lock=_LOCK,
+        target=target,
+        confirm_tag=value.tag,
+    )
+
+    assert all(method != "POST" for method, _endpoint in calls)
+    assert calls[1:4] == [
+        ("GET", "repos/proark1/onebrain/releases/42"),
+        ("PATCH", "repos/proark1/onebrain/releases/42"),
+        ("GET", "repos/proark1/onebrain/releases/42"),
+    ]
+    with pytest.raises(StopIteration):
+        next(responses)
 
 
 def test_exact_immutable_publication_rerun_is_verification_only(
@@ -788,7 +871,14 @@ def test_exact_immutable_publication_rerun_is_verification_only(
         "_verify_protected_generator_inputs",
         lambda *_args, **_kwargs: "f" * 64,
     )
-    monkeypatch.setattr(publication, "_existing_release_id", lambda _value: 42)
+    monkeypatch.setattr(
+        publication,
+        "_existing_publication",
+        lambda _value, **_kwargs: publication.ExistingPublication(
+            release_id=42,
+            draft=False,
+        ),
+    )
     monkeypatch.setattr(
         publication,
         "_retry_attestation",
@@ -862,7 +952,7 @@ def test_publication_never_publishes_an_unverified_uploaded_asset(
         immutable=False,
         assets=[],
     )
-    invalid_asset = _publication_asset(value)
+    invalid_asset = _publication_asset(value, draft=True)
     invalid_asset["digest"] = f"sha256:{'0' * 64}"
     calls: list[tuple[str, str]] = []
     responses = iter(({"enabled": True}, draft, invalid_asset))
@@ -879,7 +969,11 @@ def test_publication_never_publishes_an_unverified_uploaded_asset(
         "_verify_protected_generator_inputs",
         lambda *_args, **_kwargs: "f" * 64,
     )
-    monkeypatch.setattr(publication, "_existing_release_id", lambda _value: None)
+    monkeypatch.setattr(
+        publication,
+        "_existing_publication",
+        lambda _value, **_kwargs: None,
+    )
 
     with pytest.raises(
         publication.PublicationError,
@@ -895,7 +989,7 @@ def test_publication_never_publishes_an_unverified_uploaded_asset(
     assert all(method != "PATCH" for method, _endpoint in calls)
 
 
-def test_existing_draft_blocks_publication_identity_reuse(
+def test_incomplete_existing_draft_blocks_publication_identity_reuse(
     monkeypatch: pytest.MonkeyPatch,
 ):
     value = _publication_value()
@@ -909,7 +1003,62 @@ def test_existing_draft_blocks_publication_identity_reuse(
         publication.PublicationError,
         match="definition_publication_release_exists",
     ):
-        publication._existing_release_id(value)
+        publication._existing_publication(
+            value,
+            target="a" * 40,
+            expected_body=publication._release_notes(
+                value,
+                target="a" * 40,
+                generator_inputs_sha256="f" * 64,
+            ),
+        )
+
+
+def test_exact_existing_draft_is_adopted_for_id_bound_resume(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    value = _publication_value()
+    target = "a" * 40
+    release = _publication_release(
+        value,
+        target=target,
+        draft=True,
+        immutable=False,
+        assets=[_publication_asset(value, draft=True)],
+    )
+    monkeypatch.setattr(publication, "_list_releases", lambda: [release])
+    absent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        publication,
+        "_require_absent",
+        lambda endpoint, *, code: absent.append((endpoint, code)),
+    )
+
+    existing = publication._existing_publication(
+        value,
+        target=target,
+        expected_body=publication._release_notes(
+            value,
+            target=target,
+            generator_inputs_sha256="f" * 64,
+        ),
+    )
+
+    assert existing == publication.ExistingPublication(
+        release_id=42,
+        draft=True,
+        asset_id=7,
+        upload_url=(
+            "https://uploads.github.com/repos/proark1/onebrain/releases/42/"
+            f"assets?name={value.artifact.name}"
+        ),
+    )
+    assert absent == [
+        (
+            f"repos/proark1/onebrain/git/ref/tags/{value.tag}",
+            "definition_publication_tag_exists",
+        )
+    ]
 
 
 def test_orphan_tag_blocks_publication_identity_reuse(
@@ -927,7 +1076,15 @@ def test_orphan_tag_blocks_publication_identity_reuse(
         publication.PublicationError,
         match="definition_publication_tag_exists",
     ):
-        publication._existing_release_id(value)
+        publication._existing_publication(
+            value,
+            target="a" * 40,
+            expected_body=publication._release_notes(
+                value,
+                target="a" * 40,
+                generator_inputs_sha256="f" * 64,
+            ),
+        )
 
 
 def test_unsupported_gh_attestation_fails_before_release_mutation(
