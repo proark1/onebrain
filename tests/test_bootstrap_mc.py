@@ -14,6 +14,7 @@ import datetime as dt
 import gzip
 import io
 import json
+import lzma
 import re
 import tarfile
 from pathlib import Path
@@ -45,14 +46,24 @@ _IMAGES = json.dumps({m: f"ghcr.io/proark1/{m}@{_D}" for m in mc._MC_MODULES})
 
 def _asset_text(cloud_init: str, path: str) -> str:
     match = re.search(
-        r"  - path: /opt/onebrain/onebrain-assets\.tar\n"
+        r"  - path: /opt/onebrain/onebrain-assets\.b85\n"
         r"    permissions: '[0-7]+'\n"
-        r"    encoding: gz\+b64\n"
-        r"    content: (?P<blob>\S+)\n",
+        r"    content: \|\n"
+        r"      (?P<blob>\S+)\n",
         cloud_init,
     )
-    assert match
-    archive = gzip.decompress(base64.b64decode(match.group("blob")))
+    if match is not None:
+        archive = lzma.decompress(base64.b85decode(match.group("blob")))
+    else:
+        match = re.search(
+            r"  - path: /opt/onebrain/onebrain-assets\.tar\n"
+            r"    permissions: '[0-7]+'\n"
+            r"    encoding: gz\+b64\n"
+            r"    content: (?P<blob>\S+)\n",
+            cloud_init,
+        )
+        assert match
+        archive = gzip.decompress(base64.b64decode(match.group("blob")))
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
         handle = tar.extractfile(path.lstrip("/"))
         assert handle is not None

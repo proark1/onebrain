@@ -81,8 +81,9 @@ For production, migrations should run with an owner/migration database role befo
    only to its intended product database. Before applying this update to a
    legacy box, use Mission Control's operator-admin
    `POST /api/fleet/deployments/{id}/backfill-runtime-db-credentials` endpoint
-   to add and re-seal any missing restricted runtime passwords, then wait for the bumped
-   secrets epoch to appear in the box heartbeat.
+   to add and re-seal any missing restricted runtime passwords and the distinct
+   login rate-limit secret of at least 32 characters, then wait for the bumped secrets epoch
+   to appear in the box heartbeat.
 3. Give the migration process its owner-role DSN plus
    `ONEBRAIN_POSTGRES_APP_ROLE` and `ONEBRAIN_POSTGRES_WORKER_ROLE`. Set
    `ONEBRAIN_MIGRATION_EMBEDDING_DIM` to the fixed configured embedding

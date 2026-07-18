@@ -89,31 +89,44 @@ RUNTIME_DB_PASSWORD_KEYS = (
     "POSTGRES_COMMUNICATION_PASSWORD",
 )
 
+# Keep the legacy-bundle repair surface in one idempotent operation.  The
+# rate-limit HMAC secret was introduced after some already-sealed bundles, just
+# like the restricted runtime database credentials.  It must be minted by
+# Mission Control (where the ciphertext can be re-sealed), never on a box.
+# The route name remains ``backfill-runtime-db-credentials`` for compatibility.
+RUNTIME_BUNDLE_BACKFILL_KEYS = (
+    *RUNTIME_DB_PASSWORD_KEYS,
+    "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET",
+)
+
 
 def backfill_runtime_db_passwords(
     bundle: Dict[str, object],
     *,
     password_factory: Callable[[], str] | None = None,
 ) -> tuple[Dict[str, object], tuple[str, ...]]:
-    """Return a copy with only missing restricted-runtime passwords added.
+    """Return a copy with missing or weak legacy runtime secrets repaired.
 
-    This is intentionally idempotent: valid existing values are preserved, so
-    it is safe to retry after a control-plane interruption. Callers must run it
-    only on Mission Control after decrypting a stored bundle, then re-seal and
-    bump the bundle epoch so the box re-fetches the authoritative values.
+    The repair includes restricted-runtime database passwords and the distinct
+    login rate-limit HMAC secret.  Every generated value is at least 32
+    characters, including the rate-limit secret required by the application.
+    This is intentionally idempotent: values already at least 32 characters are
+    preserved, so it is safe to retry after a control-plane interruption. Callers
+    must run it only on Mission Control after decrypting a stored bundle, then
+    re-seal and bump the bundle epoch so the box re-fetches the authoritative values.
     """
 
     updated = dict(bundle)
     mint = password_factory or (lambda: secrets.token_urlsafe(32))
     added: list[str] = []
-    for key in RUNTIME_DB_PASSWORD_KEYS:
+    for key in RUNTIME_BUNDLE_BACKFILL_KEYS:
         current = updated.get(key)
-        if isinstance(current, str) and current.strip():
+        if isinstance(current, str) and len(current.strip()) >= 32:
             continue
         if current is not None and not isinstance(current, str):
             raise ValueError(f"Secret bundle key {key} must be a string when present.")
         password = mint()
-        if not isinstance(password, str) or len(password) < 32:
+        if not isinstance(password, str) or len(password.strip()) < 32:
             raise ValueError(f"Generated {key} must be a string of at least 32 characters.")
         updated[key] = password
         added.append(key)

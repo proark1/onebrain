@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Annotated, List, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 CONTRACT_VERSION = "fleet.v1"
 
@@ -155,6 +155,38 @@ class OneBrainReportV2(OneBrainReport):
     uptime_seconds: int = Field(default=0, ge=0)
 
 
+class StorageCapacityReport(BaseModel):
+    """Capacity for one host filesystem, expressed only as bounded metadata.
+
+    ``0/0`` means that this reporter cannot observe the filesystem.  That is
+    deliberately distinct from a full disk and lets Mission Control continue
+    accepting fleet.v2 heartbeats from older boxes until their host reporter is
+    refreshed.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    total_bytes: int = Field(default=0, ge=0)
+    available_bytes: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def _available_cannot_exceed_total(self):
+        if self.available_bytes > self.total_bytes:
+            raise ValueError("available_bytes cannot exceed total_bytes")
+        return self
+
+
+class StorageReport(BaseModel):
+    """Metadata-only capacity plus a concrete durable-volume availability signal."""
+    model_config = ConfigDict(extra="forbid")
+
+    root: StorageCapacityReport = Field(default_factory=StorageCapacityReport)
+    data: StorageCapacityReport = Field(default_factory=StorageCapacityReport)
+    # ``True`` means the host's UUID/mount verifier rejected or could not see
+    # the persistent data volume. It is deliberately distinct from unknown
+    # legacy 0/0 capacity so the watchdog can open a concrete operator alert.
+    data_volume_unavailable: bool = False
+
+
 class FleetHeartbeatV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -164,6 +196,9 @@ class FleetHeartbeatV2(BaseModel):
     onebrain: OneBrainReportV2
     modules: List[ModuleReport] = Field(default_factory=list, max_length=50)
     update: UpdateReport = Field(default_factory=UpdateReport)
+    # Additive fleet.v2 field. Older boxes omit it and correctly report unknown
+    # capacity (0/0); the watchdog never turns an unknown volume into an alert.
+    storage: StorageReport = Field(default_factory=StorageReport)
 
     @property
     def healthy(self) -> bool:
@@ -201,6 +236,7 @@ def build_heartbeat_v2(
     uptime_seconds: int = 0,
     modules: List[ModuleReport] | None = None,
     update: UpdateReport | None = None,
+    storage: StorageReport | None = None,
 ) -> FleetHeartbeatV2:
     """Pure v2 assembler mirroring build_heartbeat (which stays for v1 tests)."""
     return FleetHeartbeatV2(
@@ -223,4 +259,5 @@ def build_heartbeat_v2(
         ),
         modules=modules or [],
         update=update or UpdateReport(),
+        storage=storage or StorageReport(),
     )

@@ -504,7 +504,9 @@ class MemoryPlatformStore:
         rows = [v for v in self._retention_runs.values() if v.account_id == account_id]
         if space_id:
             rows = [v for v in rows if v.space_id == space_id]
-        return sorted(rows, key=lambda v: (v.created_at, v.id))
+        # Retention runs are an append-only audit ledger.  Keep their recording
+        # order so equal timestamps cannot be reordered by their random IDs.
+        return rows
 
     def create_tombstone(self, tombstone: Tombstone) -> Tombstone:
         self._require_account(tombstone.account_id)

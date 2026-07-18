@@ -143,6 +143,17 @@ def create_app() -> FastAPI:
         except Exception as exc:  # never fatal
             logging.getLogger("onebrain").warning("Fleet retention not started: %s", exc)
 
+        # Metadata-only fleet alerts (heartbeat, version drift, and host
+        # capacity). The watchdog never dispatches or changes deployments; it
+        # can be disabled explicitly with ONEBRAIN_FLEET_WATCHDOG_SECONDS=0.
+        try:
+            from app.fleet.watchdog_scheduler import start_fleet_watchdog
+
+            if start_fleet_watchdog(settings):
+                logging.getLogger("onebrain").info("Fleet watchdog enabled.")
+        except Exception as exc:  # never fatal
+            logging.getLogger("onebrain").warning("Fleet watchdog not started: %s", exc)
+
         # Pull-path reconcile daemon (P5-04). OFF by default (fleet_reconcile_seconds=0,
         # G3-4) — starts only when the operator explicitly opts in with a positive
         # interval, so landing this does NOT flip auto-advance on the dormant MC. Never

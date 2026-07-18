@@ -1,0 +1,14 @@
+[Unit]
+Description=Verify the persistent OneBrain data volume before Docker starts
+After=local-fs.target
+Before=docker.service
+RequiresMountsFor=/mnt/onebrain-data
+
+[Service]
+Type=oneshot
+ExecStart=/opt/onebrain/onebrain-data-volume.sh verify
+RemainAfterExit=yes
+User=root
+
+[Install]
+RequiredBy=docker.service

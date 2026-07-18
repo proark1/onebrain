@@ -25,15 +25,20 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import urllib.request
 from datetime import datetime, timezone
+from typing import Callable
 
 from app import __version__ as app_version
 from app.config import Settings
 from app.db.schema import REQUIRED_ALEMBIC_REVISION, read_live_alembic_revision
-from app.fleet.heartbeat import FleetHeartbeat, FleetHeartbeatV2, UpdateReport, build_heartbeat_v2
+from app.fleet.heartbeat import (
+    FleetHeartbeat, FleetHeartbeatV2, StorageCapacityReport, StorageReport,
+    UpdateReport, build_heartbeat_v2,
+)
 from app.fleet.module_probe import collect_module_reports
 from app.fleet.update_state import (
     read_applied_secrets_epoch,
@@ -56,6 +61,45 @@ def _safe(fn, default):
         return default, False
 
 
+def _storage_capacity(path: str) -> StorageCapacityReport:
+    """Read usable filesystem capacity without ever making telemetry fail.
+
+    ``f_bavail`` measures the space a normal service process can use, excluding
+    root-reserved blocks. A host/reporting environment that cannot observe a
+    path returns the explicit ``0/0`` unknown value instead of inventing a
+    healthy capacity value.
+    """
+    try:
+        stat = os.statvfs(path)
+        block_size = int(getattr(stat, "f_frsize", 0) or getattr(stat, "f_bsize", 0))
+        total = max(0, int(stat.f_blocks) * block_size)
+        available = max(0, int(stat.f_bavail) * block_size)
+        if total <= 0 or available > total:
+            return StorageCapacityReport()
+        return StorageCapacityReport(total_bytes=total, available_bytes=available)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return StorageCapacityReport()
+
+
+def collect_storage_report(
+    data_volume_path: str, *, data_volume_is_mounted: Callable[[str], bool] | None = None,
+) -> StorageReport:
+    """Collect root plus an actually mounted durable-data filesystem.
+
+    Cloud-init creates the mount directory before attaching the volume. Checking
+    the mount boundary prevents an unmounted directory from being misreported as
+    a healthy copy of root storage.
+    """
+    is_mounted = data_volume_is_mounted or os.path.ismount
+    root = _storage_capacity("/")
+    data = (
+        _storage_capacity(data_volume_path)
+        if is_mounted(data_volume_path)
+        else StorageCapacityReport()
+    )
+    return StorageReport(root=root, data=data)
+
+
 def collect_heartbeat(settings: Settings, *, probe_opener=None) -> FleetHeartbeatV2:
     from app.deps import (
         get_intake_store, get_job_store, get_platform_store, get_service_key_store,
@@ -70,6 +114,7 @@ def collect_heartbeat(settings: Settings, *, probe_opener=None) -> FleetHeartbea
     keys, ok_keys = _safe(lambda: get_service_key_store().summary().active, 0)
     jobs, ok_jobs = _safe(lambda: get_job_store().summary(recent_failures_limit=0), None)
     metrics, _ = _safe(monitoring_snapshot, None)
+    storage, _ = _safe(lambda: collect_storage_report(settings.fleet_data_volume_path), StorageReport())
 
     if settings.vector_store == "pgvector":
         revision, ok_rev_read = _safe(lambda: read_live_alembic_revision(settings.pg_database_url), "")
@@ -106,6 +151,7 @@ def collect_heartbeat(settings: Settings, *, probe_opener=None) -> FleetHeartbea
         uptime_seconds=int(time.monotonic() - _PROCESS_START),
         modules=modules,
         update=update,
+        storage=storage,
     )
 
 

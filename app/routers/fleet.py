@@ -37,7 +37,7 @@ from app.deps import (
 from app.fleet.base import FleetKey, Heartbeat
 from app.fleet.bootstrap_bundle import backfill_runtime_db_passwords, render_dotenv
 from app.fleet.enrollment import fleet_enrollment_vars, mint_deployment_fleet_key
-from app.fleet.heartbeat import AnyFleetHeartbeat, FleetHeartbeat  # noqa: F401 — FleetHeartbeat kept for typing
+from app.fleet.heartbeat import AnyFleetHeartbeat, FleetHeartbeat, StorageReport  # noqa: F401 — FleetHeartbeat kept for typing
 from app.fleet.keys import (
     generate_fleet_key,
     hash_secret,
@@ -438,14 +438,16 @@ def backfill_runtime_db_credentials(
     deployment_id: str,
     principal: Principal = Depends(resolve_principal),
 ):
-    """Add missing restricted runtime DB passwords to a legacy box bundle.
+    """Add missing legacy runtime secrets to a legacy box bundle.
 
     This is an operator-admin-only, MC-side migration path for bundles sealed
-    before the full restricted-runtime role split existed. It decrypts only in MC
-    memory, adds *only* missing values, re-seals before storage, and returns no
-    password material. A successful change then bumps secrets_epoch so the box
+    before the full restricted-runtime role split and login-rate-limit secret
+    existed. It decrypts only in MC memory, adds *only* missing values (including
+    a 32+ character login rate-limit secret), re-seals before storage, and returns
+    no secret material. A successful change then bumps secrets_epoch so the box
     re-fetches its authoritative bundle. Never generate these values on a box:
-    that would leave MC unable to service a later rotation.
+    that would leave MC unable to service a later rotation. The route keeps its
+    original DB-credential name for compatibility.
     """
 
     _require_operator_admin(principal)
@@ -563,6 +565,7 @@ class DeploymentOverview(BaseModel):
     last_received_at: str = ""
     applied_secrets_epoch: int = 0   # G1-3: the epoch the box last applied (rotation convergence)
     counts: dict = Field(default_factory=dict)
+    storage: StorageReport = Field(default_factory=StorageReport)
     open_alerts: list[str] = Field(default_factory=list)
 
 
@@ -572,6 +575,15 @@ class FleetOverviewOut(BaseModel):
     total: int
     healthy: int
     with_open_alerts: int
+
+
+def _reported_storage(payload: dict | None) -> StorageReport:
+    """Read additive host-capacity telemetry without trusting old stored JSON."""
+    raw = (payload or {}).get("storage") if isinstance(payload, dict) else None
+    try:
+        return StorageReport.model_validate(raw or {})
+    except ValidationError:
+        return StorageReport()
 
 
 @router.get("/overview", response_model=FleetOverviewOut)
@@ -613,6 +625,7 @@ def fleet_overview(principal: Principal = Depends(resolve_principal)):
                 "jobs_pending": ob.get("jobs_pending", 0),
                 "jobs_failed": ob.get("jobs_failed", 0),
             } if hb else {},
+            storage=_reported_storage(hb.payload if hb else None),
             open_alerts=alerts,
         )
         rows.append(row)

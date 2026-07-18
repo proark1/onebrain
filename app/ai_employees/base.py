@@ -299,6 +299,44 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def message_sort_key(message: AiEmployeeMessage) -> tuple[str, str, int, str]:
+    """Return a stable conversation order without relying on random message IDs.
+
+    A direct turn creates its human and employee messages independently. On
+    hosts with coarse clock resolution they can receive the same timestamp, so
+    sorting by UUID would occasionally show the answer before the question.
+    Keep the two messages from a run together and use their defined turn order
+    as the tie-breaker.
+    """
+    speaker_order = {
+        "human": 0,
+        "employee": 1,
+        "system": 2,
+        "tool": 3,
+    }.get(message.speaker_type, 9)
+    return (message.created_at, message.run_id or message.id, speaker_order, message.id)
+
+
+def mission_participant_sort_key(participant: AiMissionParticipant) -> tuple[int, str, str, str]:
+    """Return the deterministic execution order for a mission squad.
+
+    Membership is set by mission semantics, not by UUID creation order: the
+    Chief of Staff scopes and synthesizes first, the accountable executive
+    follows, then specialist positions run in a stable employee order.
+    """
+    mission_role_order = {
+        "orchestrator": 0,
+        "accountable": 1,
+        "specialist": 2,
+    }
+    return (
+        mission_role_order.get(participant.mission_role, 9),
+        participant.employee_id,
+        participant.joined_at,
+        participant.id,
+    )
+
+
 def validate_scope(*, tenant_id: str, account_id: str, space_id: str) -> None:
     if not (tenant_id or "").strip() or not (account_id or "").strip() or not (space_id or "").strip():
         raise ValueError("tenant_id, account_id, and space_id are required.")

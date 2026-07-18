@@ -111,8 +111,9 @@ receives production traffic:
    product database.
    Before updating an existing box that has an older sealed bundle, call
    `POST /api/fleet/deployments/{id}/backfill-runtime-db-credentials` as an
-   operator admin. It adds only missing restricted runtime passwords, re-seals the
-   bundle on MC, and bumps its epoch; wait for the box to report that epoch
+   operator admin. It adds only missing restricted runtime passwords and the
+   distinct login rate-limit secret of at least 32 characters, re-seals the bundle on MC,
+   and bumps its epoch once; wait for the box to report that epoch
    before applying the Compose/release update. It returns no secret values and
    is safe to retry.
 2. Run the owner-role migration with `ONEBRAIN_POSTGRES_APP_ROLE` and

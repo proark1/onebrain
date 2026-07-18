@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal, Optional
 from urllib.parse import urlsplit
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Approved EU object-storage endpoint HOSTS for offsite backups (host / proper-subdomain
@@ -277,6 +278,15 @@ class Settings(BaseSettings):
     fleet_report_seconds: int = 60       # how often the reporter posts a heartbeat
     fleet_missed_heartbeat_seconds: int = 600   # watchdog: alert when older than this
     fleet_target_version: str = ""       # expected fleet bundle version (drift alerting)
+    # Fleet health watchdog. It only opens/resolves metadata-only alerts; unlike
+    # rollout reconciliation it never changes a deployment, so it is enabled on
+    # Mission Control by default. Set 0 to disable the scheduler explicitly.
+    fleet_watchdog_seconds: int = Field(default=60, ge=0)
+    fleet_low_root_disk_percent: int = Field(default=15, ge=0, le=100)
+    fleet_low_data_disk_percent: int = Field(default=15, ge=0, le=100)
+    # Persistent PostgreSQL/data mount as seen by a reporter. A container that
+    # does not mount it emits 0/0 (unknown), never a duplicate root filesystem.
+    fleet_data_volume_path: str = "/mnt/onebrain-data"
     # Heartbeat ingest guards (Mission Control side). Cap per-deployment posting
     # rate so a leaked/misused fleet key can't flood the append-only table, and
     # reject a reported_at that is implausibly skewed from server time (received_at

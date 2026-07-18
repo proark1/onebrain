@@ -31,6 +31,7 @@ from app.provisioning.runs import (
 from app.provisioning.service import CustomerProvisioner
 from app.servicekeys.base import SCOPE_READ, SCOPE_WRITE, parse_key, verify_secret
 from app.servicekeys.memory import MemoryServiceKeyStore
+from tests.boot_config_helper import extract_cloud_init_file
 
 
 def _principal(role_id: str = "admin") -> Principal:
@@ -790,12 +791,17 @@ def test_hetzner_provision_customer_assembles_valid_bundle(monkeypatch):
     # their box with the same identity. seed.py needs BOTH to seed the admin at first boot.
     assert bundle["ONEBRAIN_ADMIN_EMAIL"] == "owner@acme.example"
     assert bundle["ONEBRAIN_ADMIN_EMAIL"] == owner.email
-    # The persisted, preflighted callback template reaches cloud-init rather
-    # than silently falling back to the fleet URL.
+    # The persisted, preflighted callback template reaches the archived
+    # first-boot helper rather than silently falling back to the fleet URL.
+    # Full customer cloud-init keeps first-boot commands in the XZ asset archive,
+    # so assert against the extracted runtime script—not only its outer payload.
+    first_boot = extract_cloud_init_file(
+        fake.servers[0].user_data, "/opt/onebrain/onebrain-firstboot.sh"
+    )
     assert (
         f"https://admin.example/api/provisioning/runs/"
         f"{created.provisioning_run.id}/callback"
-    ) in fake.servers[0].user_data
+    ) in first_boot
 
 
 def test_hetzner_provision_customer_requires_owner_email(monkeypatch):

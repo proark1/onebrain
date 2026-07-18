@@ -33,6 +33,8 @@ from app.ai_employees.base import (
     AiMissionParticipant,
     character_checksum,
     default_character_payload,
+    message_sort_key,
+    mission_participant_sort_key,
     now_iso,
     scope_matches,
     stable_record_id,
@@ -514,7 +516,7 @@ class MemoryAiEmployeeStore:
                 "messages", tenant_id=tenant_id, account_id=account_id, space_id=space_id,
             ) if row.conversation_id == conversation_id
         ]
-        return sorted(rows, key=lambda row: (row.created_at, row.id))
+        return sorted(rows, key=message_sort_key)
 
     def save_mission(self, mission: AiMission) -> AiMission:
         get_ai_employee(mission.accountable_employee_id)
@@ -565,7 +567,7 @@ class MemoryAiEmployeeStore:
                 "participants", tenant_id=tenant_id, account_id=account_id, space_id=space_id,
             ) if row.mission_id == mission_id
         ]
-        return sorted(rows, key=lambda row: (row.joined_at, row.id))
+        return sorted(rows, key=mission_participant_sort_key)
 
     def save_run(self, run: AiAgentRun) -> AiAgentRun:
         get_ai_employee(run.employee_id)

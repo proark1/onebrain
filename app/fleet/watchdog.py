@@ -22,12 +22,68 @@ def _age_seconds(reference_iso: str, now_iso: str) -> Optional[float]:
         return None
 
 
+def _free_percent(heartbeat: Optional[Heartbeat], volume: str) -> Optional[float]:
+    """Return a reported volume's usable-space percentage, if it is trustworthy.
+
+    Heartbeats are validated at ingest, but this defensive reader also handles
+    old persisted payloads and manually constructed test records. Unknown
+    capacity (``0/0``) remains unknown rather than being treated as a full disk.
+    """
+    if heartbeat is None:
+        return None
+    payload = heartbeat.payload if isinstance(heartbeat.payload, dict) else {}
+    storage = payload.get("storage")
+    if not isinstance(storage, dict):
+        return None
+    capacity = storage.get(volume)
+    if not isinstance(capacity, dict):
+        return None
+    total = capacity.get("total_bytes")
+    available = capacity.get("available_bytes")
+    if (
+        isinstance(total, bool)
+        or isinstance(available, bool)
+        or not isinstance(total, int)
+        or not isinstance(available, int)
+        or total <= 0
+        or available < 0
+        or available > total
+    ):
+        return None
+    return available * 100 / total
+
+
+def _data_volume_unavailable(heartbeat: Optional[Heartbeat]) -> Optional[bool]:
+    """Return the explicit host verification signal, preserving legacy unknown."""
+    if heartbeat is None:
+        return None
+    payload = heartbeat.payload if isinstance(heartbeat.payload, dict) else {}
+    storage = payload.get("storage")
+    if not isinstance(storage, dict):
+        return None
+    value = storage.get("data_volume_unavailable")
+    return value if isinstance(value, bool) else None
+
+
+def _low_disk_detail(heartbeat: Heartbeat, *, volume: str, threshold_percent: float) -> Optional[str]:
+    """Human-readable metadata-only alert detail, or ``None`` when healthy/unknown."""
+    if threshold_percent <= 0:
+        return None
+    free_percent = _free_percent(heartbeat, volume)
+    if free_percent is None or free_percent > threshold_percent:
+        return None
+    label = "root" if volume == "root" else "data"
+    return f"{label} disk has {free_percent:.1f}% free (threshold {threshold_percent:g}%)"
+
+
 def desired_alerts(
     *,
     heartbeat: Optional[Heartbeat],
     now_iso: str,
     missed_after_seconds: float,
     expected_version: str = "",
+    low_root_disk_percent: float = 0,
+    low_data_disk_percent: float = 0,
 ) -> Dict[str, str]:
     """Which alert kinds SHOULD be open for one deployment, kind -> detail."""
     alerts: Dict[str, str] = {}
@@ -47,6 +103,22 @@ def desired_alerts(
     if expected_version and heartbeat.version and heartbeat.version != expected_version:
         alerts["version_drift"] = f"running {heartbeat.version}, fleet target {expected_version}"
 
+    # Preserve a last-known low-disk signal even if the box later goes silent:
+    # resolving it solely because telemetry stopped would give a misleading all
+    # clear. A new capacity report above the threshold resolves it normally.
+    root_detail = _low_disk_detail(
+        heartbeat, volume="root", threshold_percent=low_root_disk_percent,
+    )
+    if root_detail:
+        alerts["low_root_disk"] = root_detail
+    data_detail = _low_disk_detail(
+        heartbeat, volume="data", threshold_percent=low_data_disk_percent,
+    )
+    if data_detail:
+        alerts["low_data_disk"] = data_detail
+    if _data_volume_unavailable(heartbeat) is True:
+        alerts["data_volume_unavailable"] = "persistent data volume is unavailable or failed verification"
+
     return alerts
 
 
@@ -57,6 +129,8 @@ def run_watchdog(
     now_iso: str,
     missed_after_seconds: float,
     expected_version: str = "",
+    low_root_disk_percent: float = 0,
+    low_data_disk_percent: float = 0,
     next_id,
 ) -> List[FleetAlert]:
     """Reconcile alerts for every deployment. Returns the alerts opened this pass.
@@ -70,6 +144,8 @@ def run_watchdog(
             now_iso=now_iso,
             missed_after_seconds=missed_after_seconds,
             expected_version=expected_version,
+            low_root_disk_percent=low_root_disk_percent,
+            low_data_disk_percent=low_data_disk_percent,
         )
         # Open any wanted alert that is not already open.
         for kind, detail in want.items():
@@ -78,8 +154,23 @@ def run_watchdog(
                     id=next_id(), deployment_id=deployment_id, kind=kind,
                     detail=detail, status="open", created_at=now_iso,
                 )))
-        # Resolve any open alert that is no longer wanted.
+        # Resolve any open alert that is no longer wanted.  Disk telemetry is
+        # deliberately asymmetric: a missing/unknown capacity cannot prove a
+        # previously low disk recovered.  Keep the last-known low-disk signal
+        # open until a *known* healthy capacity arrives (or its threshold is
+        # intentionally disabled).
         for existing in store.list_open_alerts(deployment_id):
             if existing.kind not in want:
+                if existing.kind == "low_root_disk" and low_root_disk_percent > 0:
+                    if _free_percent(latest.get(deployment_id), "root") is None:
+                        continue
+                if existing.kind == "low_data_disk" and low_data_disk_percent > 0:
+                    if _free_percent(latest.get(deployment_id), "data") is None:
+                        continue
+                if existing.kind == "data_volume_unavailable":
+                    # Missing on older reporters is unknown, not proof that the
+                    # verified mount recovered. Only an explicit false resolves.
+                    if _data_volume_unavailable(latest.get(deployment_id)) is None:
+                        continue
                 store.resolve_open_alerts(deployment_id, existing.kind, now_iso)
     return opened

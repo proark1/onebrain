@@ -8,6 +8,8 @@ ROOT=$(dirname "$0")
 ENV_FILE="${ENV_FILE:-$ROOT/.env}"
 BOX_ENV="${BOX_ENV:-$ROOT/box.env}"
 GATE_REPORTER="${GATE_REPORTER:-$ROOT/onebrain_gate_report.py}"
+UPDATE_SCRIPT="${UPDATE_SCRIPT:-$ROOT/update.sh}"
+BOOTSTRAP_SCRIPT="${ONEBRAIN_BOOTSTRAP_SCRIPT:-$ROOT/onebrain_bootstrap.sh}"
 DOTENV_LOADER="$ROOT/onebrain_dotenv.sh"
 
 if [ ! -r "$DOTENV_LOADER" ]; then
@@ -45,7 +47,21 @@ if [ "${1:-}" = "--provision-callback" ]; then
 fi
 
 update_status=0
-/opt/onebrain/update.sh || update_status=$?
+# Refresh the re-readable bundle before evaluating any desired state. A refresh
+# failure never starts a candidate; update.sh receives the failure marker solely
+# to verify/report the offered attempt as a failed prerequisite.
+customer_bundle_refresh_required=false
+if [ "${ONEBRAIN_GATE_AGENT_ENABLED:-false}" = "true" ] \
+   || [ -n "${ONEBRAIN_BOOTSTRAP_TOKEN:-}" ]; then
+  customer_bundle_refresh_required=true
+fi
+if [ "$customer_bundle_refresh_required" = "true" ] && [ ! -x "$BOOTSTRAP_SCRIPT" ]; then
+  UPDATE_BUNDLE_REFRESH_FAILED=true "$UPDATE_SCRIPT" || update_status=$?
+elif [ "$customer_bundle_refresh_required" = "true" ] && ! "$BOOTSTRAP_SCRIPT" --refresh; then
+  UPDATE_BUNDLE_REFRESH_FAILED=true "$UPDATE_SCRIPT" || update_status=$?
+else
+  "$UPDATE_SCRIPT" || update_status=$?
+fi
 
 if [ "${ONEBRAIN_GATE_AGENT_ENABLED:-false}" = "true" ]; then
   "$GATE_REPORTER" || true

@@ -20,6 +20,8 @@ import type {
   FleetKeyInfo,
   FleetOverview,
   FleetRollout,
+  FleetStorageCapacity,
+  FleetStorageReport,
 } from "@/lib/onebrain-types";
 
 type FleetTab = "overview" | "rollouts" | "keys";
@@ -39,6 +41,34 @@ function healthTone(healthy: boolean | null): "success" | "danger" | "neutral" {
 function healthLabel(healthy: boolean | null): string {
   if (healthy === null) return "No signal yet";
   return healthy ? "Healthy" : "Needs attention";
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
+}
+
+function capacityLabel(capacity?: FleetStorageCapacity): string {
+  const total = capacity?.total_bytes ?? 0;
+  const available = capacity?.available_bytes ?? 0;
+  if (total <= 0 || available < 0 || available > total) return "No host signal";
+  return `${formatBytes(available)} free · ${Math.round((available * 100) / total)}%`;
+}
+
+function StorageSummary({ storage }: { storage?: FleetStorageReport }) {
+  return (
+    <div>
+      <div><span className="muted">Root </span>{capacityLabel(storage?.root)}</div>
+      <div><span className="muted">Data </span>{capacityLabel(storage?.data)}</div>
+    </div>
+  );
 }
 
 function rolloutStatus(status: string, currentRing: string): { label: string; detail: string; tone: StatusTone } {
@@ -176,7 +206,7 @@ export function FleetPanel() {
               <thead>
                 <tr>
                   <th>Health</th><th>Customer</th><th>Ring</th><th>Version</th>
-                  <th>Added</th><th>Version active since</th><th>Last report</th><th>Received</th><th>Users</th><th>Alerts</th>
+                  <th>Added</th><th>Version active since</th><th>Last report</th><th>Received</th><th>Users</th><th>Storage</th><th>Alerts</th>
                 </tr>
               </thead>
               <tbody>
@@ -191,6 +221,7 @@ export function FleetPanel() {
                     <td><Timestamp label="Reported" value={d.last_reported_at} /></td>
                     <td><Timestamp label="Received" value={d.last_received_at} /></td>
                     <td>{d.counts?.users ?? "—"}</td>
+                    <td><StorageSummary storage={d.storage} /></td>
                     <td>{d.open_alerts.length ? <StatusBadge tone="danger">{d.open_alerts.join(", ")}</StatusBadge> : "—"}</td>
                   </tr>
                 ))}

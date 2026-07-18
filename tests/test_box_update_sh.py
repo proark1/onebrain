@@ -14,6 +14,7 @@ import os
 import shutil
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -65,6 +66,19 @@ _STUBS = {
         '#!/usr/bin/env bash\n'
         'echo "docker $*" >> "$STUB_LOG"\n'
         'if [ "$1" = "pull" ]; then echo "$2" >> "$CTRL/pulled_refs"; fi\n'
+        'if [ "$1" = "compose" ]; then\n'
+        '  for a in "$@"; do\n'
+        '    if [ "$a" = "stop" ]; then\n'
+        '      if [ -f "$CTRL/compose_stop_fail_once" ]; then rm -f "$CTRL/compose_stop_fail_once"; exit 1; fi\n'
+        '      [ -f "$CTRL/compose_stop_fail" ] && exit 1\n'
+        '    fi\n'
+        '    if [ "$a" = "up" ]; then\n'
+        '      if [ -f "$CTRL/compose_up_fail_once" ]; then rm -f "$CTRL/compose_up_fail_once"; exit 1; fi\n'
+        '      [ -f "$CTRL/compose_up_fail" ] && exit 1\n'
+        '      if [ -f "$CTRL/compose_stop_fail_after_up" ]; then rm -f "$CTRL/compose_stop_fail_after_up"; touch "$CTRL/compose_stop_fail_once"; fi\n'
+        '    fi\n'
+        '  done\n'
+        'fi\n'
         'exit 0\n'
     ),
     "curl": (
@@ -77,7 +91,8 @@ _STUBS = {
         '  *bootstrap*) [ -f "$CTRL/bootstrap_fail" ] && exit 22; '
         'cat "$CTRL/bootstrap_resp.json" 2>/dev/null || printf "" ;;\n'
         '  *desired-state*) [ -f "$CTRL/fetch_fail" ] && exit 22; cat "$CTRL/serve.json" ;;\n'
-        '  *health*) [ -f "$CTRL/smoke_fail" ] && exit 22; printf "OK" ;;\n'
+        '  *health*) if [ -f "$CTRL/smoke_fail_once" ]; then rm -f "$CTRL/smoke_fail_once"; exit 22; fi; '
+        '[ -f "$CTRL/smoke_fail" ] && exit 22; printf "OK" ;;\n'
         '  *) : ;;\n'
         'esac\n'
         'exit 0\n'
@@ -91,6 +106,7 @@ _STUBS = {
     "pg_dump": (
         '#!/usr/bin/env bash\n'
         'echo "pg_dump $*" >> "$STUB_LOG"\n'
+        '[ -f "$CTRL/pg_dump_fail" ] && exit 1\n'
         'printf -- "-- fake dump\\n"\n'
         'exit 0\n'
     ),
@@ -114,6 +130,32 @@ _STUBS = {
     "python3": (
         '#!/usr/bin/env bash\n'
         'exec "$PYREAL" "$@"\n'
+    ),
+    "onebrain-data-volume.sh": (
+        '#!/usr/bin/env bash\n'
+        '[ "${1:-}" = "verify" ] || exit 64\n'
+        '[ -f "$CTRL/data_volume_fail" ] && exit 1\n'
+        'exit 0\n'
+    ),
+    "mountpoint": (
+        '#!/usr/bin/env bash\n'
+        '[ "${1:-}" = "-q" ] || exit 64\n'
+        '[ -f "$CTRL/mountpoint_fail" ] && exit 1\n'
+        'exit 0\n'
+    ),
+    "readlink": (
+        '#!/usr/bin/env bash\n'
+        'path=""; for arg in "$@"; do path="$arg"; done\n'
+        'printf "%s\\n" "$path"\n'
+    ),
+    "findmnt": (
+        '#!/usr/bin/env bash\n'
+        'kind=""; target=""; for arg in "$@"; do case "$arg" in SOURCE|TARGET) kind="$arg" ;; esac; target="$arg"; done\n'
+        'case "$kind" in\n'
+        '  SOURCE) if [ "$target" = "$ONEBRAIN_MAINTENANCE_DIR" ] && [ -f "$CTRL/maintenance_source_mismatch" ]; then printf "nested-source\\n"; else printf "verified-source\\n"; fi ;;\n'
+        '  TARGET) if [ -f "$CTRL/maintenance_target_mismatch" ]; then printf "%s\\n" "$ONEBRAIN_MAINTENANCE_DIR"; else printf "%s\\n" "$ONEBRAIN_DATA_MOUNT"; fi ;;\n'
+        '  *) exit 64 ;;\n'
+        'esac\n'
     ),
 }
 
@@ -164,7 +206,8 @@ class _Harness:
         self.root = root
         self.bin = root / "bin"
         self.ctrl = root / "ctrl"
-        self.data = root / "data"
+        self.mount = root / "data-mount"
+        self.data = self.mount / "onebrain-maintenance"
         for d in (self.bin, self.ctrl, self.data):
             d.mkdir(parents=True, exist_ok=True)
         for name, body in _STUBS.items():
@@ -185,14 +228,23 @@ class _Harness:
             "UPDATE_DESIRED_STATE_PUBLIC_KEY": DS_PUB,
             "UPDATE_RELEASE_PUBLIC_KEY": REL_PUB,
             "UPDATE_REGISTRY_ALLOWLIST": "ghcr.io/proark1",
-            "UPDATE_DATA_DIR": _unix(self.data),
+            "UPDATE_DATA_DIR": _unix(self.root / "app-data"),
+            "ONEBRAIN_DATA_MOUNT": _unix(self.mount),
+            "ONEBRAIN_MAINTENANCE_DIR": _unix(self.data),
+            "ONEBRAIN_DATA_VOLUME_VERIFY_SCRIPT": _unix(self.bin / "onebrain-data-volume.sh"),
             "UPDATE_COMPOSE_DIR": _unix(self.root),
             "UPDATE_COMPOSE_PROJECT": "onebrain-dep_a",
             "UPDATE_PROFILES": "onebrain",
             "UPDATE_LOCAL_MODULES": "onebrain-api",
             "UPDATE_HEALTH_URL": "http://127.0.0.1/health",
+            # General updater scenarios predate the role-split host assets.
+            # Dedicated 0030 tests still force the migration's non-bypassable
+            # preflight; rendered hosts set this true for successor migrations.
+            "UPDATE_ROLE_SPLIT_REQUIRED": "false",
             "UPDATE_VERIFY_BIN": _unix(_VERIFY_PY),
-            "UPDATE_BACKUP_KEY": "testbackupkey",
+            "UPDATE_BACKUP_KEY": "k" * 32,
+            "UPDATE_RECOVERY_HEALTH_ATTEMPTS": "1",
+            "UPDATE_RECOVERY_HEALTH_INTERVAL_SECONDS": "0",
             "ONEBRAIN_BOOTSTRAP_TOKEN": "bt_harness_token",   # first-boot exchange auth (P5-03)
         }
         (self.root / "box.env").write_bytes(
@@ -230,6 +282,42 @@ class _Harness:
         work.mkdir(parents=True, exist_ok=True)
         (work / "last_applied.json").write_bytes(json.dumps({"images": images}).encode("utf-8"))
 
+    def seed_role_split_assets(self):
+        """Write the minimal compatible host assets needed by the 0030 preflight."""
+        init = self.root / "postgres-init.sh"
+        init.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        os.chmod(init, 0o755)
+        env_dir = self.root / "env"
+        env_dir.mkdir(exist_ok=True)
+        (env_dir / "onebrain-migrate.env").write_text(
+            "ONEBRAIN_POSTGRES_APP_ROLE=onebrain_app\n"
+            "ONEBRAIN_POSTGRES_WORKER_ROLE=onebrain_worker\n",
+            encoding="utf-8",
+        )
+        (env_dir / "postgres.env").write_text(
+            "POSTGRES_APP_ROLE=onebrain_app\n"
+            "POSTGRES_WORKER_ROLE=onebrain_worker\n",
+            encoding="utf-8",
+        )
+        (self.root / "docker-compose.yml").write_text(
+            "services:\n"
+            "  postgres-roles:\n"
+            "    volumes:\n"
+            "      - /opt/onebrain/postgres-init.sh:/opt/onebrain/postgres-init.sh:ro\n"
+            "  onebrain-api:\n"
+            "    image: ghcr.io/proark1/onebrain-api@sha256:" + "f" * 64 + "\n",
+            encoding="utf-8",
+        )
+        (self.root / ".env").write_text(
+            "POSTGRES_PASSWORD=" + "o" * 32 + "\n"
+            "POSTGRES_APP_PASSWORD=" + "a" * 32 + "\n"
+            "POSTGRES_WORKER_PASSWORD=" + "w" * 32 + "\n"
+            "POSTGRES_ASSISTANT_PASSWORD=" + "s" * 32 + "\n"
+            "POSTGRES_COMMUNICATION_PASSWORD=" + "c" * 32 + "\n"
+            "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET=" + "r" * 32 + "\n",
+            encoding="utf-8",
+        )
+
     def _env(self) -> dict:
         return {
             **os.environ,
@@ -241,17 +329,27 @@ class _Harness:
             "STUB_LOG": _unix(self.ctrl / "stub.log"),
             "CTRL": _unix(self.ctrl),
             "PYREAL": _unix(os.sys.executable),
+            "UPDATE_SCRIPT": _unix(_UPDATE_SH),
         }
 
-    def _exec(self, script: Path) -> subprocess.CompletedProcess:
+    def _exec(self, script: Path, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
         cmd = f'export PATH="{_unix(self.bin)}:$PATH"; exec "{_unix(script)}"'
-        return subprocess.run([_BASH, "-c", cmd], env=self._env(), capture_output=True, text=True, timeout=120)
+        return subprocess.run(
+            [_BASH, "-c", cmd],
+            env={**self._env(), **(extra_env or {})},
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
 
     def run(self) -> subprocess.CompletedProcess:
         return self._exec(_UPDATE_SH)
 
     def run_bootstrap(self) -> subprocess.CompletedProcess:
         return self._exec(_BOOTSTRAP_SH)
+
+    def run_gate_agent(self, **extra_env: str) -> subprocess.CompletedProcess:
+        return self._exec(_GATE_AGENT_SH, extra_env)
 
     def state(self):
         p = self.data / "onebrain_update" / "update_state.json"
@@ -312,6 +410,30 @@ def test_verify_failure_holds(box):
         "envelope_signature_invalid" in (box.data / "onebrain_update" / "update.log").read_text()
 
 
+def test_update_holds_without_the_verified_maintenance_volume(box):
+    box.touch("data_volume_fail")
+    box.set_serve(signed_serve())
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state() is None
+    assert box.pulled() == []
+    assert "persistent data volume is unavailable or mismatched" in result.stderr
+
+
+def test_update_holds_when_maintenance_subtree_is_a_different_mount(box):
+    box.touch("maintenance_source_mismatch")
+    box.set_serve(signed_serve())
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state() is None
+    assert box.pulled() == []
+    assert "maintenance directory is not on the verified data volume" in result.stderr
+
+
 def test_migration_crossing_fences(box):
     box.set_serve(signed_serve(migration_from="0019", migration_to="0020", rollback_kind="restore_required"))
     box.set_alembic_current("0020")                 # migrate reached the target -> fence passes
@@ -324,20 +446,24 @@ def test_migration_crossing_fences(box):
     assert "pg_dump" in box.stub_log() and "openssl" in box.stub_log()
 
 
-def test_migration_crossing_fence_mismatch_holds_degraded(box):
+def test_migration_crossing_fence_mismatch_restores_previous_stack(box):
+    previous = "services:\n  onebrain-api:\n    image: ghcr.io/proark1/onebrain-api@sha256:" + "b" * 64 + "\n"
+    (box.root / "images.override.yml").write_text(previous, encoding="utf-8")
     box.set_serve(signed_serve(migration_from="0019", migration_to="0020"))
     box.set_alembic_current("0019")                 # migrate did NOT reach target -> fence fails
     result = box.run()
     assert result.returncode == 0, result.stderr
     state = box.state()
-    assert state["outcome"] == "failed"
-    assert state["migration_reached"] == "0019"     # held degraded, no tag flap
+    assert state["outcome"] == "rolled_back"
+    assert state["migration_reached"] == "0019"
+    assert (box.root / "images.override.yml").read_text(encoding="utf-8") == previous
+    assert box.stub_log().count(" up -d") >= 2       # candidate, then restored stack
 
 
 # --- smoke-fail recovery -----------------------------------------------------
 def test_smoke_fail_code_only_rolls_back(box):
     box.set_serve(signed_serve(rollback_kind="code_only", migration_from="0020", migration_to="0020"))
-    box.touch("smoke_fail")
+    box.touch("smoke_fail_once")
     result = box.run()
     assert result.returncode == 0, result.stderr
     assert box.state()["outcome"] == "rolled_back"
@@ -347,7 +473,7 @@ def test_smoke_fail_code_only_rolls_back(box):
 def test_smoke_fail_restore_required_restores(box):
     box.set_serve(signed_serve(rollback_kind="restore_required", migration_from="0019", migration_to="0020"))
     box.set_alembic_current("0020")
-    box.touch("smoke_fail")
+    box.touch("smoke_fail_once")
     result = box.run()
     assert result.returncode == 0, result.stderr
     assert box.state()["outcome"] == "rolled_back"
@@ -372,6 +498,260 @@ def test_update_sh_recover_restore_decrypts_before_restore():
     restore = body.index('restore_onebrain_db "$RESTORE"')    # restores from it
     assert decrypt < restore                                  # decrypt BEFORE restore
     assert '"$WORK/backup.dump"' not in body                  # never the deleted plaintext dump
+
+
+def test_candidate_start_failure_restores_previous_override(box):
+    previous = "services:\n  onebrain-api:\n    image: ghcr.io/proark1/onebrain-api@sha256:" + "c" * 64 + "\n"
+    (box.root / "images.override.yml").write_text(previous, encoding="utf-8")
+    box.set_serve(signed_serve())
+    box.touch("compose_up_fail_once")
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "rolled_back"
+    assert (box.root / "images.override.yml").read_text(encoding="utf-8") == previous
+    assert box.stub_log().count(" up -d") >= 2
+
+
+def test_recovery_health_failure_is_reported_as_failed(box):
+    box.set_serve(signed_serve())
+    box.touch("smoke_fail")
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "failed"
+
+
+def test_role_split_preflight_holds_before_quiesce_or_pull(box):
+    box.set_serve(signed_serve(
+        migration_from="0029_auth_rate_limits",
+        migration_to="0030_job_queue_rls_roles",
+    ))
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "failed"
+    assert box.pulled() == []
+    assert " stop " not in box.stub_log()
+    assert "role-split preflight failed" in (box.data / "onebrain_update" / "update.log").read_text()
+
+
+def test_role_split_preflight_accepts_compatible_assets_and_credentials(box):
+    box.seed_role_split_assets()
+    box.set_serve(signed_serve(
+        migration_from="0029_auth_rate_limits",
+        migration_to="0030_job_queue_rls_roles",
+    ))
+    box.set_alembic_current("0030_job_queue_rls_roles")
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "succeeded"
+    assert box.pulled() == [GOOD_IMG]
+
+
+@pytest.mark.parametrize("missing_secret", [
+    "POSTGRES_APP_PASSWORD",
+    "POSTGRES_WORKER_PASSWORD",
+    "POSTGRES_ASSISTANT_PASSWORD",
+    "POSTGRES_COMMUNICATION_PASSWORD",
+    "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET",
+])
+def test_role_split_preflight_holds_when_any_runtime_secret_is_missing(box, missing_secret):
+    box.seed_role_split_assets()
+    env_file = box.root / ".env"
+    env_file.write_text(
+        "\n".join(
+            line for line in env_file.read_text(encoding="utf-8").splitlines()
+            if not line.startswith(f"{missing_secret}=")
+        ) + "\n",
+        encoding="utf-8",
+    )
+    box.set_serve(signed_serve(
+        migration_from="0029_auth_rate_limits",
+        migration_to="0030_job_queue_rls_roles",
+    ))
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "failed"
+    assert box.pulled() == []
+    assert " stop " not in box.stub_log()
+    assert "role credentials are unavailable" in (box.data / "onebrain_update" / "update.log").read_text()
+
+
+def test_role_split_preflight_runs_before_quiesce():
+    src = _UPDATE_SH.read_text(encoding="utf-8")
+    preflight = src.index("if requires_role_split_preflight && ! role_split_preflight; then")
+    quiesce = src.index("quiesce_application_services >>", preflight)
+    assert preflight < quiesce
+
+
+def test_quiesce_failure_holds_before_migration_backup_or_candidate_pull(box):
+    box.set_serve(signed_serve(
+        migration_from="0019",
+        migration_to="0020",
+        rollback_kind="restore_required",
+    ))
+    box.touch("compose_stop_fail")
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "failed"
+    assert box.pulled() == []
+    assert "pg_dump" not in box.stub_log()
+    assert "quiesce FAILED; holding current stack before backup" in (
+        box.data / "onebrain_update" / "update.log"
+    ).read_text()
+
+
+def test_migration_holds_before_quiesce_when_backup_key_is_short(box):
+    box_env = box.root / "box.env"
+    box_env.write_text(
+        box_env.read_text(encoding="utf-8").replace(
+            "UPDATE_BACKUP_KEY=" + "k" * 32,
+            "UPDATE_BACKUP_KEY=too-short",
+        ),
+        encoding="utf-8",
+    )
+    box.set_serve(signed_serve(
+        migration_from="0019",
+        migration_to="0020",
+        rollback_kind="restore_required",
+    ))
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "failed"
+    assert box.pulled() == []
+    assert " stop " not in box.stub_log()
+    assert "pg_dump" not in box.stub_log()
+    assert "backup key is unavailable or too short" in (
+        box.data / "onebrain_update" / "update.log"
+    ).read_text()
+
+
+def test_update_removes_partial_plaintext_backup_after_backup_failure(box):
+    box.set_serve(signed_serve(
+        migration_from="0019",
+        migration_to="0020",
+        rollback_kind="restore_required",
+    ))
+    box.touch("pg_dump_fail")
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    work = box.data / "onebrain_update"
+    assert box.state()["outcome"] == "failed"
+    assert not (work / "backup.dump").exists()
+    assert not (work / "restore.dump").exists()
+
+
+def test_encrypted_backup_retention_prunes_old_archives_but_keeps_newest(box):
+    backups = box.data / "backups"
+    backups.mkdir(parents=True)
+    old_archive = backups / "backup-old.dump.enc"
+    old_archive.write_text("old", encoding="utf-8")
+    old_epoch = time.time() - 90 * 24 * 60 * 60
+    os.utime(old_archive, (old_epoch, old_epoch))
+    box_env = box.root / "box.env"
+    box_env.write_text(
+        box_env.read_text(encoding="utf-8") + "UPDATE_BACKUP_RETENTION_DAYS=1\n",
+        encoding="utf-8",
+    )
+    box.set_serve(signed_serve(
+        migration_from="0019",
+        migration_to="0020",
+        rollback_kind="restore_required",
+    ))
+    box.set_alembic_current("0020")
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    archives = list(backups.glob("backup-*.dump.enc"))
+    assert old_archive not in archives
+    assert archives, "the newest encrypted rollback archive must be retained"
+    source = _UPDATE_SH.read_text(encoding="utf-8")
+    assert '[ "$archive" -ef "$newest" ] && continue' in source
+
+
+def test_update_reclaims_a_stale_dead_lock(box):
+    lock = box.data / "onebrain_update" / "update.lock"
+    lock.mkdir(parents=True)
+    (lock / "pid").write_text("not-a-pid\n", encoding="utf-8")
+    (lock / "started_at").write_text("0\n", encoding="utf-8")
+    box_env = box.root / "box.env"
+    box_env.write_text(
+        box_env.read_text(encoding="utf-8") + "UPDATE_LOCK_STALE_SECONDS=0\n",
+        encoding="utf-8",
+    )
+    box.set_serve(signed_serve())
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "succeeded"
+    assert not lock.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process liveness assertion")
+def test_update_keeps_a_live_lock_even_when_its_timestamp_is_old(box):
+    lock = box.data / "onebrain_update" / "update.lock"
+    lock.mkdir(parents=True)
+    (lock / "pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+    (lock / "started_at").write_text("0\n", encoding="utf-8")
+    box_env = box.root / "box.env"
+    box_env.write_text(
+        box_env.read_text(encoding="utf-8") + "UPDATE_LOCK_STALE_SECONDS=0\n",
+        encoding="utf-8",
+    )
+    box.set_serve(signed_serve())
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state() is None
+    assert "/api/fleet/desired-state" not in box.stub_log()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode assertion")
+def test_update_scratch_is_owner_only(box):
+    box.set_serve(signed_serve())
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    work = box.data / "onebrain_update"
+    assert stat.S_IMODE(work.stat().st_mode) == 0o700
+
+
+def test_restore_recovery_does_not_restore_while_candidate_quiesce_fails(box):
+    box.set_serve(signed_serve(
+        migration_from="0019",
+        migration_to="0020",
+        rollback_kind="restore_required",
+    ))
+    box.set_alembic_current("0020")
+    box.touch("smoke_fail_once")
+    box.touch("compose_stop_fail_after_up")
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "failed"
+    assert "pg_restore" not in box.stub_log()
+    assert "candidate quiesce FAILED; cannot restore database" in (
+        box.data / "onebrain_update" / "update.log"
+    ).read_text()
 
 
 # --- MC unreachable ----------------------------------------------------------
@@ -521,6 +901,105 @@ def test_bootstrap_rotation_reapplies_only_on_higher_epoch(box):
     assert "compose" in box.stub_log() and "up -d" in box.stub_log()
 
 
+def test_bootstrap_rotation_retries_pending_epoch_after_compose_failure(box):
+    box.set_bootstrap_resp({"secrets_epoch": 0, "dotenv": "POSTGRES_PASSWORD=v0\n"})
+    assert box.run_bootstrap().returncode == 0
+    assert box.applied_epoch() == "0"
+
+    box.set_bootstrap_resp({"secrets_epoch": 1, "dotenv": "POSTGRES_PASSWORD=v1\n"})
+    box.touch("compose_up_fail_once")
+    first_attempt = box.run_bootstrap()
+
+    assert first_attempt.returncode == 0, first_attempt.stderr
+    assert "POSTGRES_PASSWORD=v1" in (box.env_content() or "")
+    assert box.applied_epoch() == "0", "a failed compose reapply must not mark the epoch applied"
+
+    retry = box.run_bootstrap()
+
+    assert retry.returncode == 0, retry.stderr
+    assert box.applied_epoch() == "1"
+    assert box.stub_log().count(" up -d") >= 2
+
+
+def test_bootstrap_rotation_preserves_digest_pinned_override(box):
+    (box.root / ".env").write_text("ONEBRAIN_FLEET_KEY=fk_old\n", encoding="utf-8")
+    work = box.data / "onebrain_update"
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "secrets_epoch").write_text("0\n", encoding="utf-8")
+    override = box.root / "images.override.yml"
+    pinned = "services:\n  onebrain-api:\n    image: ghcr.io/proark1/onebrain-api@sha256:" + "d" * 64 + "\n"
+    override.write_text(pinned, encoding="utf-8")
+    box.set_bootstrap_resp({"secrets_epoch": 1, "dotenv": "ONEBRAIN_FLEET_KEY=fk_new\n"})
+
+    result = box.run_bootstrap()
+
+    assert result.returncode == 0, result.stderr
+    assert override.read_text(encoding="utf-8") == pinned
+    assert f"-f {_unix(override)}" in box.stub_log()
+
+
+def test_gate_agent_refreshes_bundle_before_desired_state(box):
+    box_env = box.root / "box.env"
+    box_env.write_text(
+        box_env.read_text(encoding="utf-8").replace(
+            "ONEBRAIN_FLEET_KEY=fk_test", "ONEBRAIN_FLEET_KEY=${ONEBRAIN_FLEET_KEY}"
+        ),
+        encoding="utf-8",
+    )
+    box.set_bootstrap_resp({"secrets_epoch": 0, "dotenv": "ONEBRAIN_FLEET_KEY=fk_refreshed\n"})
+    box.set_serve(signed_serve())
+
+    result = box.run_gate_agent()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "succeeded"
+    log = box.stub_log()
+    assert log.index("/api/fleet/bootstrap") < log.index("/api/fleet/desired-state")
+    assert "Authorization: Bearer fk_refreshed" in log
+
+
+def test_gate_agent_skips_bootstrap_when_customer_refresh_is_not_required(box):
+    box_env = box.root / "box.env"
+    box_env.write_text(
+        box_env.read_text(encoding="utf-8").replace(
+            "ONEBRAIN_BOOTSTRAP_TOKEN=bt_harness_token",
+            "ONEBRAIN_BOOTSTRAP_TOKEN=",
+        ),
+        encoding="utf-8",
+    )
+    box.set_serve(signed_serve())
+
+    result = box.run_gate_agent()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "succeeded"
+    assert "/api/fleet/bootstrap" not in box.stub_log()
+
+
+def test_gate_agent_reports_failed_bundle_refresh_without_starting_candidate(box):
+    box.set_serve(signed_serve())
+
+    result = box.run_gate_agent()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "failed"
+    assert box.pulled() == []
+    log = box.stub_log()
+    assert log.index("/api/fleet/bootstrap") < log.index("/api/fleet/desired-state")
+
+
+def test_gate_agent_holds_customer_candidate_when_bootstrap_helper_is_missing(box):
+    box.set_serve(signed_serve())
+    missing = _unix(box.root / "missing-bootstrap.sh")
+
+    result = box.run_gate_agent(ONEBRAIN_BOOTSTRAP_SCRIPT=missing)
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "failed"
+    assert box.pulled() == []
+    assert "/api/fleet/bootstrap" not in box.stub_log()
+
+
 def test_bootstrap_invalid_served_dotenv_keeps_existing_bundle(box):
     (box.root / ".env").write_text("ONEBRAIN_FLEET_KEY=fk_old\n", encoding="utf-8")
     work = box.data / "onebrain_update"
@@ -534,6 +1013,18 @@ def test_bootstrap_invalid_served_dotenv_keeps_existing_bundle(box):
     assert box.env_content() == "ONEBRAIN_FLEET_KEY=fk_old\n"
     assert box.applied_epoch() == "0"
     assert "compose" not in box.stub_log()
+
+
+def test_bootstrap_holds_without_the_verified_maintenance_volume(box):
+    box.touch("data_volume_fail")
+    box.set_bootstrap_resp({"secrets_epoch": 1, "dotenv": "ONEBRAIN_FLEET_KEY=fk_new\n"})
+
+    result = box.run_bootstrap()
+
+    assert result.returncode == 0, result.stderr
+    assert box.env_content() is None
+    assert box.applied_epoch() is None
+    assert "persistent data volume is unavailable or mismatched" in result.stderr
 
 
 def test_update_literal_dotenv_is_not_evaluated_and_box_refs_expand(box):
@@ -635,7 +1126,7 @@ def test_migration_backup_keeps_postgres_up_and_recovers_failed_backup():
     assert "redis" not in quiesce
     failure = src[src.index('log "backup FAILED; restoring current stack'):
                   src.index('# --- 5. PULL + UP')]
-    assert "resume_current_stack" in failure
+    assert "recover_current_stack" in failure
 
 
 def test_verified_api_digest_also_pins_migration_service():

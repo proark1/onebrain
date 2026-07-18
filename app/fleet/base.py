@@ -13,7 +13,10 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Protocol
 
 
-ALERT_KINDS = frozenset({"missed_heartbeat", "version_drift", "unhealthy", "migration_failed"})
+ALERT_KINDS = frozenset({
+    "missed_heartbeat", "version_drift", "unhealthy", "migration_failed",
+    "low_root_disk", "low_data_disk",
+})
 
 
 @dataclass(frozen=True)

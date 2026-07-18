@@ -4183,6 +4183,9 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "storage": {
+            "$ref": "#/components/schemas/StorageReport"
           }
         },
         "required": [
@@ -4422,6 +4425,9 @@
             "minLength": 1,
             "title": "Reported At",
             "type": "string"
+          },
+          "storage": {
+            "$ref": "#/components/schemas/StorageReport"
           },
           "update": {
             "$ref": "#/components/schemas/UpdateReport"
@@ -10139,6 +10145,40 @@
           "name"
         ],
         "title": "SpaceOut",
+        "type": "object"
+      },
+      "StorageCapacityReport": {
+        "additionalProperties": false,
+        "description": "Capacity for one host filesystem, expressed only as bounded metadata.\n\n``0/0`` means that this reporter cannot observe the filesystem.  That is\ndeliberately distinct from a full disk and lets Mission Control continue\naccepting fleet.v2 heartbeats from older boxes until their host reporter is\nrefreshed.",
+        "properties": {
+          "available_bytes": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Available Bytes",
+            "type": "integer"
+          },
+          "total_bytes": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Total Bytes",
+            "type": "integer"
+          }
+        },
+        "title": "StorageCapacityReport",
+        "type": "object"
+      },
+      "StorageReport": {
+        "additionalProperties": false,
+        "description": "Metadata-only root and durable-data filesystem capacity for a host.",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/StorageCapacityReport"
+          },
+          "root": {
+            "$ref": "#/components/schemas/StorageCapacityReport"
+          }
+        },
+        "title": "StorageReport",
         "type": "object"
       },
       "UpdatePlanOut": {

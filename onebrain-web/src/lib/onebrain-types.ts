@@ -974,6 +974,16 @@ export function scopeQuery(scope: ChatScope = {}): string {
 
 // --- fleet (Mission Control) ---
 
+export interface FleetStorageCapacity {
+  total_bytes: number;
+  available_bytes: number;
+}
+
+export interface FleetStorageReport {
+  root: FleetStorageCapacity;
+  data: FleetStorageCapacity;
+}
+
 export interface FleetDeploymentOverview {
   deployment_id: string;
   customer_name: string;
@@ -991,6 +1001,7 @@ export interface FleetDeploymentOverview {
   last_reported_at: string;
   last_received_at: string;
   counts: Record<string, number>;
+  storage?: FleetStorageReport;
   open_alerts: string[];
 }
 

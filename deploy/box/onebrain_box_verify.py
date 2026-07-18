@@ -21,8 +21,9 @@ CLI:
                     raise the local floor (the yank/revocation kill mechanism).
 
 Env: UPDATE_DESIRED_STATE_PUBLIC_KEY, UPDATE_RELEASE_PUBLIC_KEY,
-     UPDATE_REGISTRY_ALLOWLIST, ONEBRAIN_DEPLOYMENT_ID, UPDATE_DATA_DIR.
-Floor state: ${UPDATE_DATA_DIR}/onebrain_update/floor_state.json.
+     UPDATE_REGISTRY_ALLOWLIST, ONEBRAIN_DEPLOYMENT_ID,
+     ONEBRAIN_MAINTENANCE_DIR (or legacy UPDATE_DATA_DIR).
+Floor state: ${ONEBRAIN_MAINTENANCE_DIR}/onebrain_update/floor_state.json.
 """
 
 from __future__ import annotations
@@ -334,6 +335,9 @@ def apply_floor_bump(state: FloorState, bump: dict) -> FloorState:
 
 # --- persistence -------------------------------------------------------------
 def _floor_state_path() -> str:
+    maintenance_dir = os.environ.get("ONEBRAIN_MAINTENANCE_DIR", "").strip()
+    if maintenance_dir:
+        return os.path.join(maintenance_dir, "onebrain_update", "floor_state.json")
     data_dir = os.environ.get("UPDATE_DATA_DIR", ".")
     return os.path.join(data_dir, "onebrain_update", "floor_state.json")
 

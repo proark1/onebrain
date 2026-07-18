@@ -1,0 +1,11 @@
+[Unit]
+Description=OneBrain safe host image and build-cache maintenance
+After=docker.service network-online.target onebrain-update.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/onebrain/onebrain-host-maintenance.sh
+Nice=19
+IOSchedulingClass=idle

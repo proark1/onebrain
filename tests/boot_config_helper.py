@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import gzip
 import io
+import lzma
 import re
 import tarfile
 from typing import Dict, List, Tuple
@@ -54,20 +55,38 @@ def extract_cloud_init_file(cloud_init: str, path: str) -> str:
     marker = f"  - path: {path}\n"
     if marker not in cloud_init:
         # Full customer stacks place assets (including their root-only box.env)
-        # in the deterministic gz+b64 tar to stay below Hetzner's cloud-init
-        # size limit. The MC's baked .env is in its separate secret archive.
-        # Most files are in the normal asset archive. MC-only dotenv, box.env,
-        # and mTLS material live in a second archive so its opaque gz+b64 blob
-        # can be redacted as a unit in bootstrap dry-run output.
-        archive_matches = re.finditer(
+        # in the deterministic Base85-wrapped XZ tar to stay below Hetzner's cloud-init size
+        # limit. The MC's baked .env is in its separate secret archive. Most
+        # files are in the normal asset archive; MC-only dotenv, box.env, and
+        # mTLS material live in a second gz+b64 archive so its opaque blob can
+        # be redacted as a unit in bootstrap dry-run output.  Keep the legacy
+        # gzip archive reader too, so this helper can inspect older fixtures.
+        archives: list[bytes] = []
+        for archive_match in re.finditer(
+            r"  - path: /opt/onebrain/onebrain-assets\.b85\n"
+            r"    permissions: '[0-7]+'\n"
+            r"    content: \|\n"
+            r"      (?P<blob>\S+)\n",
+            cloud_init,
+        ):
+            archives.append(lzma.decompress(base64.b85decode(archive_match.group("blob"))))
+        for archive_match in re.finditer(
+            r"  - path: /opt/onebrain/onebrain-assets\.tar\.xz\n"
+            r"    permissions: '[0-7]+'\n"
+            r"    encoding: b64\n"
+            r"    content: (?P<blob>\S+)\n",
+            cloud_init,
+        ):
+            archives.append(lzma.decompress(base64.b64decode(archive_match.group("blob"))))
+        for archive_match in re.finditer(
             r"  - path: /opt/onebrain/(?:onebrain-assets|mc-broker-tls)\.tar\n"
             r"    permissions: '[0-7]+'\n"
             r"    encoding: gz\+b64\n"
             r"    content: (?P<blob>\S+)\n",
             cloud_init,
-        )
-        for archive_match in archive_matches:
-            archive = gzip.decompress(base64.b64decode(archive_match.group("blob")))
+        ):
+            archives.append(gzip.decompress(base64.b64decode(archive_match.group("blob"))))
+        for archive in archives:
             with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
                 try:
                     handle = tar.extractfile(path.lstrip("/"))

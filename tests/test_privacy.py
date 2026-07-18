@@ -29,6 +29,7 @@ from app.platform.base import (
     Membership,
     Organization,
     RetentionPolicy,
+    RetentionRun,
     Space,
 )
 from app.platform.memory import MemoryPlatformStore
@@ -548,7 +549,43 @@ def test_retention_skips_held_scope_and_records_run(monkeypatch):
     done_run = run_retention(account_id="acme", space_id="sp_acme_service", dry_run=False)
     assert done_run["legal_hold"] is False
     assert intake.get(service_record.id) is None
-    assert platform.list_retention_runs("acme")[-1].status == "completed"
+    runs = platform.list_retention_runs("acme")
+    assert runs[-1].status == "completed"
+    assert runs[-2].created_at < runs[-1].created_at
+
+
+def test_retention_run_listing_preserves_recording_order_when_timestamps_tie():
+    platform, *_ = _fixtures()
+    at = "2026-07-18T08:00:00+00:00"
+    platform.record_retention_run(RetentionRun(
+        id="ret_z_first", account_id="acme", space_id="sp_acme_service",
+        created_at=at, completed_at=at,
+    ))
+    platform.record_retention_run(RetentionRun(
+        id="ret_a_second", account_id="acme", space_id="sp_acme_service",
+        created_at=at, completed_at=at,
+    ))
+
+    assert [run.id for run in platform.list_retention_runs("acme")] == [
+        "ret_z_first",
+        "ret_a_second",
+    ]
+
+
+def test_postgres_retention_run_listing_breaks_created_at_ties_by_completion_time():
+    from app.platform.postgres import PostgresPlatformStore
+
+    store = object.__new__(PostgresPlatformStore)
+    called = {}
+
+    def list_scope(table, columns, account_id, space_id, order):
+        called["order"] = order
+        return []
+
+    store._list_scope = list_scope
+
+    assert store.list_retention_runs("acme") == []
+    assert called["order"] == "created_at, completed_at, id"
 
 
 def test_retention_deletes_only_records_older_than_duration(monkeypatch):

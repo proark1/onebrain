@@ -6,6 +6,7 @@ from app.fleet.bootstrap_bundle import (
     BUNDLE_KEYS,
     OPTIONAL_KEYS,
     REQUIRED_KEYS,
+    RUNTIME_BUNDLE_BACKFILL_KEYS,
     RUNTIME_DB_PASSWORD_KEYS,
     backfill_runtime_db_passwords,
     render_dotenv,
@@ -16,10 +17,10 @@ from app.fleet.bootstrap_bundle import (
 def _full_bundle(**overrides) -> dict:
     bundle = {
         "POSTGRES_PASSWORD": "pg-secret",
-        "POSTGRES_APP_PASSWORD": "app-secret",
-        "POSTGRES_WORKER_PASSWORD": "worker-secret",
-        "POSTGRES_ASSISTANT_PASSWORD": "assistant-secret",
-        "POSTGRES_COMMUNICATION_PASSWORD": "communication-secret",
+        "POSTGRES_APP_PASSWORD": "a" * 64,
+        "POSTGRES_WORKER_PASSWORD": "w" * 64,
+        "POSTGRES_ASSISTANT_PASSWORD": "s" * 64,
+        "POSTGRES_COMMUNICATION_PASSWORD": "c" * 64,
         "REDIS_PASSWORD": "redis-secret",
         "ONEBRAIN_FLEET_KEY": "fk_abc_def",
         "ONEBRAIN_LLM_API_KEY": "",
@@ -174,20 +175,66 @@ def test_backup_s3_keys_are_optional_and_dotenv_ordered():
     assert body.index("ONEBRAIN_BACKUP_S3_ACCESS_KEY") < body.index("ONEBRAIN_BACKUP_S3_SECRET_KEY")
 
 
-def test_runtime_database_password_backfill_is_idempotent_and_never_replaces_existing_values():
+def test_runtime_bundle_secret_backfill_is_idempotent_and_never_replaces_existing_values():
     legacy = _full_bundle()
     for key in RUNTIME_DB_PASSWORD_KEYS:
         legacy.pop(key)
+    legacy.pop("ONEBRAIN_LOGIN_RATE_LIMIT_SECRET")
 
-    values = iter(("a" * 32, "b" * 32, "c" * 32, "d" * 32))
+    values = iter(("a" * 32, "b" * 32, "c" * 32, "d" * 32, "e" * 32))
     updated, added = backfill_runtime_db_passwords(legacy, password_factory=lambda: next(values))
-    assert added == RUNTIME_DB_PASSWORD_KEYS
+    assert added == RUNTIME_BUNDLE_BACKFILL_KEYS
     assert updated["POSTGRES_APP_PASSWORD"] == "a" * 32
     assert updated["POSTGRES_WORKER_PASSWORD"] == "b" * 32
     assert updated["POSTGRES_ASSISTANT_PASSWORD"] == "c" * 32
     assert updated["POSTGRES_COMMUNICATION_PASSWORD"] == "d" * 32
+    assert updated["ONEBRAIN_LOGIN_RATE_LIMIT_SECRET"] == "e" * 32
 
     retried, added_again = backfill_runtime_db_passwords(
         updated, password_factory=lambda: (_ for _ in ()).throw(AssertionError("must not mint")))
     assert added_again == ()
     assert retried == updated
+
+
+def test_runtime_bundle_secret_backfill_adds_only_missing_rate_limit_secret():
+    legacy = _full_bundle()
+    expected_passwords = {key: legacy[key] for key in RUNTIME_DB_PASSWORD_KEYS}
+    legacy.pop("ONEBRAIN_LOGIN_RATE_LIMIT_SECRET")
+
+    updated, added = backfill_runtime_db_passwords(
+        legacy, password_factory=lambda: "rate-limit-secret-" + ("x" * 32))
+
+    assert added == ("ONEBRAIN_LOGIN_RATE_LIMIT_SECRET",)
+    assert updated["ONEBRAIN_LOGIN_RATE_LIMIT_SECRET"] == "rate-limit-secret-" + ("x" * 32)
+    assert {key: updated[key] for key in RUNTIME_DB_PASSWORD_KEYS} == expected_passwords
+
+
+def test_runtime_bundle_secret_backfill_preserves_existing_rate_limit_secret():
+    existing_secret = "existing-rate-limit-secret-" + ("x" * 32)
+    legacy = _full_bundle(ONEBRAIN_LOGIN_RATE_LIMIT_SECRET=existing_secret)
+    legacy.pop("POSTGRES_APP_PASSWORD")
+
+    updated, added = backfill_runtime_db_passwords(
+        legacy, password_factory=lambda: "app-password-" + ("y" * 32))
+
+    assert added == ("POSTGRES_APP_PASSWORD",)
+    assert updated["POSTGRES_APP_PASSWORD"] == "app-password-" + ("y" * 32)
+    assert updated["ONEBRAIN_LOGIN_RATE_LIMIT_SECRET"] == existing_secret
+
+
+def test_runtime_bundle_secret_backfill_replaces_weak_nonempty_role_and_rate_secrets():
+    legacy = _full_bundle(
+        POSTGRES_APP_PASSWORD="weak-app",
+        POSTGRES_WORKER_PASSWORD="weak-worker",
+        POSTGRES_ASSISTANT_PASSWORD="weak-assistant",
+        POSTGRES_COMMUNICATION_PASSWORD="weak-communication",
+        ONEBRAIN_LOGIN_RATE_LIMIT_SECRET="weak-rate-limit",
+    )
+    replacements = iter(("a" * 32, "b" * 32, "c" * 32, "d" * 32, "e" * 32))
+
+    updated, changed = backfill_runtime_db_passwords(
+        legacy, password_factory=lambda: next(replacements))
+
+    assert changed == RUNTIME_BUNDLE_BACKFILL_KEYS
+    for key in RUNTIME_BUNDLE_BACKFILL_KEYS:
+        assert len(updated[key]) >= 32

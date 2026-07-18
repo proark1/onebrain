@@ -31,6 +31,8 @@ from app.ai_employees.base import (
     AiMissionParticipant,
     character_checksum,
     default_character_payload,
+    message_sort_key,
+    mission_participant_sort_key,
     now_iso,
     stable_record_id,
     validate_scope,
@@ -487,7 +489,7 @@ class PostgresAiEmployeeStore:
             [row for row in self._list(
                 "messages", tenant_id=tenant_id, account_id=account_id, space_id=space_id,
             ) if row.conversation_id == conversation_id],
-            key=lambda row: (row.created_at, row.id),
+            key=message_sort_key,
         )
 
     def save_mission(self, mission: AiMission) -> AiMission:
@@ -533,7 +535,7 @@ class PostgresAiEmployeeStore:
         return sorted(
             [row for row in self._list(
                 "participants", tenant_id=tenant_id, account_id=account_id, space_id=space_id,
-            ) if row.mission_id == mission_id], key=lambda row: (row.joined_at, row.id),
+            ) if row.mission_id == mission_id], key=mission_participant_sort_key,
         )
 
     def save_run(self, run: AiAgentRun) -> AiAgentRun:

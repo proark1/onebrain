@@ -20,7 +20,8 @@ from app.controlplane.memory import MemoryControlPlaneStore
 from app.fleet.base import FleetAlert, FleetKey, Heartbeat
 from app.fleet.heartbeat import (
     CONTRACT_VERSION, CONTRACT_VERSION_V2, AnyFleetHeartbeat, FleetHeartbeat,
-    FleetHeartbeatV2, UpdateReport, build_heartbeat, build_heartbeat_v2,
+    FleetHeartbeatV2, StorageCapacityReport, StorageReport, UpdateReport,
+    build_heartbeat, build_heartbeat_v2,
 )
 from app.fleet.keys import generate_fleet_key, hash_secret, parse_fleet_key, verify_secret
 from app.fleet.memory import MemoryFleetStore
@@ -97,6 +98,18 @@ def test_heartbeat_health_rolls_up_module_health():
 def test_heartbeat_counts_reject_negative():
     with pytest.raises(ValidationError):
         build_heartbeat(deployment_id="dep_a", reported_at="t", chunks=-1)
+
+
+def test_storage_capacity_is_metadata_only_and_bounds_available_space():
+    storage = StorageReport(
+        root=StorageCapacityReport(total_bytes=100, available_bytes=20),
+        data=StorageCapacityReport(total_bytes=200, available_bytes=40),
+    )
+    hb = build_heartbeat_v2(deployment_id="dep_a", reported_at="t", storage=storage)
+    assert hb.storage.root.available_bytes == 20
+    assert hb.storage.data_volume_unavailable is False
+    with pytest.raises(ValidationError):
+        StorageCapacityReport(total_bytes=100, available_bytes=101)
 
 
 # --- fleet keys --------------------------------------------------------------
@@ -206,6 +219,134 @@ def test_desired_alerts_healthy_current_deployment_has_none():
     hb = Heartbeat("hb", "dep_a", CONTRACT_VERSION, "t", "2026-07-11T00:00:30+00:00", True, version="2026.07.0")
     assert desired_alerts(heartbeat=hb, now_iso="2026-07-11T00:01:00+00:00",
                           missed_after_seconds=600, expected_version="2026.07.0") == {}
+
+
+def test_desired_alerts_flags_known_low_root_and_data_capacity():
+    hb = Heartbeat(
+        "hb", "dep_a", CONTRACT_VERSION_V2, "t", "2026-07-11T00:00:30+00:00", True,
+        payload={
+            "storage": {
+                "root": {"total_bytes": 100, "available_bytes": 10},
+                "data": {"total_bytes": 100, "available_bytes": 20},
+            },
+        },
+    )
+    assert desired_alerts(
+        heartbeat=hb, now_iso="2026-07-11T00:01:00+00:00", missed_after_seconds=600,
+        low_root_disk_percent=15, low_data_disk_percent=25,
+    ) == {
+        "low_root_disk": "root disk has 10.0% free (threshold 15%)",
+        "low_data_disk": "data disk has 20.0% free (threshold 25%)",
+    }
+
+
+def test_data_volume_unavailable_is_a_concrete_watchdog_alert():
+    hb = Heartbeat(
+        "hb", "dep_a", CONTRACT_VERSION_V2, "t", "2026-07-11T00:00:30+00:00", True,
+        payload={"storage": {
+            "root": {"total_bytes": 100, "available_bytes": 50},
+            "data": {"total_bytes": 0, "available_bytes": 0},
+            "data_volume_unavailable": True,
+        }},
+    )
+
+    assert desired_alerts(
+        heartbeat=hb, now_iso="2026-07-11T00:01:00+00:00", missed_after_seconds=600,
+    ) == {
+        "data_volume_unavailable": "persistent data volume is unavailable or failed verification",
+    }
+
+
+def test_run_watchdog_resolves_low_disk_alert_after_capacity_recovers():
+    store = MemoryFleetStore()
+    store.record_heartbeat(Heartbeat(
+        "low", "dep_a", CONTRACT_VERSION_V2, "t", "2026-07-11T00:00:00+00:00", True,
+        payload={"storage": {
+            "root": {"total_bytes": 100, "available_bytes": 10},
+            "data": {"total_bytes": 100, "available_bytes": 10},
+        }},
+    ))
+    counter = {"n": 0}
+
+    def next_id():
+        counter["n"] += 1
+        return f"al_{counter['n']}"
+
+    opened = run_watchdog(
+        store, ["dep_a"], now_iso="2026-07-11T00:00:30+00:00", missed_after_seconds=600,
+        low_root_disk_percent=15, low_data_disk_percent=15, next_id=next_id,
+    )
+    assert {alert.kind for alert in opened} == {"low_root_disk", "low_data_disk"}
+
+    # A legacy/partially upgraded reporter can omit storage (or report 0/0).
+    # That does not prove the disk recovered, so the previous alerts remain
+    # open until the next *known healthy* capacity report.
+    store.record_heartbeat(Heartbeat(
+        "unknown", "dep_a", CONTRACT_VERSION_V2, "t", "2026-07-11T00:00:45+00:00", True,
+        payload={"storage": {
+            "root": {"total_bytes": 0, "available_bytes": 0},
+            "data": {"total_bytes": 0, "available_bytes": 0},
+        }},
+    ))
+    assert run_watchdog(
+        store, ["dep_a"], now_iso="2026-07-11T00:00:50+00:00", missed_after_seconds=600,
+        low_root_disk_percent=15, low_data_disk_percent=15, next_id=next_id,
+    ) == []
+    assert {alert.kind for alert in store.list_open_alerts("dep_a")} == {
+        "low_root_disk", "low_data_disk",
+    }
+
+    store.record_heartbeat(Heartbeat(
+        "recovered", "dep_a", CONTRACT_VERSION_V2, "t", "2026-07-11T00:01:00+00:00", True,
+        payload={"storage": {
+            "root": {"total_bytes": 100, "available_bytes": 60},
+            "data": {"total_bytes": 100, "available_bytes": 60},
+        }},
+    ))
+    assert run_watchdog(
+        store, ["dep_a"], now_iso="2026-07-11T00:01:30+00:00", missed_after_seconds=600,
+        low_root_disk_percent=15, low_data_disk_percent=15, next_id=next_id,
+    ) == []
+    assert store.list_open_alerts("dep_a") == []
+
+
+def test_watchdog_requires_an_explicit_recovered_data_volume_signal_to_resolve():
+    store = MemoryFleetStore()
+    store.record_heartbeat(Heartbeat(
+        "unavailable", "dep_a", CONTRACT_VERSION_V2, "t", "2026-07-11T00:00:00+00:00", True,
+        payload={"storage": {"data_volume_unavailable": True}},
+    ))
+    counter = {"n": 0}
+
+    def next_id():
+        counter["n"] += 1
+        return f"al_{counter['n']}"
+
+    opened = run_watchdog(
+        store, ["dep_a"], now_iso="2026-07-11T00:00:30+00:00", missed_after_seconds=600,
+        next_id=next_id,
+    )
+    assert [alert.kind for alert in opened] == ["data_volume_unavailable"]
+
+    store.record_heartbeat(Heartbeat(
+        "legacy", "dep_a", CONTRACT_VERSION_V2, "t", "2026-07-11T00:00:45+00:00", True,
+        payload={"storage": {"data": {"total_bytes": 0, "available_bytes": 0}}},
+    ))
+    assert run_watchdog(
+        store, ["dep_a"], now_iso="2026-07-11T00:00:50+00:00", missed_after_seconds=600,
+        next_id=next_id,
+    ) == []
+    assert store.has_open_alert("dep_a", "data_volume_unavailable")
+
+    store.record_heartbeat(Heartbeat(
+        "verified", "dep_a", CONTRACT_VERSION_V2, "t", "2026-07-11T00:01:00+00:00", True,
+        payload={"storage": {"data_volume_unavailable": False}},
+    ))
+    assert run_watchdog(
+        store, ["dep_a"], now_iso="2026-07-11T00:01:30+00:00", missed_after_seconds=600,
+        next_id=next_id,
+    ) == []
+    assert not store.has_open_alert("dep_a", "data_volume_unavailable")
 
 
 # --- watchdog reconciler -----------------------------------------------------
@@ -388,7 +529,46 @@ def test_fleet_overview_handles_deployment_without_heartbeat(monkeypatch):
     assert out.deployments[0].counts == {}
 
 
+def test_fleet_overview_exposes_reported_root_and_data_capacity(monkeypatch):
+    fleet = MemoryFleetStore()
+    body = build_heartbeat_v2(
+        deployment_id="dep_a", reported_at="2026-07-11T00:00:00+00:00",
+        storage=StorageReport(
+            root=StorageCapacityReport(total_bytes=1000, available_bytes=200),
+            data=StorageCapacityReport(total_bytes=2000, available_bytes=800),
+        ),
+    )
+    fleet.record_heartbeat(Heartbeat(
+        "hb", "dep_a", CONTRACT_VERSION_V2, body.reported_at, "2026-07-11T00:00:01+00:00",
+        True, payload=body.model_dump(),
+    ))
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: fleet)
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: _control_with("dep_a"))
+
+    row = fleet_router.fleet_overview(principal=_principal("admin")).deployments[0]
+    assert row.storage.root.available_bytes == 200
+    assert row.storage.data.total_bytes == 2000
+
+
 # --- reporter ----------------------------------------------------------------
+
+def test_collect_storage_report_keeps_data_volume_distinct_from_root(monkeypatch):
+    from app.fleet import reporter
+
+    observed = []
+
+    def capacity(path):
+        observed.append(path)
+        return StorageCapacityReport(total_bytes=1000, available_bytes=100 if path == "/" else 300)
+
+    monkeypatch.setattr(reporter, "_storage_capacity", capacity)
+    monkeypatch.setattr(reporter.os.path, "ismount", lambda _path: True)
+    storage = reporter.collect_storage_report("/mnt/onebrain-data")
+
+    assert observed == ["/", "/mnt/onebrain-data"]
+    assert storage.root.available_bytes == 100
+    assert storage.data.available_bytes == 300
+    assert storage.data_volume_unavailable is False
 
 class _FakeResponse:
     def __init__(self, status: int):
@@ -488,8 +668,9 @@ def test_collect_heartbeat_builds_metadata_only_payload():
     assert hb.onebrain.healthy is True
     # Everything in the payload is a count/flag/version/enum — no free-text customer content.
     payload = hb.model_dump()
-    assert set(payload) == {"contract_version", "deployment_id", "reported_at", "onebrain", "modules", "update"}
+    assert set(payload) == {"contract_version", "deployment_id", "reported_at", "onebrain", "modules", "update", "storage"}
     assert payload["update"]["outcome"] == "none"
+    assert set(payload["storage"]) == {"root", "data", "data_volume_unavailable"}
 
 
 # --- ground-truth reporter (fleet.v2 emitter) ---------------------------------
@@ -681,7 +862,7 @@ def test_report_once_posts_v2():
 
     body = json.loads(captured["body"])
     assert body["contract_version"] == "fleet.v2"
-    assert set(body) == {"contract_version", "deployment_id", "reported_at", "onebrain", "modules", "update"}
+    assert set(body) == {"contract_version", "deployment_id", "reported_at", "onebrain", "modules", "update", "storage"}
 
 
 # --- heartbeat ingest hardening ---------------------------------------------
@@ -1166,6 +1347,7 @@ def test_backfill_runtime_db_credentials_reseals_legacy_bundle_and_bumps_epoch(m
         "POSTGRES_WORKER_PASSWORD",
         "POSTGRES_ASSISTANT_PASSWORD",
         "POSTGRES_COMMUNICATION_PASSWORD",
+        "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET",
     ):
         assert isinstance(updated[key], str) and len(updated[key]) >= 32
 
@@ -1179,6 +1361,7 @@ def test_backfill_runtime_db_credentials_reseals_legacy_bundle_and_bumps_epoch(m
         "POSTGRES_WORKER_PASSWORD",
         "POSTGRES_ASSISTANT_PASSWORD",
         "POSTGRES_COMMUNICATION_PASSWORD",
+        "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET",
     ):
         assert reread[key] == updated[key]
 

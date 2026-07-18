@@ -174,6 +174,56 @@ def test_operational_records_round_trip_with_strict_scope_and_idempotency():
         store.save_action_proposal(replace(proposal, id="proposal-2", payload={"access_token": "raw"}))
 
 
+def test_message_and_mission_participant_order_do_not_depend_on_random_ids():
+    store = MemoryAiEmployeeStore()
+    store.seed_defaults(**SCOPE, author_id="admin-1")
+    staff_profile = store.get_profile("chief_of_staff", **SCOPE)
+    operating_profile = store.get_profile("chief_operating_officer", **SCOPE)
+    finance_profile = store.get_profile("finance_manager", **SCOPE)
+    staff_policy = store.get_model_policy("chief_of_staff", **SCOPE)
+    operating_policy = store.get_model_policy("chief_operating_officer", **SCOPE)
+    finance_policy = store.get_model_policy("finance_manager", **SCOPE)
+    timestamp = "2026-07-18T12:00:00+00:00"
+
+    conversation = store.save_conversation(AiEmployeeConversation(
+        id="conv-order", **SCOPE, employee_id="chief_of_staff", human_owner_id="user-1",
+        title="Order", status="active", character_version_id=staff_profile.default_version_id,
+        model_policy_id=staff_policy.id,
+    ))
+    store.save_message(AiEmployeeMessage(
+        id="message-z", **SCOPE, conversation_id=conversation.id, speaker_type="human",
+        speaker_id="user-1", visibility="shared", content="Question", run_id="run-order",
+        created_at=timestamp,
+    ))
+    store.save_message(AiEmployeeMessage(
+        id="message-a", **SCOPE, conversation_id=conversation.id, speaker_type="employee",
+        speaker_id="chief_of_staff", visibility="shared", content="Answer", run_id="run-order",
+        created_at=timestamp,
+    ))
+    assert [row.speaker_type for row in store.list_messages(conversation.id, **SCOPE)] == [
+        "human", "employee",
+    ]
+
+    mission = store.save_mission(AiMission(
+        id="mission-order", **SCOPE, goal="Order", sponsor_id="user-1",
+        accountable_employee_id="chief_operating_officer", status="draft", phase="scope",
+        token_budget=20_000, time_budget_seconds=600, cost_budget_usd=5.0,
+    ))
+    for employee_id, mission_role, profile, policy, record_id in (
+        ("finance_manager", "specialist", finance_profile, finance_policy, "participant-a"),
+        ("chief_operating_officer", "accountable", operating_profile, operating_policy, "participant-z"),
+        ("chief_of_staff", "orchestrator", staff_profile, staff_policy, "participant-m"),
+    ):
+        store.save_mission_participant(AiMissionParticipant(
+            id=record_id, **SCOPE, mission_id=mission.id, employee_id=employee_id,
+            mission_role=mission_role, character_version_id=profile.default_version_id,
+            model_policy_id=policy.id, status="active", joined_at=timestamp,
+        ))
+    assert [row.employee_id for row in store.list_mission_participants(mission.id, **SCOPE)] == [
+        "chief_of_staff", "chief_operating_officer", "finance_manager",
+    ]
+
+
 def test_memory_store_persists_exports_and_deletes_the_requested_scope(tmp_path: Path):
     path = tmp_path / "ai-employees.json"
     store = MemoryAiEmployeeStore(str(path))

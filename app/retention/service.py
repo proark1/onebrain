@@ -19,14 +19,35 @@ down the whole governance scope.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 from uuid import uuid4
 
 
 SUPPORTED_DOMAINS = ("documents", "conversations", "intake", "kpis", "governance")
 
 
+_retention_run_timestamp_lock = Lock()
+_last_retention_run_timestamp: datetime | None = None
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _recorded_run_timestamp() -> str:
+    """Return a locally monotonic timestamp for the append-only run ledger.
+
+    Retention sweeps may run inside a frozen clock (or faster than the clock's
+    resolution).  Advancing tied values by one microsecond keeps the audit
+    record's causal order intact without changing the retention cutoff clock.
+    """
+    global _last_retention_run_timestamp
+    with _retention_run_timestamp_lock:
+        recorded_at = datetime.now(timezone.utc)
+        if _last_retention_run_timestamp and recorded_at <= _last_retention_run_timestamp:
+            recorded_at = _last_retention_run_timestamp + timedelta(microseconds=1)
+        _last_retention_run_timestamp = recorded_at
+        return recorded_at.isoformat()
 
 
 def _doc_created_at(doc: dict) -> str:
@@ -128,6 +149,7 @@ def run_retention(*, account_id: str, space_id: str = "", domain: str = "", dry_
             result["counts"]["governance_deleted"] = platform.delete_governance_by_scope(account_id, space_id)
 
     if not dry_run:
+        recorded_at = _recorded_run_timestamp()
         platform.record_retention_run(RetentionRun(
             id=f"ret_{uuid4().hex}",
             account_id=account_id,
@@ -136,8 +158,8 @@ def run_retention(*, account_id: str, space_id: str = "", domain: str = "", dry_
             dry_run=False,
             status="skipped_legal_hold" if held else "completed",
             result=result,
-            created_at=_now(),
-            completed_at=_now(),
+            created_at=recorded_at,
+            completed_at=recorded_at,
         ))
 
     return result

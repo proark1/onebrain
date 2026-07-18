@@ -696,7 +696,7 @@ class PostgresPlatformStore:
             "id, account_id, space_id, domain, dry_run, status, result, error, created_at, completed_at",
             account_id,
             space_id,
-            "created_at, id",
+            "created_at, completed_at, id",
         )
         return [self._retention_run_row(r) for r in rows]
 

@@ -16,12 +16,15 @@ check and `images` values pass `validate_image_ref`; anything failing raises
 
 from __future__ import annotations
 
+import ast
 import base64
 import gzip
 import io
 import json
+import lzma
 import re
 import tarfile
+import tokenize
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -966,6 +969,130 @@ def _asset_archive(entries: list[tuple[str, str, str]]) -> bytes:
     return buffer.getvalue()
 
 
+# The ordinary source files deliberately keep their operational comments: they are
+# reviewed and run directly from the repository.  Cloud-init, however, has a hard
+# 32 KiB request limit, and the rendered artifact carries a copy of those host
+# tools solely to execute them.  Drop only standalone comments from that *copy*
+# before archiving.  Never touch inline comments, data, or heredoc bodies.
+_SHELL_HEREDOC_RE = re.compile(
+    r"<<-?\s*(?:'(?P<single>[^']+)'|\"(?P<double>[^\"]+)\"|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))"
+)
+
+
+def _compact_shell_asset(content: str) -> str:
+    """Remove safe full-line shell comments while preserving heredoc data exactly.
+
+    A naive ``line.lstrip().startswith('#')`` rewrite can silently alter an
+    embedded Python/SQL heredoc.  The small state machine below only strips
+    comment lines while parsing shell source; once a heredoc starts, every line
+    is copied verbatim until its delimiter.  Unusual multiple-heredoc syntax is
+    left untouched rather than guessed at.
+    """
+    lines = content.splitlines(keepends=True)
+    compacted: list[str] = []
+    heredoc_delimiter: str | None = None
+    for index, line in enumerate(lines):
+        logical = line.rstrip("\r\n")
+        if heredoc_delimiter is not None:
+            compacted.append(line)
+            if logical.lstrip("\t") == heredoc_delimiter:
+                heredoc_delimiter = None
+            continue
+
+        # The source shebang is part of the executable contract.  All other
+        # standalone comments are non-functional in shell source.
+        if index and logical.lstrip().startswith("#"):
+            continue
+        compacted.append(line)
+
+        # Detect a conventional one-delimiter heredoc on executable source. If
+        # an asset needs more elaborate shell syntax later, keep it unmodified
+        # rather than risk treating source as data incorrectly.
+        matches = list(_SHELL_HEREDOC_RE.finditer(logical))
+        if len(matches) == 1:
+            match = matches[0]
+            heredoc_delimiter = next(
+                value for value in (match.group("single"), match.group("double"), match.group("bare"))
+                if value is not None
+            )
+        elif len(matches) > 1:
+            return content
+    return "".join(compacted)
+
+
+def _compact_python_asset(content: str) -> str:
+    """Remove non-executable Python documentation from an archive copy.
+
+    The deployed helpers do not inspect ``__doc__``.  Dropping standalone module,
+    class, and function docstrings — in addition to standalone comments — keeps
+    the host artifact below Hetzner's user-data ceiling while leaving the
+    repository source (and all executable statements) intact.  Only a docstring
+    occupying complete physical lines is eligible; unusual one-line forms that
+    share a line with executable code are deliberately retained.
+    """
+    lines = content.splitlines(keepends=True)
+    removable: set[int] = set()
+    try:
+        tree = ast.parse(content)
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            body = node.body
+            if not body:
+                continue
+            candidate = body[0]
+            if not (
+                isinstance(candidate, ast.Expr)
+                and isinstance(candidate.value, ast.Constant)
+                and isinstance(candidate.value.value, str)
+            ):
+                continue
+            start = candidate.lineno - 1
+            end = candidate.end_lineno - 1
+            # Removing a same-line docstring could erase executable code. Keep
+            # it unless the AST span owns both complete physical line bounds.
+            if lines[start][:candidate.col_offset].strip() or lines[end][candidate.end_col_offset:].strip():
+                continue
+            removable.update(range(start, end + 1))
+
+        tokens = tokenize.generate_tokens(io.StringIO(content).readline)
+        for token in tokens:
+            if token.type != tokenize.COMMENT:
+                continue
+            line_index = token.start[0] - 1
+            if line_index == 0 and lines[line_index].startswith("#!"):
+                continue
+            # A comment after code is documentation for that expression and is
+            # intentionally retained.  This condition also excludes comments
+            # represented as data inside a triple-quoted string.
+            if not lines[line_index][:token.start[1]].strip():
+                removable.add(line_index)
+    except (IndentationError, SyntaxError, tokenize.TokenError):
+        # A malformed source asset should remain visible to its normal syntax
+        # validation instead of being changed by the payload compactor.
+        return content
+    return "".join(line for index, line in enumerate(lines) if index not in removable)
+
+
+def _compact_host_asset(path: str, content: str) -> str:
+    """Return the behavior-preserving, size-conscious archive form of a host asset.
+
+    This is deliberately limited to source/comment formats.  Rendered Compose,
+    environment files, certificates, and other data remain byte-for-byte as the
+    renderer created them.  Systemd ignores standalone ``#`` comments, while
+    the shell/Python helpers above protect executable syntax and data blocks.
+    """
+    suffix = Path(path).suffix
+    if suffix == ".sh":
+        return _compact_shell_asset(content)
+    if suffix == ".py":
+        return _compact_python_asset(content)
+    if suffix in {".service", ".timer"}:
+        lines = content.splitlines(keepends=True)
+        return "".join(line for line in lines if not line.lstrip().startswith("#"))
+    return content
+
+
 def _write_asset_archive(path: str, contents: bytes, permissions: str = "0600") -> str:
     """Write a binary tar through cloud-init's gz+b64 decoder (which leaves the
     decompressed tar on disk). This is always smaller than one encoded entry per
@@ -976,6 +1103,25 @@ def _write_asset_archive(path: str, contents: bytes, permissions: str = "0600") 
         f"    permissions: '{permissions}'\n"
         "    encoding: gz+b64\n"
         f"    content: {blob}\n"
+    )
+
+
+def _write_b85_xz_asset_archive(path: str, contents: bytes, permissions: str = "0600") -> str:
+    """Write a deterministic XZ tar as a compact Base85 literal.
+
+    Base64 expands the compressed customer archive by one third.  The bootstrap
+    already installs Python 3, whose standard library decodes Base85 before
+    ``tar`` extracts the exact same XZ bytes.  A YAML literal keeps the Base85
+    alphabet data-only, while the XZ container remains reproducible.
+    """
+    compressed = lzma.compress(
+        contents, format=lzma.FORMAT_XZ, preset=9 | lzma.PRESET_EXTREME)
+    blob = base64.b85encode(compressed).decode("ascii")
+    return (
+        f"  - path: {path}\n"
+        f"    permissions: '{permissions}'\n"
+        "    content: |\n"
+        f"      {blob}\n"
     )
 
 
@@ -1012,6 +1158,9 @@ def _box_env(inp: BoxRenderInputs) -> str:
         ("UPDATE_DESIRED_STATE_PUBLIC_KEY", inp.fleet_public_desired_state_key),
         ("UPDATE_REGISTRY_ALLOWLIST", inp.registry_allowlist),
         ("UPDATE_DATA_DIR", "/data"),
+        # Root-only update/bootstrap/reporter state and encrypted migration
+        # backups live under the UUID-verified attached volume, never /data.
+        ("ONEBRAIN_MAINTENANCE_DIR", "/mnt/onebrain-data/onebrain-maintenance"),
         ("UPDATE_COMPOSE_DIR", "/opt/onebrain"),
         ("UPDATE_COMPOSE_PROJECT", inp.compose_project),
         ("UPDATE_PROFILES", products),
@@ -1085,6 +1234,17 @@ def _callback_curl(status: str, smoke: str, run_id: str, *, kind: str, callback_
     )
 
 
+def _first_boot_script(commands: list[str]) -> str:
+    """Render first-boot work as an extracted Bash helper.
+
+    Cloud-init stores every runcmd string verbatim, which is costly under
+    Hetzner's fixed 32 KiB user-data cap. The helper is part of the regular XZ
+    asset archive instead. It deliberately has no global ``set -e``: that
+    retains cloud-init's prior command-by-command, fail-soft behavior.
+    """
+    return "#!/usr/bin/env bash\n" + "\n".join(commands) + "\n"
+
+
 def render_cloud_init(inp: BoxRenderInputs) -> str:
     _validate(inp)
     if not inp.run_id:
@@ -1101,17 +1261,24 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         ("/opt/onebrain/onebrain_dotenv.sh", _read_box_file("onebrain_dotenv.sh"), "0644"),
         ("/opt/onebrain/update.sh", _read_box_file("update.sh"), "0755"),
         ("/opt/onebrain/onebrain-gate-agent.sh", _read_box_file("onebrain-gate-agent.sh"), "0755"),
-        ("/opt/onebrain/onebrain_gate_report.py", _read_box_file("onebrain_gate_report.py"), "0755"),
         ("/opt/onebrain/onebrain_box_verify.py", _read_box_file("onebrain_box_verify.py"), "0644"),
+        ("/opt/onebrain/onebrain-data-volume.sh", _read_box_file("onebrain-data-volume.sh"), "0755"),
+        ("/opt/onebrain/onebrain-host-maintenance.sh", _read_box_file("onebrain-host-maintenance.sh"), "0755"),
+        ("/opt/onebrain/onebrain-postgres-collation.sh", _read_box_file("onebrain-postgres-collation.sh"), "0755"),
+        ("/etc/systemd/system/onebrain-data-volume.service", _read_box_file("onebrain-data-volume.service"), "0644"),
         ("/etc/systemd/system/onebrain-update.service", _read_box_file("onebrain-update.service"), "0644"),
         ("/etc/systemd/system/onebrain-update.timer", _read_box_file("onebrain-update.timer"), "0644"),
+        ("/etc/systemd/system/onebrain-host-maintenance.service", _read_box_file("onebrain-host-maintenance.service"), "0644"),
+        ("/etc/systemd/system/onebrain-host-maintenance.timer", _read_box_file("onebrain-host-maintenance.timer"), "0644"),
         ("/etc/systemd/system/onebrain-metadata-drop.service", _read_box_file("onebrain-metadata-drop.service"), "0644"),
     ]
-    # Operator Mission Control boxes bake their own bundle and never invoke the
-    # customer-only secret exchange.
+    # Mission Control bakes its own bundle and reports its health through the
+    # in-app self-heartbeat. Customer boxes additionally need the root-only
+    # reporter for their provisioning callbacks and post-update heartbeats.
     if inp.role != "operator":
         assets.extend([
             ("/opt/onebrain/onebrain_bootstrap.sh", _read_box_file("onebrain_bootstrap.sh"), "0755"),
+            ("/opt/onebrain/onebrain_gate_report.py", _read_box_file("onebrain_gate_report.py"), "0755"),
         ])
     # Rendered env files contain `${VAR}` references rather than secret values;
     # package them with the other non-secret assets. The real exchanged/baked
@@ -1127,7 +1294,6 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
     # configuration instead goes in the separately redacted archive below.
     if inp.role != "operator":
         assets.append(("/opt/onebrain/box.env", _box_env(inp), "0600"))
-    entries = [_write_asset_archive("/opt/onebrain/onebrain-assets.tar", _asset_archive(assets))]
     operator_tls_assets = _operator_broker_tls_assets(inp)
     operator_secret_assets: list[tuple[str, str, str]] = []
     if inp.role == "operator":
@@ -1138,9 +1304,6 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         if inp.dotenv:
             operator_secret_assets.append(("/opt/onebrain/.env", inp.dotenv, "0600"))
         operator_secret_assets.extend(operator_tls_assets)
-        entries.append(_write_asset_archive(
-            "/opt/onebrain/mc-broker-tls.tar", _asset_archive(operator_secret_assets)))
-    write_files = "".join(entries).rstrip("\n")
 
     profile_flags = " ".join(f"--profile {p}" for p in _enabled_products(inp.enabled_modules))
     # Anchor EVERY first-boot compose call to the rendered file: cloud-init runcmd runs
@@ -1150,16 +1313,24 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
     compose_cmd = (
         f"docker compose --project-name {inp.compose_project} -f {compose_file} {profile_flags}".strip()
     )
+    # The MC box has no provisioning-run record for its synthetic bootstrap id,
+    # so its old callback posted back to itself and always 404ed. Its in-app
+    # heartbeat is the authoritative readiness signal. Keep the complete
+    # callback/reporting path on customer boxes only.
+    customer_callbacks = inp.role != "operator"
     fail_cb = _callback_curl(
         "failed", "failed", inp.run_id, kind="failure", callback_url=inp.callback_url
-    )
+    ) if customer_callbacks else ""
     done_cb = _callback_curl(
         "${ST}", "${SMOKE}", inp.run_id, kind="completion", callback_url=inp.callback_url
+    ) if customer_callbacks else ""
+    metadata_failure_callback = (
+        f'; [ -z "$F" ] || {{ {fail_cb} || true; }}' if customer_callbacks else ""
     )
-    runcmd_items = [
+    smoke_callback = f"; {done_cb} || true" if customer_callbacks else ""
+    first_boot_items = [
         "mkdir -p /opt/onebrain/env /opt/onebrain/caddy-data /opt/onebrain/caddy-config /data /mnt/onebrain-data "
-        "&& chown -Rh 10001:10001 /data && chmod 750 /data",
-        "tar -xf /opt/onebrain/onebrain-assets.tar -C / && rm -f /opt/onebrain/onebrain-assets.tar",
+        "&& chown 10001:10001 /data && chmod 750 /data",
         *([
             *([f"install -d -o 10001 -g 10001 -m 0700 {_OPERATOR_TLS_HOST_DIR}"] if operator_tls_assets else []),
             f"tar -xf /opt/onebrain/mc-broker-tls.tar -C / && rm -f /opt/onebrain/mc-broker-tls.tar"
@@ -1169,10 +1340,13 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
                 if operator_tls_assets else ""
             ),
         ] if operator_secret_assets else []),
-        # Mount the attached data volume so Postgres survives a rebuild (device id
-        # is assigned by Hetzner; the real mount executes on the live box, P5).
-        'for dev in /dev/disk/by-id/scsi-0HC_Volume_*; do [ -b "$dev" ] || continue; '
-        'blkid "$dev" >/dev/null 2>&1 || mkfs.ext4 -F "$dev"; mount "$dev" /mnt/onebrain-data; done',
+        # Persist the volume's UUID in fstab and require its verifier before
+        # Docker. This prevents a reboot from silently starting Postgres against
+        # the root-disk bind mount when the attached data volume is absent.
+        "systemctl stop docker.service docker.socket >/dev/null 2>&1 || true",
+        "bash /opt/onebrain/onebrain-data-volume.sh setup",
+        "install -d -o root -g root -m 0700 /mnt/onebrain-data/onebrain-maintenance",
+        "systemctl daemon-reload && systemctl enable onebrain-data-volume.service",
         "systemctl enable --now docker",
         # Capture the public IP for the callback BEFORE the metadata drop below.
         f"curl -sf http://{_META}/hetzner/v1/metadata/public-ipv4 > /opt/onebrain/box.instance 2>/dev/null || true",
@@ -1201,7 +1375,7 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         # once makes the bootstrap artifact fit under Hetzner's user-data limit
         # without changing the fail-soft security semantics.
         f"F=; iptables -w -I DOCKER-USER -d {_META} -j DROP || F=1; "
-        f"iptables -w -I OUTPUT -d {_META} -j DROP || F=1; [ -z \"$F\" ] || {{ {fail_cb} || true; }}",
+        f"iptables -w -I OUTPUT -d {_META} -j DROP || F=1{metadata_failure_callback}",
         # G1-6: persist BOTH drops across reboots (the -I rules above are in-memory only) AND
         # apply them NOW via the authoritative oneshot, so the egress block is enforced this boot
         # even when the fast inserts above failed soft.
@@ -1214,11 +1388,42 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         f"{compose_cmd} pull",
         f"{compose_cmd} up -d",
         "systemctl enable --now onebrain-update.timer",
-        # Smoke + provisioning callback (bootstrap_password = the owner OTP).
+        "systemctl enable --now onebrain-host-maintenance.timer",
+        # Smoke + customer provisioning callback (bootstrap_password = the owner OTP).
         'sleep 5; if curl -sf http://127.0.0.1/health >/dev/null 2>&1; then ST=succeeded; SMOKE=passed; '
-        f"else ST=failed; SMOKE=failed; fi; {done_cb} || true",
+        f"else ST=failed; SMOKE=failed; fi{smoke_callback}",
+    ]
+    assets.append(("/opt/onebrain/onebrain-firstboot.sh", _first_boot_script(first_boot_items), "0755"))
+
+    # Keep verbose first-boot orchestration in the compact regular archive;
+    # cloud-init itself only extracts it and starts the helper. The separate
+    # MC-only secret archive stays gzip-wrapped so bootstrap dry-runs can mask
+    # its reversible payload as one opaque field.
+    archive_assets = [
+        (path, _compact_host_asset(path, content), permissions)
+        for path, content, permissions in assets
+    ]
+    entries = [_write_b85_xz_asset_archive(
+        "/opt/onebrain/onebrain-assets.b85", _asset_archive(archive_assets))]
+    if operator_secret_assets:
+        entries.append(_write_asset_archive(
+            "/opt/onebrain/mc-broker-tls.tar", _asset_archive(operator_secret_assets)))
+    write_files = "".join(entries).rstrip("\n")
+
+    runcmd_items = [
+        "python3 -c 'import base64,sys;sys.stdout.buffer.write(base64.b85decode(open(0,\"rb\").read().strip()))' "
+        "</opt/onebrain/onebrain-assets.b85 | tar -xJf - -C / && rm -f /opt/onebrain/onebrain-assets.b85",
+        "bash /opt/onebrain/onebrain-firstboot.sh",
     ]
     runcmd = "\n".join("  - " + _yaml_sq(item) for item in runcmd_items)
 
-    template = (_DEPLOY_TEMPLATES / "cloud-init.yaml.tmpl").read_text(encoding="utf-8")
+    # Keep the reviewed template documented in source, but omit non-functional
+    # YAML comments from the submitted user-data. ``#cloud-config`` is the
+    # required cloud-init header and therefore remains the first line.
+    template_lines = (_DEPLOY_TEMPLATES / "cloud-init.yaml.tmpl").read_text(
+        encoding="utf-8").splitlines()
+    template = "\n".join(
+        line for index, line in enumerate(template_lines)
+        if index == 0 or not line.lstrip().startswith("#")
+    ) + "\n"
     return template.replace("{{WRITE_FILES}}", write_files).replace("{{RUNCMD}}", runcmd)
