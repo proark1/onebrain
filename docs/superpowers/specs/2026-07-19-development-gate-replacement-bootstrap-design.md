@@ -1,6 +1,6 @@
 # Development Gate Replacement Bootstrap Trust
 
-**Date:** 2026-07-19  
+**Date:** 2026-07-19
 **Status:** Approved for implementation
 
 ## Goal
