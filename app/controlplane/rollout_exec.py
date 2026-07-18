@@ -11,18 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict
 
-
 HETZNER_TARGET_PREFIX = "hetzner:"
-DEVELOPMENT_GATE_MODULE_IDS = frozenset({
-    "onebrain-api",
-    "onebrain-admin-ui",
-    "onebrain-workers",
-    "assistant-service",
-    "communication-api",
-    "communication-widget",
-    "communication-voice",
-    "communication-workers",
-})
 SECRETS_EPOCH_PENDING_REASON = "development gate has not applied the expected secrets epoch"
 
 
@@ -33,6 +22,7 @@ class PullTargetEligibility:
     source: str = ""
     reason: str = ""
     target: Dict = field(default_factory=dict)
+    required_secrets_epoch: int = 0
 
 
 def _now() -> str:
@@ -111,14 +101,6 @@ def resolve_pull_target(
     if not keys:
         return PullTargetEligibility(False, reason="development gate has no active fleet key")
 
-    installed_modules = {
-        module.module_id
-        for module in control_store.list_modules(deployment_id)
-        if module.status == "active"
-    }
-    if installed_modules != DEVELOPMENT_GATE_MODULE_IDS:
-        return PullTargetEligibility(False, reason="development gate module set is incomplete")
-
     heartbeat = fleet_store.latest_heartbeat(deployment_id)
     if heartbeat is None:
         return PullTargetEligibility(False, reason="development gate has no authenticated heartbeat")
@@ -172,6 +154,7 @@ def resolve_pull_target(
         allowed=True,
         provider="hetzner",
         source="enrolled_development_gate",
+        required_secrets_epoch=int(bundle.secrets_epoch or 0),
     )
 
 

@@ -21,6 +21,10 @@ from typing import List, Optional
 from pydantic import ValidationError
 
 from app.controlplane.base import BackupRun
+from app.controlplane.development_gate import (
+    validate_module_transition,
+    verify_reported_modules,
+)
 from app.controlplane.fleet_runner import reconcile_fleet_rollout
 from app.controlplane.promotion import reconcile_promotion_timeouts, reconcile_rollout_promotion
 from app.fleet.heartbeat import FleetHeartbeatV2, UpdateReport
@@ -107,6 +111,26 @@ def pull_acknowledgement_matches(control_store, child, heartbeat) -> bool:
     ):
         return False
 
+    if deployment.is_release_gate:
+        current_module_ids = {
+            module.module_id
+            for module in control_store.list_modules(child.deployment_id)
+            if module.status == "active"
+        }
+        if validate_module_transition(current_module_ids, release.modules):
+            return False
+        try:
+            required_secrets_epoch = max(
+                0,
+                int((child.request_payload or {}).get("required_secrets_epoch", 0)),
+            )
+        except (TypeError, ValueError):
+            return False
+        if update.applied_secrets_epoch < required_secrets_epoch:
+            return False
+        _, reason = verify_reported_modules(body, release.modules)
+        return not reason
+
     reported_modules = {}
     for report in body.modules:
         if report.module_id in reported_modules:
@@ -122,6 +146,28 @@ def pull_acknowledgement_matches(control_store, child, heartbeat) -> bool:
         if not report.healthy or report.version != expected_version:
             return False
     return True
+
+
+def verified_development_gate_modules(control_store, child, heartbeat) -> Optional[dict[str, str]]:
+    """Return exact authenticated module evidence only for a promotion-linked gate rollout."""
+    deployment = control_store.get_deployment(child.deployment_id)
+    promotion = control_store.get_release_promotion(child.target_version)
+    if (
+        not deployment
+        or not deployment.is_release_gate
+        or not promotion
+        or promotion.state != "dev_deploying"
+        or promotion.gate_deployment_id != deployment.id
+        or promotion.dev_rollout_id != child.id
+        or not pull_acknowledgement_matches(control_store, child, heartbeat)
+    ):
+        return None
+    body = _heartbeat_from_stored(heartbeat)
+    release = control_store.get_release(child.target_version)
+    if not body or not release:
+        return None
+    verified, reason = verify_reported_modules(body, release.modules)
+    return None if reason else verified
 
 
 def synthesize_pull_status(
@@ -204,14 +250,35 @@ def _report_from_heartbeat(heartbeat) -> UpdateReport:
     return body.update if body is not None else UpdateReport()
 
 
-def _apply_child_status(control_store, child, status: str, update_report, *, now: datetime) -> None:
-    """Drive the child to its synthesized terminal status. A 'success' goes through the
-    UNCHANGED update_rollout_status apply path — the SAME plan_update gate every verified
-    terminal transition uses — so a pull success applies the release
-    irreversibly under the identical safety gate, never a parallel apply path."""
+def _apply_child_status(
+    control_store,
+    child,
+    status: str,
+    update_report,
+    *,
+    now: datetime,
+    verified_modules: Optional[dict[str, str]] = None,
+) -> None:
+    """Drive one child to its synthesized terminal status.
+
+    Normal pull success retains the established apply path. A promotion-linked
+    development-gate success atomically persists exact authenticated module
+    evidence with deployment and rollout completion.
+    """
     if status == "success":
-        control_store.update_rollout_status(child.id, "success")
-        control_store.update_rollout_exec(child.id, exec_status="succeeded", completed_at=now.isoformat())
+        if verified_modules is not None:
+            control_store.complete_verified_rollout(
+                child.id,
+                verified_modules=verified_modules,
+                completed_at=now.isoformat(),
+            )
+        else:
+            control_store.update_rollout_status(child.id, "success")
+            control_store.update_rollout_exec(
+                child.id,
+                exec_status="succeeded",
+                completed_at=now.isoformat(),
+            )
         reconcile_rollout_promotion(control_store, control_store.get_rollout(child.id))
         return
     reported_failure = (update_report.attempt_id == child.id
@@ -236,15 +303,27 @@ def _reconcile_development_pull(control_store, latest_heartbeats: dict, *, now: 
         heartbeat = latest_heartbeats.get(child.deployment_id)
         report = _report_from_heartbeat(heartbeat)
         materialize_backup_from_report(control_store, child.deployment_id, report)
+        verified_modules = verified_development_gate_modules(
+            control_store,
+            child,
+            heartbeat,
+        )
         status = synthesize_pull_status(
             child,
             report,
             now=now,
             deadline_seconds=deadline_seconds,
-            success_verified=pull_acknowledgement_matches(control_store, child, heartbeat),
+            success_verified=verified_modules is not None,
         )
         if status is not None:
-            _apply_child_status(control_store, child, status, report, now=now)
+            _apply_child_status(
+                control_store,
+                child,
+                status,
+                report,
+                now=now,
+                verified_modules=verified_modules,
+            )
 
 
 def reconcile_pull_targets(control_store, fleet_store, latest_heartbeats: dict, *, now: datetime,

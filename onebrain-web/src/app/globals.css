@@ -2157,6 +2157,31 @@ button:disabled,
   gap: 12px;
 }
 
+.restoreAcknowledgement {
+  align-items: flex-start;
+  background: rgb(var(--brand-warning-rgb) / 9%);
+  border: 1px solid rgb(var(--brand-warning-rgb) / 28%);
+  border-radius: var(--radius);
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+}
+
+.restoreAcknowledgement input {
+  margin-top: 3px;
+}
+
+.restoreAcknowledgement span {
+  display: grid;
+  gap: 3px;
+}
+
+.restoreAcknowledgement small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .promotionPath {
   display: grid;
   grid-template-columns: auto minmax(16px, 1fr) auto minmax(16px, 1fr) auto minmax(16px, 1fr) auto;

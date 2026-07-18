@@ -16,6 +16,12 @@ from app.controlplane.base import (
     ReleasePromotionEvent,
     validate_release,
 )
+from app.controlplane.development_gate import (
+    CURRENT_MODULE_SET_INVALID,
+    DEVELOPMENT_GATE_MODULE_IDS,
+    validate_module_transition,
+    verify_reported_modules,
+)
 from app.trust.release import (
     canonical_release_payload,
     release_signature_fields,
@@ -232,15 +238,28 @@ def _heartbeat_failure_reason(store, release, promotion, body, received_at: str)
         return "dev_attempt_mismatch"
     if update.last_target_version != release.version:
         return "dev_target_mismatch"
-    reported_modules = {report.module_id: report.version for report in body.modules}
-    installed = {module.module_id for module in store.list_modules(rollout.deployment_id) if module.status == "active"}
-    for module_id in sorted(installed):
-        expected = release.modules.get(module_id)
-        if not expected:
-            return "dev_module_missing"
-        actual = body.onebrain.version if module_id == "onebrain-api" else reported_modules.get(module_id, "")
-        if actual != expected:
-            return "dev_module_mismatch"
+    target_reason = validate_module_transition(DEVELOPMENT_GATE_MODULE_IDS, release.modules)
+    if target_reason:
+        return target_reason
+    installed = {
+        module.module_id
+        for module in store.list_modules(rollout.deployment_id)
+        if module.status == "active"
+    }
+    if installed != DEVELOPMENT_GATE_MODULE_IDS:
+        return CURRENT_MODULE_SET_INVALID
+    try:
+        required_secrets_epoch = max(
+            0,
+            int((rollout.request_payload or {}).get("required_secrets_epoch", 0)),
+        )
+    except (TypeError, ValueError):
+        return "dev_secrets_epoch_invalid"
+    if update.applied_secrets_epoch < required_secrets_epoch:
+        return "dev_secrets_epoch_mismatch"
+    _, module_reason = verify_reported_modules(body, release.modules)
+    if module_reason:
+        return module_reason
     return "verified"
 
 

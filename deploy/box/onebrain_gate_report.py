@@ -105,6 +105,10 @@ def _update_state(maintenance_dir: Path | None) -> dict:
         if maintenance_dir is not None else {}
     outcome = raw.get("outcome") if raw.get("outcome") in UPDATE_OUTCOMES else "none"
     backup_manifest = _safe_string(raw.get("backup_manifest"), limit=128)
+    try:
+        epoch = max(0, int((maintenance_dir / "onebrain_update/secrets_epoch").read_text()))
+    except Exception:
+        epoch = 0
     return {
         "last_target_version": _safe_string(raw.get("last_target_version")),
         "outcome": outcome,
@@ -114,6 +118,7 @@ def _update_state(maintenance_dir: Path | None) -> dict:
         "backup_status": raw.get("backup_status") if raw.get("backup_status") in {"", "success", "failed"} else "",
         "backup_ts": _safe_string(raw.get("backup_ts"), limit=40),
         "backup_manifest": backup_manifest if _BACKUP_MANIFEST.fullmatch(backup_manifest) else "",
+        "applied_secrets_epoch": epoch,
     }
 
 

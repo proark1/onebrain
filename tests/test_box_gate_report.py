@@ -51,6 +51,7 @@ def _env(tmp_path) -> dict[str, str]:
         "backup_manifest": "sha256:" + "a" * 64 + ":42",
         "ignored_untrusted_text": "never reported",
     }), encoding="utf-8")
+    (work / "secrets_epoch").write_text("7\n", encoding="utf-8")
     return {
         "ONEBRAIN_DEPLOYMENT_ID": "onebrain-development-next",
         "ONEBRAIN_FLEET_URL": "https://mc.example.com",
@@ -116,6 +117,7 @@ def test_host_reporter_builds_closed_full_stack_metadata_only_heartbeat(tmp_path
     }
     assert all(row["healthy"] for row in heartbeat["modules"])
     assert heartbeat["update"]["attempt_id"] == "rollout_123"
+    assert heartbeat["update"]["applied_secrets_epoch"] == 7
     assert heartbeat["update"]["backup_manifest"].endswith(":42")
     assert heartbeat["storage"] == {
         "root": {"total_bytes": 1000, "available_bytes": 200},

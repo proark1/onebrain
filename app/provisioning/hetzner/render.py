@@ -1102,12 +1102,9 @@ def _compact_shell_asset(content: str) -> str:
 def _compact_python_asset(content: str) -> str:
     """Remove non-executable Python documentation from an archive copy.
 
-    The deployed helpers do not inspect ``__doc__``.  Dropping standalone module,
-    class, and function docstrings — in addition to standalone comments — keeps
-    the host artifact below Hetzner's user-data ceiling while leaving the
-    repository source (and all executable statements) intact.  Only a docstring
-    occupying complete physical lines is eligible; unusual one-line forms that
-    share a line with executable code are deliberately retained.
+    The deployed helpers inspect neither ``__doc__`` nor function annotations.
+    Dropping both keeps the host artifact below Hetzner's user-data ceiling while
+    leaving the reviewed repository source intact.
     """
     try:
         compact_tree = ast.parse(content)
@@ -1125,6 +1122,30 @@ def _compact_python_asset(content: str) -> str:
                 and isinstance(compact_body[0].value.value, str)
             ):
                 compact_body.pop(0)
+            if isinstance(compact_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                compact_node.returns = None
+                compact_node.type_comment = None
+                arguments = compact_node.args
+                annotated = [
+                    *arguments.posonlyargs,
+                    *arguments.args,
+                    *arguments.kwonlyargs,
+                ]
+                if arguments.vararg:
+                    annotated.append(arguments.vararg)
+                if arguments.kwarg:
+                    annotated.append(arguments.kwarg)
+                for argument in annotated:
+                    argument.annotation = None
+        compact_tree.body = [
+            statement
+            for statement in compact_tree.body
+            if not (
+                isinstance(statement, ast.ImportFrom)
+                and statement.module == "__future__"
+                and any(alias.name == "annotations" for alias in statement.names)
+            )
+        ]
         ast.fix_missing_locations(compact_tree)
         compacted_source = ast.unparse(compact_tree) + "\n"
         if content.startswith("#!"):

@@ -28,6 +28,10 @@ from app.jobs.base import JOB_DOCUMENT_INGEST, JOB_SERVICE_CAPTURE
 from app.jobs.memory import MemoryJobStore
 from app.monitoring import record_api_error, record_auth_failure, reset_monitoring_metrics
 from app.controlplane.memory import MemoryControlPlaneStore
+from app.controlplane.development_gate import (
+    DEVELOPMENT_GATE_CORE_MODULE_IDS,
+    DEVELOPMENT_GATE_MODULE_IDS,
+)
 from app.trust.release import (
     release_signature_fields,
     release_signature_fields_from_body,
@@ -188,6 +192,82 @@ def test_successful_rollout_applies_release_versions_and_migration():
         "onebrain-api": "0.9.0",
     }
     assert store.plan_update("dep_a", "2026.07.4").reason == "already_current"
+
+
+def _development_gate_rollout_store():
+    store = MemoryControlPlaneStore()
+    gate = CustomerDeployment(
+        id="dev-gate",
+        customer_name="Development",
+        environment="development",
+        deployment_type="dedicated_server",
+        current_version="old",
+        current_migration="0041",
+    )
+    store.create_deployment(gate)
+    store.designate_release_gate(gate.id)
+    for module_id in DEVELOPMENT_GATE_CORE_MODULE_IDS:
+        store.upsert_module(DeploymentModule(gate.id, module_id, "old"))
+    target_modules = {
+        module_id: "2026.07.18.271"
+        for module_id in DEVELOPMENT_GATE_MODULE_IDS
+    }
+    release = ReleaseManifest(
+        version="2026.07.18.271",
+        git_sha="a" * 40,
+        modules=target_modules,
+        migration_from="0041",
+        migration_to="0042",
+    )
+    store.create_release(release)
+    store.record_backup(BackupRun("gate-backup", gate.id, "success"))
+    rollout = RolloutRun("gate-rollout", gate.id, release.version, "pending", "ci")
+    store.start_rollout(rollout)
+    return store, gate, release, rollout
+
+
+def test_complete_verified_rollout_atomically_expands_development_gate():
+    store, gate, release, rollout = _development_gate_rollout_store()
+    completed_at = "2026-07-18T12:00:00+00:00"
+
+    completed = store.complete_verified_rollout(
+        rollout.id,
+        verified_modules=release.modules,
+        completed_at=completed_at,
+    )
+
+    assert completed.status == "success"
+    assert completed.exec_status == "succeeded"
+    assert completed.completed_at == completed_at
+    assert {
+        module.module_id: module.version
+        for module in store.list_modules(gate.id)
+        if module.status == "active"
+    } == release.modules
+    deployment = store.get_deployment(gate.id)
+    assert deployment.current_version == release.version
+    assert deployment.current_migration == release.migration_to
+    assert deployment.current_version_deployed_at == completed_at
+
+
+def test_complete_verified_rollout_mismatch_leaves_gate_unchanged():
+    store, gate, release, rollout = _development_gate_rollout_store()
+    before_modules = store.list_modules(gate.id)
+    before_deployment = store.get_deployment(gate.id)
+
+    mismatched = dict(release.modules)
+    mismatched["assistant-service"] = "wrong"
+    with pytest.raises(ValueError, match="verified rollout modules do not match release"):
+        store.complete_verified_rollout(
+            rollout.id,
+            verified_modules=mismatched,
+            completed_at="2026-07-18T12:00:00+00:00",
+        )
+
+    assert store.list_modules(gate.id) == before_modules
+    assert store.get_deployment(gate.id) == before_deployment
+    assert store.get_rollout(rollout.id).status == "pending"
+    assert store.get_rollout(rollout.id).exec_status == "pending"
 
 
 def test_failed_rollout_does_not_apply_release_versions():
@@ -1398,6 +1478,7 @@ def test_dispatch_requires_ack_for_restore_required(monkeypatch):
         "provider": "hetzner",
         "pull": True,
         "target_source": "provisioning_run",
+        "required_secrets_epoch": 0,
     }
 
     # Ack-less (A5 construction — do not improvise another path).

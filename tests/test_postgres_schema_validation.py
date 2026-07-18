@@ -905,6 +905,135 @@ def test_start_rollout_insert_persists_fleet_rollout_id():
     assert connection.committed
 
 
+def test_postgres_verified_gate_completion_is_one_transaction_and_fail_closed():
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from app.controlplane.base import RolloutRun
+    from app.controlplane.development_gate import (
+        DEVELOPMENT_GATE_CORE_MODULE_IDS,
+        DEVELOPMENT_GATE_MODULE_IDS,
+    )
+
+    at = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
+    version = "2026.07.18.271"
+    target_modules = {module_id: version for module_id in DEVELOPMENT_GATE_MODULE_IDS}
+    pending = RolloutRun(
+        "gate-rollout",
+        "dev-gate",
+        version,
+        "pending",
+        "ci",
+        exec_status="dispatched",
+        request_payload={"pull": True},
+    )
+    pending_row = (
+        pending.id, pending.deployment_id, pending.target_version, pending.status,
+        pending.started_by, "", at, pending.exec_status, "hetzner", "", "", "",
+        pending.request_payload, at, None, "", False,
+    )
+    completed_row = (
+        pending.id, pending.deployment_id, pending.target_version, "success",
+        pending.started_by, "", at, "succeeded", "hetzner", "", "", "",
+        pending.request_payload, at, at, "", False,
+    )
+    release_row = (
+        version, "a" * 40, target_modules, "0041", "0042", "", "", "draft",
+        at, {}, "code_only", "", "",
+    )
+    deployment_row = (
+        "dev-gate", "Development", "development", "dedicated_server", "", "internal",
+        "active", "old", "0041", at, "", "automatic", True, None, None, True,
+        "old", "0041", [],
+    )
+    module_rows = [
+        ("dev-gate", module_id, "old", "active")
+        for module_id in sorted(DEVELOPMENT_GATE_CORE_MODULE_IDS)
+    ]
+
+    class AtomicCursor:
+        def __init__(self):
+            self.last_sql = ""
+            self.statements = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql, params=None):
+            self.last_sql = " ".join(str(sql).split())
+            self.statements.append((self.last_sql, params))
+
+        def fetchone(self):
+            if self.last_sql.startswith("SELECT") and "control_rollouts" in self.last_sql:
+                return pending_row
+            if self.last_sql.startswith("SELECT") and "control_release_manifests" in self.last_sql:
+                return release_row
+            if self.last_sql.startswith("SELECT") and "control_deployments" in self.last_sql:
+                return deployment_row
+            if self.last_sql.startswith("UPDATE control_rollouts"):
+                return completed_row
+            return None
+
+        def fetchall(self):
+            if self.last_sql.startswith("SELECT") and "control_deployment_modules" in self.last_sql:
+                return module_rows
+            return []
+
+    class AtomicConnection:
+        def __init__(self):
+            self.cursor_value = AtomicCursor()
+            self.committed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def cursor(self):
+            return self.cursor_value
+
+        def commit(self):
+            self.committed = True
+
+    def build_store(connection):
+        store = _bare_postgres_store()
+        store._conn = lambda: connection
+        store.get_rollout = lambda _rollout_id: pending
+        store._plan_update = lambda *_args, **_kwargs: SimpleNamespace(allowed=True, reason="")
+        return store
+
+    success_connection = AtomicConnection()
+    completed = build_store(success_connection).complete_verified_rollout(
+        pending.id,
+        verified_modules=target_modules,
+        completed_at=at.isoformat(),
+    )
+    statements = [sql for sql, _params in success_connection.cursor_value.statements]
+    assert completed.status == "success" and completed.exec_status == "succeeded"
+    assert success_connection.committed is True
+    assert sum(sql.startswith("INSERT INTO control_deployment_modules") for sql in statements) == 8
+    assert sum(sql.startswith("UPDATE control_deployments") for sql in statements) == 1
+    assert sum(sql.startswith("UPDATE control_rollouts") for sql in statements) == 1
+
+    failure_connection = AtomicConnection()
+    mismatched = dict(target_modules)
+    mismatched["assistant-service"] = "wrong"
+    with pytest.raises(ValueError, match="verified rollout modules do not match release"):
+        build_store(failure_connection).complete_verified_rollout(
+            pending.id,
+            verified_modules=mismatched,
+            completed_at=at.isoformat(),
+        )
+    failure_statements = [sql for sql, _params in failure_connection.cursor_value.statements]
+    assert failure_connection.committed is False
+    assert not any(sql.startswith("INSERT INTO control_deployment_modules") for sql in failure_statements)
+    assert not any(sql.startswith("UPDATE ") for sql in failure_statements)
+
+
 def test_record_backup_preserves_reported_occurrence_time():
     """Pull reconciliation supplies the time the backup happened, not merely the
     later time Mission Control received the report.  The Postgres write must keep

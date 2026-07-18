@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from app.controlplane.base import (
@@ -811,6 +812,141 @@ class PostgresControlPlaneStore:
                 RETURNING {self._ROLLOUT_COLS}
                 """,
                 (updated.status, updated.notes, rollout_id),
+            )
+            updated_row = cur.fetchone()
+            conn.commit()
+        return self._rollout(updated_row)
+
+    def complete_verified_rollout(
+        self,
+        rollout_id: str,
+        *,
+        verified_modules: Dict[str, str],
+        completed_at: str,
+    ) -> RolloutRun:
+        """Atomically apply authenticated module evidence and complete a pull rollout."""
+        from app.controlplane.development_gate import validate_module_transition
+
+        verified = {
+            str(module_id).strip(): str(version).strip()
+            for module_id, version in verified_modules.items()
+        }
+        rollout = self.get_rollout(rollout_id)
+        if not rollout:
+            raise ValueError(f"unknown rollout: {rollout_id}")
+        if rollout.status in {"success", "failed"}:
+            raise ValueError("terminal rollout status cannot be changed")
+        plan = self._plan_update(
+            rollout.deployment_id,
+            rollout.target_version,
+            ack_restore_required=rollout.ack_restore_required,
+            ignore_rollout_id=rollout.id,
+        )
+        if not plan.allowed:
+            raise ValueError(f"rollout completion blocked: {plan.reason}")
+
+        finished_at = completed_at.strip() or datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {self._ROLLOUT_COLS} FROM control_rollouts WHERE id = %s FOR UPDATE",
+                (rollout_id,),
+            )
+            locked = cur.fetchone()
+            if not locked:
+                raise ValueError(f"unknown rollout: {rollout_id}")
+            current_rollout = self._rollout(locked)
+            if current_rollout.status in {"success", "failed"}:
+                raise ValueError("terminal rollout status cannot be changed")
+            if (
+                current_rollout.deployment_id != rollout.deployment_id
+                or current_rollout.target_version != rollout.target_version
+            ):
+                raise ValueError("rollout target changed during completion")
+            cur.execute(
+                """
+                SELECT version, git_sha, modules, migration_from, migration_to,
+                    security_notes, rollback_plan, status, created_at, images,
+                    rollback_kind, signature, signing_key_id
+                FROM control_release_manifests
+                WHERE version = %s
+                FOR SHARE
+                """,
+                (current_rollout.target_version,),
+            )
+            release_row = cur.fetchone()
+            cur.execute(
+                f"SELECT {self._DEPLOYMENT_COLS} FROM control_deployments "
+                "WHERE id = %s FOR UPDATE",
+                (current_rollout.deployment_id,),
+            )
+            deployment_row = cur.fetchone()
+            if not release_row or not deployment_row:
+                raise ValueError("rollout target is no longer available")
+            release = self._release(release_row)
+            deployment = self._deployment(deployment_row)
+            if verified != release.modules:
+                raise ValueError("verified rollout modules do not match release")
+            cur.execute(
+                """
+                SELECT deployment_id, module_id, version, status
+                FROM control_deployment_modules
+                WHERE deployment_id = %s
+                ORDER BY module_id
+                FOR UPDATE
+                """,
+                (deployment.id,),
+            )
+            current_modules = [self._module(row) for row in cur.fetchall()]
+            if deployment.is_release_gate:
+                current = {
+                    module.module_id
+                    for module in current_modules
+                    if module.status == "active"
+                }
+                reason = validate_module_transition(current, verified)
+                if reason:
+                    raise ValueError(reason)
+
+            for module_id, version in verified.items():
+                cur.execute(
+                    """
+                    INSERT INTO control_deployment_modules
+                    (deployment_id, module_id, version, status)
+                    VALUES (%s, %s, %s, 'active')
+                    ON CONFLICT (deployment_id, module_id) DO UPDATE SET
+                        version = EXCLUDED.version,
+                        status = 'active',
+                        updated_at = now()
+                    """,
+                    (deployment.id, module_id, version),
+                )
+            cur.execute(
+                """
+                UPDATE control_deployments
+                SET current_version = %s,
+                    current_migration = %s,
+                    current_version_deployed_at = %s
+                WHERE id = %s
+                """,
+                (
+                    release.version,
+                    release.migration_to or deployment.current_migration,
+                    finished_at,
+                    deployment.id,
+                ),
+            )
+            cur.execute(
+                f"""
+                UPDATE control_rollouts
+                SET status = 'success',
+                    exec_status = 'succeeded',
+                    failure_reason = '',
+                    completed_at = %s,
+                    updated_at = now()
+                WHERE id = %s
+                RETURNING {self._ROLLOUT_COLS}
+                """,
+                (finished_at, rollout_id),
             )
             updated_row = cur.fetchone()
             conn.commit()
