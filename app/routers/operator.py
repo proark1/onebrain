@@ -42,6 +42,7 @@ from app.deps import (
     get_store,
 )
 from app.controlplane.rollout_exec import (
+    SECRETS_EPOCH_PENDING_REASON,
     mark_rollout_dispatch_failed,
     resolve_pull_target,
 )
@@ -1477,6 +1478,12 @@ def _dispatch_development_candidate(store, version: str, *, actor: str) -> Relea
         fresh = False
     if gate.last_heartbeat_healthy is not True or not fresh:
         return promotion
+    eligibility = _resolve_pull_target(gate.id)
+    if not eligibility.allowed and eligibility.reason == SECRETS_EPOCH_PENDING_REASON:
+        # The host is healthy and enrolled but still applying a just-rotated
+        # encrypted bundle. Keep the candidate queued; the next healthy heartbeat
+        # calls dispatch_waiting_development_candidate and retries eligibility.
+        return promotion
     rollout_id = f"roll_dev_{uuid4().hex[:12]}"
     started_at = datetime.now(timezone.utc).isoformat()
     # Candidate delivery is gated even during the report-only rollout phase. A
@@ -1791,7 +1798,10 @@ def prepare_existing_development_gate(
     except (TypeError, ValueError):
         raise HTTPException(status_code=409, detail="Development gate heartbeat is stale.")
 
-    from app.provisioning.gate_adoption import prepare_existing_gate_bundle
+    from app.provisioning.gate_adoption import (
+        prepare_existing_gate_bundle,
+        retire_superseded_gate_keys,
+    )
 
     try:
         result = prepare_existing_gate_bundle(
@@ -1812,6 +1822,19 @@ def prepare_existing_development_gate(
     except (TypeError, ValueError):
         applied_epoch = 0
     ready = applied_epoch >= result.secrets_epoch
+    if ready:
+        try:
+            retire_superseded_gate_keys(
+                deployment=gate,
+                provision_store=get_provisioning_run_store(),
+                service_key_store=get_service_key_store(),
+                settings=settings,
+                optional_module_ids=DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="Development gate key retirement failed safely.") from exc
     return DevelopmentGatePreparationOut(
         deployment_id=gate.id,
         updated=result.updated,

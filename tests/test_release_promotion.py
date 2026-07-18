@@ -539,6 +539,64 @@ def test_second_candidate_stays_pending_while_gate_verifies_first_rollout():
     assert store.get_rollout("roll-first").status == "pending"
 
 
+def test_epoch_pending_candidate_stays_queued_until_next_heartbeat(monkeypatch):
+    from types import SimpleNamespace
+
+    import app.config as config_module
+    from app.controlplane.rollout_exec import SECRETS_EPOCH_PENDING_REASON
+
+    store = MemoryControlPlaneStore()
+    gate = CustomerDeployment(
+        id="dev-gate",
+        customer_name="Development",
+        environment="development",
+        deployment_type="dedicated_server",
+        release_ring="internal",
+        last_heartbeat_at=datetime.now(timezone.utc).isoformat(),
+        last_heartbeat_healthy=True,
+    )
+    store.create_deployment(gate)
+    store.designate_release_gate(gate.id)
+    store.upsert_module(DeploymentModule(gate.id, "onebrain-api", "old"))
+    private_key, public_key = generate_keypair()
+    release = _release()
+    register_candidate(
+        store,
+        release,
+        dev_signature=sign_release(release_signature_fields(release), private_key),
+        dev_signing_key_id="dev-1",
+        development_public_key=public_key,
+    )
+    settings = SimpleNamespace(
+        release_promotion_required=True,
+        release_require_signature=True,
+        release_verify_public_key="",
+        dev_release_verify_public_key=public_key,
+        fleet_report_seconds=60,
+        fleet_public_url="https://mc.example.com",
+    )
+    monkeypatch.setattr(config_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(operator_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "_resolve_pull_target", lambda _deployment_id: SimpleNamespace(
+        allowed=False,
+        reason=SECRETS_EPOCH_PENDING_REASON,
+    ))
+
+    queued = operator_router._dispatch_development_candidate(store, release.version, actor="ci")
+    assert queued.state == "dev_pending"
+    assert store.list_rollouts(gate.id) == []
+
+    monkeypatch.setattr(operator_router, "_resolve_pull_target", lambda _deployment_id: SimpleNamespace(
+        allowed=True,
+        reason="",
+    ))
+    monkeypatch.setattr(operator_router, "_dispatch_child_rollout", lambda *_args, **_kwargs: None)
+    dispatched = operator_router.dispatch_waiting_development_candidate(store, actor="fleet:dev-gate")
+    assert dispatched.state == "dev_deploying"
+    assert dispatched.dev_rollout_id
+
+
 @pytest.mark.parametrize("retry_failed_candidate", [False, True])
 def test_dev_dispatch_persists_rollout_before_promotion_foreign_key(
     monkeypatch, retry_failed_candidate

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -14,6 +15,7 @@ from app.fleet.memory import MemoryFleetStore
 from app.provisioning.gate_adoption import prepare_existing_gate_bundle
 from app.provisioning.runs import BoxSecretBundle, MemoryProvisioningRunStore, OneTimeSecretCipher
 from app.routers import operator as operator_router
+from app.servicekeys.base import ServiceKey, generate_key, hash_secret
 from app.servicekeys.memory import MemoryServiceKeyStore
 
 
@@ -114,6 +116,23 @@ def test_prepare_existing_gate_bundle_is_secret_safe_and_idempotent():
 def test_prepare_existing_gate_endpoint_waits_for_epoch_convergence(monkeypatch):
     settings, deployment, prov, keys = _stores()
     settings.fleet_report_seconds = None
+    stale_id, stale_secret, stale_raw = generate_key()
+    keys.create(ServiceKey(
+        id=stale_id,
+        key_hash=hash_secret(stale_secret),
+        tenant_id=deployment.account_id,
+        account_id=deployment.account_id,
+        app_id="assistant",
+        scopes=(),
+    ))
+    cipher = OneTimeSecretCipher(settings)
+    bundle_row = prov.get_secret_bundle(deployment.id)
+    bundle = json.loads(cipher.open_bundle(bundle_row.ciphertext))
+    bundle["ONEBRAIN_ASSISTANT_SERVICE_KEY"] = stale_raw
+    prov.upsert_secret_bundle(replace(
+        bundle_row,
+        ciphertext=cipher.seal_bundle(json.dumps(bundle)),
+    ))
     control = MemoryControlPlaneStore()
     control.create_deployment(deployment)
     control.designate_release_gate(deployment.id)
@@ -142,6 +161,7 @@ def test_prepare_existing_gate_endpoint_waits_for_epoch_convergence(monkeypatch)
     assert first.applied_secrets_epoch == 0
     assert first.ready is False
     assert first.blockers == ["secrets_epoch_pending"]
+    assert keys.get(stale_id).status == "active"
 
     timestamp = datetime.now(timezone.utc).isoformat()
     fleet.record_heartbeat(Heartbeat(
@@ -157,6 +177,7 @@ def test_prepare_existing_gate_endpoint_waits_for_epoch_convergence(monkeypatch)
     assert second.updated is False
     assert second.ready is True
     assert second.blockers == []
+    assert keys.get(stale_id).status == "revoked"
 
 
 def test_prepare_existing_gate_revokes_new_keys_when_bundle_write_fails():

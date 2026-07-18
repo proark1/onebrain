@@ -13,6 +13,17 @@ from typing import Dict
 
 
 HETZNER_TARGET_PREFIX = "hetzner:"
+DEVELOPMENT_GATE_MODULE_IDS = frozenset({
+    "onebrain-api",
+    "onebrain-admin-ui",
+    "onebrain-workers",
+    "assistant-service",
+    "communication-api",
+    "communication-widget",
+    "communication-voice",
+    "communication-workers",
+})
+SECRETS_EPOCH_PENDING_REASON = "development gate has not applied the expected secrets epoch"
 
 
 @dataclass(frozen=True)
@@ -100,6 +111,14 @@ def resolve_pull_target(
     if not keys:
         return PullTargetEligibility(False, reason="development gate has no active fleet key")
 
+    installed_modules = {
+        module.module_id
+        for module in control_store.list_modules(deployment_id)
+        if module.status == "active"
+    }
+    if installed_modules != DEVELOPMENT_GATE_MODULE_IDS:
+        return PullTargetEligibility(False, reason="development gate module set is incomplete")
+
     heartbeat = fleet_store.latest_heartbeat(deployment_id)
     if heartbeat is None:
         return PullTargetEligibility(False, reason="development gate has no authenticated heartbeat")
@@ -117,19 +136,37 @@ def resolve_pull_target(
     if (clock - received_at).total_seconds() > max(1, heartbeat_max_age_seconds):
         return PullTargetEligibility(False, reason="development gate heartbeat is stale")
 
+    # Heartbeat ingest stamps the authenticated key's last_used_at with the same
+    # server timestamp as the heartbeat. Retain a small legacy tolerance for rows
+    # written before those timestamps were unified.
+    key_proved_heartbeat = False
+    for key in keys:
+        try:
+            used_at = datetime.fromisoformat(key.last_used_at)
+            if used_at.tzinfo is None:
+                used_at = used_at.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        if abs((received_at - used_at).total_seconds()) <= 5:
+            key_proved_heartbeat = True
+            break
+    if not key_proved_heartbeat:
+        return PullTargetEligibility(
+            False,
+            reason="development gate heartbeat was not sent with an active fleet key",
+        )
+
     get_bundle = getattr(prov_store, "get_secret_bundle", None)
     bundle = get_bundle(deployment_id) if callable(get_bundle) else None
-    if bundle is not None:
-        update = heartbeat.payload.get("update", {}) if isinstance(heartbeat.payload, dict) else {}
-        try:
-            applied_epoch = int(update.get("applied_secrets_epoch", 0) or 0)
-        except (TypeError, ValueError):
-            applied_epoch = 0
-        if applied_epoch < int(bundle.secrets_epoch or 0):
-            return PullTargetEligibility(
-                False,
-                reason="development gate has not applied the expected secrets epoch",
-            )
+    if bundle is None:
+        return PullTargetEligibility(False, reason="development gate has no encrypted secret bundle")
+    update = heartbeat.payload.get("update", {}) if isinstance(heartbeat.payload, dict) else {}
+    try:
+        applied_epoch = int(update.get("applied_secrets_epoch", 0) or 0)
+    except (TypeError, ValueError):
+        applied_epoch = 0
+    if applied_epoch < int(bundle.secrets_epoch or 0):
+        return PullTargetEligibility(False, reason=SECRETS_EPOCH_PENDING_REASON)
 
     return PullTargetEligibility(
         allowed=True,

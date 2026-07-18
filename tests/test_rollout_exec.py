@@ -16,6 +16,7 @@ from app.auth.roles import ROLES
 from app.controlplane.base import CustomerDeployment, DeploymentModule, ReleaseManifest, RolloutRun
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.controlplane.rollout_exec import (
+    DEVELOPMENT_GATE_MODULE_IDS,
     resolve_pull_target,
     resolve_provisioned_target,
     target_provider,
@@ -35,14 +36,19 @@ def _control(
     schema_change: bool = False,
     backed_up: bool = False,
     environment: str = "production",
+    full_stack: bool = False,
 ) -> MemoryControlPlaneStore:
     store = MemoryControlPlaneStore()
     store.create_deployment(CustomerDeployment(
         id="dep_a", customer_name="A", account_id="acct_a", release_ring="pilot",
         current_version="2026.07.0", current_migration="0041", environment=environment))
     store.upsert_module(DeploymentModule("dep_a", "onebrain-api", "0.7.0"))
+    release_modules = (
+        {module_id: "2026.07.1" for module_id in DEVELOPMENT_GATE_MODULE_IDS}
+        if full_stack else {"onebrain-api": "0.8.0"}
+    )
     store.create_release(ReleaseManifest(
-        version="2026.07.1", git_sha="abc123", modules={"onebrain-api": "0.8.0"},
+        version="2026.07.1", git_sha="abc123", modules=release_modules,
         migration_from="0041", migration_to="0042" if schema_change else "0041"))
     if backed_up:
         from app.controlplane.base import BackupRun
@@ -130,15 +136,21 @@ def _enrolled_gate(*, healthy=True, age_seconds=0, key_status="active"):
         deployment_type="dedicated_server",
     ))
     control.designate_release_gate("gate")
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
+        control.upsert_module(DeploymentModule("gate", module_id, "installed"))
     fleet = MemoryFleetStore()
-    fleet.create_key(FleetKey("fk", "hash", "gate", status=key_status))
     now = datetime.now(timezone.utc)
+    received_at = (now - timedelta(seconds=age_seconds)).isoformat()
+    fleet.create_key(FleetKey(
+        "fk", "hash", "gate", status=key_status, last_used_at=received_at,
+    ))
     fleet.record_heartbeat(Heartbeat(
         id="hb", deployment_id="gate", contract_version="fleet.v2",
-        reported_at=now.isoformat(), received_at=(now - timedelta(seconds=age_seconds)).isoformat(),
+        reported_at=now.isoformat(), received_at=received_at,
         healthy=healthy,
     ))
-    return control, fleet, now
+    bundle = SimpleNamespace(deployment_id="gate", secrets_epoch=0)
+    return control, fleet, now, _FakeProvStore([], bundle)
 
 
 def test_pull_target_uses_successful_provisioning_run():
@@ -155,9 +167,9 @@ def test_pull_target_uses_successful_provisioning_run():
 
 
 def test_pull_target_adopts_only_enrolled_fresh_healthy_designated_gate():
-    control, fleet, now = _enrolled_gate()
+    control, fleet, now, prov = _enrolled_gate()
 
-    result = resolve_pull_target(_FakeProvStore([]), control, fleet, "gate", now=now)
+    result = resolve_pull_target(prov, control, fleet, "gate", now=now)
 
     assert result.allowed is True
     assert result.provider == "hetzner"
@@ -174,18 +186,18 @@ def test_pull_target_adopts_only_enrolled_fresh_healthy_designated_gate():
     ],
 )
 def test_pull_target_rejects_unproven_gate(healthy, age_seconds, key_status, reason):
-    control, fleet, now = _enrolled_gate(
+    control, fleet, now, prov = _enrolled_gate(
         healthy=healthy, age_seconds=age_seconds, key_status=key_status)
 
     result = resolve_pull_target(
-        _FakeProvStore([]), control, fleet, "gate", heartbeat_max_age_seconds=600, now=now)
+        prov, control, fleet, "gate", heartbeat_max_age_seconds=600, now=now)
 
     assert result.allowed is False
     assert reason in result.reason
 
 
 def test_pull_target_waits_for_expected_secrets_epoch():
-    control, fleet, now = _enrolled_gate()
+    control, fleet, now, _prov = _enrolled_gate()
     heartbeat = fleet.latest_heartbeat("gate")
     fleet.record_heartbeat(Heartbeat(
         **{
@@ -207,6 +219,26 @@ def test_pull_target_waits_for_expected_secrets_epoch():
     ))
     ready = resolve_pull_target(_FakeProvStore([], bundle), control, fleet, "gate", now=now)
     assert ready.allowed is True
+
+
+def test_pull_target_requires_bundle_full_modules_and_active_key_heartbeat_proof():
+    control, fleet, now, prov = _enrolled_gate()
+
+    missing_bundle = resolve_pull_target(_FakeProvStore([]), control, fleet, "gate", now=now)
+    assert missing_bundle.allowed is False
+    assert "encrypted secret bundle" in missing_bundle.reason
+
+    control.upsert_module(DeploymentModule("gate", "assistant-service", "installed", status="disabled"))
+    missing_module = resolve_pull_target(prov, control, fleet, "gate", now=now)
+    assert missing_module.allowed is False
+    assert "module set" in missing_module.reason
+    control.upsert_module(DeploymentModule("gate", "assistant-service", "installed"))
+
+    fleet.revoke_key("fk")
+    fleet.create_key(FleetKey("replacement", "hash", "gate", status="active"))
+    unproved_key = resolve_pull_target(prov, control, fleet, "gate", now=now)
+    assert unproved_key.allowed is False
+    assert "not sent with an active fleet key" in unproved_key.reason
 
 
 def test_pull_target_never_adopts_customer_or_undesignated_development_server():
@@ -351,12 +383,14 @@ def test_dispatch_offers_hetzner_target(monkeypatch):
 
 
 def test_dispatch_offers_enrolled_existing_development_gate(monkeypatch):
-    store = _control(environment="development")
+    store = _control(environment="development", full_stack=True)
     store.designate_release_gate("dep_a")
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
+        store.upsert_module(DeploymentModule("dep_a", module_id, "installed"))
     _started(store)
     fleet = MemoryFleetStore()
     now = datetime.now(timezone.utc).isoformat()
-    fleet.create_key(FleetKey("fk", "hash", "dep_a"))
+    fleet.create_key(FleetKey("fk", "hash", "dep_a", last_used_at=now))
     fleet.record_heartbeat(Heartbeat(
         id="hb", deployment_id="dep_a", contract_version="fleet.v2",
         reported_at=now, received_at=now, healthy=True,
@@ -364,7 +398,8 @@ def test_dispatch_offers_enrolled_existing_development_gate(monkeypatch):
     monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
     monkeypatch.setattr(operator_router, "get_settings", _operator_settings)
     monkeypatch.setattr(provisioning_router, "get_settings", _operator_settings)
-    monkeypatch.setattr(operator_router, "get_provisioning_run_store", lambda: _FakeProvStore([]))
+    bundle = SimpleNamespace(deployment_id="dep_a", secrets_epoch=0)
+    monkeypatch.setattr(operator_router, "get_provisioning_run_store", lambda: _FakeProvStore([], bundle))
     monkeypatch.setattr(operator_router, "get_fleet_store", lambda: fleet)
 
     out = operator_router.dispatch_rollout(
