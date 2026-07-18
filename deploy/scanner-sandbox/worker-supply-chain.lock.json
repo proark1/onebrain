@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "base_image": {
+    "reference": "python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de",
+    "linux_amd64_manifest_digest": "sha256:cab2dbf575e971934a81e4622f5aba17aa7929719bd7e31033a3a83b97fd0464"
+  },
+  "debian": {
+    "suite": "trixie",
+    "architecture": "amd64",
+    "keyring": "/usr/share/keyrings/debian-archive-keyring.gpg",
+    "snapshots": {
+      "debian": {
+        "url": "https://snapshot.debian.org/archive/debian/20260714T000000Z/",
+        "suite": "trixie",
+        "components": [
+          "main"
+        ]
+      },
+      "debian-security": {
+        "url": "https://snapshot.debian.org/archive/debian-security/20260714T000000Z/",
+        "suite": "trixie-security",
+        "components": [
+          "main"
+        ]
+      }
+    }
+  },
+  "stages": {
+    "scanner-launcher-build": {
+      "packages": [
+        {
+          "name": "gcc",
+          "version": "4:14.2.0-1"
+        },
+        {
+          "name": "libc6-dev",
+          "version": "2.41-12+deb13u3"
+        },
+        {
+          "name": "libseccomp-dev",
+          "version": "2.6.0-2"
+        },
+        {
+          "name": "make",
+          "version": "4.4.1-2"
+        }
+      ],
+      "inventory_sha256": "5c8b183cbc8b74d9ec10d9bb1bf35aaf74159a27daafd7a6dbbb2e28ea0cbe55"
+    },
+    "worker-runtime": {
+      "packages": [
+        {
+          "name": "ca-certificates",
+          "version": "20250419"
+        },
+        {
+          "name": "clamav",
+          "version": "1.4.3+dfsg-1"
+        },
+        {
+          "name": "clamav-freshclam",
+          "version": "1.4.3+dfsg-1"
+        },
+        {
+          "name": "libseccomp2",
+          "version": "2.6.0-2"
+        },
+        {
+          "name": "tesseract-ocr",
+          "version": "5.5.0-1+b1"
+        }
+      ],
+      "inventory_sha256": "8f5527a21e5569e8c214c064434fd14d47a43cb823928dcff51c4ad3239f555a"
+    },
+    "scanner-validation": {
+      "packages": [
+        {
+          "name": "zip",
+          "version": "3.0-15"
+        }
+      ],
+      "inventory_sha256": "9f6bd6a2212f06eb49f3344bfcb5717a23dffc8326e3c0ea901ff06f915d4f93"
+    }
+  },
+  "definitions": {
+    "url": "https://github.com/proark1/onebrain/releases/download/scanner-definitions-clamav-2a10707a5851180ac6c1d75e/onebrain-clamav-definitions-clamav-2a10707a5851180ac6c1d75e.tar.gz",
+    "sha256": "a5c784b11174a5ff97a646787ee1406ee6322971dcfa6a815ddab8ee5ed90798",
+    "identity": "clamav-2a10707a5851180ac6c1d75e",
+    "archive_manifest_sha256": "400ad558000f574b07371b5019cc5518e13854836d95ba6a95d97f966b0c53df",
+    "max_bytes": 536870912
+  },
+  "updated_at": "2026-07-18T16:18:00+03:00"
+}
