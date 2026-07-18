@@ -65,6 +65,37 @@ class MemoryUserStore:
             self._save()
             return updated
 
+    def update_status(self, user_id: str, status: str) -> User:
+        with self._lock:
+            user = self._by_id.get(user_id)
+            if not user:
+                raise KeyError(f"unknown user: {user_id}")
+            updated = replace(user, status=status)
+            self._by_id[user_id] = updated
+            self._save()
+            return updated
+
+    def anonymize(self, user_id: str, *, email: str, password_hash: str) -> User:
+        with self._lock:
+            user = self._by_id.get(user_id)
+            if not user:
+                raise KeyError(f"unknown user: {user_id}")
+            self._by_email.pop(user.email.strip().lower(), None)
+            updated = replace(
+                user,
+                email=email.strip().lower(),
+                display_name="Deleted user",
+                password_hash=password_hash,
+                role_id="public",
+                location="",
+                status="deleted",
+                must_change_password=False,
+            )
+            self._by_id[user_id] = updated
+            self._by_email[updated.email] = user_id
+            self._save()
+            return updated
+
     def delete_by_email(self, email: str) -> bool:
         with self._lock:
             key = email.strip().lower()

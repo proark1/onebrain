@@ -86,6 +86,20 @@ def get_user_store():
 
 
 @lru_cache
+def get_user_management_job_store():
+    from app.user_management.factory import build_user_management_job_store
+
+    return build_user_management_job_store(get_settings())
+
+
+@lru_cache
+def get_user_management_receipt_store():
+    from app.user_management.factory import build_user_management_receipt_store
+
+    return build_user_management_receipt_store(get_settings())
+
+
+@lru_cache
 def get_session_store():
     from app.sessions.factory import build_session_store
 

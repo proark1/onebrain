@@ -67,6 +67,11 @@ import type {
   AiMission,
   AiModels,
   AiWorkProduct,
+  CreateManagedUserInput,
+  ManagedUserDirectory,
+  ManagedUserMutationResult,
+  UserManagementJob,
+  UserManagementResult,
 } from "@/lib/onebrain-types";
 import { cleanScope, scopeQuery } from "@/lib/onebrain-types";
 
@@ -852,6 +857,66 @@ export async function askStream(
 
 export function getFleetOverview(): Promise<FleetOverview> {
   return requestJson<FleetOverview>("/fleet/overview");
+}
+
+export function refreshManagedUserDirectory(
+  deploymentId: string,
+  includeDeleted = false,
+): Promise<UserManagementJob<ManagedUserDirectory>> {
+  return requestJson(`/operator/user-management/deployments/${encodeURIComponent(deploymentId)}/directory`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ include_deleted: includeDeleted }),
+  });
+}
+
+export function getUserManagementJob<T = Record<string, unknown>>(jobId: string): Promise<UserManagementJob<T>> {
+  return requestJson(`/operator/user-management/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export function createManagedUser(
+  deploymentId: string,
+  input: CreateManagedUserInput,
+): Promise<UserManagementJob<ManagedUserMutationResult>> {
+  return requestJson(`/operator/user-management/deployments/${encodeURIComponent(deploymentId)}/users`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+function managedUserAction(
+  deploymentId: string,
+  userId: string,
+  action: "reset-password" | "disable" | "enable",
+): Promise<UserManagementJob<ManagedUserMutationResult>> {
+  return requestJson(
+    `/operator/user-management/deployments/${encodeURIComponent(deploymentId)}/users/${encodeURIComponent(userId)}/${action}`,
+    { method: "POST" },
+  );
+}
+
+export const resetManagedUserPassword = (deploymentId: string, userId: string) =>
+  managedUserAction(deploymentId, userId, "reset-password");
+export const disableManagedUser = (deploymentId: string, userId: string) =>
+  managedUserAction(deploymentId, userId, "disable");
+export const enableManagedUser = (deploymentId: string, userId: string) =>
+  managedUserAction(deploymentId, userId, "enable");
+
+export function deleteManagedUser(
+  deploymentId: string,
+  userId: string,
+): Promise<UserManagementJob<ManagedUserMutationResult>> {
+  return requestJson(
+    `/operator/user-management/deployments/${encodeURIComponent(deploymentId)}/users/${encodeURIComponent(userId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export function revealManagedUserSecret(
+  jobId: string,
+): Promise<UserManagementResult<ManagedUserMutationResult>> {
+  return requestJson(`/operator/user-management/jobs/${encodeURIComponent(jobId)}/reveal`, { method: "POST" });
 }
 
 export function listFleetRollouts(): Promise<FleetRollout[]> {

@@ -4286,6 +4286,63 @@ button.danger, .aiApprovalControls button.danger, .aiConnectorEditor button.dang
 .aiOAuthResult > p:not(.eyebrow) { max-width: 550px; color: var(--muted); font-size: 13px; font-weight: 620; line-height: 1.5; }
 .aiOAuthResult a { margin-top: 8px; border-radius: 7px; background: var(--brand-primary); color: #fff; padding: 10px 14px; font-size: 12px; font-weight: 740; }
 
+/* Mission Control user management: a quiet server-console surface whose
+   identity rail makes deployment scope impossible to miss. */
+.userManagementSurface { --user-ink: #162c3b; --user-signal: #2d6b73; --user-mist: #edf5f4; }
+.userServerRail { display: grid; grid-template-columns: 52px minmax(240px, .55fr) minmax(0, 1fr); align-items: center; gap: 16px; overflow: hidden; border: 1px solid rgb(22 44 59 / 14%); border-radius: 12px; background: linear-gradient(105deg, #142d3b 0 52px, #fff 52px); padding: 14px 18px 14px 0; box-shadow: var(--shadow-soft); }
+.userServerGlyph { display: grid; align-content: center; gap: 4px; height: 100%; padding: 0 13px; }
+.userServerGlyph span { display: block; height: 5px; border-radius: 1px; background: #8bb9b5; box-shadow: inset 7px 0 #d7e9e7; }
+.userServerRail > label { display: grid; gap: 5px; color: var(--muted); font-size: 9px; font-weight: 780; letter-spacing: .05em; text-transform: uppercase; }
+.userServerRail select { min-width: 0; color: var(--user-ink); font-size: 13px; font-weight: 720; text-transform: none; }
+.userServerRail > p { color: var(--muted); font-size: 11px; font-weight: 620; }
+.userServerFacts { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; color: var(--muted); font-size: 9px; font-weight: 700; }
+.userServerFacts > span:not(.statusBadge) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oneTimeReceipt { display: grid; grid-template-columns: minmax(180px, .7fr) minmax(240px, 1fr) auto; align-items: center; gap: 14px; border: 1px solid rgb(var(--brand-warning-rgb) / 34%); border-left: 5px solid var(--brand-warning); border-radius: 10px; background: #fffaf0; padding: 14px 16px; box-shadow: var(--shadow-soft); }
+.oneTimeReceipt > div:first-child { display: grid; gap: 2px; }
+.oneTimeReceipt span { color: #8a622a; font-size: 8px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+.oneTimeReceipt strong { color: var(--user-ink); font-size: 11px; }
+.oneTimeReceipt code { overflow-x: auto; border: 1px solid rgb(22 44 59 / 12%); border-radius: 7px; background: #fff; padding: 10px 12px; color: var(--user-ink); font-size: 14px; letter-spacing: .04em; text-align: center; user-select: all; }
+.oneTimeReceiptActions, .userDirectoryTools, .userRowActions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.userDirectoryTools label { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 9px; font-weight: 700; text-transform: none; }
+.userDirectoryTools input { accent-color: var(--user-signal); }
+.userJobProgress { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 2px 9px; margin-bottom: 12px; border-radius: 8px; background: var(--user-mist); padding: 10px 12px; }
+.userJobPulse { grid-row: 1 / 3; width: 9px; height: 9px; border-radius: 50%; background: var(--user-signal); box-shadow: 0 0 0 5px rgb(45 107 115 / 10%); animation: userPulse 1.4s ease-in-out infinite; }
+.userJobProgress strong { color: var(--user-ink); font-size: 10px; }
+.userJobProgress small { color: var(--muted); font-family: "SFMono-Regular", Consolas, monospace; font-size: 8px; }
+@keyframes userPulse { 50% { opacity: .45; transform: scale(.82); } }
+.userTableScroll { content-visibility: auto; }
+.userTable td { vertical-align: middle; }
+.userTable td > strong, .userTable td > small { display: block; }
+.userTable td > small { margin-top: 3px; color: var(--muted); font-size: 8px; font-weight: 620; }
+.userTable td:first-child strong { color: var(--user-ink); font-size: 11px; }
+.userTable .statusBadge + small { margin-top: 5px; color: #8a622a; }
+.userRowActions { min-width: 220px; }
+.userRowActions button { padding: 6px 8px; font-size: 8px; }
+.managedUserCreate { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.managedUserCreateAction { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid rgb(22 44 59 / 10%); padding-top: 12px; }
+.managedUserCreateAction p { max-width: 620px; color: var(--muted); font-size: 10px; font-weight: 620; line-height: 1.45; }
+.userDeleteConfirm { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, .55fr) auto; align-items: end; gap: 16px; border: 1px solid rgb(var(--brand-danger-rgb) / 30%); border-radius: 11px; background: rgb(var(--brand-danger-rgb) / 5%); padding: 18px; }
+.userDeleteConfirm > div:first-child { display: grid; gap: 4px; }
+.userDeleteConfirm h2 { color: var(--red); font-size: 20px; }
+.userDeleteConfirm p:not(.eyebrow) { max-width: 620px; color: var(--muted); font-size: 10px; font-weight: 620; line-height: 1.45; }
+.userDeleteConfirm label { display: grid; gap: 5px; color: #76504e; font-size: 9px; font-weight: 760; }
+.userDeleteConfirm > div:last-child { display: flex; gap: 6px; }
+
+@media (max-width: 900px) {
+  .userServerRail { grid-template-columns: 52px minmax(0, 1fr); }
+  .userServerFacts, .userServerRail > p { grid-column: 2; justify-content: flex-start; }
+  .managedUserCreate { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .userDeleteConfirm, .oneTimeReceipt { grid-template-columns: 1fr; align-items: stretch; }
+}
+
+@media (max-width: 560px) {
+  .userServerFacts { align-items: flex-start; flex-direction: column; }
+  .managedUserCreate { grid-template-columns: 1fr; }
+  .managedUserCreateAction { align-items: stretch; flex-direction: column; }
+}
+
+@media (prefers-reduced-motion: reduce) { .userJobPulse { animation: none; } }
+
 @media (max-width: 620px) {
   .moduleChoice {
     grid-template-columns: auto minmax(0, 1fr);

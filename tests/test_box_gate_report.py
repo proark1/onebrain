@@ -107,9 +107,10 @@ def test_host_reporter_builds_closed_full_stack_metadata_only_heartbeat(tmp_path
         "jobs_pending": 0,
         "jobs_failed": 0,
         "auth_failures_recent": 0,
-        "api_5xx_recent": 0,
-        "uptime_seconds": 0,
-    }
+            "api_5xx_recent": 0,
+            "uptime_seconds": 0,
+            "user_management_v1": True,
+        }
     assert {row["module_id"]: row["version"] for row in heartbeat["modules"]} == {
         module_id: f"{module_id}-v1" for module_id in _MODULES
     }

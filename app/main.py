@@ -25,7 +25,7 @@ from app.provisioning.customer_bootstrap import (
     decode_customer_bootstrap,
     reconcile_customer_bootstrap,
 )
-from app.routers import ai_employees, assistant, auth, chat, conversations, documents, fleet, jobs, kpis, operator, platform, privacy, provisioning, rollouts, service, session
+from app.routers import ai_employees, assistant, auth, chat, conversations, documents, fleet, jobs, kpis, operator, platform, privacy, provisioning, rollouts, service, session, user_management
 from app.seed import seed_if_empty
 from app.users.seed import seed_admin_from_env, seed_users_if_empty
 
@@ -121,6 +121,8 @@ def create_app() -> FastAPI:
                 "before booting (see scripts/rotate_desired_state_key.py overlap-set)."
             )
         app.include_router(fleet.router)
+        app.include_router(user_management.agent_router)
+        app.include_router(user_management.operator_router)
 
         # G3-2 (P5-06): idempotent operator first-boot self-seed. Create MC's OWN
         # deployment row + a fleet key matching the baked ONEBRAIN_FLEET_KEY so the

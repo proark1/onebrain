@@ -113,6 +113,66 @@
         "title": "AccountOut",
         "type": "object"
       },
+      "AgentFailure": {
+        "additionalProperties": false,
+        "properties": {
+          "deployment_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "error_code": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Error Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "error_code"
+        ],
+        "title": "AgentFailure",
+        "type": "object"
+      },
+      "AgentResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ciphertext": {
+            "maxLength": 1000000,
+            "minLength": 1,
+            "title": "Ciphertext",
+            "type": "string"
+          },
+          "deployment_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "nonce": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Nonce",
+            "type": "string"
+          },
+          "sender_public_key": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Sender Public Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "sender_public_key",
+          "nonce",
+          "ciphertext"
+        ],
+        "title": "AgentResult",
+        "type": "object"
+      },
       "AiConnectorBindingOut": {
         "additionalProperties": false,
         "properties": {
@@ -3245,6 +3305,42 @@
         "title": "ConversationSummary",
         "type": "object"
       },
+      "CreateUserRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "email": {
+            "maxLength": 320,
+            "minLength": 3,
+            "title": "Email",
+            "type": "string"
+          },
+          "location": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Location",
+            "type": "string"
+          },
+          "role_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Role Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "display_name",
+          "email",
+          "role_id"
+        ],
+        "title": "CreateUserRequest",
+        "type": "object"
+      },
       "CredentialMetadataIn": {
         "properties": {
           "app_id": {
@@ -4186,6 +4282,11 @@
           },
           "storage": {
             "$ref": "#/components/schemas/StorageReport"
+          },
+          "user_management_v1": {
+            "default": false,
+            "title": "User Management V1",
+            "type": "boolean"
           }
         },
         "required": [
@@ -4269,6 +4370,18 @@
           "owner_email"
         ],
         "title": "DevelopmentGateProvisionIn",
+        "type": "object"
+      },
+      "DirectoryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "include_deleted": {
+            "default": false,
+            "title": "Include Deleted",
+            "type": "boolean"
+          }
+        },
+        "title": "DirectoryRequest",
         "type": "object"
       },
       "DocumentSummary": {
@@ -6546,6 +6659,11 @@
             "title": "Migration Revision",
             "type": "string"
           },
+          "user_management_v1": {
+            "default": false,
+            "title": "User Management V1",
+            "type": "boolean"
+          },
           "users": {
             "default": 0,
             "minimum": 0.0,
@@ -6630,6 +6748,11 @@
             "minimum": 0.0,
             "title": "Uptime Seconds",
             "type": "integer"
+          },
+          "user_management_v1": {
+            "default": false,
+            "title": "User Management V1",
+            "type": "boolean"
           },
           "users": {
             "default": 0,
@@ -14555,6 +14678,177 @@
         ]
       }
     },
+    "/api/fleet/user-management/jobs/next": {
+      "get": {
+        "operationId": "next_job_api_fleet_user_management_jobs_next_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-onebrain-deployment-id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "X-Onebrain-Deployment-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Next Job",
+        "tags": [
+          "fleet-user-management"
+        ]
+      }
+    },
+    "/api/fleet/user-management/jobs/{job_id}/failure": {
+      "post": {
+        "operationId": "submit_failure_api_fleet_user_management_jobs__job_id__failure_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentFailure"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Failure",
+        "tags": [
+          "fleet-user-management"
+        ]
+      }
+    },
+    "/api/fleet/user-management/jobs/{job_id}/result": {
+      "post": {
+        "operationId": "submit_result_api_fleet_user_management_jobs__job_id__result_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentResult"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Result",
+        "tags": [
+          "fleet-user-management"
+        ]
+      }
+    },
     "/api/jobs/{job_id}": {
       "get": {
         "operationId": "get_job_api_jobs__job_id__get",
@@ -17040,6 +17334,462 @@
         "summary": "Yank Release",
         "tags": [
           "operator"
+        ]
+      }
+    },
+    "/api/operator/user-management/deployments/{deployment_id}/directory": {
+      "post": {
+        "operationId": "refresh_directory_api_operator_user_management_deployments__deployment_id__directory_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refresh Directory",
+        "tags": [
+          "operator-user-management"
+        ]
+      }
+    },
+    "/api/operator/user-management/deployments/{deployment_id}/users": {
+      "post": {
+        "operationId": "create_user_api_operator_user_management_deployments__deployment_id__users_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateUserRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create User",
+        "tags": [
+          "operator-user-management"
+        ]
+      }
+    },
+    "/api/operator/user-management/deployments/{deployment_id}/users/{user_id}": {
+      "delete": {
+        "operationId": "delete_user_api_operator_user_management_deployments__deployment_id__users__user_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete User",
+        "tags": [
+          "operator-user-management"
+        ]
+      }
+    },
+    "/api/operator/user-management/deployments/{deployment_id}/users/{user_id}/disable": {
+      "post": {
+        "operationId": "disable_user_api_operator_user_management_deployments__deployment_id__users__user_id__disable_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disable User",
+        "tags": [
+          "operator-user-management"
+        ]
+      }
+    },
+    "/api/operator/user-management/deployments/{deployment_id}/users/{user_id}/enable": {
+      "post": {
+        "operationId": "enable_user_api_operator_user_management_deployments__deployment_id__users__user_id__enable_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enable User",
+        "tags": [
+          "operator-user-management"
+        ]
+      }
+    },
+    "/api/operator/user-management/deployments/{deployment_id}/users/{user_id}/reset-password": {
+      "post": {
+        "operationId": "reset_password_api_operator_user_management_deployments__deployment_id__users__user_id__reset_password_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Password",
+        "tags": [
+          "operator-user-management"
+        ]
+      }
+    },
+    "/api/operator/user-management/jobs/{job_id}": {
+      "get": {
+        "operationId": "get_job_api_operator_user_management_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job",
+        "tags": [
+          "operator-user-management"
+        ]
+      }
+    },
+    "/api/operator/user-management/jobs/{job_id}/reveal": {
+      "post": {
+        "operationId": "reveal_secret_api_operator_user_management_jobs__job_id__reveal_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reveal Secret",
+        "tags": [
+          "operator-user-management"
         ]
       }
     },

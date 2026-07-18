@@ -148,6 +148,7 @@ def collect_heartbeat(settings: Settings, *, probe_opener=None) -> FleetHeartbea
         jobs_failed=int(jobs.by_status.get("failed", 0)) if jobs else 0,
         auth_failures_recent=int(metrics.auth_total) if metrics else 0,
         api_5xx_recent=int(metrics.api_errors_5xx) if metrics else 0,
+        user_management_v1=True,
         uptime_seconds=int(time.monotonic() - _PROCESS_START),
         modules=modules,
         update=update,

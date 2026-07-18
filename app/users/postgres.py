@@ -53,7 +53,10 @@ class PostgresUserStore:
                 (user.id, user.email.strip().lower(), user.display_name, user.password_hash,
                  user.tenant_id, user.role_id, user.location, user.status, user.must_change_password),
             )
+            created = cur.rowcount
             conn.commit()
+        if not created:
+            raise ValueError("duplicate_email")
         return user
 
     def update_password(self, user_id: str, password_hash: str, *, must_change_password: bool) -> User:
@@ -75,6 +78,32 @@ class PostgresUserStore:
                 f"UPDATE users SET tenant_id = %s, role_id = %s, location = %s WHERE id = %s "
                 f"RETURNING {self._COLS}",
                 (tenant_id, role_id, location, user_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        if not row:
+            raise KeyError(f"unknown user: {user_id}")
+        return self._row(row)
+
+    def update_status(self, user_id: str, status: str) -> User:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE users SET status = %s WHERE id = %s RETURNING {self._COLS}",
+                (status, user_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        if not row:
+            raise KeyError(f"unknown user: {user_id}")
+        return self._row(row)
+
+    def anonymize(self, user_id: str, *, email: str, password_hash: str) -> User:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE users SET email = %s, display_name = 'Deleted user', password_hash = %s, "
+                "role_id = 'public', location = '', status = 'deleted', must_change_password = false "
+                f"WHERE id = %s RETURNING {self._COLS}",
+                (email.strip().lower(), password_hash, user_id),
             )
             row = cur.fetchone()
             conn.commit()

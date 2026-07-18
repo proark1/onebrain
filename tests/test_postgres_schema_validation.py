@@ -519,6 +519,10 @@ def _job_queue_rls_module():
     return _load_migration_module("0030_job_queue_rls_roles.py", "job_queue_rls_migration")
 
 
+def _mc_user_management_module():
+    return _load_migration_module("0031_mc_user_management.py", "mc_user_management_migration")
+
+
 def test_trust_primitives_migration_structure_and_chain():
     migration = _trust_primitives_module()
 
@@ -587,7 +591,7 @@ def test_required_revision_matches_single_alembic_head():
     heads = ScriptDirectory.from_config(config).get_heads()
 
     assert heads == [REQUIRED_ALEMBIC_REVISION]
-    assert REQUIRED_ALEMBIC_REVISION == "0030_job_queue_rls_roles"
+    assert REQUIRED_ALEMBIC_REVISION == "0031_mc_user_management"
 
 
 def test_job_leases_migration_precedes_the_current_head():
@@ -620,14 +624,27 @@ def test_recovery_auth_and_job_queue_migrations_form_one_additive_chain():
     assert teardown.down_revision == ai_leases.revision
     assert auth_limits.revision == "0029_auth_rate_limits"
     assert auth_limits.down_revision == teardown.revision
-    assert job_queue_rls.revision == REQUIRED_ALEMBIC_REVISION
+    assert job_queue_rls.revision == "0030_job_queue_rls_roles"
     assert job_queue_rls.down_revision == auth_limits.revision
+    user_management = _mc_user_management_module()
+    assert user_management.revision == REQUIRED_ALEMBIC_REVISION
+    assert user_management.down_revision == job_queue_rls.revision
     source = Path(auth_limits.__file__).read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS auth_rate_limits" in source
     assert "subject_hash" in source and "auth_rate_limits_expiry_idx" in source
     job_queue_source = Path(job_queue_rls.__file__).read_text(encoding="utf-8")
     assert "ALTER TABLE IF EXISTS provisioning_runs ALTER COLUMN external_provider SET DEFAULT 'hetzner'" in job_queue_source
     assert "ALTER TABLE IF EXISTS control_rollouts ALTER COLUMN external_provider SET DEFAULT 'hetzner'" in job_queue_source
+
+
+def test_mc_user_management_migration_is_ciphertext_only_and_additive():
+    migration = _mc_user_management_module()
+    source = Path(migration.__file__).read_text(encoding="utf-8")
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert "fleet_user_management_jobs" in source
+    assert "user_management_receipts" in source
+    assert "sealed_payload" in source and "result_ciphertext" in source
+    assert "password_hash" not in source
 
 
 def test_kpi_dashboard_migration_is_scoped_and_forced_rls():

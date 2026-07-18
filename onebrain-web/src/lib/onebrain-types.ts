@@ -1003,6 +1003,64 @@ export interface FleetDeploymentOverview {
   counts: Record<string, number>;
   storage?: FleetStorageReport;
   open_alerts: string[];
+  user_management_v1: boolean;
+}
+
+export interface ManagedUser {
+  id: string;
+  display_name: string;
+  email: string;
+  role_id: string;
+  location: string;
+  status: "active" | "disabled" | "deleted";
+  must_change_password: boolean;
+  created_at: string;
+  deletion_blocked: boolean;
+}
+
+export interface ManagedUserRole {
+  id: string;
+  label: string;
+  scope: "chain" | "location" | "none";
+}
+
+export interface ManagedUserDirectory {
+  users: ManagedUser[];
+  roles: ManagedUserRole[];
+  locations: string[];
+}
+
+export interface UserManagementResult<T = Record<string, unknown>> {
+  ok: boolean;
+  data?: T;
+  error_code?: string;
+  details?: { blockers?: Array<{ type: string; resource_id: string }> };
+}
+
+export interface UserManagementJob<T = Record<string, unknown>> {
+  id: string;
+  deployment_id: string;
+  action: string;
+  status: "queued" | "leased" | "completed" | "failed" | "expired";
+  created_at: string;
+  expires_at: string;
+  completed_at: string;
+  error_code: string;
+  result_available: boolean;
+  result?: UserManagementResult<T>;
+}
+
+export interface ManagedUserMutationResult {
+  user: ManagedUser;
+  one_time_password?: string;
+  sessions_revoked?: number;
+}
+
+export interface CreateManagedUserInput {
+  display_name: string;
+  email: string;
+  role_id: string;
+  location: string;
 }
 
 export interface FleetOverview {

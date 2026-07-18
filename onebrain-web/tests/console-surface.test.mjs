@@ -11,10 +11,10 @@ test("customer boxes expose the complete customer surface without control-plane 
   );
 });
 
-test("Mission Control exposes status, fleet-control, and account settings", () => {
+test("Mission Control exposes status, fleet control, user management, and account settings", () => {
   assert.deepEqual(
     consoleNavigation(true).map((item) => item.label),
-    ["Status", "Control", "Fleet", "Settings"],
+    ["Status", "Control", "Fleet", "Users", "Settings"],
   );
 });
 

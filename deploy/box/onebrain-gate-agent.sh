@@ -65,6 +65,14 @@ fi
 
 if [ "${ONEBRAIN_GATE_AGENT_ENABLED:-false}" = "true" ]; then
   "$GATE_REPORTER" || true
+  USER_AGENT="${ONEBRAIN_USER_MANAGEMENT_AGENT:-$ROOT/onebrain_user_management_agent.py}"
+  if [ ! -x "$USER_AGENT" ]; then
+    "${DOCKER:-docker}" compose --project-name "${UPDATE_COMPOSE_PROJECT:-onebrain}" \
+      -f "${UPDATE_COMPOSE_DIR:-$ROOT}/docker-compose.yml" cp \
+      onebrain-api:/app/deploy/box/onebrain_user_management_agent.py "$USER_AGENT" >/dev/null 2>&1 || true
+    chmod 0700 "$USER_AGENT" 2>/dev/null || true
+  fi
+  [ ! -x "$USER_AGENT" ] || "$USER_AGENT" || true
 fi
 
 exit "$update_status"

@@ -32,6 +32,9 @@ class OneBrainReport(BaseModel):
     jobs_failed: int = Field(default=0, ge=0)
     auth_failures_recent: int = Field(default=0, ge=0)
     api_5xx_recent: int = Field(default=0, ge=0)
+    # Metadata-only capability bit. It carries no identity or command data and
+    # lets MC keep user controls inert until the customer agent and CLI exist.
+    user_management_v1: bool = False
 
 
 class ModuleReport(BaseModel):
@@ -74,6 +77,7 @@ def build_heartbeat(
     jobs_failed: int = 0,
     auth_failures_recent: int = 0,
     api_5xx_recent: int = 0,
+    user_management_v1: bool = False,
     modules: List[ModuleReport] | None = None,
 ) -> FleetHeartbeat:
     """Assemble a heartbeat from primitive local counts. Pure — no I/O — so a
@@ -95,6 +99,7 @@ def build_heartbeat(
             jobs_failed=jobs_failed,
             auth_failures_recent=auth_failures_recent,
             api_5xx_recent=api_5xx_recent,
+            user_management_v1=user_management_v1,
         ),
         modules=modules or [],
     )
@@ -233,6 +238,7 @@ def build_heartbeat_v2(
     jobs_failed: int = 0,
     auth_failures_recent: int = 0,
     api_5xx_recent: int = 0,
+    user_management_v1: bool = False,
     uptime_seconds: int = 0,
     modules: List[ModuleReport] | None = None,
     update: UpdateReport | None = None,
@@ -255,6 +261,7 @@ def build_heartbeat_v2(
             jobs_failed=jobs_failed,
             auth_failures_recent=auth_failures_recent,
             api_5xx_recent=api_5xx_recent,
+            user_management_v1=user_management_v1,
             uptime_seconds=uptime_seconds,
         ),
         modules=modules or [],

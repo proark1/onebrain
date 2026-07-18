@@ -567,6 +567,7 @@ class DeploymentOverview(BaseModel):
     counts: dict = Field(default_factory=dict)
     storage: StorageReport = Field(default_factory=StorageReport)
     open_alerts: list[str] = Field(default_factory=list)
+    user_management_v1: bool = False
 
 
 class FleetOverviewOut(BaseModel):
@@ -627,6 +628,7 @@ def fleet_overview(principal: Principal = Depends(resolve_principal)):
             } if hb else {},
             storage=_reported_storage(hb.payload if hb else None),
             open_alerts=alerts,
+            user_management_v1=bool(ob.get("user_management_v1", False)),
         )
         rows.append(row)
         if hb and hb.healthy:

@@ -251,6 +251,7 @@ def build_heartbeat(
             "jobs_failed": 0,
             "auth_failures_recent": 0,
             "api_5xx_recent": 0,
+            "user_management_v1": True,
             "uptime_seconds": 0,
         },
         "modules": module_rows,
