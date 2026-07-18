@@ -16,7 +16,6 @@ def build_provisioning_run_store(settings: Settings):
         # an account scope is known, so the store must use the explicit,
         # role-bound operator DSN rather than the tenant-scoped API login.
         return PostgresProvisioningRunStore(
-            settings.pg_database_url,
             operator_dsn=settings.pg_operator_database_url,
         )
 

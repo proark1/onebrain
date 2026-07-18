@@ -218,20 +218,18 @@ def test_provisioning_factory_passes_explicit_operator_dsn(monkeypatch):
     captured = {}
 
     class FakeStore:
-        def __init__(self, dsn, *, operator_dsn):
-            captured.update(dsn=dsn, operator_dsn=operator_dsn)
+        def __init__(self, *, operator_dsn):
+            captured.update(operator_dsn=operator_dsn)
 
     monkeypatch.setattr(provisioning_runs, "PostgresProvisioningRunStore", FakeStore)
     settings = SimpleNamespace(
         vector_store="pgvector",
-        pg_database_url="postgresql://app",
         pg_operator_database_url="postgresql://operator",
     )
 
     provisioning_factory.build_provisioning_run_store(settings)
 
     assert captured == {
-        "dsn": "postgresql://app",
         "operator_dsn": "postgresql://operator",
     }
 

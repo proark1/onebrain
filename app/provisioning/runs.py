@@ -464,11 +464,10 @@ class MemoryProvisioningRunStore:
 
 
 class PostgresProvisioningRunStore:
-    def __init__(self, dsn: str, *, operator_dsn: str = ""):
+    def __init__(self, *, operator_dsn: str):
         import psycopg
 
         self._psycopg = psycopg
-        self._dsn = dsn
         self._operator_dsn = operator_dsn.strip()
         self._validate_schema()
 

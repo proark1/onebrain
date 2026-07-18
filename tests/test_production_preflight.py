@@ -107,8 +107,12 @@ def test_production_operator_console_cannot_bypass_control_plane_preflight(tmp_p
         ({"rls_enforced": False}, "ONEBRAIN_RLS_ENFORCED=true"),
         ({"operator_database_url": ""}, "ONEBRAIN_OPERATOR_DATABASE_URL"),
         (
-            {"operator_database_url": "postgresql://onebrain:secret@postgres/onebrain"},
-            "ONEBRAIN_OPERATOR_DATABASE_URL must differ",
+            {
+                "operator_database_url": (
+                    "postgresql://onebrain:other-secret@postgres:5432/onebrain/"
+                )
+            },
+            "ONEBRAIN_OPERATOR_DATABASE_URL must use a distinct PostgreSQL login role",
         ),
         ({"secret_encryption_key": ""}, "ONEBRAIN_SECRET_ENCRYPTION_KEY is required"),
         ({"secret_encryption_key": "not-a-fernet-key"}, "ONEBRAIN_SECRET_ENCRYPTION_KEY must be a URL-safe base64 Fernet key"),
