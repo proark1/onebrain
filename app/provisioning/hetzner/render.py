@@ -1104,7 +1104,9 @@ def _compact_python_asset(content: str) -> str:
 
     The deployed helpers inspect neither ``__doc__`` nor function annotations.
     Dropping both keeps the host artifact below Hetzner's user-data ceiling while
-    leaving the reviewed repository source intact.
+    leaving the reviewed repository source intact.  Keep postponed-annotation
+    imports, however: variable and class annotations remain executable and may
+    refer to names available only during type checking.
     """
     try:
         compact_tree = ast.parse(content)
@@ -1137,15 +1139,6 @@ def _compact_python_asset(content: str) -> str:
                     annotated.append(arguments.kwarg)
                 for argument in annotated:
                     argument.annotation = None
-        compact_tree.body = [
-            statement
-            for statement in compact_tree.body
-            if not (
-                isinstance(statement, ast.ImportFrom)
-                and statement.module == "__future__"
-                and any(alias.name == "annotations" for alias in statement.names)
-            )
-        ]
         ast.fix_missing_locations(compact_tree)
         compacted_source = ast.unparse(compact_tree) + "\n"
         if content.startswith("#!"):

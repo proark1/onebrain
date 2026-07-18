@@ -9,6 +9,8 @@ import {
 
 test("restore-required development retries require both a review note and acknowledgement", () => {
   assert.equal(developmentRetryRequiresRestoreAcknowledgement("restore_required"), true);
+  assert.equal(developmentRetryRequiresRestoreAcknowledgement(null), false);
+  assert.equal(developmentRetryRequiresRestoreAcknowledgement(undefined), false);
   assert.equal(canRetryDevelopmentRelease("restore_required", "", false), false);
   assert.equal(canRetryDevelopmentRelease("restore_required", "Backup reviewed", false), false);
   assert.equal(canRetryDevelopmentRelease("restore_required", "", true), false);

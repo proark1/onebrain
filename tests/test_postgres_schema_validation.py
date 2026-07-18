@@ -905,10 +905,10 @@ def test_start_rollout_insert_persists_fleet_rollout_id():
     assert connection.committed
 
 
-def test_postgres_verified_gate_completion_is_one_transaction_and_fail_closed():
+def test_postgres_verified_gate_completion_is_one_transaction_and_fail_closed(monkeypatch):
     from datetime import datetime, timezone
-    from types import SimpleNamespace
 
+    from app.controlplane import postgres as postgres_module
     from app.controlplane.base import RolloutRun
     from app.controlplane.development_gate import (
         DEVELOPMENT_GATE_CORE_MODULE_IDS,
@@ -950,6 +950,17 @@ def test_postgres_verified_gate_completion_is_one_transaction_and_fail_closed():
         ("dev-gate", module_id, "old", "active")
         for module_id in sorted(DEVELOPMENT_GATE_CORE_MODULE_IDS)
     ]
+    backup_row = ("gate-backup", "dev-gate", "success", "verified", at)
+    monkeypatch.setattr(postgres_module, "require_signed_releases", lambda: False)
+    monkeypatch.setattr(
+        postgres_module,
+        "release_promotion_plan_context",
+        lambda _release, _promotion: {
+            "promotion_required": False,
+            "promotion_warning_only": True,
+            "heartbeat_max_age_seconds": 600,
+        },
+    )
 
     class AtomicCursor:
         def __init__(self):
@@ -968,11 +979,17 @@ def test_postgres_verified_gate_completion_is_one_transaction_and_fail_closed():
 
         def fetchone(self):
             if self.last_sql.startswith("SELECT") and "control_rollouts" in self.last_sql:
+                if "id <> %s" in self.last_sql:
+                    return None
                 return pending_row
+            if self.last_sql.startswith("SELECT") and "control_release_promotions" in self.last_sql:
+                return None
             if self.last_sql.startswith("SELECT") and "control_release_manifests" in self.last_sql:
                 return release_row
             if self.last_sql.startswith("SELECT") and "control_deployments" in self.last_sql:
                 return deployment_row
+            if self.last_sql.startswith("SELECT") and "control_backups" in self.last_sql:
+                return backup_row
             if self.last_sql.startswith("UPDATE control_rollouts"):
                 return completed_row
             return None
@@ -1002,8 +1019,6 @@ def test_postgres_verified_gate_completion_is_one_transaction_and_fail_closed():
     def build_store(connection):
         store = _bare_postgres_store()
         store._conn = lambda: connection
-        store.get_rollout = lambda _rollout_id: pending
-        store._plan_update = lambda *_args, **_kwargs: SimpleNamespace(allowed=True, reason="")
         return store
 
     success_connection = AtomicConnection()
@@ -1018,6 +1033,23 @@ def test_postgres_verified_gate_completion_is_one_transaction_and_fail_closed():
     assert sum(sql.startswith("INSERT INTO control_deployment_modules") for sql in statements) == 8
     assert sum(sql.startswith("UPDATE control_deployments") for sql in statements) == 1
     assert sum(sql.startswith("UPDATE control_rollouts") for sql in statements) == 1
+    rollout_lock = next(
+        i for i, sql in enumerate(statements)
+        if sql.startswith("SELECT") and "control_rollouts" in sql and "FOR UPDATE" in sql
+    )
+    promotion_lock = next(
+        i for i, sql in enumerate(statements)
+        if sql.startswith("SELECT") and "control_release_promotions" in sql and "FOR SHARE" in sql
+    )
+    release_lock = next(
+        i for i, sql in enumerate(statements)
+        if sql.startswith("SELECT") and "control_release_manifests" in sql and "FOR SHARE" in sql
+    )
+    first_write = next(
+        i for i, sql in enumerate(statements)
+        if sql.startswith("INSERT INTO control_deployment_modules")
+    )
+    assert rollout_lock < promotion_lock < release_lock < first_write
 
     failure_connection = AtomicConnection()
     mismatched = dict(target_modules)

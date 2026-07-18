@@ -965,11 +965,12 @@ def test_compact_host_assets_drop_only_safe_blank_lines():
     assert namespace["value"] == "first\n\nsecond"
 
 
-def test_compact_python_asset_drops_inert_function_annotations():
+def test_compact_python_asset_drops_inert_function_annotations_but_keeps_future_semantics():
     from app.provisioning.hetzner import render as R
 
     source = (
         "from __future__ import annotations\n"
+        "OnlyDuringTypeChecking: MissingAtRuntime\n"
         "def enabled(values: list[str], *, fallback: bool = False) -> bool:\n"
         "    return bool(values) or fallback\n"
     )
@@ -977,7 +978,8 @@ def test_compact_python_asset_drops_inert_function_annotations():
     namespace: dict[str, object] = {}
     exec(compacted, namespace)
 
-    assert "__future__" not in compacted
+    assert "from __future__ import annotations" in compacted
+    assert namespace["__annotations__"]["OnlyDuringTypeChecking"] == "MissingAtRuntime"
     assert "list[str]" not in compacted
     assert namespace["enabled"]([], fallback=True) is True
 

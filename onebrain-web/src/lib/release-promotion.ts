@@ -1,5 +1,7 @@
-export function developmentRetryRequiresRestoreAcknowledgement(rollbackKind: string): boolean {
-  return rollbackKind.trim().toLowerCase() === "restore_required";
+export function developmentRetryRequiresRestoreAcknowledgement(
+  rollbackKind: string | null | undefined,
+): boolean {
+  return (rollbackKind ?? "").trim().toLowerCase() === "restore_required";
 }
 
 export function canRetryDevelopmentRelease(

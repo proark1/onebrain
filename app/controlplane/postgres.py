@@ -831,20 +831,6 @@ class PostgresControlPlaneStore:
             str(module_id).strip(): str(version).strip()
             for module_id, version in verified_modules.items()
         }
-        rollout = self.get_rollout(rollout_id)
-        if not rollout:
-            raise ValueError(f"unknown rollout: {rollout_id}")
-        if rollout.status in {"success", "failed"}:
-            raise ValueError("terminal rollout status cannot be changed")
-        plan = self._plan_update(
-            rollout.deployment_id,
-            rollout.target_version,
-            ack_restore_required=rollout.ack_restore_required,
-            ignore_rollout_id=rollout.id,
-        )
-        if not plan.allowed:
-            raise ValueError(f"rollout completion blocked: {plan.reason}")
-
         finished_at = completed_at.strip() or datetime.now(timezone.utc).isoformat()
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
@@ -857,11 +843,12 @@ class PostgresControlPlaneStore:
             current_rollout = self._rollout(locked)
             if current_rollout.status in {"success", "failed"}:
                 raise ValueError("terminal rollout status cannot be changed")
-            if (
-                current_rollout.deployment_id != rollout.deployment_id
-                or current_rollout.target_version != rollout.target_version
-            ):
-                raise ValueError("rollout target changed during completion")
+            cur.execute(
+                f"SELECT {self._PROMOTION_COLS} FROM control_release_promotions "
+                "WHERE release_version = %s FOR SHARE",
+                (current_rollout.target_version,),
+            )
+            promotion_row = cur.fetchone()
             cur.execute(
                 """
                 SELECT version, git_sha, modules, migration_from, migration_to,
@@ -897,6 +884,53 @@ class PostgresControlPlaneStore:
                 (deployment.id,),
             )
             current_modules = [self._module(row) for row in cur.fetchall()]
+            promotion = self._promotion(promotion_row) if promotion_row else None
+
+            if deployment.is_release_gate and deployment.status == "active":
+                gate_deployment_id = deployment.id
+            else:
+                cur.execute(
+                    "SELECT id FROM control_deployments "
+                    "WHERE is_release_gate = true AND status = 'active' LIMIT 1 FOR SHARE"
+                )
+                gate_row = cur.fetchone()
+                gate_deployment_id = str(gate_row[0]) if gate_row else ""
+
+            cur.execute(
+                "SELECT 1 FROM control_rollouts "
+                "WHERE deployment_id = %s AND id <> %s "
+                "AND status NOT IN ('success', 'failed') LIMIT 1 FOR SHARE",
+                (deployment.id, current_rollout.id),
+            )
+            active_rollout = cur.fetchone() is not None
+
+            def latest_locked_backup():
+                cur.execute(
+                    "SELECT id, deployment_id, status, detail, created_at "
+                    "FROM control_backups WHERE deployment_id = %s "
+                    "ORDER BY created_at DESC, id DESC LIMIT 1 FOR SHARE",
+                    (deployment.id,),
+                )
+                backup_row = cur.fetchone()
+                return self._backup(backup_row) if backup_row else None
+
+            plan = compute_update_plan(
+                deployment.id,
+                current_rollout.target_version,
+                deployment=deployment,
+                release=release,
+                modules=current_modules,
+                latest_backup=latest_locked_backup,
+                ack_restore_required=current_rollout.ack_restore_required,
+                require_signed_release=require_signed_releases(),
+                promotion=promotion,
+                gate_deployment_id=gate_deployment_id,
+                active_rollout=active_rollout,
+                **release_promotion_plan_context(release, promotion),
+            )
+            if not plan.allowed:
+                raise ValueError(f"rollout completion blocked: {plan.reason}")
+
             if deployment.is_release_gate:
                 current = {
                     module.module_id
