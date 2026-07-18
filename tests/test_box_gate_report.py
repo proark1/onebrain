@@ -51,6 +51,7 @@ def _env(tmp_path) -> dict[str, str]:
         "backup_manifest": "sha256:" + "a" * 64 + ":42",
         "ignored_untrusted_text": "never reported",
     }), encoding="utf-8")
+    (work / "secrets_epoch").write_text("3\n", encoding="utf-8")
     return {
         "ONEBRAIN_DEPLOYMENT_ID": "onebrain-development-next",
         "ONEBRAIN_FLEET_URL": "https://mc.example.com",
@@ -117,6 +118,7 @@ def test_host_reporter_builds_closed_full_stack_metadata_only_heartbeat(tmp_path
     assert all(row["healthy"] for row in heartbeat["modules"])
     assert heartbeat["update"]["attempt_id"] == "rollout_123"
     assert heartbeat["update"]["backup_manifest"].endswith(":42")
+    assert heartbeat["update"]["applied_secrets_epoch"] == 3
     assert heartbeat["storage"] == {
         "root": {"total_bytes": 1000, "available_bytes": 200},
         "data": {"total_bytes": 1000, "available_bytes": 300},
@@ -178,9 +180,24 @@ def test_host_reporter_hides_update_state_when_data_volume_verification_fails(tm
     assert heartbeat["onebrain"]["version"] == ""
     assert heartbeat["onebrain"]["healthy"] is False
     assert heartbeat["update"]["outcome"] == "none"
+    assert heartbeat["update"]["applied_secrets_epoch"] == 0
     assert heartbeat["storage"]["data"] == {"total_bytes": 0, "available_bytes": 0}
     assert heartbeat["storage"]["data_volume_unavailable"] is True
     assert observed_paths == ["/"]
+
+
+def test_host_reporter_defaults_invalid_secrets_epoch_to_zero(tmp_path):
+    report = _load_report()
+    env = _env(tmp_path)
+    work = tmp_path / "onebrain-maintenance" / "onebrain_update"
+    (work / "secrets_epoch").write_text("not-an-epoch\n", encoding="utf-8")
+
+    heartbeat = report.build_heartbeat(
+        env, runner=_healthy_runner, health_probe=lambda _url: True,
+        maintenance_volume_verifier=_verified_volume,
+    )
+
+    assert heartbeat["update"]["applied_secrets_epoch"] == 0
 
 
 def test_host_reporter_health_probe_matches_updater_curl(monkeypatch):

@@ -1112,6 +1112,18 @@ def _compact_python_asset(content: str) -> str:
     try:
         compact_tree = ast.parse(content)
         for compact_node in ast.walk(compact_tree):
+            if isinstance(compact_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                compact_node.returns = None
+                compact_args = compact_node.args
+                for compact_arg in (
+                    *compact_args.posonlyargs,
+                    *compact_args.args,
+                    *compact_args.kwonlyargs,
+                    compact_args.vararg,
+                    compact_args.kwarg,
+                ):
+                    if compact_arg is not None:
+                        compact_arg.annotation = None
             if not isinstance(
                 compact_node,
                 (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
