@@ -1506,6 +1506,12 @@ def _replacement_development_gate_baseline(
 
     candidates: list[tuple[str, str, ReleaseManifest]] = []
     for promotion in store.list_release_promotions():
+        if (
+            promotion.state != "dev_failed"
+            or promotion.gate_deployment_id != gate.id
+            or promotion.failure_reason != "dev_preflight_failed"
+        ):
+            continue
         if not is_current_replacement_bootstrap_failure(
             promotion,
             store.list_release_promotion_events(promotion.release_version),

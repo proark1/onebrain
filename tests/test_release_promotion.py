@@ -1257,6 +1257,40 @@ def test_development_gate_selects_newest_valid_replacement_candidate():
     assert selected.version == newer.version
 
 
+def test_development_gate_prefilters_promotions_before_event_queries():
+    store, _baseline, candidate, production_public, dev_public, dev_private = (
+        _replacement_bootstrap_records()
+    )
+    unrelated = _development_gate_release("2026.07.18.312")
+    register_candidate(
+        store,
+        unrelated,
+        dev_signature=sign_release(release_signature_fields(unrelated), dev_private),
+        dev_signing_key_id="dev-1",
+        development_public_key=dev_public,
+        production_public_key=production_public,
+    )
+    settings = _replacement_bootstrap_settings(production_public, dev_public)
+    original = store.list_release_promotion_events
+    queried_versions = []
+
+    def tracked_events(version):
+        queried_versions.append(version)
+        return original(version)
+
+    store.list_release_promotion_events = tracked_events
+
+    selected, source = operator_router._development_gate_provisioning_baseline(
+        store,
+        DEVELOPMENT_GATE_MODULES,
+        settings=settings,
+    )
+
+    assert source == "development_replacement_candidate"
+    assert selected.version == candidate.version
+    assert queried_versions == [candidate.version]
+
+
 def test_development_gate_preflight_names_missing_modules(monkeypatch):
     from types import SimpleNamespace
     from fastapi import HTTPException
