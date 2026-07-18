@@ -81,7 +81,10 @@ jobs:
 
       - name: Publish validated immutable release
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Reading the immutable-release repository setting requires
+          # Administration:read, which the per-run GITHUB_TOKEN cannot hold.
+          # Keep this environment-scoped token behind the publication approval.
+          GH_TOKEN: ${{ secrets.SCANNER_DEFINITIONS_ADMIN_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
