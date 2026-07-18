@@ -17,6 +17,7 @@ from app.controlplane.base import CustomerDeployment, DeploymentModule, ReleaseM
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.controlplane.rollout_exec import (
     DEVELOPMENT_GATE_MODULE_IDS,
+    LEGACY_DEVELOPMENT_GATE_MODULE_IDS,
     resolve_pull_target,
     resolve_provisioned_target,
     target_provider,
@@ -129,14 +130,15 @@ def test_target_provider_rejects_non_hetzner_targets():
     assert target_provider({}) == "unknown"  # resolver already fail-closes empties upstream
 
 
-def _enrolled_gate(*, healthy=True, age_seconds=0, key_status="active"):
+def _enrolled_gate(*, healthy=True, age_seconds=0, key_status="active", legacy_core=False):
     control = MemoryControlPlaneStore()
     control.create_deployment(CustomerDeployment(
         id="gate", customer_name="Gate", environment="development",
         deployment_type="dedicated_server",
     ))
     control.designate_release_gate("gate")
-    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
+    module_ids = LEGACY_DEVELOPMENT_GATE_MODULE_IDS if legacy_core else DEVELOPMENT_GATE_MODULE_IDS
+    for module_id in module_ids:
         control.upsert_module(DeploymentModule("gate", module_id, "installed"))
     fleet = MemoryFleetStore()
     now = datetime.now(timezone.utc)
@@ -175,6 +177,16 @@ def test_pull_target_adopts_only_enrolled_fresh_healthy_designated_gate():
     assert result.provider == "hetzner"
     assert result.source == "enrolled_development_gate"
     assert result.target == {}
+
+
+def test_pull_target_bootstraps_exact_legacy_core_gate():
+    control, fleet, now, prov = _enrolled_gate(legacy_core=True)
+
+    result = resolve_pull_target(prov, control, fleet, "gate", now=now)
+
+    assert result.allowed is True
+    assert result.provider == "hetzner"
+    assert result.source == "enrolled_development_gate"
 
 
 @pytest.mark.parametrize(

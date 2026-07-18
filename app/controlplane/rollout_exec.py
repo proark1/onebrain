@@ -23,6 +23,11 @@ DEVELOPMENT_GATE_MODULE_IDS = frozenset({
     "communication-voice",
     "communication-workers",
 })
+LEGACY_DEVELOPMENT_GATE_MODULE_IDS = frozenset({
+    "onebrain-api",
+    "onebrain-admin-ui",
+    "onebrain-workers",
+})
 SECRETS_EPOCH_PENDING_REASON = "development gate has not applied the expected secrets epoch"
 
 
@@ -116,7 +121,15 @@ def resolve_pull_target(
         for module in control_store.list_modules(deployment_id)
         if module.status == "active"
     }
-    if installed_modules != DEVELOPMENT_GATE_MODULE_IDS:
+    # The pre-adoption gate reported only the three Core services. Permit that
+    # one exact legacy shape to receive its first full-stack candidate; arbitrary
+    # partial or expanded module sets still fail closed. The release planner and
+    # signed desired-state path independently require the candidate's exact
+    # target module map before anything is offered to the host.
+    if installed_modules not in {
+        DEVELOPMENT_GATE_MODULE_IDS,
+        LEGACY_DEVELOPMENT_GATE_MODULE_IDS,
+    }:
         return PullTargetEligibility(False, reason="development gate module set is incomplete")
 
     heartbeat = fleet_store.latest_heartbeat(deployment_id)
