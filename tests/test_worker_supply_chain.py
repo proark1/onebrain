@@ -1134,6 +1134,8 @@ def test_publication_workflows_separate_immutable_publish_and_online_refresh():
     assert "environment: scanner-definitions" in publish_workflow
     assert "if: github.ref == 'refs/heads/main'" in publish_workflow
     assert "contents: write" in publish_workflow
+    assert "secrets.SCANNER_DEFINITIONS_ADMIN_TOKEN" in publish_workflow
+    assert "GH_TOKEN: ${{ github.token }}" not in publish_workflow
     assert "--target \"${GITHUB_SHA}\"" in publish_workflow
     assert "--supply-chain-lock" in publish_workflow
     assert "schedule:" in refresh_workflow
