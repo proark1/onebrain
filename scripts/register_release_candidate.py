@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from app.controlplane.base import ReleaseManifest
+from app.controlplane.base import ReleaseManifest, validate_image_ref
 from app.controlplane.migration_lint import classify_release
 from app.trust.release import release_signature_fields, sign_release
 
@@ -25,6 +25,29 @@ MODULE_REPOSITORIES = {
     "onebrain-api": "ghcr.io/proark1/onebrain-api",
     "onebrain-workers": "ghcr.io/proark1/onebrain-workers",
     "onebrain-admin-ui": "ghcr.io/proark1/onebrain-admin-ui",
+}
+
+EXTERNAL_MODULE_INPUTS = {
+    "assistant-service": (
+        "ONEBRAIN_ASSISTANT_IMAGE_REF",
+        "ONEBRAIN_ASSISTANT_REVISION",
+    ),
+    "communication-api": (
+        "ONEBRAIN_COMMUNICATION_IMAGE_REF",
+        "ONEBRAIN_COMMUNICATION_REVISION",
+    ),
+    "communication-widget": (
+        "ONEBRAIN_COMMUNICATION_IMAGE_REF",
+        "ONEBRAIN_COMMUNICATION_REVISION",
+    ),
+    "communication-voice": (
+        "ONEBRAIN_COMMUNICATION_IMAGE_REF",
+        "ONEBRAIN_COMMUNICATION_REVISION",
+    ),
+    "communication-workers": (
+        "ONEBRAIN_COMMUNICATION_IMAGE_REF",
+        "ONEBRAIN_COMMUNICATION_REVISION",
+    ),
 }
 
 
@@ -144,12 +167,23 @@ def register_from_environment(env: dict[str, str] | None = None, *, opener=urlop
         version = candidate_version(_required(values, "GITHUB_RUN_NUMBER"), version_clock)
 
     images: dict[str, str] = {}
+    modules: dict[str, str] = {}
     for module_id, repository in MODULE_REPOSITORIES.items():
         env_name = f"ONEBRAIN_{module_id.upper().replace('-', '_')}_DIGEST"
         digest = _required(values, env_name)
         if not digest.startswith("sha256:"):
             raise ValueError(f"{env_name} is not a sha256 digest")
         images[module_id] = f"{repository}@{digest}"
+        modules[module_id] = version
+
+    for module_id, (image_env, revision_env) in EXTERNAL_MODULE_INPUTS.items():
+        image_ref = _required(values, image_env)
+        image_error = validate_image_ref(image_ref)
+        if image_error:
+            raise ValueError(f"{image_env} is invalid: {image_error}")
+        revision = _required(values, revision_env)
+        images[module_id] = image_ref
+        modules[module_id] = revision
 
     rollback_kind = (values.get("ONEBRAIN_ROLLBACK_KIND") or "").strip()
     if not rollback_kind:
@@ -158,7 +192,7 @@ def register_from_environment(env: dict[str, str] | None = None, *, opener=urlop
     common = {
         "version": version,
         "git_sha": git_sha,
-        "modules": {module_id: version for module_id in MODULE_REPOSITORIES},
+        "modules": modules,
         "images": images,
         "migration_from": (values.get("ONEBRAIN_MIGRATION_FROM") or "").strip(),
         "migration_to": migration_to,

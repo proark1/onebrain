@@ -126,8 +126,8 @@ def ingest_heartbeat(body: AnyFleetHeartbeat, authorization: str = Header(defaul
                             headers={"Retry-After": str(wait)})
     _reject_skewed_reported_at(body.reported_at)
     store = get_fleet_store()
-    store.touch_key(key.id, _now())
     received_at = _now()
+    store.touch_key(key.id, received_at)
     store.record_heartbeat(Heartbeat(
         id=f"hb_{uuid4().hex}",
         deployment_id=body.deployment_id,

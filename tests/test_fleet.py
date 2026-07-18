@@ -403,6 +403,7 @@ def test_ingest_heartbeat_records_and_touches_key(monkeypatch):
     assert store.latest_heartbeat("dep_a").version == "2026.07.0"
     key_id = parse_fleet_key(token)[0]
     assert store.get_key(key_id).last_used_at != ""
+    assert store.get_key(key_id).last_used_at == store.latest_heartbeat("dep_a").received_at
 
 
 def test_ingest_heartbeat_rejects_missing_and_bad_keys(monkeypatch):

@@ -22,7 +22,7 @@ import {
   provisionCustomer,
   readBootstrapSecret,
   pauseOperatorRelease,
-  provisionDevelopmentGate,
+  prepareExistingDevelopmentGate,
   resumeOperatorRelease,
   retryDevelopmentRelease,
   retryProvisioningRun,
@@ -35,6 +35,7 @@ import type {
   BrandTheme,
   BrandThemeInput,
   DevelopmentGate,
+  DevelopmentGatePreparation,
   OperatorBackup,
   OperatorCustomer,
   OperatorDeployment,
@@ -184,6 +185,7 @@ export function OperatorPanel() {
   const [deployments, setDeployments] = useState<DeploymentRow[]>([]);
   const [releases, setReleases] = useState<OperatorRelease[]>([]);
   const [developmentGate, setDevelopmentGate] = useState<DevelopmentGate | null>(null);
+  const [gatePreparation, setGatePreparation] = useState<DevelopmentGatePreparation | null>(null);
   const [provisioningRuns, setProvisioningRuns] = useState<ProvisioningRun[]>([]);
   const [credentials, setCredentials] = useState<ProvisionedCredential[]>([]);
   const [bootstrapSecrets, setBootstrapSecrets] = useState<Record<string, string>>({});
@@ -199,7 +201,6 @@ export function OperatorPanel() {
   const [signatureByRelease, setSignatureByRelease] = useState<Record<string, string>>({});
   const [signatureKeyByRelease, setSignatureKeyByRelease] = useState<Record<string, string>>({});
   const [promotionNoteByRelease, setPromotionNoteByRelease] = useState<Record<string, string>>({});
-  const [developmentOwnerEmail, setDevelopmentOwnerEmail] = useState("");
 
   const [provisionName, setProvisionName] = useState("");
   const [provisionOwnerEmail, setProvisionOwnerEmail] = useState("");
@@ -487,19 +488,22 @@ export function OperatorPanel() {
   }
 
   async function onPrepareDevelopmentGate() {
-    if (busyAction || !developmentOwnerEmail.trim()) {
+    if (busyAction) {
       return;
     }
     setBusyAction("gate");
-    setBusyId("provision");
+    setBusyId("prepare-existing");
     setError("");
     setNotice("");
     try {
-      const result = await provisionDevelopmentGate(developmentOwnerEmail.trim(), true);
-      setNotice(`Development server dry run created for ${result.deployment.id}. Review it before live provisioning.`);
+      const result = await prepareExistingDevelopmentGate();
+      setGatePreparation(result);
+      setNotice(result.ready
+        ? "Existing development server is ready for a signed test rollout."
+        : `Encrypted settings updated. Waiting for server confirmation at epoch ${result.secrets_epoch}.`);
       await loadOperator();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not prepare development provisioning.");
+      setError(err instanceof Error ? err.message : "Could not prepare the existing development server.");
     } finally {
       setBusyAction("");
       setBusyId("");
@@ -764,10 +768,9 @@ export function OperatorPanel() {
               busyAction={busyAction}
               busyId={busyId}
               deployments={deployments.map((row) => row.deployment)}
-              ownerEmail={developmentOwnerEmail}
               gate={developmentGate}
+              preparation={gatePreparation}
               onDesignate={onDesignateGate}
-              onOwnerEmailChange={setDevelopmentOwnerEmail}
               onPrepare={onPrepareDevelopmentGate}
             />
           </Panel>
@@ -1104,18 +1107,16 @@ function DevelopmentGateCard({
   deployments,
   gate,
   onDesignate,
-  onOwnerEmailChange,
   onPrepare,
-  ownerEmail,
+  preparation,
 }: {
   busyAction: BusyAction;
   busyId: string;
   deployments: OperatorDeployment[];
   gate: DevelopmentGate | null;
   onDesignate: (deploymentId: string) => Promise<void>;
-  onOwnerEmailChange: (value: string) => void;
   onPrepare: () => Promise<void>;
-  ownerEmail: string;
+  preparation: DevelopmentGatePreparation | null;
 }) {
   const candidates = deployments.filter((deployment) => deployment.environment === "development"
     && deployment.deployment_type === "dedicated_server" && !deployment.is_release_gate);
@@ -1151,24 +1152,26 @@ function DevelopmentGateCard({
             <Timestamp label="Version active since" value={deployment.current_version_deployed_at} />
             <Timestamp label="Last seen" value={deployment.last_heartbeat_at} />
           </div>
+          <div className={`gateEpochRail ${preparation?.ready ? "ready" : ""}`}>
+            <span><small>Mission Control expects</small><strong>{preparation ? `Epoch ${preparation.secrets_epoch}` : "Check required"}</strong></span>
+            <i aria-hidden="true">{"->"}</i>
+            <span><small>Server has applied</small><strong>{preparation ? `Epoch ${preparation.applied_secrets_epoch}` : "Not checked"}</strong></span>
+          </div>
+          <button
+            className="secondaryButton"
+            disabled={Boolean(busyAction)}
+            type="button"
+            onClick={() => void onPrepare()}
+          >
+            {busyAction === "gate" && busyId === "prepare-existing" ? "Preparing existing server" : "Prepare existing server"}
+          </button>
+          <small className="operatorMuted">This updates encrypted settings on the enrolled server. It does not create a Hetzner server.</small>
           {gate?.blockers.length ? (
             <div className="pillRail">{gate.blockers.map((blocker) => <span key={blocker}>{labelFor(blocker)}</span>)}</div>
           ) : null}
         </article>
       ) : (
-        <div className="signatureForm">
-          <p className="mutedLine">No development gate is designated. Prepare the dedicated onebrain-only server, enroll it, and wait for a healthy heartbeat.</p>
-          <TextField label="Development owner email" required type="email" value={ownerEmail} onChange={onOwnerEmailChange} />
-          <button
-            className="secondaryButton"
-            disabled={Boolean(busyAction) || !ownerEmail.trim()}
-            type="button"
-            onClick={() => void onPrepare()}
-          >
-            {busyAction === "gate" && busyId === "provision" ? "Preparing" : "Prepare dry run"}
-          </button>
-          <small className="operatorMuted">Live Hetzner creation remains an activation step requiring separate confirmation.</small>
-        </div>
+        <p className="mutedLine">No development gate is designated. Enroll and select the existing development server below; this screen will not create a replacement.</p>
       )}
       {candidates.map((candidate) => (
         <div className="gateCandidate" key={candidate.id}>
@@ -1458,6 +1461,7 @@ function DeploymentCard({
             <div>
               <strong>{rollout.target_version}</strong>
               <p>{describeOperationalStatus(rollout.status).condition}</p>
+              {rollout.target_source ? <p className="operatorMuted">Target: {labelFor(rollout.target_source)}</p> : null}
               {rollout.failure_reason ? <p className="promotionFailure">{rollout.failure_reason}</p> : null}
             </div>
             <Timestamp label="Requested" value={rollout.created_at} />

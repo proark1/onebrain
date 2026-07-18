@@ -38,6 +38,10 @@ def _env(private_key: str) -> dict[str, str]:
         "ONEBRAIN_ONEBRAIN_API_DIGEST": digest,
         "ONEBRAIN_ONEBRAIN_WORKERS_DIGEST": digest,
         "ONEBRAIN_ONEBRAIN_ADMIN_UI_DIGEST": digest,
+        "ONEBRAIN_ASSISTANT_IMAGE_REF": f"ghcr.io/proark1/assistant-service@{digest}",
+        "ONEBRAIN_ASSISTANT_REVISION": "assistant-revision",
+        "ONEBRAIN_COMMUNICATION_IMAGE_REF": f"ghcr.io/proark1/communication@{digest}",
+        "ONEBRAIN_COMMUNICATION_REVISION": "communication-revision",
     }
 
 
@@ -85,6 +89,21 @@ def test_registration_prepares_then_dev_signs_exact_returned_manifest():
     assert result["created"] is True
     assert [call["action"] for call in calls] == ["prepare", "register"]
     registered = calls[1]
+    expected_modules = {
+        "onebrain-api",
+        "onebrain-workers",
+        "onebrain-admin-ui",
+        "assistant-service",
+        "communication-api",
+        "communication-widget",
+        "communication-voice",
+        "communication-workers",
+    }
+    assert set(calls[0]["modules"]) == expected_modules
+    assert set(calls[0]["images"]) == expected_modules
+    assert calls[0]["modules"]["assistant-service"] == "assistant-revision"
+    assert calls[0]["modules"]["communication-voice"] == "communication-revision"
+    assert calls[0]["images"]["communication-api"] == calls[0]["images"]["communication-workers"]
     fields = {
         key: registered[key]
         for key in (
@@ -100,4 +119,12 @@ def test_registration_rejects_any_production_private_key_input():
     env = _env(private_key)
     env["ONEBRAIN_RELEASE_PRIVATE_KEY"] = "must-never-enter-ci"
     with pytest.raises(ValueError, match="forbidden"):
+        register_from_environment(env, opener=lambda *_args, **_kwargs: None)
+
+
+def test_registration_rejects_mutable_external_image_reference():
+    private_key, _ = generate_keypair()
+    env = _env(private_key)
+    env["ONEBRAIN_ASSISTANT_IMAGE_REF"] = "ghcr.io/proark1/assistant-service:latest"
+    with pytest.raises(ValueError, match="ONEBRAIN_ASSISTANT_IMAGE_REF is invalid"):
         register_from_environment(env, opener=lambda *_args, **_kwargs: None)

@@ -461,4 +461,8 @@ jobs:
           ONEBRAIN_ONEBRAIN_API_DIGEST: ${{ needs.publish-images.outputs.api-digest }}
           ONEBRAIN_ONEBRAIN_WORKERS_DIGEST: ${{ needs.publish-images.outputs.workers-digest }}
           ONEBRAIN_ONEBRAIN_ADMIN_UI_DIGEST: ${{ needs.publish-images.outputs.admin-ui-digest }}
+          ONEBRAIN_ASSISTANT_IMAGE_REF: ${{ vars.ONEBRAIN_ASSISTANT_IMAGE_REF }}
+          ONEBRAIN_ASSISTANT_REVISION: ${{ vars.ONEBRAIN_ASSISTANT_REVISION }}
+          ONEBRAIN_COMMUNICATION_IMAGE_REF: ${{ vars.ONEBRAIN_COMMUNICATION_IMAGE_REF }}
+          ONEBRAIN_COMMUNICATION_REVISION: ${{ vars.ONEBRAIN_COMMUNICATION_REVISION }}
         run: python -m scripts.register_release_candidate

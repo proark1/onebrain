@@ -42,10 +42,11 @@ from app.deps import (
     get_store,
 )
 from app.controlplane.rollout_exec import (
+    SECRETS_EPOCH_PENDING_REASON,
     mark_rollout_dispatch_failed,
-    resolve_provisioned_target,
-    target_provider,
+    resolve_pull_target,
 )
+from app.controlplane.desired_state import active_signer_in_served_set
 from app.controlplane.fleet_runner import plan_and_start_fleet_rollout, reconcile_fleet_rollout
 from app.controlplane.promotion import (
     attach_production_signature,
@@ -234,6 +235,15 @@ class DevelopmentGateProvisionIn(BaseModel):
     dry_run: bool = True
 
 
+class DevelopmentGatePreparationOut(BaseModel):
+    deployment_id: str
+    updated: bool
+    secrets_epoch: int
+    applied_secrets_epoch: int
+    ready: bool
+    blockers: list[str] = Field(default_factory=list)
+
+
 DEVELOPMENT_GATE_DEPLOYMENT_ID = "onebrain_development_gate"
 # The development gate deliberately includes every currently available optional
 # product module.  Core is resolved server-side for every provisioning request;
@@ -321,6 +331,7 @@ class RolloutOut(BaseModel):
     completed_at: str = ""
     fleet_rollout_id: str = ""
     ack_restore_required: bool = False
+    target_source: str = ""
 
 
 class CustomerTeardownRequestCreate(BaseModel):
@@ -640,6 +651,7 @@ def _rollout_out(r: RolloutRun) -> RolloutOut:
         completed_at=r.completed_at,
         fleet_rollout_id=r.fleet_rollout_id,
         ack_restore_required=r.ack_restore_required,
+        target_source=str((r.request_payload or {}).get("target_source", "")),
     )
 
 
@@ -1466,6 +1478,12 @@ def _dispatch_development_candidate(store, version: str, *, actor: str) -> Relea
         fresh = False
     if gate.last_heartbeat_healthy is not True or not fresh:
         return promotion
+    eligibility = _resolve_pull_target(gate.id)
+    if not eligibility.allowed and eligibility.reason == SECRETS_EPOCH_PENDING_REASON:
+        # The host is healthy and enrolled but still applying a just-rotated
+        # encrypted bundle. Keep the candidate queued; the next healthy heartbeat
+        # calls dispatch_waiting_development_candidate and retries eligibility.
+        return promotion
     rollout_id = f"roll_dev_{uuid4().hex[:12]}"
     started_at = datetime.now(timezone.utc).isoformat()
     # Candidate delivery is gated even during the report-only rollout phase. A
@@ -1732,6 +1750,99 @@ def get_development_gate(principal: Principal = Depends(resolve_principal)):
     _require_admin(principal)
     _require_operator_mode()
     return _development_gate_out(get_control_plane_store())
+
+
+@router.post(
+    "/development-gate/prepare-existing",
+    response_model=DevelopmentGatePreparationOut,
+)
+def prepare_existing_development_gate(
+    principal: Principal = Depends(resolve_principal),
+):
+    """Prepare the designated enrolled gate in place; never provision a server."""
+    _require_admin(principal)
+    _require_operator_mode()
+    settings = get_settings()
+    if not active_signer_in_served_set(settings):
+        raise HTTPException(
+            status_code=409,
+            detail="Active desired-state signer is not in the served public-key set.",
+        )
+
+    store = get_control_plane_store()
+    gate = store.get_release_gate()
+    if gate is None:
+        raise HTTPException(status_code=409, detail="No development gate is designated.")
+    if (
+        gate.environment != "development"
+        or gate.deployment_type != "dedicated_server"
+        or gate.status != "active"
+    ):
+        raise HTTPException(status_code=409, detail="Designated development gate shape is invalid.")
+
+    fleet = get_fleet_store()
+    if not any(key.status == "active" for key in fleet.list_keys(gate.id)):
+        raise HTTPException(status_code=409, detail="Development gate has no active fleet key.")
+    heartbeat = fleet.latest_heartbeat(gate.id)
+    if heartbeat is None or heartbeat.deployment_id != gate.id or heartbeat.healthy is not True:
+        raise HTTPException(status_code=409, detail="Development gate heartbeat is missing or unhealthy.")
+    try:
+        received_at = datetime.fromisoformat(heartbeat.received_at)
+        if received_at.tzinfo is None:
+            received_at = received_at.replace(tzinfo=timezone.utc)
+        fleet_report_seconds = int(getattr(settings, "fleet_report_seconds", 300) or 300)
+        if (datetime.now(timezone.utc) - received_at).total_seconds() > max(
+            600, fleet_report_seconds * 2
+        ):
+            raise ValueError
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=409, detail="Development gate heartbeat is stale.")
+
+    from app.provisioning.gate_adoption import (
+        prepare_existing_gate_bundle,
+        retire_superseded_gate_keys,
+    )
+
+    try:
+        result = prepare_existing_gate_bundle(
+            deployment=gate,
+            provision_store=get_provisioning_run_store(),
+            service_key_store=get_service_key_store(),
+            settings=settings,
+            optional_module_ids=DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Development gate preparation failed safely.") from exc
+
+    update = heartbeat.payload.get("update", {}) if isinstance(heartbeat.payload, dict) else {}
+    try:
+        applied_epoch = int(update.get("applied_secrets_epoch", 0) or 0)
+    except (TypeError, ValueError):
+        applied_epoch = 0
+    ready = applied_epoch >= result.secrets_epoch
+    if ready:
+        try:
+            retire_superseded_gate_keys(
+                deployment=gate,
+                provision_store=get_provisioning_run_store(),
+                service_key_store=get_service_key_store(),
+                settings=settings,
+                optional_module_ids=DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="Development gate key retirement failed safely.") from exc
+    return DevelopmentGatePreparationOut(
+        deployment_id=gate.id,
+        updated=result.updated,
+        secrets_epoch=result.secrets_epoch,
+        applied_secrets_epoch=applied_epoch,
+        ready=ready,
+        blockers=[] if ready else ["secrets_epoch_pending"],
+    )
 
 
 @router.put("/development-gate/{deployment_id}", response_model=DevelopmentGateOut)
@@ -2182,7 +2293,7 @@ def start_rollout(deployment_id: str, body: RolloutCreate, principal: Principal 
     return _rollout_out(rollout)
 
 
-def offer_pull_target(control, rollout) -> None:
+def offer_pull_target(control, rollout, *, target_source: str) -> None:
     """Offer a rollout to a Hetzner box through its signed desired state.
 
     The box reports the outcome through its fleet report; the reconcile tick
@@ -2191,7 +2302,25 @@ def offer_pull_target(control, rollout) -> None:
     if not control.claim_rollout_dispatch(rollout.id):
         return
     control.update_rollout_exec(rollout.id, dispatched_at=datetime.now(timezone.utc).isoformat(),
-                                request_payload={"provider": "hetzner", "pull": True})
+                                request_payload={
+                                    "provider": "hetzner",
+                                    "pull": True,
+                                    "target_source": target_source,
+                                })
+
+
+def _resolve_pull_target(deployment_id: str):
+    settings = get_settings()
+    return resolve_pull_target(
+        get_provisioning_run_store(),
+        get_control_plane_store(),
+        get_fleet_store(),
+        deployment_id,
+        heartbeat_max_age_seconds=max(
+            600,
+            int(getattr(settings, "fleet_report_seconds", 300) or 300) * 2,
+        ),
+    )
 
 
 @router.post("/deployments/{deployment_id}/rollouts/{rollout_id}/dispatch", response_model=RolloutOut)
@@ -2227,18 +2356,14 @@ def dispatch_rollout(
         raise HTTPException(status_code=409, detail="Rollout target is no longer available.")
 
     _validate_callback_url(body.callback_url, placeholder="{rollout_id}")
-    try:
-        target = resolve_provisioned_target(get_provisioning_run_store(), deployment_id)
-    except ValueError as exc:
-        mark_rollout_dispatch_failed(control, rollout, str(exc))
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if target_provider(target) == "hetzner":
+    eligibility = _resolve_pull_target(deployment_id)
+    if eligibility.allowed:
         # The box converges on its own signed desired state and the reconcile
         # tick resolves the terminal state from its fleet report.
-        offer_pull_target(control, rollout)
+        offer_pull_target(control, rollout, target_source=eligibility.source)
         return _rollout_out(control.get_rollout(rollout_id))
 
-    reason = "Rollout target is not a Hetzner deployment."
+    reason = eligibility.reason or "Rollout target is not a Hetzner deployment."
     mark_rollout_dispatch_failed(control, rollout, reason)
     raise HTTPException(status_code=409, detail=reason)
 
@@ -2338,16 +2463,16 @@ def _dispatch_child_rollout(fleet_id: str, deployment_id: str, *, target_version
     if not (release and deployment and plan.allowed):
         mark_rollout_dispatch_failed(control, rollout, "update no longer available")
         return
-    try:
-        target = resolve_provisioned_target(get_provisioning_run_store(), deployment_id)
-    except ValueError as exc:
-        mark_rollout_dispatch_failed(control, rollout, str(exc))
-        return
-    if target_provider(target) == "hetzner":
+    eligibility = _resolve_pull_target(deployment_id)
+    if eligibility.allowed:
         # The child remains in-flight until the box reports a terminal state.
-        offer_pull_target(control, rollout)
+        offer_pull_target(control, rollout, target_source=eligibility.source)
         return
-    mark_rollout_dispatch_failed(control, rollout, "Rollout target is not a Hetzner deployment.")
+    mark_rollout_dispatch_failed(
+        control,
+        rollout,
+        eligibility.reason or "Rollout target is not a Hetzner deployment.",
+    )
 
 
 def fleet_dispatch_child(fleet_run, deployment_id) -> None:
