@@ -10169,10 +10169,15 @@
       },
       "StorageReport": {
         "additionalProperties": false,
-        "description": "Metadata-only root and durable-data filesystem capacity for a host.",
+        "description": "Metadata-only capacity plus a concrete durable-volume availability signal.",
         "properties": {
           "data": {
             "$ref": "#/components/schemas/StorageCapacityReport"
+          },
+          "data_volume_unavailable": {
+            "default": false,
+            "title": "Data Volume Unavailable",
+            "type": "boolean"
           },
           "root": {
             "$ref": "#/components/schemas/StorageCapacityReport"
@@ -13733,7 +13738,7 @@
     },
     "/api/fleet/deployments/{deployment_id}/backfill-runtime-db-credentials": {
       "post": {
-        "description": "Add missing restricted runtime DB passwords to a legacy box bundle.\n\nThis is an operator-admin-only, MC-side migration path for bundles sealed\nbefore the full restricted-runtime role split existed. It decrypts only in MC\nmemory, adds *only* missing values, re-seals before storage, and returns no\npassword material. A successful change then bumps secrets_epoch so the box\nre-fetches its authoritative bundle. Never generate these values on a box:\nthat would leave MC unable to service a later rotation.",
+        "description": "Add missing legacy runtime secrets to a legacy box bundle.\n\nThis is an operator-admin-only, MC-side migration path for bundles sealed\nbefore the full restricted-runtime role split and login-rate-limit secret\nexisted. It decrypts only in MC memory, adds *only* missing values (including\na 32+ character login rate-limit secret), re-seals before storage, and returns\nno secret material. A successful change then bumps secrets_epoch so the box\nre-fetches its authoritative bundle. Never generate these values on a box:\nthat would leave MC unable to service a later rotation. The route keeps its\noriginal DB-credential name for compatibility.",
         "operationId": "backfill_runtime_db_credentials_api_fleet_deployments__deployment_id__backfill_runtime_db_credentials_post",
         "parameters": [
           {
