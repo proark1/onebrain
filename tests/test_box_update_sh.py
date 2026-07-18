@@ -389,6 +389,10 @@ def test_happy_path_no_migration(box):
     assert state["attempt_id"] == "child_1"
     assert box.pulled() == [GOOD_IMG]
     assert "pg_dump" not in box.stub_log()   # no schema change -> no backup
+    last_applied = json.loads(
+        (box.data / "onebrain_update" / "last_applied.json").read_text(encoding="utf-8")
+    )
+    assert last_applied["modules"] == {"onebrain-api": "2026.7.2"}
 
 
 def test_pulled_digests_equal_verifier_output(box):

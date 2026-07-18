@@ -4599,6 +4599,23 @@
         "title": "DevelopmentGateProvisionIn",
         "type": "object"
       },
+      "DevelopmentRetryIn": {
+        "properties": {
+          "ack_restore_required": {
+            "default": false,
+            "title": "Ack Restore Required",
+            "type": "boolean"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "title": "DevelopmentRetryIn",
+        "type": "object"
+      },
       "DirectoryRequest": {
         "additionalProperties": false,
         "properties": {
@@ -17542,7 +17559,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PromotionNote"
+                "$ref": "#/components/schemas/DevelopmentRetryIn"
               }
             }
           },

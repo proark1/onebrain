@@ -105,7 +105,9 @@ def test_mc_envelope_passes_box_verifier():
         expected_deployment_id="dep_a", now=NOW, floor_state=bv.FloorState(), registry_allowlist=ALLOW)
     assert errors == []
     # And the box derives the exact target update.sh would pull from the verified block.
-    assert bv.verified_target(env.model_dump())["images"] == {"onebrain-api": _IMG}
+    target = bv.verified_target(env.model_dump())
+    assert target["modules"] == {"onebrain-api": "0.8.0"}
+    assert target["images"] == {"onebrain-api": _IMG}
 
 
 def test_emission_disabled_returns_none():

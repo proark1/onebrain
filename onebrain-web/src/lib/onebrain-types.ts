@@ -777,6 +777,11 @@ export type OperatorRunInput = {
   detail?: string;
 };
 
+export type DevelopmentRetryInput = {
+  note: string;
+  ack_restore_required: boolean;
+};
+
 export type OperatorRolloutStatusInput = {
   status: string;
   notes?: string;

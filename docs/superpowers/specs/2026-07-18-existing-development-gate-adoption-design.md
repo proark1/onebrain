@@ -2,9 +2,10 @@
 
 ## Goal
 
-Deploy and validate new OneBrain releases on the existing
-`onebrain_development_gate` server. Mission Control must not create a replacement
-Hetzner server merely because the existing gate predates the provisioning ledger.
+Deploy and validate new OneBrain releases on a designated full-stack development
+gate. Mission Control may adopt an existing full-stack gate that predates the
+provisioning ledger, but a legacy Core-only gate must be replaced through the
+explicit development-gate provisioner before it can receive a candidate.
 
 After a candidate passes development validation, the workflow stops and asks the
 operator for explicit approval before Mission Control itself is updated.
@@ -22,24 +23,44 @@ development gate runs the eight-service full-stack composition, and the legacy g
 may lack the encrypted runtime credentials required by the Assistant and
 Communication services.
 
+The first live Drive candidate, `2026.07.18.270`, exposed two additional fail-closed
+boundaries. Its schema change is correctly classified `restore_required`, but the
+development retry path has no way to record the operator's acknowledgement on the
+promotion-linked rollout. After that acknowledgement, the legacy Core-only host
+still cannot apply a full-stack candidate: its compose profiles and local reporting
+allowlist were fixed when it was provisioned. Treating its database rows as
+expandable would dispatch a rollout that can never converge.
+
 ## Scope
 
 This change:
 
 - adopts only the currently designated development gate as an enrolled pull target;
-- prepares missing development-only credentials in the existing encrypted bundle;
+- prepares missing development-only credentials in an adopted full-stack gate's
+  encrypted bundle;
 - registers a development-signed, digest-pinned full-stack candidate;
-- rolls that candidate out to the existing server and verifies its report; and
+- records an explicit restore-required acknowledgement on the exact linked rollout;
+- requires an exact eight-service active set before candidate dispatch;
+- provisions a separately verified full-stack replacement when the designated gate
+  is still Core-only;
+- rolls that candidate out to the designated full-stack server and verifies its
+  report; and
 - stops for operator approval after development verification.
 
 This change does not:
 
-- create, replace, or delete a Hetzner server;
+- replace or delete a Hetzner server implicitly during candidate dispatch;
 - invent a provisioning run or Hetzner server ID;
 - relax targeting for customer deployments;
 - bypass release, image, desired-state, version-floor, or heartbeat verification;
+- relabel a restore-required migration as code-only;
+- create active module rows without matching authenticated host evidence;
 - upload a production private key to Mission Control or CI; or
 - update Mission Control itself without a later explicit approval.
+
+Candidate `2026.07.18.270` is immutable and remains failed. The repaired workflow
+creates a new eight-service candidate; it does not amend, retry, sign, or promote the
+three-service manifest.
 
 ## Target Eligibility
 
@@ -68,6 +89,32 @@ The resolver returns a small eligibility result containing the provider, source,
 and denial reason. An adopted gate needs no fabricated `target_id`; signed desired
 state is fetched by the deployment ID already bound to its fleet key.
 
+For the one-time legacy expansion, target eligibility and post-rollout readiness are
+separate checks. Before dispatch, the gate may have exactly the three Core active
+module rows, but no foreign or unexpected active rows. The target candidate must
+contain exactly the required eight services. A gate that already has eight active
+rows must match the same exact set. Any other current/target combination fails
+closed. `development_baseline_untrusted` remains visible, but it does not prevent a
+development-signed candidate from repairing the designated development gate; it
+continues to block production trust and customer rollout.
+
+## Restore-Required Retry
+
+Automatic candidate registration never acknowledges destructive rollback risk. A
+`restore_required` candidate therefore enters `dev_failed` with
+`restore_required_ack_needed` until an authenticated Mission Control administrator
+performs an explicit retry.
+
+The retry request carries `ack_restore_required: true` and a review note. Mission
+Control passes the acknowledgement to both `plan_update()` and the internally
+created `RolloutRun`; the rollout remains the exact ID stored on the promotion. The
+existing successful-backup gate still applies. The audit trail records the actor,
+the stable acknowledgement fact, the linked rollout ID, and the review note without
+recording secrets.
+
+A retry without the acknowledgement remains blocked. A manual parallel rollout is
+not an alternative because it is not linked to the promotion state machine.
+
 ## Dispatch and Audit Flow
 
 1. Candidate dispatch runs the existing update plan and rollout concurrency gates.
@@ -82,8 +129,12 @@ state is fetched by the deployment ID already bound to its fleet key.
 5. The gate fetches its own signed desired state with its fleet key.
 6. The gate verifies the development signature, MC wrapper signature, digest-pinned
    images, deployment scope, and version floor before applying anything.
-7. The existing reconciliation state machine accepts success only when the reported
-   attempt ID, release version, migration, module versions, and health all match.
+7. Reconciliation accepts success only when the reported attempt ID, release
+   version, migration, expected secrets epoch, exact eight-service module set,
+   versions, and health all match.
+8. Only after that proof, Mission Control atomically reconciles the deployment's
+   module registry to the eight verified active rows and completes the linked rollout
+   and promotion.
 
 No new adoption table or synthetic provisioning record is added. The existing
 deployment, fleet-key, heartbeat, rollout, promotion-event, and execution-payload
@@ -113,6 +164,10 @@ epoch. A partial preparation failure leaves the prior bundle and epoch active.
 The operation is idempotent. Repeating it reuses existing valid credentials and does
 not create duplicate accounts, spaces, apps, or service keys.
 
+Credential preparation does not create active deployment-module rows and cannot
+turn a Core-only host into a full-stack host. The explicit provisioner creates the
+replacement topology; its authenticated report is the authority for designation.
+
 ## Full-Stack Development Candidate
 
 The release-registration workflow is extended to support the complete development
@@ -133,6 +188,34 @@ registration script validates digest syntax and refuses a partial full-stack map
 The production signing key remains offline and is not needed to test a development
 candidate.
 
+## Verified Full-Stack Module Set
+
+The required deployable set is fixed to:
+
+- `onebrain-api`;
+- `onebrain-admin-ui`;
+- `onebrain-workers`;
+- `assistant-service`;
+- `communication-api`;
+- `communication-widget`;
+- `communication-voice`; and
+- `communication-workers`.
+
+Candidate dispatch accepts only that exact full-stack set as both the current and
+target topology. A legacy Core-only set returns
+`development_gate_replacement_required`; the operator must use the existing
+development-gate provisioner, verify the replacement, and designate it first. The
+signed desired-state manifest carries all eight immutable image references and exact
+per-module versions.
+
+Heartbeat reconciliation validates the target set from the combined OneBrain
+identity and module-health report rather than iterating only the pre-existing module
+rows. Duplicate, missing, extra, unhealthy, or wrong-version reports keep the
+rollout non-terminal and eventually fail through the existing timeout path. Once all
+evidence agrees, the module-row reconciliation and rollout completion occur in one
+control-plane transaction. A partial database write cannot leave the gate appearing
+full-stack.
+
 ## Failure Handling
 
 - Missing, disabled, or foreign fleet keys block adoption.
@@ -140,6 +223,11 @@ candidate.
 - A secret-bundle preparation failure blocks before any container change.
 - A gate that has not reported the expected secrets epoch cannot receive the
   full-stack candidate.
+- A restore-required retry without a successful backup and explicit acknowledgement
+  is rejected before dispatch.
+- A current module set other than exact full-stack is rejected. A legacy Core-only
+  gate must be replaced through the development-gate provisioner before promotion.
+- A target manifest other than the exact eight-service set is rejected.
 - An active rollout keeps later candidates queued.
 - Signature, digest, scope, version-floor, attempt-ID, migration, module-version, or
   health mismatches fail through the existing state machines.
@@ -170,20 +258,38 @@ No prior "bring live" instruction is carried across that approval boundary.
 - Credential preparation creates only missing credentials and advances the epoch
   once.
 - Dispatch waits for the expected applied epoch.
+- Automatic dispatch cannot acknowledge `restore_required`; explicit retry can, and
+  persists the acknowledgement on the linked rollout.
+- A legacy Core gate receives `development_gate_replacement_required`; exact
+  full-stack updates succeed while partial, foreign, and extra sets fail closed.
 - Candidate registration requires all eight module and image entries.
 - The shared Communication digest is accepted for each of its four module IDs.
-- Successful reconciliation verifies the exact attempt, release, migration, module
-  versions, secrets epoch, and health.
+- Successful reconciliation verifies the exact attempt, release, migration, all
+  eight module versions, secrets epoch, and health before activating missing module
+  rows.
+- A failed or partial report leaves the module registry unchanged.
+- Module activation and rollout completion are atomic in both memory and PostgreSQL
+  stores.
 - Failure and timeout paths remain terminal and auditable.
 
 ### Live acceptance
 
-1. Confirm the existing gate remains the only designated development gate.
-2. Reconcile its full-stack secret bundle and observe the expected epoch in a fresh
-   healthy heartbeat.
-3. Register the development-signed full-stack candidate.
-4. Confirm dispatch records `target_source=enrolled_development_gate`.
-5. Confirm the existing server applies all eight immutable images.
-6. Confirm the rollout and promotion reach `dev_verified` with exact report matches.
-7. Confirm no Hetzner server was created and no customer rollout started.
-8. Stop and request operator approval before updating Mission Control.
+1. Confirm the Core-only gate is rejected with
+   `development_gate_replacement_required` before candidate dispatch.
+2. Provision the full-stack replacement, verify its exact eight-service heartbeat,
+   and designate it as the release gate.
+3. Reconcile its encrypted bundle and observe the expected epoch in a fresh healthy
+   heartbeat.
+4. Register a new development-signed full-stack candidate; leave
+   `2026.07.18.270` failed and unchanged.
+5. Verify the fresh backup and explicitly acknowledge `restore_required` on the
+   retry.
+6. Confirm dispatch records the qualified target source and the
+   promotion-linked rollout ID.
+7. Confirm the replacement server applies all eight immutable images.
+8. Confirm the exact eight-service heartbeat atomically reconciles the module rows
+   and moves the rollout and promotion to `dev_verified`.
+9. Confirm only the explicit gate replacement was created and no customer rollout
+   started.
+10. Stop for the offline production signature and explicit approval before any
+   customer rollout.

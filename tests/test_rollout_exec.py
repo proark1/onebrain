@@ -15,12 +15,8 @@ from app.auth.principal import Principal
 from app.auth.roles import ROLES
 from app.controlplane.base import CustomerDeployment, DeploymentModule, ReleaseManifest, RolloutRun
 from app.controlplane.memory import MemoryControlPlaneStore
-from app.controlplane.rollout_exec import (
-    DEVELOPMENT_GATE_MODULE_IDS,
-    resolve_pull_target,
-    resolve_provisioned_target,
-    target_provider,
-)
+from app.controlplane.development_gate import DEVELOPMENT_GATE_MODULE_IDS
+from app.controlplane.rollout_exec import resolve_pull_target, resolve_provisioned_target, target_provider
 from app.fleet.base import FleetKey, Heartbeat
 from app.fleet.memory import MemoryFleetStore
 
@@ -129,14 +125,20 @@ def test_target_provider_rejects_non_hetzner_targets():
     assert target_provider({}) == "unknown"  # resolver already fail-closes empties upstream
 
 
-def _enrolled_gate(*, healthy=True, age_seconds=0, key_status="active"):
+def _enrolled_gate(
+    *,
+    healthy=True,
+    age_seconds=0,
+    key_status="active",
+    module_ids=DEVELOPMENT_GATE_MODULE_IDS,
+):
     control = MemoryControlPlaneStore()
     control.create_deployment(CustomerDeployment(
         id="gate", customer_name="Gate", environment="development",
         deployment_type="dedicated_server",
     ))
     control.designate_release_gate("gate")
-    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
+    for module_id in module_ids:
         control.upsert_module(DeploymentModule("gate", module_id, "installed"))
     fleet = MemoryFleetStore()
     now = datetime.now(timezone.utc)
@@ -175,6 +177,20 @@ def test_pull_target_adopts_only_enrolled_fresh_healthy_designated_gate():
     assert result.provider == "hetzner"
     assert result.source == "enrolled_development_gate"
     assert result.target == {}
+    assert result.required_secrets_epoch == 0
+
+
+def test_pull_target_recognizes_enrolled_legacy_core_for_preparation_only():
+    from app.controlplane.development_gate import DEVELOPMENT_GATE_CORE_MODULE_IDS
+
+    control, fleet, now, prov = _enrolled_gate(
+        module_ids=DEVELOPMENT_GATE_CORE_MODULE_IDS
+    )
+
+    result = resolve_pull_target(prov, control, fleet, "gate", now=now)
+
+    assert result.allowed is True
+    assert result.source == "enrolled_development_gate"
 
 
 @pytest.mark.parametrize(
@@ -219,20 +235,15 @@ def test_pull_target_waits_for_expected_secrets_epoch():
     ))
     ready = resolve_pull_target(_FakeProvStore([], bundle), control, fleet, "gate", now=now)
     assert ready.allowed is True
+    assert ready.required_secrets_epoch == 4
 
 
-def test_pull_target_requires_bundle_full_modules_and_active_key_heartbeat_proof():
+def test_pull_target_requires_bundle_and_active_key_heartbeat_proof():
     control, fleet, now, prov = _enrolled_gate()
 
     missing_bundle = resolve_pull_target(_FakeProvStore([]), control, fleet, "gate", now=now)
     assert missing_bundle.allowed is False
     assert "encrypted secret bundle" in missing_bundle.reason
-
-    control.upsert_module(DeploymentModule("gate", "assistant-service", "installed", status="disabled"))
-    missing_module = resolve_pull_target(prov, control, fleet, "gate", now=now)
-    assert missing_module.allowed is False
-    assert "module set" in missing_module.reason
-    control.upsert_module(DeploymentModule("gate", "assistant-service", "installed"))
 
     fleet.revoke_key("fk")
     fleet.create_key(FleetKey("replacement", "hash", "gate", status="active"))
@@ -379,7 +390,11 @@ def test_dispatch_offers_hetzner_target(monkeypatch):
     rollout = store.get_rollout("roll1")
     assert rollout.exec_status == "dispatched" and rollout.dispatched_at
     assert rollout.request_payload == {
-        "provider": "hetzner", "pull": True, "target_source": "provisioning_run"}
+        "provider": "hetzner",
+        "pull": True,
+        "target_source": "provisioning_run",
+        "required_secrets_epoch": 0,
+    }
 
 
 def test_dispatch_offers_enrolled_existing_development_gate(monkeypatch):
@@ -410,6 +425,7 @@ def test_dispatch_offers_enrolled_existing_development_gate(monkeypatch):
         "provider": "hetzner",
         "pull": True,
         "target_source": "enrolled_development_gate",
+        "required_secrets_epoch": 0,
     }
 
 
@@ -430,7 +446,11 @@ def test_fleet_child_offers_hetzner_target(monkeypatch):
     assert children[0].status == "pending"          # non-terminal, awaiting box convergence
     assert children[0].exec_status == "dispatched"  # offered, not dispatch_failed
     assert children[0].request_payload == {
-        "provider": "hetzner", "pull": True, "target_source": "provisioning_run"}
+        "provider": "hetzner",
+        "pull": True,
+        "target_source": "provisioning_run",
+        "required_secrets_epoch": 0,
+    }
 
 
 def test_fleet_child_rejects_non_hetzner_target(monkeypatch):

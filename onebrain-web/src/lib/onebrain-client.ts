@@ -10,6 +10,7 @@ import type {
   CreatePlatformAccountInput,
   CreatePlatformSpaceInput,
   CreateOperatorReleaseInput,
+  DevelopmentRetryInput,
   DocumentSummary,
   InstallPlatformAppInput,
   CreateKpiDefinitionInput,
@@ -626,11 +627,14 @@ export function provisionDevelopmentGate(ownerEmail: string, dryRun = true): Pro
   });
 }
 
-export function retryDevelopmentRelease(version: string, note = ""): Promise<OperatorRelease> {
+export function retryDevelopmentRelease(
+  version: string,
+  input: DevelopmentRetryInput,
+): Promise<OperatorRelease> {
   return requestJson<OperatorRelease>(`/operator/releases/${encodeURIComponent(version)}/retry-dev`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ note }),
+    body: JSON.stringify(input),
   });
 }
 

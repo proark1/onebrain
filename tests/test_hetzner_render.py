@@ -973,6 +973,25 @@ def test_compact_host_assets_drop_only_safe_blank_lines():
     assert render.__annotations__ == {}
 
 
+def test_compact_python_asset_drops_inert_function_annotations_but_keeps_future_semantics():
+    from app.provisioning.hetzner import render as R
+
+    source = (
+        "from __future__ import annotations\n"
+        "OnlyDuringTypeChecking: MissingAtRuntime\n"
+        "def enabled(values: list[str], *, fallback: bool = False) -> bool:\n"
+        "    return bool(values) or fallback\n"
+    )
+    compacted = R._compact_host_asset("/opt/example.py", source)
+    namespace: dict[str, object] = {}
+    exec(compacted, namespace)
+
+    assert "from __future__ import annotations" in compacted
+    assert namespace["__annotations__"]["OnlyDuringTypeChecking"] == "MissingAtRuntime"
+    assert "list[str]" not in compacted
+    assert namespace["enabled"]([], fallback=True) is True
+
+
 def test_mc_cloud_init_under_hetzner_user_data_limit():
     """The MC (operator) box — the actual go-live artifact bootstrap_mc renders — fits under
     Hetzner's 32768-byte user_data limit via build_mc_artifacts. Its baked dotenv and

@@ -564,6 +564,75 @@ class MemoryControlPlaneStore:
             self._save()
             return updated
 
+    def complete_verified_rollout(
+        self,
+        rollout_id: str,
+        *,
+        verified_modules: Dict[str, str],
+        completed_at: str,
+    ) -> RolloutRun:
+        """Atomically apply authenticated module evidence and complete a pull rollout."""
+        from app.controlplane.development_gate import validate_module_transition
+
+        verified = {
+            str(module_id).strip(): str(version).strip()
+            for module_id, version in verified_modules.items()
+        }
+        with self._lock:
+            rollout = self._rollouts.get(rollout_id)
+            if not rollout:
+                raise ValueError(f"unknown rollout: {rollout_id}")
+            if rollout.status in {"success", "failed"}:
+                raise ValueError("terminal rollout status cannot be changed")
+            plan = self._plan_update(
+                rollout.deployment_id,
+                rollout.target_version,
+                ack_restore_required=rollout.ack_restore_required,
+                ignore_rollout_id=rollout.id,
+            )
+            if not plan.allowed:
+                raise ValueError(f"rollout completion blocked: {plan.reason}")
+            release = self._releases.get(rollout.target_version)
+            deployment = self._deployments.get(rollout.deployment_id)
+            if not release or not deployment:
+                raise ValueError("rollout target is no longer available")
+            if verified != release.modules:
+                raise ValueError("verified rollout modules do not match release")
+            if deployment.is_release_gate:
+                current = {
+                    module.module_id
+                    for module in self.list_modules(deployment.id)
+                    if module.status == "active"
+                }
+                reason = validate_module_transition(current, verified)
+                if reason:
+                    raise ValueError(reason)
+
+            for module_id, version in verified.items():
+                self._modules[(deployment.id, module_id)] = DeploymentModule(
+                    deployment.id,
+                    module_id,
+                    version,
+                    status="active",
+                )
+            finished_at = completed_at.strip() or datetime.now(timezone.utc).isoformat()
+            self._deployments[deployment.id] = replace(
+                deployment,
+                current_version=release.version,
+                current_migration=release.migration_to or deployment.current_migration,
+                current_version_deployed_at=finished_at,
+            )
+            updated = replace(
+                rollout,
+                status="success",
+                exec_status="succeeded",
+                failure_reason="",
+                completed_at=finished_at,
+            )
+            self._rollouts[rollout_id] = updated
+            self._save()
+            return updated
+
     def get_rollout(self, rollout_id: str) -> Optional[RolloutRun]:
         return self._rollouts.get(rollout_id)
 

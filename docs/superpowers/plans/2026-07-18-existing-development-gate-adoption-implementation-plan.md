@@ -1,10 +1,10 @@
 # Existing Development Gate Adoption: Implementation Plan
 
-**Goal:** Reuse the enrolled `onebrain_development_gate` server for full-stack development validation, without creating a replacement server or weakening customer rollout safeguards.
+**Goal:** Reuse an enrolled full-stack `onebrain_development_gate` for development validation, while requiring an explicit provisioned replacement for a legacy Core-only gate and preserving customer rollout safeguards.
 
-**Architecture:** Add a narrow rollout-target eligibility result that accepts either a real successful provisioning run or the currently designated, enrolled, fresh, healthy development gate. Add an admin-only, idempotent in-place gate preparation operation that reconciles missing full-stack integration credentials into the existing encrypted bundle and waits for the applied epoch. Extend candidate registration to carry all eight digest-pinned service entries. Preserve the existing signed desired-state and heartbeat reconciliation state machines.
+**Architecture:** Add a narrow rollout-target eligibility result that accepts either a real successful provisioning run or the currently designated, enrolled, fresh, healthy development gate. Require the active and target module sets to be the exact eight-service topology; return `development_gate_replacement_required` for a legacy Core-only host. Use the existing development-gate provisioner to create and verify that replacement. Keep the admin-only, idempotent preparation operation for a designated full-stack gate's encrypted bundle. Extend candidate registration to carry all eight digest-pinned service entries. Preserve the existing signed desired-state and heartbeat reconciliation state machines.
 
-**Working tree:** `codex/dev-gate-adoption` in `.codex-worktrees/dev-gate-adoption`.
+**Working tree:** `codex/dev-gate-promotion-repair` in `.codex-worktrees/dev-gate-adoption`.
 
 ## Task 1: Model adopted pull-target eligibility
 
@@ -40,7 +40,7 @@
 5. Preserve rollout claiming, concurrency, update-plan, callback validation, and terminal failure behavior.
 6. Run the focused operator, fleet-orchestration, and release-promotion tests.
 
-## Task 3: Reconcile the existing gate's full-stack secret bundle
+## Task 3: Reconcile the designated full-stack gate's secret bundle
 
 **Files:**
 
@@ -103,7 +103,7 @@
 
 **Steps:**
 
-1. Add a development-gate action labelled for preparing the existing server, not provisioning a replacement.
+1. Expose separate actions for preparing a compatible designated gate and explicitly provisioning a Core-only gate replacement.
 2. Explain the eligibility blockers and applied/expected secret epoch without exposing credentials.
 3. Show whether rollout targeting came from `provisioning_run` or `enrolled_development_gate` in operational details.
 4. Keep any Mission Control update action outside this flow; after `dev_verified`, show that operator approval is required.
@@ -125,14 +125,15 @@
 7. Push the feature branch.
 8. Follow `AGENTS.md`: fast-forward `main`, merge the feature branch, and push `main` only when all checks pass and no unrelated changes or conflicts are present.
 
-## Task 7: Existing-server development activation
+## Task 7: Full-stack development-gate activation
 
-1. Confirm the current gate ID remains `onebrain_development_gate` and no replacement deployment exists.
+1. Confirm the designated Core-only gate is blocked with `development_gate_replacement_required` and no replacement deployment already exists.
 2. Configure the immutable Assistant and Communication image refs/revisions as non-secret release inputs.
-3. Run the existing-gate preparation action and retain no raw response secrets.
-4. Wait for a fresh healthy heartbeat with the expected applied secrets epoch.
-5. Register the full-stack development candidate.
-6. Confirm the rollout audit payload reports `target_source=enrolled_development_gate`.
-7. Monitor exact attempt ID, release, migration, eight module versions, and health through `dev_verified`.
-8. Confirm no new Hetzner server and no customer rollout were created.
-9. Stop and ask the operator for explicit approval before updating Mission Control itself.
+3. Explicitly provision the full-stack replacement, verify its eight-service report, and designate it.
+4. Run the preparation action for the designated full-stack gate and retain no raw response secrets.
+5. Wait for a fresh healthy heartbeat with the expected applied secrets epoch.
+6. Register the full-stack development candidate.
+7. Confirm the rollout audit payload records the qualified target source.
+8. Monitor exact attempt ID, release, migration, eight module versions, and health through `dev_verified`.
+9. Confirm exactly one replacement was created and no customer rollout was created.
+10. Stop and ask the operator for explicit approval before updating Mission Control itself.

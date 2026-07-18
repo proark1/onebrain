@@ -20,6 +20,7 @@ from app.controlplane.base import (
     RolloutRun,
 )
 from app.controlplane.memory import MemoryControlPlaneStore
+from app.controlplane.development_gate import DEVELOPMENT_GATE_MODULE_IDS
 from app.controlplane.orchestration import FleetRolloutRun
 from app.controlplane.pull_reconcile import (
     materialize_backup_from_report,
@@ -88,6 +89,7 @@ def _hb(
     backup_status: str = "",
     backup_ts: str = "",
     backup_manifest: str = "",
+    applied_secrets_epoch: int = 0,
 ):
     """A stored-heartbeat stand-in whose .payload matches latest_heartbeats()'s shape."""
     body = build_heartbeat_v2(
@@ -105,6 +107,7 @@ def _hb(
             backup_status=backup_status,
             backup_ts=backup_ts,
             backup_manifest=backup_manifest,
+            applied_secrets_epoch=applied_secrets_epoch,
         ),
     )
     return SimpleNamespace(payload=body.model_dump())
@@ -341,6 +344,193 @@ def test_reconcile_at_rest_is_noop():
                                   dispatch_child=_noop_dispatch) == []
 
 
+def _store_with_development_pull(*, required_secrets_epoch=4):
+    store = MemoryControlPlaneStore()
+    gate = CustomerDeployment(
+        id="dev",
+        customer_name="Development",
+        environment="development",
+        deployment_type="dedicated_server",
+        current_version="2026.07.0",
+        current_migration="0041",
+    )
+    store.create_deployment(gate)
+    store.designate_release_gate(gate.id)
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
+        store.upsert_module(DeploymentModule(gate.id, module_id, "2026.07.0"))
+    version = "2026.07.1"
+    target_modules = {
+        module_id: version
+        for module_id in DEVELOPMENT_GATE_MODULE_IDS
+    }
+    rollout_id = "roll-dev"
+    started = NOW.isoformat()
+    store.create_release_candidate(
+        ReleaseManifest(
+            version=version,
+            git_sha="sha",
+            modules=target_modules,
+            migration_from="0041",
+            migration_to="0041",
+        ),
+        ReleasePromotion(
+            version,
+            state="dev_deploying",
+            gate_deployment_id=gate.id,
+            dev_rollout_id=rollout_id,
+            dev_attempt_id=rollout_id,
+            dev_started_at=started,
+            created_at=started,
+            updated_at=started,
+        ),
+        ReleasePromotionEvent(
+            "event-dev",
+            version,
+            "dev_rollout_started",
+            "dev_deploying",
+        ),
+    )
+    store.start_rollout(RolloutRun(
+        rollout_id,
+        gate.id,
+        version,
+        "pending",
+        "release-candidate:test",
+    ))
+    store.claim_rollout_dispatch(rollout_id)
+    store.update_rollout_exec(
+        rollout_id,
+        dispatched_at=started,
+        request_payload={
+            "provider": "hetzner",
+            "pull": True,
+            "required_secrets_epoch": required_secrets_epoch,
+        },
+    )
+    reports = [
+        ModuleReport(module_id=module_id, version=module_version)
+        for module_id, module_version in sorted(target_modules.items())
+    ]
+    return store, gate, target_modules, reports
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "extra",
+        "duplicate",
+        "unhealthy",
+        "wrong-version",
+    ],
+)
+def test_development_pull_requires_exact_healthy_full_stack_report(mutation):
+    store, gate, _target_modules, reports = _store_with_development_pull()
+    if mutation == "missing":
+        reports = reports[:-1]
+    elif mutation == "extra":
+        reports.append(ModuleReport(module_id="foreign-service", version="2026.07.1"))
+    elif mutation == "duplicate":
+        reports.append(reports[0])
+    elif mutation == "unhealthy":
+        reports[0] = reports[0].model_copy(update={"healthy": False})
+    elif mutation == "wrong-version":
+        reports[0] = reports[0].model_copy(update={"version": "wrong"})
+
+    heartbeat = _hb(
+        gate.id,
+        attempt_id="roll-dev",
+        outcome="succeeded",
+        version="2026.07.1",
+        modules=reports,
+        applied_secrets_epoch=4,
+    )
+
+    assert pull_acknowledgement_matches(
+        store,
+        store.get_rollout("roll-dev"),
+        heartbeat,
+    ) is False
+    reconcile_pull_targets(
+        store,
+        store,
+        {gate.id: heartbeat},
+        now=NOW,
+        deadline_seconds=DEADLINE,
+        dispatch_child=_noop_dispatch,
+    )
+    assert store.get_rollout("roll-dev").status == "pending"
+    assert {
+        module.module_id
+        for module in store.list_modules(gate.id)
+        if module.status == "active"
+    } == DEVELOPMENT_GATE_MODULE_IDS
+
+
+def test_development_pull_requires_persisted_secrets_epoch_evidence():
+    store, gate, target_modules, reports = _store_with_development_pull()
+    stale = _hb(
+        gate.id,
+        attempt_id="roll-dev",
+        outcome="succeeded",
+        version="2026.07.1",
+        modules=reports,
+        applied_secrets_epoch=3,
+    )
+    reconcile_pull_targets(
+        store,
+        store,
+        {gate.id: stale},
+        now=NOW,
+        deadline_seconds=DEADLINE,
+        dispatch_child=_noop_dispatch,
+    )
+    assert store.get_rollout("roll-dev").status == "pending"
+
+    matching = _hb(
+        gate.id,
+        attempt_id="roll-dev",
+        outcome="succeeded",
+        version="2026.07.1",
+        modules=reports,
+        applied_secrets_epoch=4,
+    )
+    reconcile_pull_targets(
+        store,
+        store,
+        {gate.id: matching},
+        now=NOW,
+        deadline_seconds=DEADLINE,
+        dispatch_child=_noop_dispatch,
+    )
+    assert store.get_rollout("roll-dev").status == "success"
+    assert {
+        module.module_id: module.version
+        for module in store.list_modules(gate.id)
+        if module.status == "active"
+    } == target_modules
+
+
+def test_development_pull_rejects_malformed_persisted_secrets_epoch():
+    store, gate, _target_modules, reports = _store_with_development_pull(
+        required_secrets_epoch="not-an-integer",
+    )
+    heartbeat = _hb(
+        gate.id,
+        attempt_id="roll-dev",
+        outcome="succeeded",
+        version="2026.07.1",
+        modules=reports,
+        applied_secrets_epoch=4,
+    )
+
+    assert pull_acknowledgement_matches(
+        store,
+        store.get_rollout("roll-dev"),
+        heartbeat,
+    ) is False
+
+
 def test_reconcile_converges_standalone_development_pull_before_timeout():
     store = MemoryControlPlaneStore()
     gate = CustomerDeployment(
@@ -349,12 +539,17 @@ def test_reconcile_converges_standalone_development_pull_before_timeout():
     )
     store.create_deployment(gate)
     store.designate_release_gate(gate.id)
-    store.upsert_module(DeploymentModule(gate.id, "onebrain-api", "2026.07.0"))
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
+        store.upsert_module(DeploymentModule(gate.id, module_id, "2026.07.0"))
     version = "2026.07.1"
+    target_modules = {
+        module_id: version
+        for module_id in DEVELOPMENT_GATE_MODULE_IDS
+    }
     rollout_id = "roll-dev"
     started = (NOW - timedelta(seconds=DEADLINE + 60)).isoformat()
     store.create_release_candidate(
-        ReleaseManifest(version=version, git_sha="sha", modules={"onebrain-api": version},
+        ReleaseManifest(version=version, git_sha="sha", modules=target_modules,
                         migration_from="0041", migration_to="0041"),
         ReleasePromotion(version, state="dev_deploying", gate_deployment_id=gate.id,
                          dev_rollout_id=rollout_id, dev_attempt_id=rollout_id,
@@ -366,7 +561,13 @@ def test_reconcile_converges_standalone_development_pull_before_timeout():
     ))
     store.claim_rollout_dispatch(rollout_id)
     store.update_rollout_exec(
-        rollout_id, dispatched_at=started, request_payload={"provider": "hetzner", "pull": True},
+        rollout_id,
+        dispatched_at=started,
+        request_payload={
+            "provider": "hetzner",
+            "pull": True,
+            "required_secrets_epoch": 4,
+        },
     )
 
     reconcile_pull_targets(
@@ -375,7 +576,11 @@ def test_reconcile_converges_standalone_development_pull_before_timeout():
             gate.id,
             attempt_id=rollout_id,
             outcome="succeeded",
-            modules=[ModuleReport(module_id="onebrain-api", version=version)],
+            modules=[
+                ModuleReport(module_id=module_id, version=module_version)
+                for module_id, module_version in sorted(target_modules.items())
+            ],
+            applied_secrets_epoch=4,
         )},
         now=NOW, deadline_seconds=DEADLINE, dispatch_child=_noop_dispatch,
     )
@@ -383,6 +588,11 @@ def test_reconcile_converges_standalone_development_pull_before_timeout():
     rollout = store.get_rollout(rollout_id)
     assert rollout.status == "success" and rollout.exec_status == "succeeded"
     assert store.get_deployment(gate.id).current_version == version
+    assert {
+        module.module_id: module.version
+        for module in store.list_modules(gate.id)
+        if module.status == "active"
+    } == target_modules
     assert store.get_release_promotion(version).state == "dev_deploying"
     assert store.get_release_promotion(version).failure_reason == ""
 

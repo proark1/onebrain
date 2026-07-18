@@ -365,6 +365,14 @@ class ControlPlaneStore(Protocol):
 
     def update_rollout_status(self, rollout_id: str, status: str, notes: str = "", apply: bool = True) -> RolloutRun: ...
 
+    def complete_verified_rollout(
+        self,
+        rollout_id: str,
+        *,
+        verified_modules: Dict[str, str],
+        completed_at: str,
+    ) -> RolloutRun: ...
+
     def get_rollout(self, rollout_id: str) -> Optional[RolloutRun]: ...
 
     def list_rollouts(self, deployment_id: str) -> List[RolloutRun]: ...

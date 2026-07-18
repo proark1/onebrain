@@ -51,6 +51,10 @@ import type {
   ServiceKeyInfo,
 } from "@/lib/onebrain-types";
 import { describeOperationalStatus, formatOperationalTimestamp } from "@/lib/operational";
+import {
+  canRetryDevelopmentRelease,
+  developmentRetryRequiresRestoreAcknowledgement,
+} from "@/lib/release-promotion";
 
 type DeploymentRow = {
   backup: OperatorBackup | null;
@@ -201,6 +205,7 @@ export function OperatorPanel() {
   const [signatureByRelease, setSignatureByRelease] = useState<Record<string, string>>({});
   const [signatureKeyByRelease, setSignatureKeyByRelease] = useState<Record<string, string>>({});
   const [promotionNoteByRelease, setPromotionNoteByRelease] = useState<Record<string, string>>({});
+  const [restoreAckByRelease, setRestoreAckByRelease] = useState<Record<string, boolean>>({});
 
   const [provisionName, setProvisionName] = useState("");
   const [provisionOwnerEmail, setProvisionOwnerEmail] = useState("");
@@ -524,7 +529,15 @@ export function OperatorPanel() {
     const note = promotionNoteByRelease[release.version] || "";
     try {
       if (action === "retry") {
-        await retryDevelopmentRelease(release.version, note);
+        await retryDevelopmentRelease(release.version, {
+          note,
+          ack_restore_required: Boolean(restoreAckByRelease[release.version]),
+        });
+        setRestoreAckByRelease((current) => {
+          const next = { ...current };
+          delete next[release.version];
+          return next;
+        });
       } else if (action === "signature") {
         await uploadProductionSignature(
           release.version,
@@ -779,8 +792,10 @@ export function OperatorPanel() {
               busyAction={busyAction}
               busyId={busyId}
               notes={promotionNoteByRelease}
+              restoreAcknowledgements={restoreAckByRelease}
               onAction={onPromotionAction}
               onNoteChange={(version, value) => setPromotionNoteByRelease((current) => ({ ...current, [version]: value }))}
+              onRestoreAcknowledgementChange={(version, value) => setRestoreAckByRelease((current) => ({ ...current, [version]: value }))}
               onSignatureChange={(version, value) => setSignatureByRelease((current) => ({ ...current, [version]: value }))}
               onSignatureKeyChange={(version, value) => setSignatureKeyByRelease((current) => ({ ...current, [version]: value }))}
               releases={releases}
@@ -1198,9 +1213,11 @@ function ReleasePromotionLedger({
   notes,
   onAction,
   onNoteChange,
+  onRestoreAcknowledgementChange,
   onSignatureChange,
   onSignatureKeyChange,
   releases,
+  restoreAcknowledgements,
   signatureKeys,
   signatures,
 }: {
@@ -1209,9 +1226,11 @@ function ReleasePromotionLedger({
   notes: Record<string, string>;
   onAction: (release: OperatorRelease, action: PromotionAction) => Promise<void>;
   onNoteChange: (version: string, value: string) => void;
+  onRestoreAcknowledgementChange: (version: string, value: boolean) => void;
   onSignatureChange: (version: string, value: string) => void;
   onSignatureKeyChange: (version: string, value: string) => void;
   releases: OperatorRelease[];
+  restoreAcknowledgements: Record<string, boolean>;
   signatureKeys: Record<string, string>;
   signatures: Record<string, string>;
 }) {
@@ -1225,6 +1244,15 @@ function ReleasePromotionLedger({
         const state = promotion?.state || "legacy";
         const busy = busyAction === "promotion" && busyId === release.version;
         const canSign = state === "dev_verified" && !promotion?.production_signature_attached;
+        const restoreAcknowledgementRequired = (
+          state === "dev_failed"
+          && developmentRetryRequiresRestoreAcknowledgement(release.rollback_kind)
+        );
+        const retryReady = canRetryDevelopmentRelease(
+          release.rollback_kind,
+          notes[release.version] || "",
+          Boolean(restoreAcknowledgements[release.version]),
+        );
         return (
           <article className={`promotionCard state-${state}`} key={release.version}>
             <div className="promotionHeader">
@@ -1270,8 +1298,21 @@ function ReleasePromotionLedger({
             {promotion && state !== "yanked" ? (
               <TextField label="Review note" value={notes[release.version] || ""} onChange={(value) => onNoteChange(release.version, value)} />
             ) : null}
+            {restoreAcknowledgementRequired ? (
+              <label className="restoreAcknowledgement">
+                <input
+                  checked={Boolean(restoreAcknowledgements[release.version])}
+                  onChange={(event) => onRestoreAcknowledgementChange(release.version, event.target.checked)}
+                  type="checkbox"
+                />
+                <span>
+                  <strong>Acknowledge restore-required retry</strong>
+                  <small>I reviewed the fresh backup and restore plan. Retrying may require restoring data if the migration fails.</small>
+                </span>
+              </label>
+            ) : null}
             <div className="promotionActions">
-              {state === "dev_failed" ? <button className="secondaryButton" disabled={busy} type="button" onClick={() => void onAction(release, "retry")}>Retry dev</button> : null}
+              {state === "dev_failed" ? <button className="secondaryButton" disabled={busy || !retryReady} type="button" onClick={() => void onAction(release, "retry")}>Retry dev</button> : null}
               {state === "dev_verified" && promotion?.production_signature_attached ? <button className="primaryButton" disabled={busy} type="button" onClick={() => void onAction(release, "approve")}>Approve customers</button> : null}
               {state === "customer_approved" ? <button className="secondaryButton" disabled={busy} type="button" onClick={() => void onAction(release, "pause")}>Pause</button> : null}
               {state === "customer_paused" ? <button className="primaryButton" disabled={busy || !notes[release.version]?.trim()} type="button" onClick={() => void onAction(release, "resume")}>Resume after review</button> : null}

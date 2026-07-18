@@ -4,8 +4,10 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import HTTPException
 
 from app.controlplane.base import (
+    BackupRun,
     CustomerDeployment,
     DeploymentModule,
     ReleaseManifest,
@@ -15,6 +17,10 @@ from app.controlplane.base import (
 )
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.controlplane.desired_state import sign_desired_state_for
+from app.controlplane.development_gate import (
+    DEVELOPMENT_GATE_CORE_MODULE_IDS,
+    DEVELOPMENT_GATE_MODULE_IDS,
+)
 from app.controlplane.promotion import (
     ALLOWED_PROMOTION_TRANSITIONS,
     decide_transition,
@@ -54,13 +60,27 @@ def _development_gate_release(version: str = "2026.07.13.1") -> ReleaseManifest:
     return ReleaseManifest(
         version=version,
         git_sha="a" * 40,
-        modules={module_id: f"{version}-{module_id}" for module_id in DEVELOPMENT_GATE_MODULES},
+        modules={
+            module_id: (
+                version
+                if module_id in DEVELOPMENT_GATE_CORE_MODULE_IDS
+                else f"{version}-{module_id}"
+            )
+            for module_id in DEVELOPMENT_GATE_MODULES
+        },
         images={
             module_id: f"ghcr.io/proark1/{module_id}@sha256:{format(index + 1, '064x')}"
             for index, module_id in enumerate(DEVELOPMENT_GATE_MODULES)
         },
         rollback_kind="code_only",
     )
+
+
+def _development_gate_reports(release: ReleaseManifest) -> list[ModuleReport]:
+    return [
+        ModuleReport(module_id=module_id, version=version)
+        for module_id, version in sorted(release.modules.items())
+    ]
 
 
 def test_promotion_transition_table_accepts_only_documented_edges():
@@ -225,9 +245,10 @@ def test_successful_dev_rollout_needs_matching_later_heartbeat():
     )
     store.create_deployment(gate)
     store.designate_release_gate(gate.id)
-    store.upsert_module(DeploymentModule(gate.id, "onebrain-api", "old"))
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
+        store.upsert_module(DeploymentModule(gate.id, module_id, "old"))
     dev_private, dev_public = generate_keypair()
-    release = _release()
+    release = _development_gate_release()
     signature = sign_release(release_signature_fields(release), dev_private)
     register_candidate(
         store,
@@ -247,15 +268,18 @@ def test_successful_dev_rollout_needs_matching_later_heartbeat():
     )
     store.start_rollout(rollout)
     store.update_rollout_exec(rollout.id, exec_status="running")
-    store.update_rollout_status(rollout.id, "success")
     completed = datetime.now(timezone.utc).isoformat()
-    store.update_rollout_exec(rollout.id, exec_status="succeeded", completed_at=completed)
+    store.complete_verified_rollout(
+        rollout.id,
+        verified_modules=release.modules,
+        completed_at=completed,
+    )
 
     heartbeat = build_heartbeat_v2(
         deployment_id=gate.id,
         reported_at=completed,
         version=release.version,
-        modules=[ModuleReport(module_id="onebrain-api", version=release.version)],
+        modules=_development_gate_reports(release),
         update=UpdateReport(
             last_target_version=release.version,
             outcome="succeeded",
@@ -265,6 +289,11 @@ def test_successful_dev_rollout_needs_matching_later_heartbeat():
     )
     verified = reconcile_heartbeat_promotion(store, heartbeat, received_at=completed)
     assert verified.state == "dev_verified"
+    assert {
+        module.module_id: module.version
+        for module in store.list_modules(gate.id)
+        if module.status == "active"
+    } == release.modules
     assert len([event for event in store.list_release_promotion_events(release.version)
                 if event.action == "dev_verified"]) == 1
     assert reconcile_heartbeat_promotion(store, heartbeat, received_at=completed) is None
@@ -557,9 +586,10 @@ def test_epoch_pending_candidate_stays_queued_until_next_heartbeat(monkeypatch):
     )
     store.create_deployment(gate)
     store.designate_release_gate(gate.id)
-    store.upsert_module(DeploymentModule(gate.id, "onebrain-api", "old"))
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
+        store.upsert_module(DeploymentModule(gate.id, module_id, "old"))
     private_key, public_key = generate_keypair()
-    release = _release()
+    release = _development_gate_release()
     register_candidate(
         store,
         release,
@@ -626,9 +656,10 @@ def test_dev_dispatch_persists_rollout_before_promotion_foreign_key(
     )
     store.create_deployment(gate)
     store.designate_release_gate(gate.id)
-    store.upsert_module(DeploymentModule(gate.id, "onebrain-api", "old"))
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
+        store.upsert_module(DeploymentModule(gate.id, module_id, "old"))
     dev_private, dev_public = generate_keypair()
-    release = _release()
+    release = _development_gate_release()
     register_candidate(
         store,
         release,
@@ -664,6 +695,11 @@ def test_dev_dispatch_persists_rollout_before_promotion_foreign_key(
     monkeypatch.setattr(config_module, "get_settings", lambda: settings)
     monkeypatch.setattr(operator_router, "get_settings", lambda: settings)
     monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(
+        operator_router,
+        "_resolve_pull_target",
+        lambda _deployment_id: SimpleNamespace(allowed=True, reason=""),
+    )
     dispatched = {}
 
     def fake_dispatch(*_args, **kwargs):
@@ -682,6 +718,137 @@ def test_dev_dispatch_persists_rollout_before_promotion_foreign_key(
     assert promotion.state == "dev_deploying"
     assert promotion.dev_rollout_id == dispatched["rollout"].id
     assert store.get_rollout(promotion.dev_rollout_id) is not None
+
+
+def test_restore_required_retry_requires_note_and_persists_linked_ack(monkeypatch):
+    from types import SimpleNamespace
+
+    import app.config as config_module
+
+    store = MemoryControlPlaneStore()
+    now = datetime.now(timezone.utc).isoformat()
+    gate = CustomerDeployment(
+        id="dev-gate",
+        customer_name="Development",
+        environment="development",
+        deployment_type="dedicated_server",
+        release_ring="internal",
+        current_migration="0030",
+        last_heartbeat_at=now,
+        last_heartbeat_healthy=True,
+    )
+    store.create_deployment(gate)
+    store.designate_release_gate(gate.id)
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
+        store.upsert_module(DeploymentModule(gate.id, module_id, "old"))
+    store.record_backup(BackupRun("backup", gate.id, "success", "verified"))
+
+    dev_private, dev_public = generate_keypair()
+    release = replace(
+        _development_gate_release("2026.07.18.271"),
+        rollback_kind="restore_required",
+        migration_from="0030",
+        migration_to="0034",
+    )
+    register_candidate(
+        store,
+        release,
+        dev_signature=sign_release(release_signature_fields(release), dev_private),
+        dev_signing_key_id="dev-1",
+        development_public_key=dev_public,
+    )
+    previous_rollout = RolloutRun(
+        "previous-dev-rollout",
+        gate.id,
+        release.version,
+        "pending",
+        "ci",
+        ack_restore_required=True,
+    )
+    store.start_rollout(previous_rollout)
+    store.update_rollout_status(previous_rollout.id, "failed")
+    store.transition_release_promotion(
+        release.version,
+        frozenset({"dev_pending"}),
+        "dev_deploying",
+        actor="ci",
+        action="dev_rollout_started",
+        fields={
+            "gate_deployment_id": gate.id,
+            "dev_rollout_id": previous_rollout.id,
+            "dev_attempt_id": previous_rollout.id,
+        },
+    )
+    store.transition_release_promotion(
+        release.version,
+        frozenset({"dev_deploying"}),
+        "dev_failed",
+        actor="mission-control",
+        action="dev_preflight_failed",
+        fields={"failure_reason": "dev_preflight_failed"},
+    )
+    settings = SimpleNamespace(
+        is_operator_surface=True,
+        operator_mode=True,
+        release_promotion_required=True,
+        release_require_signature=True,
+        release_verify_public_key="",
+        dev_release_verify_public_key=dev_public,
+        fleet_report_seconds=60,
+        fleet_public_url="https://mc.example.com",
+    )
+    principal = SimpleNamespace(role_id="admin", user_id="operator@example.com")
+    monkeypatch.setattr(config_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(operator_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(
+        operator_router,
+        "_resolve_pull_target",
+        lambda _deployment_id: SimpleNamespace(allowed=True, reason=""),
+    )
+    monkeypatch.setattr(
+        operator_router,
+        "_dispatch_child_rollout",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(HTTPException, match="restore_required_review_note_required"):
+        operator_router.retry_development_release(
+            release.version,
+            operator_router.DevelopmentRetryIn(ack_restore_required=True),
+            principal,
+        )
+    assert store.get_release_promotion(release.version).state == "dev_failed"
+
+    blocked = operator_router.retry_development_release(
+        release.version,
+        operator_router.DevelopmentRetryIn(note="Reviewed backup and restore plan."),
+        principal,
+    )
+    assert blocked.promotion.state == "dev_failed"
+    assert store.get_release_promotion(release.version).dev_rollout_id == ""
+    assert store.list_active_rollout(gate.id) is None
+
+    out = operator_router.retry_development_release(
+        release.version,
+        operator_router.DevelopmentRetryIn(
+            note="Reviewed backup and restore plan.",
+            ack_restore_required=True,
+        ),
+        principal,
+    )
+
+    promotion = store.get_release_promotion(release.version)
+    rollout = store.get_rollout(promotion.dev_rollout_id)
+    assert out.promotion.state == "dev_deploying"
+    assert rollout.ack_restore_required is True
+    assert rollout.notes == "Reviewed backup and restore plan."
+    retry_event = store.list_release_promotion_events(release.version)[-1]
+    assert retry_event.action == "dev_rollout_retried"
+    assert retry_event.actor == principal.user_id
+    assert retry_event.note == (
+        "restore_required acknowledged: Reviewed backup and restore plan."
+    )
 
 
 def test_gate_replacement_is_validated_before_atomic_marker_swap(monkeypatch):

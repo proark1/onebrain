@@ -46,6 +46,11 @@ from app.controlplane.rollout_exec import (
     mark_rollout_dispatch_failed,
     resolve_pull_target,
 )
+from app.controlplane.development_gate import (
+    DEVELOPMENT_GATE_MODULE_IDS,
+    DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS,
+    validate_module_transition,
+)
 from app.controlplane.desired_state import active_signer_in_served_set
 from app.controlplane.fleet_runner import plan_and_start_fleet_rollout, reconcile_fleet_rollout
 from app.controlplane.promotion import (
@@ -218,6 +223,10 @@ class PromotionNote(BaseModel):
     note: str = Field(default="", max_length=1000)
 
 
+class DevelopmentRetryIn(PromotionNote):
+    ack_restore_required: bool = False
+
+
 class ProductionSignatureIn(BaseModel):
     signature: str = Field(min_length=1, max_length=1000)
     signing_key_id: str = Field(min_length=1, max_length=120)
@@ -245,10 +254,6 @@ class DevelopmentGatePreparationOut(BaseModel):
 
 
 DEVELOPMENT_GATE_DEPLOYMENT_ID = "onebrain_development_gate"
-# The development gate deliberately includes every currently available optional
-# product module.  Core is resolved server-side for every provisioning request;
-# browsers and callers cannot opt it out.
-DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS = ("assistant", "kpi_dashboard", "ai_employees", "communication")
 DEVELOPMENT_GATE_ACCOUNT_ID = "onebrain-development"
 
 
@@ -1448,7 +1453,66 @@ def _latest_approved_release(store) -> ReleaseManifest | None:
     return trusted[0] if trusted else None
 
 
-def _dispatch_development_candidate(store, version: str, *, actor: str) -> ReleasePromotion:
+def _development_attempt_note(
+    release: ReleaseManifest,
+    *,
+    ack_restore_required: bool,
+    review_note: str,
+) -> str:
+    note = review_note.strip()
+    if release.rollback_kind == "restore_required" and ack_restore_required:
+        return f"restore_required acknowledged: {note}"[:1000]
+    return note[:1000]
+
+
+def _fail_development_preflight(
+    store,
+    promotion: ReleasePromotion,
+    *,
+    version: str,
+    gate_deployment_id: str,
+    actor: str,
+    rollout_id: str,
+    started_at: str,
+    reason: str,
+    attempt_note: str = "",
+) -> ReleasePromotion:
+    promotion = transition_promotion(
+        store,
+        version,
+        to_state="dev_deploying",
+        actor=actor,
+        action="dev_rollout_started" if promotion.state == "dev_pending" else "dev_rollout_retried",
+        note=attempt_note,
+        fields={
+            "gate_deployment_id": gate_deployment_id,
+            "dev_rollout_id": "",
+            "dev_attempt_id": rollout_id,
+            "dev_started_at": started_at,
+            "dev_completed_at": "",
+            "dev_verified_at": "",
+            "failure_reason": "",
+        },
+    )
+    return transition_promotion(
+        store,
+        version,
+        to_state="dev_failed",
+        actor="mission-control",
+        action="dev_preflight_failed",
+        note=reason,
+        fields={"failure_reason": "dev_preflight_failed"},
+    )
+
+
+def _dispatch_development_candidate(
+    store,
+    version: str,
+    *,
+    actor: str,
+    ack_restore_required: bool = False,
+    review_note: str = "",
+) -> ReleasePromotion:
     promotion = store.get_release_promotion(version)
     if not promotion or promotion.state not in {"dev_pending", "dev_failed"}:
         if not promotion:
@@ -1457,6 +1521,20 @@ def _dispatch_development_candidate(store, version: str, *, actor: str) -> Relea
     gate = store.get_release_gate()
     if not gate:
         return promotion
+    release = store.get_release(version)
+    if not release:
+        raise ValueError(f"unknown release candidate: {version}")
+    note = review_note.strip()
+    acknowledged = bool(
+        ack_restore_required and release.rollback_kind == "restore_required"
+    )
+    if acknowledged and not note:
+        raise ValueError("restore_required_review_note_required")
+    attempt_note = _development_attempt_note(
+        release,
+        ack_restore_required=acknowledged,
+        review_note=note,
+    )
     if store.list_active_rollout(gate.id) or any(
         queued.state == "dev_deploying"
         and queued.gate_deployment_id == gate.id
@@ -1471,10 +1549,11 @@ def _dispatch_development_candidate(store, version: str, *, actor: str) -> Relea
         heartbeat_at = datetime.fromisoformat(gate.last_heartbeat_at)
         if heartbeat_at.tzinfo is None:
             heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
+        report_seconds = int(getattr(get_settings(), "fleet_report_seconds", 300) or 300)
         fresh = (datetime.now(timezone.utc) - heartbeat_at).total_seconds() <= max(
-            600, get_settings().fleet_report_seconds * 2
+            600, report_seconds * 2
         )
-    except (TypeError, ValueError):
+    except (AttributeError, TypeError, ValueError):
         fresh = False
     if gate.last_heartbeat_healthy is not True or not fresh:
         return promotion
@@ -1486,33 +1565,54 @@ def _dispatch_development_candidate(store, version: str, *, actor: str) -> Relea
         return promotion
     rollout_id = f"roll_dev_{uuid4().hex[:12]}"
     started_at = datetime.now(timezone.utc).isoformat()
+    current_module_ids = {
+        module.module_id
+        for module in store.list_modules(gate.id)
+        if module.status == "active"
+    }
+    module_reason = validate_module_transition(current_module_ids, release.modules)
+    if module_reason:
+        return _fail_development_preflight(
+            store,
+            promotion,
+            version=version,
+            gate_deployment_id=gate.id,
+            actor=actor,
+            rollout_id=rollout_id,
+            started_at=started_at,
+            reason=module_reason,
+            attempt_note=attempt_note,
+        )
+    if not eligibility.allowed:
+        return _fail_development_preflight(
+            store,
+            promotion,
+            version=version,
+            gate_deployment_id=gate.id,
+            actor=actor,
+            rollout_id=rollout_id,
+            started_at=started_at,
+            reason=eligibility.reason or "development_gate_target_unavailable",
+            attempt_note=attempt_note,
+        )
     # Candidate delivery is gated even during the report-only rollout phase. A
     # warning here is a real dev-readiness failure, not permission to proceed.
-    plan = store.plan_update(gate.id, version)
+    plan = store.plan_update(
+        gate.id,
+        version,
+        ack_restore_required=acknowledged,
+    )
     if not plan.allowed or plan.warnings:
-        promotion = transition_promotion(
+        return _fail_development_preflight(
             store,
-            version,
-            to_state="dev_deploying",
+            promotion,
+            version=version,
+            gate_deployment_id=gate.id,
             actor=actor,
-            action="dev_rollout_started" if promotion.state == "dev_pending" else "dev_rollout_retried",
-            fields={
-                "gate_deployment_id": gate.id,
-                "dev_attempt_id": rollout_id,
-                "dev_started_at": started_at,
-                "dev_completed_at": "",
-                "dev_verified_at": "",
-                "failure_reason": "",
-            },
-        )
-        return transition_promotion(
-            store,
-            version,
-            to_state="dev_failed",
-            actor="mission-control",
-            action="dev_preflight_failed",
-            note=plan.reason if not plan.allowed else ",".join(plan.warnings),
-            fields={"failure_reason": "dev_preflight_failed"},
+            rollout_id=rollout_id,
+            started_at=started_at,
+            reason=plan.reason if not plan.allowed else ",".join(plan.warnings),
+            attempt_note=attempt_note,
         )
     # Postgres enforces promotion.dev_rollout_id -> rollouts.id. Persist the
     # rollout before attaching it to the promotion, then let the dispatcher use
@@ -1524,6 +1624,8 @@ def _dispatch_development_candidate(store, version: str, *, actor: str) -> Relea
             target_version=version,
             status="pending",
             started_by=f"release-candidate:{actor}",
+            notes=note,
+            ack_restore_required=acknowledged,
         ))
     except ValueError:
         return promotion
@@ -1533,6 +1635,7 @@ def _dispatch_development_candidate(store, version: str, *, actor: str) -> Relea
         to_state="dev_deploying",
         actor=actor,
         action="dev_rollout_started" if promotion.state == "dev_pending" else "dev_rollout_retried",
+        note=attempt_note,
         fields={
             "gate_deployment_id": gate.id,
             "dev_rollout_id": rollout_id,
@@ -1960,7 +2063,7 @@ def provision_development_gate(
 @router.post("/releases/{version}/retry-dev", response_model=ReleaseOut)
 def retry_development_release(
     version: str,
-    body: PromotionNote,
+    body: DevelopmentRetryIn,
     principal: Principal = Depends(resolve_principal),
 ):
     _require_admin(principal)
@@ -1970,7 +2073,13 @@ def retry_development_release(
     if not promotion or promotion.state != "dev_failed":
         raise HTTPException(status_code=409, detail="Only a failed development candidate can be retried.")
     try:
-        promotion = _dispatch_development_candidate(store, version, actor=principal.user_id)
+        promotion = _dispatch_development_candidate(
+            store,
+            version,
+            actor=principal.user_id,
+            ack_restore_required=body.ack_restore_required,
+            review_note=body.note,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     release = store.get_release(version)
@@ -2293,7 +2402,13 @@ def start_rollout(deployment_id: str, body: RolloutCreate, principal: Principal 
     return _rollout_out(rollout)
 
 
-def offer_pull_target(control, rollout, *, target_source: str) -> None:
+def offer_pull_target(
+    control,
+    rollout,
+    *,
+    target_source: str,
+    required_secrets_epoch: int = 0,
+) -> None:
     """Offer a rollout to a Hetzner box through its signed desired state.
 
     The box reports the outcome through its fleet report; the reconcile tick
@@ -2306,6 +2421,9 @@ def offer_pull_target(control, rollout, *, target_source: str) -> None:
                                     "provider": "hetzner",
                                     "pull": True,
                                     "target_source": target_source,
+                                    "required_secrets_epoch": max(
+                                        0, int(required_secrets_epoch or 0)
+                                    ),
                                 })
 
 
@@ -2360,7 +2478,12 @@ def dispatch_rollout(
     if eligibility.allowed:
         # The box converges on its own signed desired state and the reconcile
         # tick resolves the terminal state from its fleet report.
-        offer_pull_target(control, rollout, target_source=eligibility.source)
+        offer_pull_target(
+            control,
+            rollout,
+            target_source=eligibility.source,
+            required_secrets_epoch=getattr(eligibility, "required_secrets_epoch", 0),
+        )
         return _rollout_out(control.get_rollout(rollout_id))
 
     reason = eligibility.reason or "Rollout target is not a Hetzner deployment."
@@ -2466,7 +2589,12 @@ def _dispatch_child_rollout(fleet_id: str, deployment_id: str, *, target_version
     eligibility = _resolve_pull_target(deployment_id)
     if eligibility.allowed:
         # The child remains in-flight until the box reports a terminal state.
-        offer_pull_target(control, rollout, target_source=eligibility.source)
+        offer_pull_target(
+            control,
+            rollout,
+            target_source=eligibility.source,
+            required_secrets_epoch=getattr(eligibility, "required_secrets_epoch", 0),
+        )
         return
     mark_rollout_dispatch_failed(
         control,
