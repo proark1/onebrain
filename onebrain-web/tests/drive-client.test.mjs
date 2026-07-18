@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DriveApiError,
   approveDriveFile,
   createDriveFolder,
   createDriveUpload,
@@ -9,6 +10,7 @@ import {
   listDriveItems,
   mutateDriveEntry,
   permanentlyDeleteDriveFile,
+  rescanDriveFile,
   setDriveFileIndexing,
   updateDriveFile,
   updateDriveFolder,
@@ -54,6 +56,8 @@ function file(overrides = {}) {
     index_status: "not_indexed",
     desired_indexed: false,
     approval_status: "approved",
+    malware_status: "clean",
+    download_url: "/api/drive/files/file_12345678/content",
     ...overrides,
   };
 }
@@ -179,6 +183,7 @@ test("Drive file filing, indexing, approval, and permanent deletion use scoped l
     await updateDriveFile({ file: entry, folderId: "folder-2", policy: POLICY, idempotencyKey: "filing-1", confirmAudienceChange: false });
     await setDriveFileIndexing(entry, true);
     await approveDriveFile(entry);
+    await rescanDriveFile(entry);
     await permanentlyDeleteDriveFile(entry, "Duplicate record");
   } finally {
     globalThis.fetch = originalFetch;
@@ -188,6 +193,7 @@ test("Drive file filing, indexing, approval, and permanent deletion use scoped l
     "/api/drive/files/file_12345678",
     "/api/drive/files/file_12345678/indexing",
     "/api/drive/files/file_12345678/approve",
+    "/api/drive/files/file_12345678/rescan",
     "/api/drive/files/file_12345678/permanent-delete",
   ]);
   assert.equal(requests[0].method, "PATCH");
@@ -195,7 +201,78 @@ test("Drive file filing, indexing, approval, and permanent deletion use scoped l
   assert.equal(requests[0].body.index_for_ai, false);
   assert.equal(requests[1].body.enabled, true);
   assert.equal(requests[2].body.generation, 7);
-  assert.equal(requests[3].body.reason, "Duplicate record");
+  assert.equal(requests[3].body.generation, 7);
+  assert.equal(typeof requests[3].body.idempotency_key, "string");
+  assert.equal(requests[4].body.reason, "Duplicate record");
   assert.ok(requests.every((request) => request.body.account_id === ROOT.account_id));
   assert.ok(requests.every((request) => request.body.space_id === ROOT.space_id));
+});
+
+test("Drive rescan reuses a bounded key for a stale-row retry and rotates on generation", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (_input, init) => {
+    requests.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ file: file({ generation: 8 }) }), {
+      status: 202,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    const stale = file({ generation: 7 });
+    await rescanDriveFile(stale);
+    await rescanDriveFile(stale);
+    await rescanDriveFile(file({ generation: 8 }));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(requests[0].idempotency_key, requests[1].idempotency_key);
+  assert.notEqual(requests[1].idempotency_key, requests[2].idempotency_key);
+  assert.ok(requests.every((body) => body.idempotency_key.length <= 128));
+});
+
+test("Drive API errors preserve structured quarantine and capacity metadata", async () => {
+  const originalFetch = globalThis.fetch;
+  const cases = [
+    {
+      status: 423,
+      code: "drive_revision_quarantined",
+      message: "This file is unavailable until its security scan passes.",
+      retryAfter: null,
+    },
+    {
+      status: 503,
+      code: "drive_quarantine_capacity_exhausted",
+      message: "Secure upload capacity is temporarily full. Please retry later.",
+      retryAfter: "60",
+    },
+  ];
+  try {
+    for (const expected of cases) {
+      globalThis.fetch = async () => new Response(JSON.stringify({
+        detail: { code: expected.code, message: expected.message },
+      }), {
+        status: expected.status,
+        headers: {
+          "Content-Type": "application/json",
+          ...(expected.retryAfter ? { "Retry-After": expected.retryAfter } : {}),
+        },
+      });
+
+      await assert.rejects(
+        () => setDriveFileIndexing(file(), true),
+        (error) => {
+          assert.ok(error instanceof DriveApiError);
+          assert.equal(error.message, expected.message);
+          assert.equal(error.code, expected.code);
+          assert.equal(error.status, expected.status);
+          assert.equal(error.retryAfter, expected.retryAfter);
+          return true;
+        },
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

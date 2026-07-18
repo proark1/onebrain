@@ -47,7 +47,7 @@ def test_drive_migration_is_additive_originals_stay_out_of_postgres_and_rls_is_f
     module = _migration("0033_onebrain_drive.py", "drive_schema_migration")
     sql = _captured_upgrade(monkeypatch, module)
 
-    assert module.revision == REQUIRED_ALEMBIC_REVISION
+    assert module.revision == "0033_onebrain_drive"
     assert module.down_revision == "0032_drive_foundations"
     assert set(module.DRIVE_TABLES) == DRIVE_TABLES
     assert "BYTEA" not in sql.upper()
@@ -82,7 +82,7 @@ def test_foundation_migration_scopes_groups_and_purges_only_terminal_job_bytes(m
 
 
 def test_schema_and_runtime_rls_registries_include_every_drive_table():
-    assert REQUIRED_ALEMBIC_REVISION == "0033_onebrain_drive"
+    assert REQUIRED_ALEMBIC_REVISION == "0034_drive_malware_quarantine"
     assert DRIVE_TABLES <= set(RLS_REQUIRED_TABLES)
     assert ACCESS_GROUP_TABLES <= set(RLS_REQUIRED_TABLES)
 

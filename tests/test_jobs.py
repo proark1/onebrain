@@ -28,6 +28,7 @@ from app.jobs.base import (
     STATUS_RUNNING,
     STATUS_SUCCEEDED,
     STATUS_QUEUED,
+    JobEnqueueSpec,
     JobLeaseLostError,
     JobFileInput,
     utcnow,
@@ -110,6 +111,75 @@ def test_memory_job_store_lifecycle_with_file_payload():
     assert done.result == {"ok": True}
     assert done.completed_at
     assert store.get_file(job.id) is None
+
+
+def test_memory_job_batch_uses_one_lock_and_recovers_existing_jobs():
+    class CountingLock:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+            self.entries = 0
+
+        def __enter__(self):
+            self.entries += 1
+            self.wrapped.acquire()
+            return self
+
+        def __exit__(self, *exc):
+            self.wrapped.release()
+            return False
+
+    store = MemoryJobStore()
+    lock = CountingLock(store._lock)
+    store._lock = lock
+    specs = tuple(
+        JobEnqueueSpec(
+            type="drive_file_ingest",
+            tenant_id="tenant_a",
+            account_id="account_a",
+            space_id="space_a",
+            payload={"file_id": f"file_{index}"},
+            idempotency_key=f"drive-batch:{index}",
+        )
+        for index in range(100)
+    )
+
+    first = store.enqueue_many(specs)
+    second = store.enqueue_many(specs)
+
+    assert lock.entries == 2
+    assert len(first) == len(second) == len(store._jobs) == 100
+    assert [job.id for job in second] == [job.id for job in first]
+
+
+def test_memory_job_batch_is_atomic_on_explicit_id_collision():
+    store = MemoryJobStore()
+    store.enqueue(
+        job_id="job_existing",
+        type="document_ingest",
+        tenant_id="tenant_a",
+        payload={"existing": True},
+        idempotency_key="existing-key",
+    )
+
+    with pytest.raises(ValueError, match="outside its idempotency key"):
+        store.enqueue_many((
+            JobEnqueueSpec(
+                type="document_ingest",
+                tenant_id="tenant_a",
+                payload={"new": True},
+                idempotency_key="new-key",
+            ),
+            JobEnqueueSpec(
+                job_id="job_existing",
+                type="document_ingest",
+                tenant_id="tenant_a",
+                payload={"collision": True},
+                idempotency_key="collision-key",
+            ),
+        ))
+
+    assert len(store._jobs) == 1
+    assert next(iter(store._jobs.values())).id == "job_existing"
 
 
 def test_memory_job_store_summary_is_sanitized():
@@ -366,7 +436,7 @@ def test_worker_shutdown_stops_new_claims():
     assert store.get(job.id).status == STATUS_QUEUED
 
 
-def test_ingestion_job_handlers_reuse_outputs_after_a_recovered_attempt(monkeypatch):
+def test_legacy_document_job_is_rejected_while_service_capture_remains_idempotent(monkeypatch):
     vector_store = MemoryStore()
     pipeline = IngestPipeline(LocalEmbedder(), vector_store)
     job_store = MemoryJobStore()
@@ -383,14 +453,13 @@ def test_ingestion_job_handlers_reuse_outputs_after_a_recovered_attempt(monkeypa
         payload={"text": "A customer asked about memberships."},
     )
 
-    document_first = handle_job(document, job_store)
-    document_second = handle_job(document, job_store)
+    with pytest.raises(ValueError, match="retired"):
+        handle_job(document, job_store)
     capture_first = handle_job(capture, job_store)
     capture_second = handle_job(capture, job_store)
 
-    assert document_second == document_first
     assert capture_second == capture_first
-    assert vector_store.count() == document_first["chunks"] + capture_first["chunks"]
+    assert vector_store.count() == capture_first["chunks"]
 
 
 def test_intake_job_handler_reuses_output_after_a_recovered_attempt(monkeypatch):
@@ -421,11 +490,14 @@ def test_intake_job_handler_reuses_output_after_a_recovered_attempt(monkeypatch)
     assert intake_store.count() == 1
 
 
-def test_worker_processes_document_ingest_job(monkeypatch):
+def test_worker_permanently_fails_legacy_document_job_without_publishing(monkeypatch):
     vector_store = MemoryStore()
-    pipeline = IngestPipeline(LocalEmbedder(), vector_store)
     job_store = MemoryJobStore()
-    monkeypatch.setattr(app.deps, "get_pipeline", lambda: pipeline)
+    monkeypatch.setattr(
+        app.deps,
+        "get_pipeline",
+        lambda: pytest.fail("retired document jobs must not reach ingestion"),
+    )
 
     job_store.enqueue(
         type=JOB_DOCUMENT_INGEST,
@@ -446,9 +518,10 @@ def test_worker_processes_document_ingest_job(monkeypatch):
     assert worker.run_once() == 1
 
     job = next(iter(job_store._jobs.values()))
-    assert job.status == STATUS_SUCCEEDED
-    assert job.result["chunks"] == 1
-    assert vector_store.count() == 1
+    assert job.status == STATUS_FAILED
+    assert "retired" in job.error
+    assert job_store.get_file(job.id) is None
+    assert vector_store.count() == 0
 
 
 def test_worker_processes_service_capture_job(monkeypatch):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -13,11 +14,22 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth.principal import Principal, resolve_principal
+from app.auth.account_access import authorize_account_admin
 from app.auth.roles import LOCATIONS
 from app.config import get_settings
-from app.deps import get_drive_service, get_store
+from app.deps import get_drive_service, get_platform_store, get_store
 from app.drive import DRIVE_CONTRACT_VERSION
-from app.drive.base import DriveConflictError, DriveGenerationConflict, DriveLimitError
+from app.drive.base import (
+    DriveConflictError,
+    DriveFileListDetail,
+    DriveGenerationConflict,
+    DriveLimitError,
+    DriveQuarantineCapacityError,
+    DriveQuarantineLockedError,
+    file_list_detail_matches_file,
+    is_clean_attestation,
+    malware_scan_matches_revision,
+)
 from app.security.policy import Classification
 
 
@@ -102,8 +114,25 @@ def _drive_errors():
         raise HTTPException(status_code=404, detail=str(exc).strip("'") or "Drive item not found.") from exc
     except (DriveGenerationConflict, DriveConflictError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DriveQuarantineCapacityError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": exc.code,
+                "message": "Secure upload capacity is temporarily full. Please retry later.",
+            },
+            headers={"Retry-After": "60"},
+        ) from exc
     except (DriveLimitError,) as exc:
         raise HTTPException(status_code=507, detail=str(exc)) from exc
+    except DriveQuarantineLockedError as exc:
+        raise HTTPException(
+            status_code=423,
+            detail={
+                "code": exc.code,
+                "message": "This file is unavailable until its security scan passes.",
+            },
+        ) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
@@ -136,15 +165,25 @@ def _folder_out(folder) -> dict:
     }
 
 
-def _file_out(file, service=None) -> dict:
+def _file_out(file, detail: DriveFileListDetail | None = None) -> dict:
     size_bytes = 0
     media_type = "application/octet-stream"
-    if service and file.current_revision_id:
-        revision = service.store.get_revision(
-            file.current_revision_id, account_id=file.account_id, space_id=file.space_id,
-        )
-        if revision:
+    malware_status = "rescan_required"
+    malware_scanned_at = None
+    malware_definition_version = None
+    revision = detail.revision if detail else None
+    evidence = detail.malware_scan if detail else None
+    detail_is_current = bool(detail and file_list_detail_matches_file(file, detail))
+    if (
+        detail_is_current
+        and revision
+        and malware_scan_matches_revision(revision, evidence)
+    ):
+        if evidence:
             size_bytes, media_type = revision.size_bytes, revision.media_type
+            malware_status = evidence.status
+            malware_scanned_at = evidence.completed_at or None
+            malware_definition_version = evidence.definition_version or None
     return {
         "kind": "file",
         "id": file.id,
@@ -163,15 +202,26 @@ def _file_out(file, service=None) -> dict:
         "trashed_at": file.trashed_at,
         "size_bytes": size_bytes,
         "media_type": media_type,
+        "malware_status": malware_status,
+        "malware_scanned_at": malware_scanned_at,
+        "malware_definition_version": malware_definition_version,
         "download_url": (
             f"/api/drive/files/{file.id}/content?account_id={quote(file.account_id)}&space_id={quote(file.space_id)}"
+            if detail_is_current and revision and is_clean_attestation(revision, evidence) else None
         ),
     }
 
 
-def _entries_out(page, service) -> list[dict]:
+def _file_response(service, file) -> dict:
+    return _file_out(file, service.file_list_detail(file))
+
+
+def _entries_out(page) -> list[dict]:
     entries = [_folder_out(row) for row in page.folders]
-    entries.extend(_file_out(row, service) for row in page.files)
+    entries.extend(
+        _file_out(row, page.file_details.get(row.current_revision_id))
+        for row in page.files
+    )
     return entries
 
 
@@ -212,11 +262,11 @@ def bootstrap(
         ) if folder_id else []
         scoped = replace(principal, account_id=selected.account_id, space_ids=frozenset({selected.space_id}))
         legacy_docs = get_store().list_documents(scoped.access_filter())
-        pending = [
-            row for row in service.store.list_pending_review(
-                account_id=selected.account_id, space_id=selected.space_id,
-            ) if service._can_access(principal, row)
-        ]
+        review_page = service.list_pending_review(
+            principal,
+            account_id=selected.account_id,
+            space_id=selected.space_id,
+        )
         trash = service.list_entries(
             principal,
             account_id=selected.account_id,
@@ -224,9 +274,9 @@ def bootstrap(
             trashed=True,
             limit=250,
         )
-        entries = _legacy_entries(legacy_docs) if view == "legacy" else _entries_out(page, service)
+        entries = _legacy_entries(legacy_docs) if view == "legacy" else _entries_out(page)
         if view == "review":
-            entries = [_file_out(row, service) for row in pending]
+            entries = _entries_out(review_page)
         return {
             "contract_version": DRIVE_CONTRACT_VERSION,
             "roots": [_root_out(row) for row in roots],
@@ -235,7 +285,7 @@ def bootstrap(
             "entries": entries,
             "next_cursor": page.next_cursor or None,
             "counts": {
-                "review": len(pending),
+                "review": len(review_page.files),
                 "trash": len(trash.folders) + len(trash.files),
                 "legacy": len(legacy_docs),
             },
@@ -265,12 +315,12 @@ def list_items(
             scoped = replace(principal, account_id=account_id, space_ids=frozenset({space_id}))
             return {"entries": _legacy_entries(get_store().list_documents(scoped.access_filter())), "next_cursor": None}
         if view == "review":
-            service.authorize_space(principal, account_id, space_id)
-            rows = [
-                row for row in service.store.list_pending_review(account_id=account_id, space_id=space_id)
-                if service._can_access(principal, row)
-            ]
-            return {"entries": [_file_out(row, service) for row in rows], "next_cursor": None}
+            page = service.list_pending_review(
+                principal,
+                account_id=account_id,
+                space_id=space_id,
+            )
+            return {"entries": _entries_out(page), "next_cursor": None}
         page = service.list_entries(
             principal, account_id=account_id, space_id=space_id, folder_id=folder_id,
             query=q, trashed=view == "trash", cursor=cursor, limit=limit,
@@ -279,10 +329,72 @@ def list_items(
             principal, account_id=account_id, space_id=space_id, folder_id=folder_id,
         ) if folder_id else []
         return {
-            "entries": _entries_out(page, service),
+            "entries": _entries_out(page),
             "breadcrumbs": [_folder_out(row) for row in breadcrumbs],
             "next_cursor": page.next_cursor or None,
         }
+
+
+@router.get("/security/status")
+def drive_security_status(
+    account_id: str,
+    principal: Principal = Depends(_human),
+):
+    """Content-free, tenant-scoped scanner readiness for account admins."""
+
+    authorize_account_admin(principal, account_id, get_platform_store())
+    service = get_drive_service()
+    # The caller may administer an account other than the account carried by
+    # their session principal. Authorization above resolves that relationship;
+    # every subsequent operational read must stay on the requested account.
+    counts = service.store.malware_operational_counts(tenant_id=account_id)
+    stale_after = timedelta(seconds=max(
+        60, int(getattr(get_settings(), "drive_malware_runtime_stale_seconds", 180)),
+    ))
+    now = datetime.now(timezone.utc)
+    workers = []
+    for row in service.store.list_scanner_runtime_status(tenant_id=account_id):
+        try:
+            heartbeat = datetime.fromisoformat(row.heartbeat_at)
+            if heartbeat.tzinfo is None:
+                heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+            stale = now - heartbeat.astimezone(timezone.utc) > stale_after
+        except (TypeError, ValueError):
+            stale = True
+        workers.append({
+            "worker_id": row.worker_id,
+            "readiness": "unknown" if stale else row.readiness,
+            "scanner_engine": row.scanner_engine,
+            "scanner_engine_version": row.scanner_engine_version,
+            "definition_version": row.definition_version,
+            "definition_timestamp": row.definition_timestamp,
+            "policy_epoch": row.policy_epoch,
+            "last_successful_refresh_at": row.last_successful_refresh_at,
+            "last_successful_scan_at": row.last_successful_scan_at,
+            "pending_count": row.pending_count,
+            "recent_error_counts": dict(row.recent_error_counts),
+            "heartbeat_at": row.heartbeat_at,
+            "stale": stale,
+        })
+    if not workers or all(row["readiness"] == "unknown" for row in workers):
+        readiness = "unknown"
+    elif any(row["readiness"] != "ready" for row in workers):
+        readiness = "degraded"
+    else:
+        readiness = "ready"
+    quarantine_limit = service.store.quarantine_limit_bytes()
+    return {
+        "readiness": readiness,
+        "pending_count": counts.pending_count,
+        "quarantine": {
+            "usage_bytes": counts.quarantine_usage_bytes,
+            "reserved_bytes": counts.quarantine_reserved_bytes,
+            "revision_bytes": counts.quarantined_revision_bytes,
+            "limit_bytes": quarantine_limit,
+            "over_capacity": counts.quarantine_usage_bytes > quarantine_limit,
+        },
+        "workers": workers,
+    }
 
 
 @router.post("/folders")
@@ -324,8 +436,9 @@ def update_folder(folder_id: str, body: FolderUpdateIn, principal: Principal = D
 
 @router.patch("/files/{file_id}")
 def update_file(file_id: str, body: FileUpdateIn, principal: Principal = Depends(_human)):
+    service = get_drive_service()
     with _drive_errors():
-        file = get_drive_service().update_file(
+        file = service.update_file(
             principal,
             account_id=body.account_id,
             space_id=body.space_id,
@@ -339,7 +452,7 @@ def update_file(file_id: str, body: FileUpdateIn, principal: Principal = Depends
             index_for_ai=body.index_for_ai,
             confirm_audience_change=body.confirm_audience_change,
         )
-        return {"file": _file_out(file, get_drive_service())}
+        return {"file": _file_response(service, file)}
 
 
 @router.post("/uploads", status_code=201)
@@ -386,11 +499,12 @@ async def upload_content(
             raise
 
 
-@router.post("/uploads/{upload_id}/complete")
+@router.post("/uploads/{upload_id}/complete", status_code=202)
 def complete_upload(upload_id: str, body: UploadCompleteIn, principal: Principal = Depends(_human)):
+    service = get_drive_service()
     with _drive_errors():
-        upload, file = get_drive_service().complete_upload(principal, upload_id)
-        return {"upload": _upload_out(upload), "file": _file_out(file, get_drive_service())}
+        upload, file = service.complete_upload(principal, upload_id)
+        return {"upload": _upload_out(upload), "file": _file_response(service, file)}
 
 
 @router.get("/files/{file_id}/content")
@@ -403,12 +517,9 @@ def download_file(
 ):
     service = get_drive_service()
     with _drive_errors():
-        file, revision = service.get_revision_for_download(
+        file, revision, info = service.get_revision_for_download(
             principal, account_id=account_id, space_id=space_id, file_id=file_id,
         )
-        info = service.blobs.stat(revision.storage_key)
-        if not info:
-            raise FileNotFoundError("Drive original is unavailable.")
         start, end, status = 0, info.size_bytes - 1, 200
         if range_header:
             match = _RANGE_RE.fullmatch(range_header.strip())
@@ -447,22 +558,24 @@ def download_file(
 
 @router.post("/files/{file_id}/trash")
 def trash_file(file_id: str, body: ScopedMutationIn, principal: Principal = Depends(_human)):
+    service = get_drive_service()
     with _drive_errors():
-        file = get_drive_service().trash_file(
+        file = service.trash_file(
             principal, account_id=body.account_id, space_id=body.space_id,
             file_id=file_id, generation=body.generation,
         )
-        return {"file": _file_out(file, get_drive_service())}
+        return {"file": _file_response(service, file)}
 
 
 @router.post("/files/{file_id}/restore")
 def restore_file(file_id: str, body: ScopedMutationIn, principal: Principal = Depends(_human)):
+    service = get_drive_service()
     with _drive_errors():
-        file = get_drive_service().restore_file(
+        file = service.restore_file(
             principal, account_id=body.account_id, space_id=body.space_id,
             file_id=file_id, generation=body.generation,
         )
-        return {"file": _file_out(file, get_drive_service())}
+        return {"file": _file_response(service, file)}
 
 
 @router.post("/folders/{folder_id}/trash")
@@ -487,22 +600,39 @@ def restore_folder(folder_id: str, body: ScopedMutationIn, principal: Principal 
 
 @router.post("/files/{file_id}/indexing")
 def set_indexing(file_id: str, body: IndexingIn, principal: Principal = Depends(_human)):
+    service = get_drive_service()
     with _drive_errors():
-        file = get_drive_service().set_indexing(
+        file = service.set_indexing(
             principal, account_id=body.account_id, space_id=body.space_id,
             file_id=file_id, generation=body.generation, enabled=body.enabled,
         )
-        return {"file": _file_out(file, get_drive_service())}
+        return {"file": _file_response(service, file)}
 
 
 @router.post("/files/{file_id}/approve")
 def approve_file(file_id: str, body: ScopedMutationIn, principal: Principal = Depends(_human)):
+    service = get_drive_service()
     with _drive_errors():
-        file = get_drive_service().approve_file(
+        file = service.approve_file(
             principal, account_id=body.account_id, space_id=body.space_id,
             file_id=file_id, generation=body.generation,
         )
-        return {"file": _file_out(file, get_drive_service())}
+        return {"file": _file_response(service, file)}
+
+
+@router.post("/files/{file_id}/rescan", status_code=202)
+def rescan_file(file_id: str, body: ScopedMutationIn, principal: Principal = Depends(_human)):
+    service = get_drive_service()
+    with _drive_errors():
+        file = service.rescan_file(
+            principal,
+            account_id=body.account_id,
+            space_id=body.space_id,
+            file_id=file_id,
+            generation=body.generation,
+            idempotency_key=body.idempotency_key,
+        )
+        return {"file": _file_response(service, file)}
 
 
 @router.post("/files/{file_id}/permanent-delete")

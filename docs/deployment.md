@@ -122,3 +122,5 @@ See [release promotion](release-promotion-activation.md) for the release
 workflow, [target architecture](target-architecture.md) for the isolation
 model, and the [production activation runbook](production-activation-runbook.md)
 for the operator-owned activation and recovery steps.
+Drive scanner activation and fail-closed recovery are documented separately in
+the [Drive malware operations runbook](drive-malware-operations.md).

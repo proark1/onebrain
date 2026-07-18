@@ -61,6 +61,14 @@ class PublicationInput:
     size: int
 
 
+@dataclass(frozen=True)
+class ExistingPublication:
+    release_id: int
+    draft: bool
+    asset_id: int | None = None
+    upload_url: str | None = None
+
+
 def validate_input(artifact: Path, fragment_file: Path) -> PublicationInput:
     fragment = supply_chain._load_json(
         fragment_file,
@@ -152,49 +160,63 @@ def publish(
         target=target,
         generator_inputs_sha256=generator_inputs_sha256,
     )
-    existing_release_id = _existing_release_id(value)
-    if existing_release_id is not None:
+    existing = _existing_publication(
+        value,
+        target=target,
+        expected_body=notes,
+    )
+    if existing is not None and not existing.draft:
         _verify_existing_release(
             value,
-            release_id=existing_release_id,
+            release_id=existing.release_id,
             target=target,
             expected_body=notes,
         )
         return
 
-    draft = _api_json(
-        "POST",
-        f"repos/{_REPOSITORY}/releases",
-        code="definition_publication_draft_failed",
-        payload={
-            "tag_name": value.tag,
-            "target_commitish": target,
-            "name": value.tag,
-            "body": notes,
-            "draft": True,
-            "prerelease": False,
-            "make_latest": "false",
-        },
-    )
-    release_id = _validate_created_draft(
-        draft,
-        value=value,
-        target=target,
-        expected_body=notes,
-    )
-    upload_url = _asset_upload_url(
-        draft.get("upload_url"),
-        release_id=release_id,
-        asset_name=value.artifact.name,
-    )
-    uploaded_asset = _api_json(
-        "POST",
-        upload_url,
-        code="definition_publication_asset_upload_failed",
-        input_file=value.artifact,
-        headers=("Content-Type: application/gzip",),
-    )
-    asset_id = _validate_asset(uploaded_asset, value=value)
+    if existing is None:
+        draft = _api_json(
+            "POST",
+            f"repos/{_REPOSITORY}/releases",
+            code="definition_publication_draft_failed",
+            payload={
+                "tag_name": value.tag,
+                "target_commitish": target,
+                "name": value.tag,
+                "body": notes,
+                "draft": True,
+                "prerelease": False,
+                "make_latest": "false",
+            },
+        )
+        release_id = _validate_created_draft(
+            draft,
+            value=value,
+            target=target,
+            expected_body=notes,
+        )
+        upload_url = _asset_upload_url(
+            draft.get("upload_url"),
+            release_id=release_id,
+            asset_name=value.artifact.name,
+        )
+        asset_id = None
+    else:
+        release_id = existing.release_id
+        upload_url = existing.upload_url
+        asset_id = existing.asset_id
+
+    if asset_id is None:
+        if upload_url is None:
+            raise PublicationError("definition_publication_upload_url_invalid")
+        uploaded_asset = _api_json(
+            "POST",
+            upload_url,
+            code="definition_publication_asset_upload_failed",
+            input_file=value.artifact,
+            headers=("Content-Type: application/gzip",),
+        )
+        asset_id = _validate_asset(uploaded_asset, value=value, draft=True)
     _wait_for_release_id(
         value,
         release_id=release_id,
@@ -249,7 +271,7 @@ def _verify_existing_release(
     assets = release.get("assets")
     if not isinstance(assets, list) or len(assets) != 1:
         raise PublicationError("definition_publication_asset_invalid")
-    asset_id = _validate_asset(assets[0], value=value)
+    asset_id = _validate_asset(assets[0], value=value, draft=False)
     _validate_release(
         release,
         value=value,
@@ -467,7 +489,12 @@ def _require_gh_attestation_support() -> None:
         raise PublicationError("definition_publication_gh_attestation_unsupported")
 
 
-def _existing_release_id(value: PublicationInput) -> int | None:
+def _existing_publication(
+    value: PublicationInput,
+    *,
+    target: str,
+    expected_body: str,
+) -> ExistingPublication | None:
     releases = _list_releases()
     matches: list[dict] = []
     for release in releases:
@@ -490,17 +517,50 @@ def _existing_release_id(value: PublicationInput) -> int | None:
             raise PublicationError("definition_publication_release_exists")
         release = matches[0]
         release_id = release.get("id")
-        if (
-            not isinstance(release_id, int)
-            or isinstance(release_id, bool)
-            or release_id <= 0
-            or release.get("tag_name") != value.tag
-            or release.get("name") != value.tag
-            or release.get("draft") is not False
-            or release.get("prerelease") is not False
-        ):
+        if not isinstance(release_id, int) or isinstance(release_id, bool) or release_id <= 0:
             raise PublicationError("definition_publication_release_exists")
-        return release_id
+        if release.get("draft") is False:
+            if release.get("tag_name") != value.tag or release.get("name") != value.tag:
+                raise PublicationError("definition_publication_release_exists")
+            return ExistingPublication(release_id=release_id, draft=False)
+        if release.get("draft") is not True:
+            raise PublicationError("definition_publication_release_exists")
+        try:
+            _validate_release_identity(
+                release,
+                value=value,
+                release_id=release_id,
+                target=target,
+                expected_body=expected_body,
+                draft=True,
+            )
+        except PublicationError as exc:
+            raise PublicationError("definition_publication_release_exists") from exc
+        if release.get("immutable") not in {False, None}:
+            raise PublicationError("definition_publication_release_exists")
+        assets = release.get("assets")
+        if not isinstance(assets, list) or len(assets) > 1:
+            raise PublicationError("definition_publication_release_exists")
+        upload_url = _asset_upload_url(
+            release.get("upload_url"),
+            release_id=release_id,
+            asset_name=value.artifact.name,
+        )
+        asset_id = (
+            _validate_asset(assets[0], value=value, draft=True)
+            if assets
+            else None
+        )
+        _require_absent(
+            f"repos/{_REPOSITORY}/git/ref/tags/{value.tag}",
+            code="definition_publication_tag_exists",
+        )
+        return ExistingPublication(
+            release_id=release_id,
+            draft=True,
+            asset_id=asset_id,
+            upload_url=upload_url,
+        )
     _require_absent(
         f"repos/{_REPOSITORY}/git/ref/tags/{value.tag}",
         code="definition_publication_tag_exists",
@@ -568,11 +628,26 @@ def _asset_upload_url(raw_url: object, *, release_id: int, asset_name: str) -> s
     return f"{url}?{urllib.parse.urlencode({'name': asset_name})}"
 
 
-def _validate_asset(asset: dict, *, value: PublicationInput) -> int:
+def _validate_asset(
+    asset: dict,
+    *,
+    value: PublicationInput,
+    draft: bool,
+) -> int:
     asset_id = asset.get("id")
     expected_url = (
         f"https://github.com/{_REPOSITORY}/releases/download/"
         f"{value.tag}/{value.artifact.name}"
+    )
+    browser_url = asset.get("browser_download_url")
+    draft_url = (
+        isinstance(browser_url, str)
+        and re.fullmatch(
+            rf"https://github\.com/{re.escape(_REPOSITORY)}/releases/download/"
+            rf"untagged-[0-9a-f]+/{re.escape(value.artifact.name)}",
+            browser_url,
+        )
+        is not None
     )
     if (
         not isinstance(asset_id, int)
@@ -582,7 +657,7 @@ def _validate_asset(asset: dict, *, value: PublicationInput) -> int:
         or asset.get("size") != value.size
         or asset.get("digest") != f"sha256:{value.sha256}"
         or asset.get("state") != "uploaded"
-        or asset.get("browser_download_url") != expected_url
+        or (browser_url != expected_url and not (draft and draft_url))
     ):
         raise PublicationError("definition_publication_asset_invalid")
     return asset_id
@@ -631,7 +706,7 @@ def _validate_release(
     assets = release.get("assets")
     if not isinstance(assets, list) or len(assets) != 1:
         raise PublicationError("definition_publication_asset_invalid")
-    verified_asset_id = _validate_asset(assets[0], value=value)
+    verified_asset_id = _validate_asset(assets[0], value=value, draft=draft)
     if verified_asset_id != asset_id:
         raise PublicationError("definition_publication_asset_identity_mismatch")
     immutable = release.get("immutable")

@@ -14,11 +14,33 @@ import type {
 
 const DRIVE_BASE = "/api/drive";
 
+export class DriveApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly retryAfter: string | null;
+
+  constructor(
+    message: string,
+    options: { status: number; code?: string; retryAfter?: string | null },
+  ) {
+    super(message);
+    this.name = "DriveApiError";
+    this.status = options.status;
+    this.code = options.code ?? "";
+    this.retryAfter = options.retryAfter ?? null;
+  }
+}
+
 async function driveJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${DRIVE_BASE}${path}`, init);
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(payload, `Drive request failed (${response.status}).`));
+    throw apiError(
+      payload,
+      `Drive request failed (${response.status}).`,
+      response.status,
+      response.headers.get("Retry-After"),
+    );
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -110,6 +132,16 @@ export async function approveDriveFile(file: DriveFileEntry): Promise<DriveFileE
   return fileMutation(`/files/${encodeURIComponent(file.id)}/approve`, file);
 }
 
+export async function rescanDriveFile(file: DriveFileEntry): Promise<DriveFileEntry> {
+  const idempotencyKey = await deterministicMutationKey("rescan", file);
+  return fileMutation(
+    `/files/${encodeURIComponent(file.id)}/rescan`,
+    file,
+    {},
+    idempotencyKey,
+  );
+}
+
 export async function permanentlyDeleteDriveFile(
   file: DriveFileEntry,
   reason: string,
@@ -168,13 +200,29 @@ async function fileMutation(
   path: string,
   file: DriveFileEntry,
   fields: Record<string, unknown> = {},
+  idempotencyKey?: string,
 ): Promise<DriveFileEntry> {
   const response = await driveJson<DriveFileEntry | { file: DriveFileEntry }>(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...scopedMutationBody(file), ...fields }),
+    body: JSON.stringify({ ...scopedMutationBody(file, idempotencyKey), ...fields }),
   });
   return "file" in response ? response.file : response;
+}
+
+async function deterministicMutationKey(action: string, entry: DriveEntry): Promise<string> {
+  const identity = [
+    "drive",
+    action,
+    entry.account_id,
+    entry.space_id,
+    entry.id,
+    String(entry.generation),
+  ].join(":");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity));
+  let encoded = "";
+  for (const byte of new Uint8Array(digest)) encoded += byte.toString(16).padStart(2, "0");
+  return `drive-${action}:${encoded}`;
 }
 
 function scopedMutationBody(entry: DriveEntry, idempotencyKey = crypto.randomUUID()) {
@@ -209,7 +257,7 @@ export function putDriveUploadContent(
         resolve();
         return;
       }
-      reject(new Error(xhrErrorMessage(request)));
+      reject(xhrError(request));
     });
     request.addEventListener("error", () => {
       signal?.removeEventListener("abort", abort);
@@ -240,24 +288,55 @@ export async function completeDriveUpload(
   return "file" in response ? response : { file: response };
 }
 
-function xhrErrorMessage(request: XMLHttpRequest): string {
+function xhrError(request: XMLHttpRequest): DriveApiError {
   try {
-    return apiErrorMessage(JSON.parse(request.responseText), `Upload failed (${request.status}).`);
+    return apiError(
+      JSON.parse(request.responseText),
+      `Upload failed (${request.status}).`,
+      request.status,
+      request.getResponseHeader("Retry-After"),
+    );
   } catch {
-    return `Upload failed (${request.status}).`;
+    return new DriveApiError(`Upload failed (${request.status}).`, {
+      status: request.status,
+      retryAfter: request.getResponseHeader("Retry-After"),
+    });
   }
 }
 
-function apiErrorMessage(payload: unknown, fallback: string): string {
+function apiError(
+  payload: unknown,
+  fallback: string,
+  status: number,
+  retryAfter: string | null,
+): DriveApiError {
+  const details = apiErrorDetails(payload, fallback);
+  return new DriveApiError(details.message, {
+    status,
+    code: details.code,
+    retryAfter,
+  });
+}
+
+function apiErrorDetails(payload: unknown, fallback: string): { message: string; code: string } {
   if (payload && typeof payload === "object" && "detail" in payload) {
     const detail = (payload as { detail?: unknown }).detail;
-    if (typeof detail === "string") return detail;
+    if (typeof detail === "string") return { message: detail, code: "" };
+    if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+      const structured = detail as { message?: unknown; code?: unknown };
+      if (typeof structured.message === "string") {
+        return {
+          message: structured.message,
+          code: typeof structured.code === "string" ? structured.code : "",
+        };
+      }
+    }
     if (Array.isArray(detail)) {
       const messages = detail.flatMap((item) => (
         item && typeof item === "object" && "msg" in item && typeof item.msg === "string" ? [item.msg] : []
       ));
-      if (messages.length) return messages.join(" ");
+      if (messages.length) return { message: messages.join(" "), code: "" };
     }
   }
-  return fallback;
+  return { message: fallback, code: "" };
 }

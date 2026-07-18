@@ -12,6 +12,7 @@ type DriveIconName =
   | "restore"
   | "review"
   | "search"
+  | "shield"
   | "trash"
   | "upload";
 
@@ -27,6 +28,7 @@ const ICON_PATHS: Record<DriveIconName, ReactNode> = {
     restore: <><path d="M4 7v5h5" /><path d="M5 12a7 7 0 1 1 2 5" /></>,
     review: <><path d="M5 3h14v18H5Z" /><path d="m8 12 2 2 5-5" /></>,
     search: <><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></>,
+    shield: <path d="M12 3 5 6v5c0 4.7 2.8 8.2 7 10 4.2-1.8 7-5.3 7-10V6Z" />,
     trash: <><path d="M4 7h16M9 3h6l1 4H8Z" /><path d="m7 7 1 14h8l1-14M10 11v6m4-6v6" /></>,
     upload: <><path d="M12 16V4m0 0L8 8m4-4 4 4" /><path d="M5 20h14" /></>,
 };

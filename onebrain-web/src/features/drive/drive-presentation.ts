@@ -1,4 +1,4 @@
-import type { DriveEntry } from "./types";
+import type { DriveEntry, DriveFileEntry } from "./types";
 
 export type DriveStatusTone = "neutral" | "running" | "success" | "warning" | "danger";
 
@@ -15,6 +15,7 @@ const STATUS_PRESENTATION: Record<string, DriveStatusPresentation> = {
   extracting: { label: "Preparing", detail: "Reading the original file.", tone: "running" },
   indexing: { label: "Indexing", detail: "Preparing this file for AI answers.", tone: "running" },
   indexed: { label: "Indexed", detail: "AI can use this file for permitted audiences.", tone: "success" },
+  awaiting_scan: { label: "Waiting for security", detail: "AI waits for the malware scan to finish.", tone: "running" },
   awaiting_review: { label: "Needs review", detail: "AI waits for an authorized review.", tone: "warning" },
   pending: { label: "Needs review", detail: "AI waits for an authorized review.", tone: "warning" },
   blocked: { label: "Blocked", detail: "Policy prevents AI from using this file.", tone: "danger" },
@@ -24,11 +25,56 @@ const STATUS_PRESENTATION: Record<string, DriveStatusPresentation> = {
   stale: { label: "Updating", detail: "A newer file policy is being applied.", tone: "running" },
 };
 
+const SECURITY_PRESENTATION: Record<string, DriveStatusPresentation> = {
+  pending: {
+    label: "Security scan queued",
+    detail: "The file is quarantined until its security scan finishes.",
+    tone: "running",
+  },
+  scanning: {
+    label: "Scanning for threats",
+    detail: "The file remains quarantined while OneBrain scans it.",
+    tone: "running",
+  },
+  clean: {
+    label: "No known malware found",
+    detail: "The current file revision passed the required malware scan.",
+    tone: "success",
+  },
+  infected: {
+    label: "Threat blocked",
+    detail: "The file is quarantined and cannot be opened or used by AI.",
+    tone: "danger",
+  },
+  scan_error: {
+    label: "Scan unavailable — retrying",
+    detail: "The security scan was inconclusive. The file remains quarantined.",
+    tone: "warning",
+  },
+  rescan_required: {
+    label: "Security rescan required",
+    detail: "The file remains quarantined until a current security scan finishes.",
+    tone: "warning",
+  },
+};
+
 export function driveStatusPresentation(status: string): DriveStatusPresentation {
   return STATUS_PRESENTATION[status.toLowerCase()] ?? {
     label: status ? humanize(status) : "Not indexed",
     detail: "AI availability has not been reported yet.",
     tone: "neutral",
+  };
+}
+
+export function driveSecurityPresentation(status?: string): DriveStatusPresentation {
+  if (status) {
+    const presentation = SECURITY_PRESENTATION[status.toLowerCase()];
+    if (presentation) return presentation;
+  }
+  return {
+    label: "Security check required",
+    detail: "No current malware verdict is available. The file remains quarantined.",
+    tone: "warning",
   };
 }
 
@@ -53,8 +99,24 @@ export function driveAudienceSummary(entry: DriveEntry): string {
     .join(" · ") || "Company policy";
 }
 
-export function canDownloadDriveEntry(entry: DriveEntry): boolean {
-  return entry.kind === "file" && !entry.legacy;
+export function canDownloadDriveEntry(
+  entry: DriveEntry,
+): entry is DriveFileEntry & { download_url: string; malware_status: "clean" } {
+  return entry.kind === "file"
+    && !entry.legacy
+    && entry.malware_status === "clean"
+    && Boolean(entry.download_url);
+}
+
+export function shouldPollDriveSecurity(entry: DriveEntry): entry is DriveFileEntry {
+  return entry.kind === "file"
+    && (entry.malware_status === "pending" || entry.malware_status === "scanning");
+}
+
+export function canRescanDriveEntry(entry: DriveEntry): entry is DriveFileEntry {
+  return entry.kind === "file"
+    && !entry.legacy
+    && ["infected", "scan_error", "rescan_required"].includes(entry.malware_status ?? "");
 }
 
 export function driveFileKind(name: string, mediaType: string): string {

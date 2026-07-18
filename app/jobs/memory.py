@@ -5,9 +5,11 @@ from __future__ import annotations
 import threading
 from dataclasses import replace
 from datetime import datetime, timedelta
+from typing import Sequence
 from uuid import uuid4
 
 from app.jobs.base import (
+    JobEnqueueSpec,
     JobFailureSummary,
     JobScopeDeleteResult,
     JobSummary,
@@ -23,6 +25,7 @@ from app.jobs.base import (
     JobFile,
     JobFileInput,
     utcnow,
+    validate_job_enqueue_batch,
 )
 
 
@@ -59,6 +62,7 @@ class MemoryJobStore:
     def enqueue(
         self,
         *,
+        job_id: str = "",
         type: str,
         tenant_id: str,
         account_id: str = "",
@@ -76,9 +80,14 @@ class MemoryJobStore:
                 existing_id = self._idempotency.get(dedupe_scope)
                 if existing_id and existing_id in self._jobs:
                     return self._jobs[existing_id]
+        explicit_job_id = (job_id or "").strip()
+        if explicit_job_id and (
+            not explicit_job_id.startswith("job_") or len(explicit_job_id) > 128
+        ):
+            raise ValueError("Explicit job id must be an opaque job_ identifier.")
         now = _iso()
         job = Job(
-            id=f"job_{uuid4().hex}",
+            id=explicit_job_id or f"job_{uuid4().hex}",
             type=type,
             status=STATUS_QUEUED,
             tenant_id=tenant_id,
@@ -92,6 +101,17 @@ class MemoryJobStore:
             updated_at=now,
         )
         with self._lock:
+            existing_by_id = self._jobs.get(job.id)
+            if existing_by_id:
+                if (
+                    existing_by_id.type == job.type
+                    and existing_by_id.tenant_id == job.tenant_id
+                    and existing_by_id.account_id == job.account_id
+                    and existing_by_id.space_id == job.space_id
+                    and existing_by_id.payload == job.payload
+                ):
+                    return existing_by_id
+                raise ValueError("Explicit job id already exists with different work.")
             if dedupe:
                 existing_id = self._idempotency.get(dedupe_scope)
                 if existing_id and existing_id in self._jobs:
@@ -110,6 +130,64 @@ class MemoryJobStore:
                     created_at=now,
                 )
         return job
+
+    def enqueue_many(
+        self,
+        specs: Sequence[JobEnqueueSpec],
+    ) -> tuple[Job, ...]:
+        """Atomically resolve a bounded idempotent batch under one lock."""
+
+        batch: tuple[JobEnqueueSpec, ...] = validate_job_enqueue_batch(specs)
+        if not batch:
+            return ()
+        now = _iso()
+        candidates = tuple(
+            Job(
+                id=(spec.job_id or "").strip() or f"job_{uuid4().hex}",
+                type=spec.type,
+                status=STATUS_QUEUED,
+                tenant_id=spec.tenant_id,
+                account_id=spec.account_id,
+                space_id=spec.space_id,
+                requested_by=spec.requested_by,
+                payload=dict(spec.payload),
+                max_attempts=int(spec.max_attempts),
+                run_after=now,
+                created_at=now,
+                updated_at=now,
+            )
+            for spec in batch
+        )
+        with self._lock:
+            staged_jobs: dict[str, Job] = {}
+            staged_idempotency: dict[tuple[str, str, str, str, str], str] = {}
+            resolved: list[Job] = []
+            for spec, candidate in zip(batch, candidates, strict=True):
+                dedupe_scope = (
+                    spec.tenant_id,
+                    spec.account_id,
+                    spec.space_id,
+                    spec.type,
+                    spec.idempotency_key.strip(),
+                )
+                existing_id = staged_idempotency.get(dedupe_scope)
+                if not existing_id:
+                    existing_id = self._idempotency.get(dedupe_scope, "")
+                existing = staged_jobs.get(existing_id) or self._jobs.get(existing_id)
+                if existing is not None:
+                    resolved.append(existing)
+                    continue
+                existing_by_id = staged_jobs.get(candidate.id) or self._jobs.get(candidate.id)
+                if existing_by_id is not None:
+                    raise ValueError(
+                        "Batch job id already exists outside its idempotency key."
+                    )
+                staged_jobs[candidate.id] = candidate
+                staged_idempotency[dedupe_scope] = candidate.id
+                resolved.append(candidate)
+            self._jobs.update(staged_jobs)
+            self._idempotency.update(staged_idempotency)
+        return tuple(resolved)
 
     def get(
         self,

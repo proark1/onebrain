@@ -21722,6 +21722,8 @@
     },
     "/api/upload": {
       "post": {
+        "deprecated": true,
+        "description": "Retired compatibility route; new originals must enter through Drive.",
         "operationId": "upload_api_upload_post",
         "parameters": [
           {
@@ -21749,17 +21751,7 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/DocumentSummary"
-                    },
-                    {
-                      "$ref": "#/components/schemas/JobStatusOut"
-                    }
-                  ],
-                  "title": "Response Upload Api Upload Post"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response"

@@ -11,7 +11,7 @@ const ROOT = { id: "root-1", account_id: "account-1", space_id: "space-1", kind:
 
 function bootstrap() {
   return {
-    contract_version: 1,
+    contract_version: 2,
     roots: [ROOT],
     selected_root: ROOT,
     breadcrumbs: [{ id: "folder-1", name: "Contracts" }],
@@ -73,6 +73,23 @@ test("Drive upload reducer prevents progress from moving backwards and supports 
   assert.equal(state[0].progress, 0);
   assert.equal(state[0].error, "");
   assert.equal(state[0].attempt, 1);
+
+  state = driveUploadReducer(state, {
+    type: "completed",
+    id: record.id,
+    fileId: "file-1",
+    malwareStatus: "pending",
+  });
+  assert.equal(state[0].status, "stored");
+  assert.equal(state[0].progress, 100);
+  assert.equal(state[0].fileId, "file-1");
+  assert.equal(state[0].malwareStatus, "pending");
+
+  state = driveUploadReducer(state, {
+    type: "sync_security",
+    files: [{ id: "file-1", malwareStatus: "clean" }],
+  });
+  assert.equal(state[0].malwareStatus, "clean");
 });
 
 test("Drive browser state replaces a generation-guarded entry after a lifecycle mutation", () => {
@@ -92,9 +109,52 @@ test("Drive browser state replaces a generation-guarded entry after a lifecycle 
     media_type: "application/pdf",
     desired_indexed: false,
     index_status: "not_indexed",
+    malware_status: "pending",
   };
   const initial = { ...createDriveBrowserState(bootstrap()), entries: [entry] };
   const updated = { ...entry, generation: 2, desired_indexed: true, index_status: "queued" };
   const state = driveBrowserReducer(initial, { type: "replace_entry", entry: updated });
   assert.deepEqual(state.entries, [updated]);
+});
+
+test("Drive polling merges only security lifecycle fields into the current row", () => {
+  const entry = {
+    kind: "file",
+    id: "file-1",
+    account_id: "account-1",
+    space_id: "space-1",
+    parent_folder_id: "folder-current",
+    generation: 3,
+    name: "plan.pdf",
+    classification: "confidential",
+    location: "global",
+    category: "finance",
+    updated_at: "before",
+    size_bytes: 20,
+    media_type: "application/pdf",
+    desired_indexed: true,
+    index_status: "awaiting_scan",
+    malware_status: "scanning",
+  };
+  const initial = { ...createDriveBrowserState(bootstrap()), entries: [entry] };
+  const staleListProjection = {
+    ...entry,
+    parent_folder_id: "stale-folder",
+    classification: "internal",
+    index_status: "queued",
+    malware_status: "clean",
+    malware_scanned_at: "2026-07-18T12:00:00Z",
+    malware_definition_version: "main-123",
+    download_url: "/api/drive/files/file-1/content",
+    updated_at: "after",
+  };
+  const state = driveBrowserReducer(initial, {
+    type: "merge_security",
+    entries: [staleListProjection],
+  });
+  assert.equal(state.entries[0].malware_status, "clean");
+  assert.equal(state.entries[0].index_status, "queued");
+  assert.equal(state.entries[0].download_url, "/api/drive/files/file-1/content");
+  assert.equal(state.entries[0].classification, "confidential");
+  assert.equal(state.entries[0].parent_folder_id, "folder-current");
 });

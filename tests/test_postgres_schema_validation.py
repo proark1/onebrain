@@ -531,6 +531,12 @@ def _onebrain_drive_module():
     return _load_migration_module("0033_onebrain_drive.py", "onebrain_drive_migration")
 
 
+def _drive_malware_module():
+    return _load_migration_module(
+        "0034_drive_malware_quarantine.py", "drive_malware_migration"
+    )
+
+
 def test_trust_primitives_migration_structure_and_chain():
     migration = _trust_primitives_module()
 
@@ -599,7 +605,7 @@ def test_required_revision_matches_single_alembic_head():
     heads = ScriptDirectory.from_config(config).get_heads()
 
     assert heads == [REQUIRED_ALEMBIC_REVISION]
-    assert REQUIRED_ALEMBIC_REVISION == _onebrain_drive_module().revision
+    assert REQUIRED_ALEMBIC_REVISION == _drive_malware_module().revision
 
 
 def test_job_leases_migration_precedes_the_current_head():
@@ -627,6 +633,7 @@ def test_recovery_auth_job_queue_and_drive_migrations_form_one_chain():
     job_queue_rls = _job_queue_rls_module()
     drive_foundations = _drive_foundations_module()
     onebrain_drive = _onebrain_drive_module()
+    drive_malware = _drive_malware_module()
 
     assert ai_leases.revision == "0027_ai_agent_run_leases"
     assert ai_leases.down_revision == job_leases.revision
@@ -641,8 +648,10 @@ def test_recovery_auth_job_queue_and_drive_migrations_form_one_chain():
     assert user_management.down_revision == job_queue_rls.revision
     assert drive_foundations.revision == "0032_drive_foundations"
     assert drive_foundations.down_revision == user_management.revision
-    assert onebrain_drive.revision == REQUIRED_ALEMBIC_REVISION
+    assert onebrain_drive.revision == "0033_onebrain_drive"
     assert onebrain_drive.down_revision == drive_foundations.revision
+    assert drive_malware.revision == REQUIRED_ALEMBIC_REVISION
+    assert drive_malware.down_revision == onebrain_drive.revision
     source = Path(auth_limits.__file__).read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS auth_rate_limits" in source
     assert "subject_hash" in source and "auth_rate_limits_expiry_idx" in source

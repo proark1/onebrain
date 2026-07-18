@@ -7,7 +7,8 @@ import tarfile
 from dataclasses import dataclass
 from typing import Iterator
 
-from app.drive.base import normalize_name
+from app.drive.base import is_clean_attestation, normalize_name
+from app.drive.blobs import blob_matches_revision
 
 
 TAR_BLOCK_SIZE = 512
@@ -62,12 +63,37 @@ def prepare_drive_export(
         file = files.get(revision.get("file_id", ""))
         if not file:
             raise DriveExportIntegrityError("Drive export contains a revision without its file.")
+        revision_row = drive_store.get_revision(
+            str(revision.get("id") or ""),
+            account_id=account_id,
+            space_id=str(revision.get("space_id") or ""),
+        )
+        scan = drive_store.get_authoritative_malware_scan(
+            str(revision.get("id") or ""),
+            account_id=account_id,
+            space_id=str(revision.get("space_id") or ""),
+        )
+        if revision_row is None:
+            raise DriveExportIntegrityError("Drive export revision metadata changed during preparation.")
+        public_revision = {
+            key: value for key, value in revision.items() if key != "storage_key"
+        }
+        if not is_clean_attestation(revision_row, scan):
+            malware_status = scan.status if scan else "rescan_required"
+            public_revision.update({
+                "archive_path": None,
+                "content_disposition": "withheld",
+                "withheld_reason": _withheld_reason(malware_status),
+                "malware_status": malware_status,
+            })
+            manifest_revisions.append(public_revision)
+            continue
         storage_key = str(revision.get("storage_key") or "")
         info = blobs.stat(storage_key)
-        if (
-            not info
-            or info.size_bytes != int(revision.get("size_bytes") or 0)
-            or info.sha256 != revision.get("sha256")
+        if not blob_matches_revision(
+            info,
+            size_bytes=int(revision.get("size_bytes") or 0),
+            sha256=str(revision.get("sha256") or ""),
         ):
             raise DriveExportIntegrityError(
                 f"Drive original {revision.get('id', '')} is missing or failed integrity validation."
@@ -89,14 +115,16 @@ def prepare_drive_export(
             sha256=info.sha256,
             media_type=str(revision.get("media_type") or "application/octet-stream"),
         ))
-        public_revision = {
-            key: value for key, value in revision.items() if key != "storage_key"
-        }
-        public_revision["archive_path"] = archive_path
+        public_revision.update({
+            "archive_path": archive_path,
+            "content_disposition": "included",
+            "withheld_reason": None,
+            "malware_status": "clean",
+        })
         manifest_revisions.append(public_revision)
 
     manifest = {
-        "schema": "onebrain.drive.originals-export.v1",
+        "schema": "onebrain.drive.originals-export.v2",
         "tenant_id": tenant_id,
         "account_id": account_id,
         "space_id": space_id,
@@ -108,6 +136,14 @@ def prepare_drive_export(
         ),
     }
     return DriveExportArchive(manifest=manifest, items=tuple(items))
+
+
+def _withheld_reason(status: str) -> str:
+    if status == "infected":
+        return "malware_detected"
+    if status == "scan_error":
+        return "security_scan_unavailable"
+    return "security_scan_pending"
 
 
 def iter_drive_export_tar(archive: DriveExportArchive, blobs) -> Iterator[bytes]:

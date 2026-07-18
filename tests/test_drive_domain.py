@@ -11,7 +11,10 @@ from app.drive.base import (
     DriveFile,
     DriveFolder,
     DriveGenerationConflict,
+    DriveMalwareScan,
+    DriveMalwareWorkerStore,
     DriveRevision,
+    DriveStore,
     bounded_page_size,
     decode_page_cursor,
     encode_page_cursor,
@@ -77,6 +80,22 @@ def test_drive_names_and_scope_records_are_fail_closed():
     assert decode_page_cursor(encode_page_cursor(25)) == 25
     with pytest.raises(ValueError, match="cursor"):
         decode_page_cursor("folder_aaaaaaaa")
+
+
+def test_worker_only_malware_capabilities_are_not_in_the_api_store_protocol():
+    privileged = {
+        "list_expired_uploads_for_maintenance",
+        "upsert_scanner_runtime_status",
+        "reconcile_quarantine_capacity",
+        "list_malware_tenant_ids",
+        "begin_malware_scan",
+        "complete_malware_scan",
+        "reconcile_malware_scans",
+        "wake_retryable_malware_scans",
+    }
+
+    assert privileged.isdisjoint(DriveStore.__dict__)
+    assert privileged <= set(DriveMalwareWorkerStore.__dict__)
 
 
 def test_revision_contract_rejects_forged_hashes_and_path_names():
@@ -147,6 +166,39 @@ def test_projection_publication_is_generation_fenced_and_unpublish_removes_chunk
     vectors = MemoryStore()
     store = MemoryDriveStore(vectors)
     file = store.create_file(_file())
+    revision = store.create_revision(DriveRevision(
+        id=file.current_revision_id,
+        tenant_id=ACCOUNT,
+        account_id=ACCOUNT,
+        space_id=SPACE,
+        file_id=file.id,
+        upload_session_id="upload_aaaaaaaa",
+        storage_key="drive/t/a/s/file_aaaaaaaa/revision_aaaaaaaa",
+        sha256="a" * 64,
+        size_bytes=4,
+        media_type="text/plain",
+        original_name=file.name,
+        created_by="user_owner",
+    ))
+    store.create_malware_scan(DriveMalwareScan(
+        id="scan_aaaaaaaa",
+        tenant_id=ACCOUNT,
+        account_id=ACCOUNT,
+        space_id=SPACE,
+        file_id=file.id,
+        revision_id=revision.id,
+        revision_sha256=revision.sha256,
+        revision_size_bytes=revision.size_bytes,
+        status="clean",
+        origin="upload",
+        attempt_sequence=1,
+        job_id="job_aaaaaaaa",
+        scanner_engine="clamav",
+        scanner_engine_version="1.4.3",
+        definition_version="daily-1",
+        definition_timestamp="2026-07-18T00:00:00+00:00",
+        completed_at="2026-07-18T00:00:01+00:00",
+    ))
     chunk = Chunk(
         id="drive_doc:0",
         doc_id="drive_doc",

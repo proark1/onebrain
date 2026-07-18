@@ -2,34 +2,15 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
-from fastapi.concurrency import run_in_threadpool
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.auth.principal import Principal, resolve_principal
-from app.config import get_settings
-from app.deps import get_job_store, get_pipeline, get_platform_store, get_store
-from app.jobs.base import JOB_DOCUMENT_INGEST, JobFileInput
+from app.deps import get_platform_store, get_store
 from app.platform.scope import scoped_human_principal, selected_space_id
-from app.routers.jobs import job_status_out
-from app.schemas import DocumentSummary, JobStatusOut, PendingDocument
+from app.schemas import DocumentSummary, PendingDocument
 from app.security.policy import STATUS_APPROVED
 
 router = APIRouter(prefix="/api", tags=["documents"])
-
-UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
-
-
-async def _read_upload_limited(file: UploadFile, max_bytes: int) -> bytes:
-    data = bytearray()
-    while True:
-        chunk = await file.read(UPLOAD_READ_CHUNK_BYTES)
-        if not chunk:
-            break
-        data.extend(chunk)
-        if len(data) > max_bytes:
-            raise HTTPException(status_code=413, detail="Payload too large")
-    return bytes(data)
-
 
 def _space_scope(account_id: str, space_id: str, principal: Principal):
     scoped = scoped_human_principal(account_id, space_id, principal, get_platform_store())
@@ -64,9 +45,8 @@ def list_documents(
     return [_doc_summary(d) for d in get_store().list_documents(access)]
 
 
-@router.post("/upload", response_model=DocumentSummary | JobStatusOut)
+@router.post("/upload", deprecated=True)
 async def upload(
-    response: Response = None,
     file: UploadFile = File(...),
     classification: str = Form("internal"),
     location: str = Form("global"),
@@ -75,66 +55,18 @@ async def upload(
     space_id: str = Form(""),
     principal: Principal = Depends(resolve_principal),
 ):
+    """Retired compatibility route; new originals must enter through Drive."""
+
     if not principal.is_employee:
         raise HTTPException(status_code=403, detail="Only employees can upload documents.")
-    scoped_account, scoped_space, _ = _space_scope(account_id, space_id, principal)
-
-    settings = get_settings()
-    data = await _read_upload_limited(file, settings.max_body_bytes)
-    if not data:
-        raise HTTPException(status_code=400, detail="The file is empty.")
-
-    if getattr(settings, "use_async_ingestion", False):
-        job = get_job_store().enqueue(
-            type=JOB_DOCUMENT_INGEST,
-            tenant_id=principal.tenant_id,
-            account_id=scoped_account,
-            space_id=scoped_space,
-            requested_by=principal.user_id,
-            payload={
-                "classification": classification,
-                "location": location,
-                "category": category,
-                "require_approval": settings.require_approval,
-                "block_public_on_pii": settings.block_public_on_pii,
-                "pii_phase": settings.pii_phase,
-            },
-            file=JobFileInput(
-                filename=file.filename or "upload.txt",
-                content_type=file.content_type or "",
-                data=data,
-            ),
-            max_attempts=settings.job_max_attempts,
-        )
-        if response is not None:
-            response.status_code = 202
-        return job_status_out(job)
-
-    try:
-        pipeline = get_pipeline()
-        result = await run_in_threadpool(
-            pipeline.ingest_file,
-            filename=file.filename or "upload.txt",
-            data=data,
-            classification=classification,
-            location=location,
-            category=category,
-            uploaded_by=principal.user_id,
-            tenant=principal.tenant_id,  # server-side — never a caller-supplied field
-            require_approval=settings.require_approval,
-            block_public_on_pii=settings.block_public_on_pii,
-            pii_phase=settings.pii_phase,
-            account_id=scoped_account,
-            space_id=scoped_space,
-        )
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    return DocumentSummary(
-        doc_id=result.doc_id, title=result.title, classification=result.classification,
-        location=result.location, category=result.category, chunks=result.chunks,
-        status=result.status, pii_findings=len(result.pii_findings),
-        account_id=scoped_account, space_id=scoped_space,
+    _space_scope(account_id, space_id, principal)
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Legacy document upload is retired. Upload new files in OneBrain Drive "
+            "through /api/drive/uploads so they are quarantined and malware-scanned first."
+        ),
+        headers={"Link": "</drive>; rel=\"alternate\""},
     )
 
 

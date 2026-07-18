@@ -138,9 +138,31 @@ A source-controlled fetcher:
 6. hands the resulting directory to the existing `sigtool`, definition
    manifest, EICAR, and scanner-capability gates.
 
-The release asset is never silently overwritten. A definition update publishes
-a new immutable asset and changes the lock in the same reviewed change. Runtime
-`freshclam` refresh and atomic definition-set rotation remain unchanged.
+The release asset is never silently overwritten. Publication uses two protected
+changes so a not-yet-published URL never enters the production build graph:
+
+1. merge generator/tooling or package-snapshot changes to protected `main`
+   while retaining the currently valid definition artifact;
+2. dispatch the approval-gated `scanner-definitions` publication workflow at
+   that exact protected-main HEAD;
+3. create and verify an immutable release whose source tooling and
+   package/snapshot projection are byte-bound to that commit; and
+4. merge a follow-up lock activation from the generated fragment.
+
+The publisher deliberately excludes the active `definitions` object from its
+generator-lock projection; otherwise step 2 would circularly require the new
+artifact to exist before publication. It remains fail-closed for drafts,
+orphan tags, target/body/asset drift, extra assets, or mutable releases. An
+exact already-immutable terminal state is verification-only and reruns both
+attestations without mutation. Runtime `freshclam` refresh and atomic
+definition-set rotation remain unchanged.
+
+For the initial rollout, where no prior OneBrain artifact exists, delivery must
+be split once more: land the generator/publisher and bootstrap target on
+protected main while retaining the pre-scanner production worker, publish the
+first immutable asset, then land the scanner production graph and its generated
+lock activation. The combined development tree is not releasable while its
+first locked asset is absent.
 
 ### 4.5 Update and rollback process
 
@@ -148,11 +170,12 @@ Dependency refreshes are explicit maintenance changes:
 
 1. choose a new snapshot and direct versions;
 2. generate candidate inventories in clean Docker stages;
-3. publish and checksum a new baseline-definition asset when required;
-4. update the lock;
-5. run scanner sandbox, clean-file, EICAR, encrypted-content, archive-limit,
+3. merge those generator inputs while retaining a valid active definition;
+4. publish and attest a new baseline from the protected workflow;
+5. activate the generated artifact in a follow-up lock change;
+6. run scanner sandbox, clean-file, EICAR, encrypted-content, archive-limit,
    package-inventory, and evidence verification; and
-6. promote the resulting digest through the normal signed release gate.
+7. promote the resulting digest through the normal signed release gate.
 
 Security updates are reviewed at least monthly and immediately for relevant
 critical vulnerabilities. Prior locks and definition assets remain available
@@ -234,8 +257,27 @@ evidence.
 The batch detail mapping is attached only after authorization. The service
 passes the same mapping to queued-index reconciliation. `_enqueue_index` accepts
 an optional exact detail and avoids scalar revision and scan reads when that
-detail is present. Each eligible file still receives its own idempotent job;
-queue write failures remain isolated so browsing stays available.
+detail is present. Reconciliation constructs one bounded, same-scope
+`JobEnqueueSpec` collection and invokes `JobStore.enqueue_many` once for the
+page. Each file remains its own durable job row, keyed exactly as authoritative
+scan completion keys it:
+`drive-ingest:{file_id}:{revision_id}:{generation}`. It does not receive its own
+queue call. The queue row ID is also derived from that tuple as
+`job_<md5("onebrain:" + key)>`; this is an opaque deterministic identifier, not
+a security checksum. The Python domain helper and PostgreSQL completion
+transaction use the same derivation, so listing repair and scan completion
+cannot race to claim one idempotency key with different job IDs.
+
+The generic byte-free batch contract requires a non-empty idempotency key,
+rejects mixed tenant/account/space scopes, and is capped at the Drive maximum
+page size. Memory resolves the whole collection under one lock. PostgreSQL uses
+one RLS-scoped connection and transaction with a fixed three execute calls: one
+scope statement, one `jsonb_to_recordset` set insert with `ON CONFLICT DO
+NOTHING`, and one set resolution query in ordinal order. Keeping insertion and
+resolution as separate statements is intentional: under `READ COMMITTED`, the
+second statement sees an already-existing or concurrently committed unique-key
+winner without granting the request role queue-update privileges. The store
+commits only when every input ordinal resolves.
 
 Review lists use the same service-level authorization and batch-detail helper.
 Single-file mutation responses may use a one-item batch. Router serialization
@@ -256,8 +298,9 @@ and no indexing job. Internal storage keys and threat details remain absent.
 - A batch-detail database failure fails the listing request rather than
   fabricating a clean state.
 - Missing or inconsistent rows fail closed per file as `rescan_required`.
-- Index-queue failure does not fail browsing; the durable `queued` state retries
-  on a later read as it does today.
+- Index-queue batch failure does not fail browsing. The transaction rolls back
+  rather than partially committing the page, and durable `queued` metadata
+  retries the bounded batch on a later read.
 - Authorization filtering happens before metadata batching, so hidden revision
   identifiers never enter the detail query.
 
@@ -266,8 +309,9 @@ and no indexing job. Internal storage keys and threat details remain absent.
 ### Supply chain
 
 - Static tests reject live Debian sources, unversioned direct installs,
-  mismatched base digests, disabled signature checks, and APT use outside the
-  locked helper.
+  mismatched base/index-platform digests, hidden BuildKit mount dependencies,
+  remote `ADD`, disabled signature checks, and APT use outside the locked
+  helper.
 - Lock parsing rejects unknown fields, duplicate packages, malformed versions,
   non-HTTPS artifact URLs, invalid digests, and missing stage inventories.
 - Each Docker stage verifies its normalized package inventory.
@@ -275,6 +319,11 @@ and no indexing job. Internal storage keys and threat details remain absent.
   unexpected members, and manifest mismatch.
 - The exact packaged image still passes sandbox probes, clean-file, EICAR,
   encrypted archive, limit, capability, and release-evidence checks.
+- The production stage graph cannot reach the definition bootstrap or online
+  runtime-refresh targets; final validation never invokes `freshclam`.
+- Image publication is callable only from the fully gated test workflow. The
+  definition publisher runs only from protected-main `workflow_dispatch` with
+  the approval environment and exact generator-input binding.
 - CI performs a cold-cache worker build using only the locked sources and
   verifies the lock and evidence identities inside the resulting image.
 
@@ -286,10 +335,20 @@ and no indexing job. Internal storage keys and threat details remain absent.
 - PostgreSQL selects the exact latest attempt for the current policy epoch with
   one execute call for arbitrary bounded input.
 - Memory performs one scan pass and matches PostgreSQL semantics.
+- One and one hundred eligible queued files invoke `enqueue_many` once per page;
+  they never invoke scalar queue enqueue from the listing path.
+- A 100-item PostgreSQL enqueue batch uses one connection and exactly three
+  execute calls for both new rows and already-existing authoritative
+  `drive-ingest:` rows, returns stable IDs, and leaves exactly 100 durable jobs.
+- A 100-item memory enqueue batch takes one lock; mixed scopes, oversized input,
+  or an unresolved job-ID collision fail atomically.
+- Listing-first crash-window repair and scan completion resolve the same exact
+  deterministic ingestion job ID and never create a duplicate.
 - Normal, review, bootstrap, trash, and single-file response serializers make
   no persistence calls.
-- Queued clean files reuse batch details and enqueue idempotently without scalar
-  metadata reads; quarantined or mismatched files never enqueue.
+- Queued clean files reuse batch details and reconcile as one idempotent batch
+  without scalar metadata or queue operations; quarantined or mismatched files
+  never enqueue.
 - Existing response fields, ordering, cursors, and access-control tests remain
   unchanged.
 

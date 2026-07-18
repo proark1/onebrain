@@ -218,6 +218,10 @@ def test_compose_onebrain_only():
     _assert_golden("compose_onebrain.yml", compose)
     services = _service_names(compose)
     assert "onebrain-migrate" in services
+    assert (
+        'command: ["python", "-m", "app.drive.malware.activation", "--migrate"]'
+        in compose
+    )
     assert "postgres-roles" in services
     assert "PGHOST=postgres exec /opt/onebrain/postgres-init.sh" in compose
     assert "      postgres-roles:\n        condition: service_completed_successfully" in compose
@@ -227,6 +231,10 @@ def test_compose_onebrain_only():
     assert "- env/onebrain-api.env" in compose
     assert "- /data:/data" in compose
     assert compose.count("- /mnt/onebrain-data/drive:/data/drive") == 2
+    assert compose.count(
+        "- /var/lib/onebrain/clamav:/var/lib/onebrain/clamav"
+    ) == 1
+    assert 'tmpfs: ["/tmp:mode=1777,size=640m"]' in compose
     assert "x-x: &x {read_only: true" in compose
     assert 'tmpfs: ["/tmp:mode=1777,size=64m", "/app/.next/cache:mode=1777,size=64m"]' in compose
     assert "edge: {ipv4_address: 172.30.0.2}" in compose
@@ -393,6 +401,10 @@ def test_env_bakes_production_boot_essentials():
         assert "ONEBRAIN_RLS_ENFORCED=true" in content
         assert "ONEBRAIN_VECTOR_STORE=pgvector" in content
         assert "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET=${ONEBRAIN_LOGIN_RATE_LIMIT_SECRET}" in content
+    assert "ONEBRAIN_DRIVE_MALWARE_SCANNER=clamav" in workers
+    assert "ONEBRAIN_DRIVE_MALWARE_WORKER_ID=worker_primary" in workers
+    assert "ONEBRAIN_DRIVE_MALWARE_SCANNER" not in api
+    assert "ONEBRAIN_DRIVE_MALWARE_WORKER_ID" not in api
     # The cookie secret (a ${VAR} ref) + Secure cookies live ONLY on onebrain-api — the worker
     # never constructs the app / signs cookies, so it neither validates nor needs the secret.
     assert "ONEBRAIN_AUTH_SECRET=${ONEBRAIN_AUTH_SECRET}" in api
@@ -628,6 +640,7 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
         "/etc/systemd/system/onebrain-drive-erasure-ledger.service",
         "/etc/systemd/system/onebrain-drive-erasure-ledger.timer",
         "/etc/systemd/system/onebrain-update.service", "/etc/systemd/system/onebrain-update.timer",
+        "/etc/tmpfiles.d/onebrain-malware.conf",
     ):
         assert required in assets
     assert "/opt/onebrain/env/onebrain-api.env" in assets
@@ -652,6 +665,10 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
     assert "base64.b85decode" in _runcmd_section(ci)
     assert "tar -xJf - -C /" in _runcmd_section(ci)
     assert "bash /opt/onebrain/onebrain-firstboot.sh" in _runcmd_section(ci)
+    assert (
+        assets["/etc/tmpfiles.d/onebrain-malware.conf"][1]
+        == "d /var/lib/onebrain/clamav 0700 10001 10001 -\n"
+    )
 
 
 def test_cloud_init_installs_volume_contract_and_safe_host_maintenance():
@@ -697,6 +714,10 @@ def test_customer_drive_volume_is_persistent_verified_and_ordered_before_docker(
     ci = render_cloud_init(_inputs(_ONEBRAIN))
     assets = _asset_entries(ci)
     first_boot = _first_boot_section(ci)
+    assert (
+        "install -d -o 10001 -g 10001 -m 0700 /var/lib/onebrain/clamav"
+        in first_boot
+    )
     setup = first_boot.index("onebrain-data-volume.sh setup")
     docker = first_boot.index("systemctl enable --now docker")
 

@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "launcher": "onebrain-scanner-sandbox",
+  "profiles": ["scan", "definitions-update"],
+  "required_clamav_options": [
+    "--official-db-only",
+    "--max-scantime",
+    "--bytecode-timeout",
+    "--alert-exceeds-max",
+    "--alert-encrypted",
+    "--max-filesize",
+    "--max-scansize",
+    "--max-files",
+    "--max-recursion"
+  ],
+  "minimum_landlock_abi": 3,
+  "scan_network": "denied-by-seccomp",
+  "filesystem": "landlock-allowlist",
+  "privileges": "no-new-privileges-non-root",
+  "definition_root": "/var/lib/onebrain/clamav",
+  "drive_root_access": "denied",
+  "runtime_negative_probes": [
+    "drive-filesystem",
+    "application-secrets",
+    "proc-environ",
+    "network-socket",
+    "io-uring"
+  ],
+  "release_evidence": [
+    "launcher-sha256",
+    "clamav-sha256",
+    "definition-manifest-sha256",
+    "capabilities-sha256",
+    "packages-sha256",
+    "shared-library-sha256",
+    "supply-chain-lock-sha256",
+    "base-image-digest",
+    "debian-snapshot-identity",
+    "definition-artifact-sha256",
+    "engine-version",
+    "database-functionality-level",
+    "supported-options"
+  ]
+}

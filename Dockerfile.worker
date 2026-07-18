@@ -1,4 +1,4 @@
-FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS definition-worker-base
+FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS worker-base
 
 COPY deploy/scanner-sandbox/worker_supply_chain.py /opt/onebrain/worker_supply_chain.py
 COPY deploy/scanner-sandbox/worker-supply-chain.lock.json /opt/onebrain/worker-supply-chain.lock.json
@@ -11,9 +11,21 @@ RUN python /opt/onebrain/worker_supply_chain.py verify-lock \
     && chmod 0444 /opt/onebrain/worker-supply-chain.lock.json
 
 
-# First-rollout publication target only. It is deliberately disconnected from
-# the pre-scanner production final stage below.
-FROM definition-worker-base AS scanner-definition-artifact-build
+FROM worker-base AS scanner-launcher-build
+
+RUN python /opt/onebrain/worker_supply_chain.py install-stage \
+        /opt/onebrain/worker-supply-chain.lock.json scanner-launcher-build
+
+COPY deploy/scanner-sandbox /tmp/scanner-sandbox
+RUN make -C /tmp/scanner-sandbox \
+    && install --owner=root --group=root --mode=0755 \
+        /tmp/scanner-sandbox/onebrain-scanner-sandbox /onebrain-scanner-sandbox
+
+
+# Explicit maintenance-only target. It is not an ancestor of worker-runtime or
+# final. Release maintainers use BuildKit --output against this named target to
+# publish a new checksum-locked baseline; production builds never run freshclam.
+FROM worker-base AS scanner-definition-artifact-build
 
 RUN python /opt/onebrain/worker_supply_chain.py install-stage \
         /opt/onebrain/worker-supply-chain.lock.json worker-runtime \
@@ -35,19 +47,32 @@ FROM scratch AS scanner-definition-artifact-bootstrap
 COPY --from=scanner-definition-artifact-build /out/ /
 
 
-# Keep the first bootstrap commit on the established pre-scanner worker graph.
-FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS final
+FROM worker-base AS worker-runtime
 
 WORKDIR /app
 
-# tesseract-ocr: OCR engine for images and scanned PDFs.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends tesseract-ocr \
-    && rm -rf /var/lib/apt/lists/* \
+# ClamAV stays worker-only. All package resolution is performed by the strict
+# snapshot helper; there is no live-repository fallback in this Dockerfile.
+RUN python /opt/onebrain/worker_supply_chain.py install-stage \
+        /opt/onebrain/worker-supply-chain.lock.json worker-runtime \
+        --inventory-output /opt/onebrain/scanner-packages.txt \
     && groupadd --system --gid 10001 onebrain \
-    && useradd --system --uid 10001 --gid onebrain --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin onebrain \
+    && useradd --system --uid 10001 --gid onebrain --home-dir /nonexistent \
+        --no-create-home --shell /usr/sbin/nologin onebrain \
     && install -d --owner=onebrain --group=onebrain --mode=0750 /data \
-    && install -d --owner=onebrain --group=onebrain --mode=0700 /tmp/onebrain
+    && install -d --owner=onebrain --group=onebrain --mode=0700 \
+        /tmp/onebrain /tmp/onebrain-scanner \
+    && install -d --owner=onebrain --group=onebrain --mode=0700 \
+        /var/lib/onebrain/clamav/sets /var/lib/onebrain/clamav/incoming \
+    && install -d --owner=root --group=root --mode=0755 \
+        /opt/onebrain/clamav-baseline /etc/onebrain
+
+COPY --from=scanner-launcher-build /onebrain-scanner-sandbox /usr/local/bin/onebrain-scanner-sandbox
+COPY --chown=root:root --chmod=0644 deploy/scanner-sandbox/freshclam.conf /etc/onebrain/freshclam.conf
+COPY --chown=root:root --chmod=0644 deploy/scanner-sandbox/capabilities.json /opt/onebrain/scanner-capabilities.json
+
+RUN chown root:root /usr/local/bin/onebrain-scanner-sandbox \
+    && chmod 0755 /usr/local/bin/onebrain-scanner-sandbox
 
 COPY requirements.txt .
 RUN pip install --require-hashes --no-cache-dir -r requirements.txt
@@ -56,12 +81,119 @@ COPY app ./app
 COPY migrations ./migrations
 COPY alembic.ini .
 
+# The production baseline is an immutable release asset. The helper streams it
+# with a size cap, verifies the locked archive and manifest digests, and safely
+# extracts only main/daily/bytecode databases. Runtime refresh remains online.
+RUN python /opt/onebrain/worker_supply_chain.py fetch-definitions \
+        /opt/onebrain/worker-supply-chain.lock.json \
+        /opt/onebrain/clamav-baseline \
+    && clamscan --help > /tmp/onebrain-clamscan-help \
+    && for option in \
+        --official-db-only --max-scantime --bytecode-timeout \
+        --alert-exceeds-max --alert-encrypted --max-filesize \
+        --max-scansize --max-files --max-recursion; do \
+        grep -Eq -- "${option}(=|\[|[[:space:],]|$)" /tmp/onebrain-clamscan-help || exit 1; \
+       done \
+    && rm -f /tmp/onebrain-clamscan-help \
+    && for database in /opt/onebrain/clamav-baseline/*.cvd \
+        /opt/onebrain/clamav-baseline/*.cld; do \
+        test ! -f "${database}" || sigtool --info "${database}" || exit 1; \
+       done \
+    && python -m app.drive.malware.definitions manifest \
+        /opt/onebrain/clamav-baseline \
+    && install -d --owner=onebrain --group=onebrain --mode=0700 \
+        /var/lib/onebrain/clamav/sets/image-baseline \
+    && cp -a /opt/onebrain/clamav-baseline/. \
+        /var/lib/onebrain/clamav/sets/image-baseline/ \
+    && python - <<'PY'
+import json
+from pathlib import Path
+
+manifest = json.loads(Path("/opt/onebrain/clamav-baseline/onebrain-definitions.json").read_text())
+manifest["identity"] = "image-baseline"
+Path("/var/lib/onebrain/clamav/sets/image-baseline/onebrain-definitions.json").write_text(
+    json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+)
+Path("/var/lib/onebrain/clamav/active.json").write_text(
+    '{"identity":"image-baseline","schema":1}\n'
+)
+PY
+RUN python /opt/onebrain/worker_supply_chain.py write-evidence \
+        /opt/onebrain/worker-supply-chain.lock.json \
+        /opt/onebrain/worker-supply-chain.json --stage worker-runtime \
+        --inventory /opt/onebrain/scanner-packages.txt \
+    && python -m app.drive.malware.definitions release-evidence \
+        /opt/onebrain/clamav-baseline \
+        --output /opt/onebrain/scanner-release.json \
+        --launcher /usr/local/bin/onebrain-scanner-sandbox \
+        --clamav-binary /usr/bin/clamscan \
+        --capabilities /opt/onebrain/scanner-capabilities.json \
+        --packages /opt/onebrain/scanner-packages.txt \
+        --supply-chain /opt/onebrain/worker-supply-chain.json \
+    && sha256sum /opt/onebrain/scanner-release.json \
+        > /opt/onebrain/scanner-release.sha256 \
+    && chown --recursive onebrain:onebrain /var/lib/onebrain/clamav \
+    && chmod -R go-rwx /var/lib/onebrain/clamav \
+    && chown --recursive root:root /opt/onebrain \
+    && find /opt/onebrain -type d -exec chmod 0555 {} + \
+    && find /opt/onebrain -type f -exec chmod 0444 {} +
+
 ENV ONEBRAIN_DATA_DIR=/data \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HOME=/tmp/onebrain \
     TMPDIR=/tmp/onebrain \
     XDG_CACHE_HOME=/tmp/onebrain/cache
+
+
+# The gate stage owns every detectable or adversarial fixture. The final image
+# copies only a harmless pass marker, so no test-malware bytes survive in a
+# production layer even when registry scanners inspect full image history.
+FROM worker-runtime AS scanner-validation
+
+USER root
+RUN python /opt/onebrain/worker_supply_chain.py install-stage \
+        /opt/onebrain/worker-supply-chain.lock.json scanner-validation
+COPY deploy/scanner-sandbox/image-smoke.sh /usr/local/bin/onebrain-scanner-image-smoke
+COPY deploy/scanner-sandbox/build-fixtures.py /usr/local/lib/onebrain-scanner-build-fixtures.py
+RUN chmod 0755 /usr/local/bin/onebrain-scanner-image-smoke \
+    && chmod 0555 /usr/local/lib/onebrain-scanner-build-fixtures.py \
+    && install -d --owner=root --group=root --mode=0555 \
+        /opt/onebrain/scanner-fixtures \
+    && printf 'encrypted archive scanner fixture\n' \
+        >/tmp/onebrain-encrypted-fixture.txt \
+    && zip -j -P onebrain /opt/onebrain/scanner-fixtures/encrypted.zip \
+        /tmp/onebrain-encrypted-fixture.txt >/dev/null \
+    && python /usr/local/lib/onebrain-scanner-build-fixtures.py \
+        /opt/onebrain/scanner-fixtures \
+    && rm -f /tmp/onebrain-encrypted-fixture.txt \
+    && find /opt/onebrain/scanner-fixtures -type d -exec chmod 0555 {} + \
+    && find /opt/onebrain/scanner-fixtures -type f -exec chmod 0444 {} +
+
+USER onebrain
+RUN /usr/local/bin/onebrain-scanner-image-smoke \
+    && printf 'scanner-image-smoke=passed\n' \
+        >/tmp/onebrain-scanner-validation-passed
+
+
+# Explicit, networked integration target for the runtime refresh profile. This
+# sibling is intentionally not an ancestor of final and is never built during
+# production image publication.
+FROM worker-runtime AS scanner-runtime-refresh-validation
+
+COPY deploy/scanner-sandbox/runtime-refresh-smoke.sh /usr/local/bin/onebrain-scanner-runtime-refresh-smoke
+USER root
+RUN chown root:root /usr/local/bin/onebrain-scanner-runtime-refresh-smoke \
+    && chmod 0755 /usr/local/bin/onebrain-scanner-runtime-refresh-smoke
+USER onebrain
+RUN /usr/local/bin/onebrain-scanner-runtime-refresh-smoke
+
+
+FROM worker-runtime AS final
+
+COPY --from=scanner-validation --chown=root:root \
+    /tmp/onebrain-scanner-validation-passed \
+    /opt/onebrain/scanner-validation-passed
 
 VOLUME ["/data"]
 USER onebrain

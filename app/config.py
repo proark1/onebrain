@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import sys
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal, Optional
 from urllib.parse import urlsplit
 
@@ -252,6 +252,37 @@ class Settings(BaseSettings):
     drive_upload_session_seconds: int = 24 * 60 * 60
     drive_max_folder_depth: int = 32
 
+    # Mandatory Drive malware boundary. Local/test composition uses the
+    # deterministic fake; production-like workers must use the native sandbox
+    # launcher and cannot configure a disabled/clean-all adapter.
+    drive_malware_scanner: str = "fake"  # fake (local/test) | clamav
+    drive_malware_sandbox_binary: str = "/usr/local/bin/onebrain-scanner-sandbox"
+    drive_malware_definition_baseline_dir: str = "/opt/onebrain/clamav-baseline"
+    drive_malware_definition_runtime_dir: str = "/var/lib/onebrain/clamav"
+    drive_malware_clamav_binary: str = "/usr/bin/clamscan"
+    drive_malware_capabilities_file: str = "/opt/onebrain/scanner-capabilities.json"
+    drive_malware_release_evidence_file: str = "/opt/onebrain/scanner-release.json"
+    drive_malware_packages_file: str = "/opt/onebrain/scanner-packages.txt"
+    drive_malware_scan_timeout_seconds: float = 60.0
+    drive_malware_max_scan_time_ms: int = 45_000
+    drive_malware_bytecode_timeout_ms: int = 5_000
+    drive_malware_output_limit_bytes: int = 64 * 1024
+    drive_malware_max_source_bytes: int = 50 * 1024 * 1024
+    drive_malware_max_scan_bytes: int = 512 * 1024 * 1024
+    drive_malware_max_file_bytes: int = 100 * 1024 * 1024
+    drive_malware_max_archive_files: int = 10_000
+    drive_malware_max_archive_recursion: int = 16
+    drive_malware_definition_refresh_seconds: int = 6 * 60 * 60
+    drive_malware_definition_max_age_seconds: int = 72 * 60 * 60
+    drive_malware_definition_retain_inactive_sets: int = 2
+    drive_malware_definition_prune_grace_seconds: int = 10 * 60
+    drive_malware_retry_attempts: int = 5
+    drive_malware_retry_cooldown_seconds: int = 15 * 60
+    drive_malware_retry_max_cooldown_seconds: int = 6 * 60 * 60
+    drive_malware_quarantine_bytes: int = 5 * 1024 * 1024 * 1024
+    drive_malware_runtime_stale_seconds: int = 3 * 60
+    drive_malware_worker_id: str = "worker_primary"
+
     # Product UI handoff. FastAPI is API-first; Next.js owns the browser
     # console. The old static UI is available only when explicitly enabled.
     admin_ui_url: str = ""
@@ -457,6 +488,101 @@ class Settings(BaseSettings):
     @property
     def is_production_like(self) -> bool:
         return self.environment.strip().lower() in {"prod", "production", "staging"}
+
+    def assert_drive_malware_scanner_configured(self) -> None:
+        """Validate the replaceable scanner without weakening the boundary.
+
+        This check is intentionally callable by worker composition/preflight,
+        rather than at ``Settings`` construction, so the API image can remain
+        independent from native scanner files. The scanner factory calls it as
+        well, making an unknown or production fake adapter fail closed.
+        """
+
+        adapter = self.drive_malware_scanner.strip().lower()
+        errors: list[str] = []
+        if adapter not in {"fake", "clamav"}:
+            errors.append("ONEBRAIN_DRIVE_MALWARE_SCANNER must be clamav (or fake for local tests)")
+        if self.is_production_like and adapter != "clamav":
+            errors.append("production-like deployments require ONEBRAIN_DRIVE_MALWARE_SCANNER=clamav")
+
+        positive_values = (
+            ("ONEBRAIN_DRIVE_MALWARE_SCAN_TIMEOUT_SECONDS", self.drive_malware_scan_timeout_seconds),
+            ("ONEBRAIN_DRIVE_MALWARE_MAX_SCAN_TIME_MS", self.drive_malware_max_scan_time_ms),
+            ("ONEBRAIN_DRIVE_MALWARE_BYTECODE_TIMEOUT_MS", self.drive_malware_bytecode_timeout_ms),
+            ("ONEBRAIN_DRIVE_MALWARE_OUTPUT_LIMIT_BYTES", self.drive_malware_output_limit_bytes),
+            ("ONEBRAIN_DRIVE_MALWARE_MAX_SOURCE_BYTES", self.drive_malware_max_source_bytes),
+            ("ONEBRAIN_DRIVE_MALWARE_MAX_SCAN_BYTES", self.drive_malware_max_scan_bytes),
+            ("ONEBRAIN_DRIVE_MALWARE_MAX_FILE_BYTES", self.drive_malware_max_file_bytes),
+            ("ONEBRAIN_DRIVE_MALWARE_MAX_ARCHIVE_FILES", self.drive_malware_max_archive_files),
+            ("ONEBRAIN_DRIVE_MALWARE_MAX_ARCHIVE_RECURSION", self.drive_malware_max_archive_recursion),
+            ("ONEBRAIN_DRIVE_MALWARE_DEFINITION_REFRESH_SECONDS", self.drive_malware_definition_refresh_seconds),
+            ("ONEBRAIN_DRIVE_MALWARE_DEFINITION_MAX_AGE_SECONDS", self.drive_malware_definition_max_age_seconds),
+            (
+                "ONEBRAIN_DRIVE_MALWARE_DEFINITION_RETAIN_INACTIVE_SETS",
+                self.drive_malware_definition_retain_inactive_sets,
+            ),
+            (
+                "ONEBRAIN_DRIVE_MALWARE_DEFINITION_PRUNE_GRACE_SECONDS",
+                self.drive_malware_definition_prune_grace_seconds,
+            ),
+            ("ONEBRAIN_DRIVE_MALWARE_RETRY_ATTEMPTS", self.drive_malware_retry_attempts),
+            ("ONEBRAIN_DRIVE_MALWARE_RETRY_COOLDOWN_SECONDS", self.drive_malware_retry_cooldown_seconds),
+            ("ONEBRAIN_DRIVE_MALWARE_RETRY_MAX_COOLDOWN_SECONDS", self.drive_malware_retry_max_cooldown_seconds),
+            ("ONEBRAIN_DRIVE_MALWARE_QUARANTINE_BYTES", self.drive_malware_quarantine_bytes),
+            ("ONEBRAIN_DRIVE_MALWARE_RUNTIME_STALE_SECONDS", self.drive_malware_runtime_stale_seconds),
+        )
+        errors.extend(f"{name} must be positive" for name, value in positive_values if value <= 0)
+        if self.drive_malware_max_source_bytes < self.drive_max_file_bytes:
+            errors.append("ONEBRAIN_DRIVE_MALWARE_MAX_SOURCE_BYTES must cover DRIVE_MAX_FILE_BYTES")
+        if self.drive_malware_max_source_bytes > self.drive_malware_max_file_bytes:
+            errors.append("ONEBRAIN_DRIVE_MALWARE_MAX_SOURCE_BYTES cannot exceed MAX_FILE_BYTES")
+        if self.drive_malware_max_file_bytes > self.drive_malware_max_scan_bytes:
+            errors.append("ONEBRAIN_DRIVE_MALWARE_MAX_FILE_BYTES cannot exceed MAX_SCAN_BYTES")
+        upper_bounds = (
+            ("ONEBRAIN_DRIVE_MALWARE_OUTPUT_LIMIT_BYTES", self.drive_malware_output_limit_bytes, 1024 * 1024),
+            ("ONEBRAIN_DRIVE_MALWARE_MAX_SCAN_BYTES", self.drive_malware_max_scan_bytes, 512 * 1024 * 1024),
+            ("ONEBRAIN_DRIVE_MALWARE_MAX_FILE_BYTES", self.drive_malware_max_file_bytes, 100 * 1024 * 1024),
+            ("ONEBRAIN_DRIVE_MALWARE_MAX_ARCHIVE_FILES", self.drive_malware_max_archive_files, 10_000),
+            ("ONEBRAIN_DRIVE_MALWARE_MAX_ARCHIVE_RECURSION", self.drive_malware_max_archive_recursion, 16),
+            ("ONEBRAIN_DRIVE_MALWARE_SCAN_TIMEOUT_SECONDS", self.drive_malware_scan_timeout_seconds, 5 * 60),
+            ("ONEBRAIN_DRIVE_MALWARE_MAX_SCAN_TIME_MS", self.drive_malware_max_scan_time_ms, 90 * 1000),
+            ("ONEBRAIN_DRIVE_MALWARE_BYTECODE_TIMEOUT_MS", self.drive_malware_bytecode_timeout_ms, 30 * 1000),
+            ("ONEBRAIN_DRIVE_MALWARE_RETRY_ATTEMPTS", self.drive_malware_retry_attempts, 10),
+            (
+                "ONEBRAIN_DRIVE_MALWARE_DEFINITION_RETAIN_INACTIVE_SETS",
+                self.drive_malware_definition_retain_inactive_sets,
+                10,
+            ),
+        )
+        errors.extend(
+            f"{name} exceeds the packaged scanner sandbox ceiling"
+            for name, value, maximum in upper_bounds
+            if value > maximum
+        )
+        if self.drive_malware_retry_max_cooldown_seconds < self.drive_malware_retry_cooldown_seconds:
+            errors.append("ONEBRAIN_DRIVE_MALWARE_RETRY_MAX_COOLDOWN_SECONDS cannot be below the initial cooldown")
+        if self.drive_malware_definition_refresh_seconds > self.drive_malware_definition_max_age_seconds:
+            errors.append("definition refresh interval cannot exceed the maximum definition age")
+        if self.drive_malware_max_scan_time_ms >= int(self.drive_malware_scan_timeout_seconds * 1000):
+            errors.append("ClamAV max scan time must be below the outer process timeout")
+        if self.drive_malware_bytecode_timeout_ms > self.drive_malware_max_scan_time_ms:
+            errors.append("ClamAV bytecode timeout cannot exceed max scan time")
+        if self.drive_malware_definition_prune_grace_seconds <= self.drive_malware_scan_timeout_seconds:
+            errors.append("definition prune grace must exceed the outer scanner timeout")
+        if self.is_production_like:
+            for name, value in (
+                ("ONEBRAIN_DRIVE_MALWARE_SANDBOX_BINARY", self.drive_malware_sandbox_binary),
+                ("ONEBRAIN_DRIVE_MALWARE_DEFINITION_BASELINE_DIR", self.drive_malware_definition_baseline_dir),
+                ("ONEBRAIN_DRIVE_MALWARE_DEFINITION_RUNTIME_DIR", self.drive_malware_definition_runtime_dir),
+                ("ONEBRAIN_DRIVE_MALWARE_CLAMAV_BINARY", self.drive_malware_clamav_binary),
+                ("ONEBRAIN_DRIVE_MALWARE_CAPABILITIES_FILE", self.drive_malware_capabilities_file),
+                ("ONEBRAIN_DRIVE_MALWARE_RELEASE_EVIDENCE_FILE", self.drive_malware_release_evidence_file),
+                ("ONEBRAIN_DRIVE_MALWARE_PACKAGES_FILE", self.drive_malware_packages_file),
+            ):
+                if not PurePosixPath(value.strip()).is_absolute():
+                    errors.append(f"{name} must be an absolute path in production")
+        if errors:
+            raise RuntimeError("Drive malware scanner configuration is unsafe: " + "; ".join(errors))
 
     def assert_production_mission_control_ready(self) -> None:
         """Fail closed when a production-like Mission Control is incomplete.

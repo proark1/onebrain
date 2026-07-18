@@ -8,6 +8,7 @@ production stack is a config change here, not a rewrite elsewhere.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from app.config import get_settings
 from app.conversations.factory import build_conversation_store
@@ -18,6 +19,9 @@ from app.intake.pipeline import IntakePipeline
 from app.llm.factory import build_llm
 from app.retrieval.service import RetrievalService
 from app.store.factory import build_store
+
+if TYPE_CHECKING:
+    from app.drive.base import DriveMalwareWorkerStore, DriveStore
 
 
 @lru_cache
@@ -168,10 +172,29 @@ def get_kpi_store():
 
 
 @lru_cache
-def get_drive_store():
+def get_drive_store() -> DriveStore:
     from app.drive.factory import build_drive_store
 
     return build_drive_store(get_settings(), get_store(), dim=get_embedder().dim)
+
+
+@lru_cache
+def get_drive_worker_store() -> DriveMalwareWorkerStore:
+    """Build Drive persistence with the separate worker capability attached.
+
+    The API-facing singleton above never receives the worker DSN. This keeps
+    fenced malware evidence transitions unavailable to request handlers even
+    when API and worker modules are packaged in the same Core image.
+    """
+    from app.drive.factory import build_drive_worker_store
+
+    settings = get_settings()
+    return build_drive_worker_store(
+        settings,
+        get_store(),
+        dim=get_embedder().dim,
+        worker_dsn=settings.pg_worker_database_url,
+    )
 
 
 @lru_cache
@@ -179,6 +202,28 @@ def get_drive_blob_store():
     from app.drive.factory import build_drive_blob_store
 
     return build_drive_blob_store(get_settings())
+
+
+@lru_cache
+def get_drive_malware_scanner():
+    from app.drive.malware.factory import build_drive_malware_scanner
+
+    return build_drive_malware_scanner(get_settings())
+
+
+@lru_cache
+def get_drive_malware_scanning_service():
+    from app.drive.scanning import DriveMalwareScanningService
+
+    return DriveMalwareScanningService(
+        store=get_drive_worker_store(),
+        blobs=get_drive_blob_store(),
+        scanner=get_drive_malware_scanner(),
+        job_store=get_job_store(),
+        platform_store=get_platform_store(),
+        settings=get_settings(),
+        worker_id=get_settings().drive_malware_worker_id,
+    )
 
 
 @lru_cache

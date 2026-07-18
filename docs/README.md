@@ -33,6 +33,7 @@ production and customer-deployment model is Hetzner-only.
 - [KPI Dashboard](kpi-dashboard.md)
 - [AI Employees](ai-employees.md)
 - [Deletion, retention, and tombstones](deletion-tombstone-contract.md)
+- [Drive malware quarantine operations](drive-malware-operations.md)
 
 ## Reference and transition material
 

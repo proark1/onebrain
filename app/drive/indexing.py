@@ -6,7 +6,8 @@ import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from app.drive.base import DriveGenerationConflict
+from app.drive.base import DriveGenerationConflict, is_clean_attestation
+from app.drive.blobs import blob_matches_revision
 from app.ingest.chunk import chunk_text
 from app.ingest.extract import UnsupportedDocumentError, extract_text_isolated
 from app.security.pii import scan_pii
@@ -41,11 +42,27 @@ def handle_drive_index_job(job) -> dict:
     revision = store.get_revision(revision_id, account_id=job.account_id, space_id=job.space_id)
     if not revision or revision.file_id != file.id:
         raise ValueError("Drive indexing revision is missing.")
+    scan = store.get_authoritative_malware_scan(
+        revision.id, account_id=job.account_id, space_id=job.space_id,
+    )
+    if not is_clean_attestation(revision, scan):
+        # A forged, premature, or old-policy ingestion job must be a harmless
+        # no-op before the worker opens even one byte of the original.
+        return {
+            "status": "quarantined",
+            "file_id": file.id,
+            "generation": file.generation,
+            "malware_status": scan.status if scan else "rescan_required",
+        }
 
     file = _set_state(store, file, "extracting")
     blob = get_drive_blob_store()
     info = blob.stat(revision.storage_key)
-    if not info or info.sha256 != revision.sha256 or info.size_bytes != revision.size_bytes:
+    if not blob_matches_revision(
+        info,
+        size_bytes=revision.size_bytes,
+        sha256=revision.sha256,
+    ):
         raise ValueError("Drive original is missing or does not match its revision.")
     data = b"".join(blob.iter_range(revision.storage_key))
     try:
