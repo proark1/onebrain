@@ -18,6 +18,8 @@ passes only once every essential is baked.
 
 from __future__ import annotations
 
+from urllib.parse import unquote, urlsplit
+
 from app.config import Settings
 from app.controlplane.desired_state import active_signer_in_served_set
 from app.deploy.runtime import is_postgres_mode, validate_runtime_safety
@@ -85,7 +87,7 @@ def test_mc_box_env_satisfies_onebrain_api_boot_requirements():
 
 # --- customer box ------------------------------------------------------------
 
-def _customer_boot_settings():
+def _customer_boot_settings(*, bundle_overrides: dict | None = None):
     control = _control()
     prov = MemoryProvisioningRunStore()
     fleet = MemoryFleetStore()
@@ -99,6 +101,8 @@ def _customer_boot_settings():
     # /bootstrap, whose body is render_dotenv(stored bundle).
     api_env = extract_cloud_init_file(fake.servers[0].user_data, "/opt/onebrain/env/onebrain-api.env")
     bundle = _open_bundle(prov, settings, "dep_a")
+    if bundle_overrides:
+        bundle.update(bundle_overrides)
     return resolve_box_api_settings(api_env, render_dotenv(bundle)), bundle
 
 
@@ -112,3 +116,14 @@ def test_customer_box_env_satisfies_onebrain_api_boot_requirements():
     assert len(settings.login_rate_limit_secret) == 64
     # A customer box is NEVER Mission Control (no operator overlay).
     assert settings.operator_mode is False
+
+
+def test_customer_connection_url_encodes_legacy_reserved_password_characters():
+    raw = "legacy@password:/?[]+=%"
+    settings, _ = _customer_boot_settings(bundle_overrides={"POSTGRES_APP_PASSWORD": raw})
+
+    parsed = urlsplit(settings.database_url)
+    assert parsed.username == "onebrain_app"
+    assert parsed.hostname == "postgres"
+    assert parsed.path == "/onebrain"
+    assert unquote(parsed.password or "") == raw

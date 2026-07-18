@@ -461,6 +461,26 @@ def test_migration_crossing_fence_mismatch_restores_previous_stack(box):
 
 
 # --- smoke-fail recovery -----------------------------------------------------
+def test_smoke_wait_retries_transient_candidate_health_failure(box):
+    # Candidate services can need a moment after compose reports them started.
+    # A single failed probe must not roll back if the bounded retry succeeds.
+    box_env = box.root / "box.env"
+    box_env.write_text(
+        box_env.read_text(encoding="utf-8").replace(
+            "UPDATE_RECOVERY_HEALTH_ATTEMPTS=1", "UPDATE_RECOVERY_HEALTH_ATTEMPTS=2"
+        ),
+        encoding="utf-8",
+    )
+    box.set_serve(signed_serve(rollback_kind="code_only"))
+    box.touch("smoke_fail_once")
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "succeeded"
+    assert box.stub_log().count("curl -sf http://127.0.0.1/health") == 2
+
+
 def test_smoke_fail_code_only_rolls_back(box):
     box.set_serve(signed_serve(rollback_kind="code_only", migration_from="0020", migration_to="0020"))
     box.touch("smoke_fail_once")
@@ -1046,6 +1066,31 @@ def test_update_literal_dotenv_is_not_evaluated_and_box_refs_expand(box):
     assert not marker.exists()
     assert box.state()["outcome"] == "succeeded"
     assert f"Authorization: Bearer {literal}" in box.stub_log()
+
+
+def test_update_accepts_crlf_dotenv_with_blank_lines(box):
+    # Existing boxes may retain a Windows-authored dotenv.  The literal loader
+    # must normalize only CRLF terminators, skip blank lines, and leave values
+    # unevaluated before box.env expands the fleet key reference.
+    literal = "fk_crlf_compatible"
+    (box.root / ".env").write_bytes(
+        b"\r\nONEBRAIN_FLEET_KEY=" + literal.encode("ascii") + b"\r\n\r\n"
+    )
+    box_env = box.root / "box.env"
+    box_env.write_text(
+        box_env.read_text(encoding="utf-8").replace(
+            "ONEBRAIN_FLEET_KEY=fk_test", "ONEBRAIN_FLEET_KEY=${ONEBRAIN_FLEET_KEY}"
+        ),
+        encoding="utf-8",
+    )
+    box.set_serve(signed_serve())
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "succeeded"
+    assert f"Authorization: Bearer {literal}" in box.stub_log()
+    assert "\r" not in box.stub_log()
 
 
 def test_bootstrap_rotation_loads_existing_dotenv_literally(box):

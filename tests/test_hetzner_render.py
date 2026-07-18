@@ -343,8 +343,9 @@ def test_env_files_are_per_service_and_cover_requirements():
                     assert value == "${" + key + "}", f"{key} is not a ${{VAR}} ref: {line!r}"
             if key in ("ONEBRAIN_DATABASE_URL", "DATABASE_URL", "ONEBRAIN_WORKER_DATABASE_URL"):
                 assert "${POSTGRES_" in value             # password is a ref, never plaintext
+                assert "_URLENCODED}" in value             # URL component is safely encoded at dotenv render time
             if key == "REDIS_URL":
-                assert "${REDIS_PASSWORD}" in value
+                assert "${REDIS_PASSWORD_URLENCODED}" in value
 
 
 def test_shared_communication_image_services_receive_explicit_selectors():
@@ -377,6 +378,7 @@ def test_env_bakes_production_boot_essentials():
         assert "ONEBRAIN_ENVIRONMENT=production" in content
         assert "ONEBRAIN_RLS_ENFORCED=true" in content
         assert "ONEBRAIN_VECTOR_STORE=pgvector" in content
+        assert "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET=${ONEBRAIN_LOGIN_RATE_LIMIT_SECRET}" in content
     # The cookie secret (a ${VAR} ref) + Secure cookies live ONLY on onebrain-api — the worker
     # never constructs the app / signs cookies, so it neither validates nor needs the secret.
     assert "ONEBRAIN_AUTH_SECRET=${ONEBRAIN_AUTH_SECRET}" in api
@@ -386,13 +388,12 @@ def test_env_bakes_production_boot_essentials():
     assert "ONEBRAIN_TRUSTED_PROXY_HOPS=1" in api
     assert "ONEBRAIN_POSTGRES_APP_ROLE=onebrain_app" in api
     assert "ONEBRAIN_POSTGRES_WORKER_ROLE=onebrain_worker" in api
-    assert "postgresql://onebrain_app:${POSTGRES_APP_PASSWORD}@postgres:5432/onebrain" in api
+    assert "postgresql://onebrain_app:${POSTGRES_APP_PASSWORD_URLENCODED}@postgres:5432/onebrain" in api
     assert "ONEBRAIN_WORKER_DATABASE_URL" not in api
-    assert "ONEBRAIN_WORKER_DATABASE_URL=postgresql://onebrain_worker:${POSTGRES_WORKER_PASSWORD}@postgres:5432/onebrain" in workers
-    assert "postgresql://assistant_app:${POSTGRES_ASSISTANT_PASSWORD}@postgres:5432/assistant" in env["env/assistant-service.env"]
-    assert "postgresql://communication_app:${POSTGRES_COMMUNICATION_PASSWORD}@postgres:5432/communication" in env["env/communication-api.env"]
+    assert "ONEBRAIN_WORKER_DATABASE_URL=postgresql://onebrain_worker:${POSTGRES_WORKER_PASSWORD_URLENCODED}@postgres:5432/onebrain" in workers
+    assert "postgresql://assistant_app:${POSTGRES_ASSISTANT_PASSWORD_URLENCODED}@postgres:5432/assistant" in env["env/assistant-service.env"]
+    assert "postgresql://communication_app:${POSTGRES_COMMUNICATION_PASSWORD_URLENCODED}@postgres:5432/communication" in env["env/communication-api.env"]
     assert "ONEBRAIN_AUTH_SECRET" not in workers
-    assert "ONEBRAIN_LOGIN_RATE_LIMIT_SECRET" not in workers
     assert "ONEBRAIN_COOKIE_SECURE" not in workers
 
 
@@ -402,19 +403,19 @@ def test_per_product_databases_are_distinct():
     assert "@postgres:5432/assistant" in env["env/assistant-service.env"]
     assert "@postgres:5432/communication" in env["env/communication-api.env"]
     # the two independent alembic lineages target DISTINCT databases (no shared alembic_version)
-    ob_db = "postgresql://onebrain:${POSTGRES_PASSWORD}@postgres:5432/onebrain"
-    as_db = "postgresql://onebrain:${POSTGRES_PASSWORD}@postgres:5432/assistant"
+    ob_db = "postgresql://onebrain:${POSTGRES_PASSWORD_URLENCODED}@postgres:5432/onebrain"
+    as_db = "postgresql://onebrain:${POSTGRES_PASSWORD_URLENCODED}@postgres:5432/assistant"
     assert ob_db in env["env/onebrain-migrate.env"]
     assert as_db in env["env/assistant-migrate.env"]
     assert ob_db != as_db
-    assert "ONEBRAIN_DATABASE_URL=postgresql://onebrain_app:${POSTGRES_APP_PASSWORD}@postgres:5432/onebrain" in env["env/onebrain-api.env"]
+    assert "ONEBRAIN_DATABASE_URL=postgresql://onebrain_app:${POSTGRES_APP_PASSWORD_URLENCODED}@postgres:5432/onebrain" in env["env/onebrain-api.env"]
     assert "ONEBRAIN_PROCESS=worker" in env["env/onebrain-workers.env"]
-    assert "ONEBRAIN_WORKER_DATABASE_URL=postgresql://onebrain_worker:${POSTGRES_WORKER_PASSWORD}@postgres:5432/onebrain" in env["env/onebrain-workers.env"]
+    assert "ONEBRAIN_WORKER_DATABASE_URL=postgresql://onebrain_worker:${POSTGRES_WORKER_PASSWORD_URLENCODED}@postgres:5432/onebrain" in env["env/onebrain-workers.env"]
     # Runtime services never receive the product owner's global credential;
     # the owner DSNs remain only in their one-shot migration environments.
     for name in ("env/assistant-service.env", "env/communication-api.env",
                  "env/communication-workers.env", "env/communication-voice.env"):
-        assert "postgresql://onebrain:${POSTGRES_PASSWORD}" not in env[name]
+        assert "postgresql://onebrain:${POSTGRES_PASSWORD_URLENCODED}" not in env[name]
     # the createdb names equal the Phase-6 pg_restore targets
     from app.provisioning.hetzner import render as R
     init = R._read_box_file("postgres-init.sh")
@@ -440,7 +441,7 @@ def test_render_operator_overlay():
     assert "ONEBRAIN_IS_OPERATOR_SURFACE=true" in op
     assert "ONEBRAIN_FLEET_PUBLIC_URL=https://mc.example.com" in op   # MC's own public URL
     assert "ONEBRAIN_FLEET_URL=https://mc.example.com" in op        # self-pointing (caller sets the URL)
-    assert "ONEBRAIN_OPERATOR_DATABASE_URL=postgresql://onebrain:${POSTGRES_PASSWORD}@postgres:5432/onebrain" in op
+    assert "ONEBRAIN_OPERATOR_DATABASE_URL=postgresql://onebrain:${POSTGRES_PASSWORD_URLENCODED}@postgres:5432/onebrain" in op
     assert "ONEBRAIN_PROVISIONING_CALLBACK_ALLOWED_HOSTS=" in op
     assert "ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY=${ONEBRAIN_FLEET_DESIRED_STATE_PRIVATE_KEY}" in op
     # G1-1: the box's OWN accepted wrapper-key set, or its startup assertion bricks it.
@@ -502,6 +503,23 @@ def test_box_env_bakes_backup_config_when_enabled():
     # the two S3 credentials are ${VAR} refs — NEVER literal secrets baked into box.env
     assert "ONEBRAIN_BACKUP_S3_ACCESS_KEY=${ONEBRAIN_BACKUP_S3_ACCESS_KEY}" in be
     assert "ONEBRAIN_BACKUP_S3_SECRET_KEY=${ONEBRAIN_BACKUP_S3_SECRET_KEY}" in be
+
+
+@pytest.mark.parametrize(
+    ("fqdn", "expected_health_url"),
+    [
+        ("dep_a.fleet.example", "https://dep_a.fleet.example/health"),
+        ("", "http://127.0.0.1/health"),
+    ],
+)
+def test_box_health_probes_follow_fqdn_when_tls_is_enabled(fqdn, expected_health_url):
+    """The updater and first-boot smoke probe the same reachable endpoint."""
+    from app.provisioning.hetzner.render import _box_env
+
+    inp = _inputs(_ONEBRAIN, fqdn=fqdn)
+
+    assert f"UPDATE_HEALTH_URL={expected_health_url}" in _box_env(inp)
+    assert f"curl -sf {expected_health_url}" in _first_boot_section(render_cloud_init(inp))
 
 
 def test_enabled_product_dbs_tracks_products():

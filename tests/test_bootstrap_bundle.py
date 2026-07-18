@@ -8,6 +8,7 @@ from app.fleet.bootstrap_bundle import (
     REQUIRED_KEYS,
     RUNTIME_BUNDLE_BACKFILL_KEYS,
     RUNTIME_DB_PASSWORD_KEYS,
+    URLENCODED_SECRET_ALIASES,
     backfill_runtime_db_passwords,
     render_dotenv,
     validate_bundle,
@@ -47,6 +48,7 @@ def test_callback_token_is_never_a_bundle_key():
     # G1-7: the callback token stays baked in box.env, NEVER in the exchange bundle.
     assert "ONEBRAIN_PROVISIONING_CALLBACK_TOKEN" not in BUNDLE_KEYS
     assert "ONEBRAIN_BOOTSTRAP_TOKEN" not in BUNDLE_KEYS
+    assert all(alias not in BUNDLE_KEYS for _, alias in URLENCODED_SECRET_ALIASES)
 
 
 def test_required_and_optional_partition_bundle_keys():
@@ -65,8 +67,12 @@ def test_render_dotenv_emits_only_present_keys_in_canonical_order_lf():
     # LF only, no CR.
     assert "\r" not in dotenv
     lines = dotenv.splitlines()
-    # Every bundle key present -> one line each, in BUNDLE_KEYS order.
-    assert [line.split("=", 1)[0] for line in lines] == list(BUNDLE_KEYS)
+    # Every bundle key is followed by its derived URL-safe connection-secret
+    # aliases.  The aliases are not persisted bundle keys.
+    assert [line.split("=", 1)[0] for line in lines] == [
+        *BUNDLE_KEYS,
+        *(alias for _, alias in URLENCODED_SECRET_ALIASES),
+    ]
     assert "POSTGRES_PASSWORD=pg-secret" in lines
     assert "UPDATE_DESIRED_STATE_PUBLIC_KEYS=pub1,pub2" in lines
     # Present-but-empty keys are emitted as bare KEY= (no quoting).
@@ -78,13 +84,37 @@ def test_render_dotenv_emits_only_present_keys_in_canonical_order_lf():
 def test_render_dotenv_skips_absent_keys_and_ignores_extras():
     bundle = {"POSTGRES_PASSWORD": "x", "REDIS_PASSWORD": "y", "NOT_A_BUNDLE_KEY": "z"}
     dotenv = render_dotenv(bundle)
-    assert dotenv == "POSTGRES_PASSWORD=x\nREDIS_PASSWORD=y\n"
+    assert dotenv == (
+        "POSTGRES_PASSWORD=x\n"
+        "REDIS_PASSWORD=y\n"
+        "POSTGRES_PASSWORD_URLENCODED=x\n"
+        "REDIS_PASSWORD_URLENCODED=y\n"
+    )
     assert "NOT_A_BUNDLE_KEY" not in dotenv
 
 
 def test_render_dotenv_does_not_quote_secret_values():
     dotenv = render_dotenv(_full_bundle(POSTGRES_PASSWORD="a b/c=+d"))
     assert "POSTGRES_PASSWORD=a b/c=+d\n" in dotenv
+
+
+def test_render_dotenv_derives_urlencoded_connection_password_aliases():
+    raw = "p@ss:/?[]+=%"
+    dotenv = render_dotenv(_full_bundle(
+        POSTGRES_PASSWORD=raw,
+        POSTGRES_APP_PASSWORD=raw,
+        POSTGRES_WORKER_PASSWORD=raw,
+        POSTGRES_ASSISTANT_PASSWORD=raw,
+        POSTGRES_COMMUNICATION_PASSWORD=raw,
+        REDIS_PASSWORD=raw,
+    ))
+    encoded = "p%40ss%3A%2F%3F%5B%5D%2B%3D%25"
+
+    # Init services receive raw values, while URL consumers receive aliases
+    # derived from precisely the same values.
+    for source, alias in URLENCODED_SECRET_ALIASES:
+        assert f"{source}={raw}\n" in dotenv
+        assert f"{alias}={encoded}\n" in dotenv
 
 
 def test_validate_bundle_accepts_full_bundle_with_empty_optionals():

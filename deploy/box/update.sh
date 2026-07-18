@@ -800,7 +800,10 @@ if [ "$MIG_FROM" != "$MIG_TO" ]; then
 fi
 
 # --- 7. SMOKE + recover by rollback_kind ------------------------------------
-if ! "$CURL" -sf "$UPDATE_HEALTH_URL" >/dev/null 2>>"$LOG"; then
+# A just-started candidate can briefly be unavailable while its dependencies
+# settle.  Use the same bounded health wait as recovery so that a transient
+# failure does not needlessly roll back an otherwise healthy release.
+if ! wait_for_health; then
   recover_failed_candidate "$MIGRATION_REACHED" "smoke FAILED (rollback_kind=$ROLLBACK_KIND)"
   exit 0
 fi

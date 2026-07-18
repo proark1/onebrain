@@ -18,6 +18,7 @@ from __future__ import annotations
 import secrets
 from collections.abc import Callable
 from typing import Dict, List
+from urllib.parse import quote
 
 # Canonical bundle key order. render_dotenv emits keys in THIS order.
 BUNDLE_KEYS = (
@@ -56,6 +57,21 @@ BUNDLE_KEYS = (
 # It stays baked in user-data (box.env) so the cloud-init metadata-egress-block FAILURE
 # callback (fail_cb) can authenticate BEFORE the bundle exchange has run. It is
 # short-lived and used only during the provisioning/smoke window. See P5-03.
+
+# PostgreSQL and Redis initialization consume their raw passwords.  Their URL
+# clients, however, require the password component to be percent-encoded when
+# a legacy secret contains a URI-reserved character such as ``@`` or ``/``.
+# These aliases are derived only while rendering the root-only box dotenv; they
+# are deliberately not persisted as bundle keys, so the raw secret remains the
+# single source of truth and a stale encoded copy cannot be supplied separately.
+URLENCODED_SECRET_ALIASES = (
+    ("POSTGRES_PASSWORD", "POSTGRES_PASSWORD_URLENCODED"),
+    ("POSTGRES_APP_PASSWORD", "POSTGRES_APP_PASSWORD_URLENCODED"),
+    ("POSTGRES_WORKER_PASSWORD", "POSTGRES_WORKER_PASSWORD_URLENCODED"),
+    ("POSTGRES_ASSISTANT_PASSWORD", "POSTGRES_ASSISTANT_PASSWORD_URLENCODED"),
+    ("POSTGRES_COMMUNICATION_PASSWORD", "POSTGRES_COMMUNICATION_PASSWORD_URLENCODED"),
+    ("REDIS_PASSWORD", "REDIS_PASSWORD_URLENCODED"),
+)
 
 # Keys without which a fresh box cannot come up — a bundle missing/empty on any of
 # these must fail closed (dispatch_failed), never provision a box that can't boot.
@@ -136,9 +152,16 @@ def backfill_runtime_db_passwords(
 def render_dotenv(bundle: Dict[str, str]) -> str:
     """The ``/opt/onebrain/.env`` body: ``KEY=value`` lines for the keys PRESENT in
     the bundle, in canonical BUNDLE_KEYS order, LF-terminated, no quoting of secret
-    values (compose interpolates ``${VAR}`` from this file verbatim). Keys absent
+    values (compose interpolates ``${VAR}`` from this file verbatim). It appends
+    derived percent-encoded aliases for DB/Redis URL password components while
+    preserving the raw password values for service initialization. Keys absent
     from the bundle are skipped; extra keys not in BUNDLE_KEYS are ignored."""
     lines = [f"{key}={bundle[key]}" for key in BUNDLE_KEYS if key in bundle]
+    lines.extend(
+        f"{alias}={quote(str(bundle[source]), safe='')}"
+        for source, alias in URLENCODED_SECRET_ALIASES
+        if source in bundle
+    )
     return "".join(f"{line}\n" for line in lines)
 
 

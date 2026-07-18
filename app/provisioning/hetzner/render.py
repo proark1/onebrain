@@ -315,16 +315,32 @@ def _migrate_included(inp: BoxRenderInputs, product: str) -> bool:
     return base in inp.enabled_modules
 
 
+def _urlencoded_secret_ref(password_env: str) -> str:
+    """Return the derived dotenv alias used for a password inside a URI.
+
+    The raw variables remain in the infra env files for ``postgres-init.sh`` and
+    Redis itself.  ``render_dotenv`` derives these aliases from the same raw
+    values, so a reserved character cannot change the URL's authority/path.
+    """
+    return f"{password_env}_URLENCODED"
+
+
 def _db_url(product: str) -> str:
-    return f"postgresql://{_PG_USER}:${{POSTGRES_PASSWORD}}@postgres:5432/{_DB_OF[product]}"
+    return (
+        f"postgresql://{_PG_USER}:${{{_urlencoded_secret_ref('POSTGRES_PASSWORD')}}}"
+        f"@postgres:5432/{_DB_OF[product]}"
+    )
 
 
 def _role_db_url(role: str, password_env: str, product: str = "onebrain") -> str:
-    return f"postgresql://{role}:${{{password_env}}}@postgres:5432/{_DB_OF[product]}"
+    return (
+        f"postgresql://{role}:${{{_urlencoded_secret_ref(password_env)}}}"
+        f"@postgres:5432/{_DB_OF[product]}"
+    )
 
 
-def _redis_url() -> str:
-    return "redis://:${REDIS_PASSWORD}@redis:6379"
+def _redis_url(password_env: str = "REDIS_PASSWORD") -> str:
+    return f"redis://:${{{_urlencoded_secret_ref(password_env)}}}@redis:6379"
 
 
 def _needs_redis(module_id: str) -> bool:
@@ -599,7 +615,12 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
                   # for a multi-tenant customer box (and required once production-like). Fixed
                   # literals (not per-box secrets), so they live in the render, not the bundle.
                   ("ONEBRAIN_ENVIRONMENT", "production"),
-                  ("ONEBRAIN_RLS_ENFORCED", "true")]
+                  ("ONEBRAIN_RLS_ENFORCED", "true"),
+                  # Both the API and worker construct production-like settings.
+                  # The worker does not sign cookies, but it must receive this
+                  # dedicated HMAC secret to pass the same runtime safety gate.
+                  (f"{refs.login_rate_limit_secret_env}",
+                   "${" + refs.login_rate_limit_secret_env + "}")]
         if module_id == "onebrain-workers":
             pairs.append(("ONEBRAIN_WORKER_DATABASE_URL", _role_db_url(
                 inp.postgres_worker_role, refs.worker_db_password_env)))
@@ -618,9 +639,6 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             # ONEBRAIN_ADMIN_PASSWORD. Only onebrain-api validates/signs with it, so it is NOT
             # baked on the worker (whose entrypoint never constructs the app).
             (f"{refs.auth_secret_env}", "${" + refs.auth_secret_env + "}"),
-            # Separate key used to HMAC account/address subjects before the
-            # shared PostgreSQL login-limit store persists them.
-            (f"{refs.login_rate_limit_secret_env}", "${" + refs.login_rate_limit_secret_env + "}"),
             # The admin seed pair. seed.py (seed_admin_from_env) creates a loginable admin
             # at container start ONLY when BOTH are non-empty; the box fills them from the
             # exchanged (customer) / baked (MC) /opt/onebrain/.env. Without the email the box
@@ -658,7 +676,7 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             (refs.service_key_env, "${" + refs.assistant_service_key_env + "}"),
             ("DATABASE_URL", _role_db_url(
                 inp.postgres_assistant_role, refs.assistant_db_password_env, "assistant")),
-            ("REDIS_URL", _redis_url()),
+            ("REDIS_URL", _redis_url(refs.redis_password_env)),
         ]
     if module_id in ("communication-api", "communication-workers"):
         pairs += [
@@ -670,11 +688,11 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             pairs += [("ONEBRAIN_ACCOUNT_ID", inp.account_id)]
         pairs += [("DATABASE_URL", _role_db_url(
             inp.postgres_communication_role, refs.communication_db_password_env, "communication")),
-                  ("REDIS_URL", _redis_url())]
+                  ("REDIS_URL", _redis_url(refs.redis_password_env))]
     if module_id == "communication-voice":
         pairs += [("DATABASE_URL", _role_db_url(
             inp.postgres_communication_role, refs.communication_db_password_env, "communication")),
-                  ("REDIS_URL", _redis_url())]
+                  ("REDIS_URL", _redis_url(refs.redis_password_env))]
     if module_id == "communication-widget":
         pairs += [("ONEBRAIN_API_BASE_URL", "http://onebrain-api:8000")]
     selector = _COMMUNICATION_SERVICE_SELECTORS.get(module_id)
@@ -1147,6 +1165,19 @@ def _yaml_sq(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _health_url(inp: BoxRenderInputs) -> str:
+    """Return the externally reachable probe URL for a rendered box.
+
+    Caddy redirects HTTP to HTTPS when the box has a domain.  Probing the
+    loopback HTTP listener would therefore turn a healthy domain-backed box
+    into a false failed first-boot/update signal.  IP-only boxes retain their
+    local HTTP probe because they deliberately do not provision TLS.
+    """
+    if inp.fqdn:
+        return f"https://{inp.fqdn}/health"
+    return "http://127.0.0.1/health"
+
+
 def _box_env(inp: BoxRenderInputs) -> str:
     products = " ".join(_enabled_products(inp.enabled_modules))
     pairs = [
@@ -1165,7 +1196,7 @@ def _box_env(inp: BoxRenderInputs) -> str:
         ("UPDATE_COMPOSE_PROJECT", inp.compose_project),
         ("UPDATE_PROFILES", products),
         ("UPDATE_LOCAL_MODULES", ",".join(_ordered(inp.enabled_modules))),
-        ("UPDATE_HEALTH_URL", "http://127.0.0.1/health"),
+        ("UPDATE_HEALTH_URL", _health_url(inp)),
         ("UPDATE_INITIAL_RELEASE_FILE", "/opt/onebrain/installed-release.json"),
         # Customer stacks report from the root-owned companion after the update
         # tick. Mission Control continues to use its in-app reporter.
@@ -1390,7 +1421,7 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         "systemctl enable --now onebrain-update.timer",
         "systemctl enable --now onebrain-host-maintenance.timer",
         # Smoke + customer provisioning callback (bootstrap_password = the owner OTP).
-        'sleep 5; if curl -sf http://127.0.0.1/health >/dev/null 2>&1; then ST=succeeded; SMOKE=passed; '
+        f'sleep 5; if curl -sf {_health_url(inp)} >/dev/null 2>&1; then ST=succeeded; SMOKE=passed; '
         f"else ST=failed; SMOKE=failed; fi{smoke_callback}",
     ]
     assets.append(("/opt/onebrain/onebrain-firstboot.sh", _first_boot_script(first_boot_items), "0755"))
