@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import re
 import subprocess
 import sys
 import tarfile
@@ -126,6 +127,35 @@ def test_dockerfile_has_no_live_apt_or_production_definition_download_path():
     assert "COPY --from=scanner-definition-artifact-build / " not in export
     assert "fetch-definitions" in dockerfile
     assert "--supply-chain /opt/onebrain/worker-supply-chain.json" in dockerfile
+
+
+def test_clamscan_option_gate_accepts_bracketed_boolean_help():
+    dockerfile = (_ROOT / "Dockerfile.worker").read_text(encoding="utf-8")
+    boundary_match = re.search(
+        r'grep -Eq -- "\$\{option\}([^\"]+)"',
+        dockerfile,
+    )
+
+    assert boundary_match is not None
+    boundary = boundary_match.group(1)
+    assert boundary == r"(=|\[|[[:space:],]|$)"
+
+    python_boundary = boundary.replace("[[:space:],]", r"[\s,]")
+    help_fixture = "\n".join(
+        (
+            "--official-db-only[=yes/no(*)]  Only load official signatures",
+            "--alert-encrypted[=yes/no(*)]    Alert on encrypted archives",
+            "--alert-exceeds-max[=yes/no(*)]  Alert when limits are exceeded",
+            "--max-scantime=#n                Scan time limit",
+        )
+    )
+    for option in (
+        "--official-db-only",
+        "--alert-encrypted",
+        "--alert-exceeds-max",
+        "--max-scantime",
+    ):
+        assert re.search(re.escape(option) + python_boundary, help_fixture)
 
 
 def test_dockerfile_rejects_external_base_that_self_aliases(tmp_path: Path):

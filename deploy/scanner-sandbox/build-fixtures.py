@@ -22,7 +22,7 @@ def main() -> int:
     (root / "member-count.zip").write_bytes(
         _zip_bytes({f"member-{index}.txt": b"bounded\n" for index in range(4)})
     )
-    (root / "file-size.zip").write_bytes(_zip_bytes({"large.txt": b"F" * 4096}))
+    (root / "file-size.bin").write_bytes(b"F" * 4096)
     (root / "scan-size.zip").write_bytes(
         _zip_bytes({f"scan-{index}.txt": bytes([65 + index]) * 2048 for index in range(3)})
     )

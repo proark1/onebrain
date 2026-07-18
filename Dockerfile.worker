@@ -92,7 +92,7 @@ RUN python /opt/onebrain/worker_supply_chain.py fetch-definitions \
         --official-db-only --max-scantime --bytecode-timeout \
         --alert-exceeds-max --alert-encrypted --max-filesize \
         --max-scansize --max-files --max-recursion; do \
-        grep -Eq -- "${option}([=[:space:],]|$)" /tmp/onebrain-clamscan-help || exit 1; \
+        grep -Eq -- "${option}(=|\[|[[:space:],]|$)" /tmp/onebrain-clamscan-help || exit 1; \
        done \
     && rm -f /tmp/onebrain-clamscan-help \
     && for database in /opt/onebrain/clamav-baseline/*.cvd \

@@ -104,7 +104,7 @@ expect_diagnostic recursion "${fixtures}/recursion.zip" \
 expect_diagnostic member-count "${fixtures}/member-count.zip" \
     'Heuristics\.Limits\.Exceeded\.MaxFiles' \
     536870912 104857600 3 16 45000 5000
-expect_diagnostic file-size "${fixtures}/file-size.zip" \
+expect_diagnostic file-size "${fixtures}/file-size.bin" \
     'Heuristics\.Limits\.Exceeded\.MaxFileSize' \
     536870912 1024 10000 16 45000 5000
 expect_diagnostic scan-size "${fixtures}/scan-size.zip" \

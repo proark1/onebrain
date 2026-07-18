@@ -8,6 +8,16 @@ _ROOT = Path(__file__).resolve().parents[1]
 _SANDBOX = _ROOT / "deploy" / "scanner-sandbox"
 
 
+def test_scanner_shell_entrypoints_are_lf_normalized_for_linux_images():
+    attributes = (_ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+
+    assert "deploy/scanner-sandbox/*.sh text eol=lf" in attributes
+    for script in _SANDBOX.glob("*.sh"):
+        contents = script.read_bytes()
+        assert contents.startswith(b"#!/"), script
+        assert b"\r" not in contents, script
+
+
 def test_native_launcher_has_only_the_two_fixed_profiles_and_never_uses_a_shell():
     source = (_SANDBOX / "onebrain_scanner_sandbox.c").read_text(encoding="utf-8")
 
@@ -136,6 +146,7 @@ def test_capability_manifest_matches_the_fail_closed_launcher_contract():
 
 def test_image_gate_exercises_exact_resource_diagnostics_offline():
     smoke = (_SANDBOX / "image-smoke.sh").read_text(encoding="utf-8")
+    fixture_builder = (_SANDBOX / "build-fixtures.py").read_text(encoding="utf-8")
 
     for option in (
         "--official-db-only=yes",
@@ -152,6 +163,10 @@ def test_image_gate_exercises_exact_resource_diagnostics_offline():
     ):
         assert diagnostic in smoke
     assert "verify-release-evidence" in smoke
+    assert '"${fixtures}/file-size.bin"' in smoke
+    assert '(root / "file-size.bin").write_bytes(b"F" * 4096)' in fixture_builder
+    assert "file-size.zip" not in smoke
+    assert "file-size.zip" not in fixture_builder
     assert '"${launcher}" scan' in smoke
     assert "definitions-update" not in smoke
     assert "freshclam" not in smoke.lower()
