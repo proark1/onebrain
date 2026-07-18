@@ -354,6 +354,8 @@ class DriveMalwareScanningService:
             if not tenant_ids and self._tenant_cursor:
                 self._tenant_cursor = ""
                 tenant_ids = list(lister(after="", limit=1_000))
+        elif self.platform_store is None:
+            tenant_ids = []
         else:
             tenant_ids = sorted({
                 account.id for account in self.platform_store.list_accounts()

@@ -312,6 +312,22 @@ def test_idle_worker_heartbeat_reports_ready_with_real_zero_counts(tmp_path):
     assert counts.quarantine_usage_bytes == 0
 
 
+def test_idle_worker_heartbeat_is_a_safe_noop_without_a_platform_store(tmp_path):
+    scanning = DriveMalwareScanningService(
+        store=MemoryDriveStore(MemoryStore()),
+        blobs=LocalDriveBlobStore(
+            str(tmp_path / "no-platform-drive"), min_free_bytes=0, min_free_percent=0,
+        ),
+        scanner=FakeMalwareScanner(("clean",)),
+        job_store=MemoryJobStore(),
+        platform_store=None,
+        settings=SimpleNamespace(drive_malware_runtime_stale_seconds=180),
+        worker_id="worker_no_platform",
+    )
+
+    assert scanning.heartbeat_if_due(force=True) == 0
+
+
 def test_successful_definition_refresh_is_retained_by_periodic_heartbeat(tmp_path):
     service, scanning, _jobs, _vectors, _principal, _file, _payload = _fixture(tmp_path)
 
