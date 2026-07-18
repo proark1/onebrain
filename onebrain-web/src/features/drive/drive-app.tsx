@@ -15,6 +15,7 @@ import {
   listDriveItems,
   mutateDriveEntry,
   permanentlyDeleteDriveFile,
+  rescanDriveFile,
   setDriveFileIndexing,
   updateDriveFile,
   updateDriveFolder,
@@ -29,6 +30,7 @@ import {
 } from "./drive-dialogs";
 import { DriveEntryList } from "./drive-entry-list";
 import { DriveIcon } from "./drive-icons";
+import { shouldPollDriveSecurity } from "./drive-presentation";
 import {
   DEFAULT_DRIVE_AUDIENCE,
   defaultDrivePolicy,
@@ -73,6 +75,8 @@ const EMPTY_BOOTSTRAP: DriveBootstrap = {
 
 type UploadRequest = { files: File[]; folderId: string };
 
+const DRIVE_SECURITY_POLL_LIMIT = 24;
+
 export function DriveApp({
   initialBootstrap,
   initialError = "",
@@ -107,15 +111,31 @@ export function DriveApp({
       uploadRefreshRef.current = setTimeout(() => setReloadToken((current) => current + 1), 180);
     },
   });
+  const syncUploadSecurity = uploads.syncSecurity;
 
   const destinations = useMemo(
     () => driveDestinations(state.selectedRoot, state.breadcrumbs, state.entries, audience, capabilities.can_index),
     [audience, capabilities.can_index, state.breadcrumbs, state.entries, state.selectedRoot],
   );
+  const securityPollKey = useMemo(
+    () => Array.from(new Set(
+      state.entries.filter(shouldPollDriveSecurity).map((entry) => entry.id),
+    )).sort().join("|"),
+    [state.entries],
+  );
+  const pollRootId = state.selectedRoot?.id ?? "";
+  const pollAccountId = state.selectedRoot?.account_id ?? "";
+  const pollSpaceId = state.selectedRoot?.space_id ?? "";
+  const pollRootKind = state.selectedRoot?.kind ?? "space";
+  const pollRootName = state.selectedRoot?.name ?? "Drive";
 
   useEffect(() => () => {
     if (uploadRefreshRef.current) clearTimeout(uploadRefreshRef.current);
   }, []);
+
+  useEffect(() => {
+    syncUploadSecurity(state.entries.flatMap((entry) => entry.kind === "file" ? [entry] : []));
+  }, [state.entries, syncUploadSecurity]);
 
   useEffect(() => {
     const root = state.selectedRoot;
@@ -141,6 +161,60 @@ export function DriveApp({
     });
     return () => controller.abort();
   }, [bootstrap.contract_version, deferredQuery, reloadToken, state.folderId, state.selectedRoot, state.view]);
+
+  useEffect(() => {
+    if (!securityPollKey || !pollRootId || !pollAccountId || !pollSpaceId) return;
+    let stopped = false;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let controller: AbortController | null = null;
+
+    const poll = async () => {
+      attempts += 1;
+      controller = new AbortController();
+      try {
+        const response = await listDriveItems({
+          root: {
+            id: pollRootId,
+            account_id: pollAccountId,
+            space_id: pollSpaceId,
+            kind: pollRootKind,
+            name: pollRootName,
+          },
+          folderId: state.folderId,
+          view: state.view,
+          query: deferredQuery,
+          signal: controller.signal,
+        });
+        if (!stopped) dispatch({ type: "merge_security", entries: response.entries });
+      } catch {
+        // The row remains quarantined. Manual refresh remains available if polling exhausts.
+      } finally {
+        controller = null;
+        if (!stopped && attempts < DRIVE_SECURITY_POLL_LIMIT) {
+          timer = setTimeout(() => void poll(), securityPollDelay(attempts));
+        }
+      }
+    };
+
+    timer = setTimeout(() => void poll(), securityPollDelay(0));
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      controller?.abort();
+    };
+  }, [
+    deferredQuery,
+    pollAccountId,
+    pollRootId,
+    pollRootKind,
+    pollRootName,
+    pollSpaceId,
+    reloadToken,
+    securityPollKey,
+    state.folderId,
+    state.view,
+  ]);
 
   if (bootstrap.contract_version !== DRIVE_CONTRACT_VERSION) {
     return <DriveUnavailable title="Drive update required" message="The Drive interface and Core API use different contract versions. Finish the Core rollout, then refresh." />;
@@ -262,6 +336,20 @@ export function DriveApp({
     }
   }
 
+  async function rescan(file: DriveFileEntry) {
+    setActionId(file.id);
+    dispatch({ type: "clear_feedback" });
+    try {
+      const updated = await rescanDriveFile(file);
+      dispatch({ type: "replace_entry", entry: updated });
+      dispatch({ type: "set_notice", message: `${file.name} queued for another security scan.` });
+    } catch (err) {
+      dispatch({ type: "load_error", message: messageFrom(err, "Could not start another security scan.") });
+    } finally {
+      setActionId("");
+    }
+  }
+
   async function permanentlyDelete(file: DriveFileEntry, reason: string) {
     setActionId(file.id);
     try {
@@ -349,6 +437,7 @@ export function DriveApp({
           onManageFolder={setFolderToManage}
           onOpenFolder={selectFolder}
           onPermanentDelete={setFileToDelete}
+          onRescan={(file) => void rescan(file)}
           onRestore={(entry) => void changeTrashState(entry, "restore")}
           onToggleIndexing={(file) => void toggleIndexing(file)}
           onTrash={(entry) => void changeTrashState(entry, "trash")}
@@ -372,7 +461,7 @@ function DrivePolicyBanner({ mode }: { mode: DriveBootstrap["capabilities"]["pol
   return (
     <div className={styles.policyBanner} role="status">
       <DriveIcon name="brain" />
-      <span>{mode === "storage_only" ? "Storage-only mode: files remain governed and downloadable, but AI indexing is disabled for this deployment." : "Drive is disabled for this deployment. Existing content is read-only and no uploads or filing changes are available."}</span>
+      <span>{mode === "storage_only" ? "Storage-only mode: files remain governed and become downloadable after security scanning, but AI indexing is disabled for this deployment." : "Drive is disabled for this deployment. Existing content is read-only and no uploads or filing changes are available."}</span>
     </div>
   );
 }
@@ -408,4 +497,10 @@ function loadKey(root: DriveRoot | null, folderId: string, view: DriveView, quer
 
 function messageFrom(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
+}
+
+function securityPollDelay(attempt: number): number {
+  if (attempt < 4) return 1_500;
+  if (attempt < 10) return 3_000;
+  return 6_000;
 }

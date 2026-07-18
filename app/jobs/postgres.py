@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Sequence
 from uuid import uuid4
 
 from app.db.rls import set_rls_scope
 from app.db.schema import validate_postgres_schema
 from app.jobs.base import (
+    JobEnqueueSpec,
     JobFailureSummary,
     JobScopeDeleteResult,
     JobSummary,
@@ -22,6 +24,7 @@ from app.jobs.base import (
     Job,
     JobFile,
     JobFileInput,
+    validate_job_enqueue_batch,
 )
 
 
@@ -70,6 +73,13 @@ class PostgresJobStore:
         "NULL::timestamptz AS locked_at, ''::text AS lease_token, "
         "NULL::timestamptz AS lease_expires_at, created_at, updated_at, completed_at"
     )
+    _APP_JOB_COLS_J = (
+        "j.id, j.type, j.status, j.tenant_id, j.account_id, j.space_id, j.requested_by, "
+        "'{}'::jsonb AS payload, j.result, j.error, j.attempts, 0 AS max_attempts, "
+        "NULL::timestamptz AS run_after, ''::text AS locked_by, "
+        "NULL::timestamptz AS locked_at, ''::text AS lease_token, "
+        "NULL::timestamptz AS lease_expires_at, j.created_at, j.updated_at, j.completed_at"
+    )
 
     def __init__(
         self,
@@ -110,6 +120,7 @@ class PostgresJobStore:
     def enqueue(
         self,
         *,
+        job_id: str = "",
         type: str,
         tenant_id: str,
         account_id: str = "",
@@ -120,7 +131,9 @@ class PostgresJobStore:
         max_attempts: int = 3,
         idempotency_key: str = "",
     ) -> Job:
-        job_id = f"job_{uuid4().hex}"
+        job_id = (job_id or "").strip() or f"job_{uuid4().hex}"
+        if not job_id.startswith("job_") or len(job_id) > 128:
+            raise ValueError("Explicit job id must be an opaque job_ identifier.")
         dedupe = (idempotency_key or "").strip()
         if len(dedupe) > 200:
             raise ValueError("Job idempotency key is too long.")
@@ -136,8 +149,7 @@ class PostgresJobStore:
                 f"(id, type, status, tenant_id, account_id, space_id, requested_by, payload, "
                 f"max_attempts, idempotency_key) "
                 f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
-                f"ON CONFLICT (tenant_id, account_id, space_id, type, idempotency_key) "
-                f"WHERE idempotency_key <> '' DO NOTHING RETURNING {self._APP_JOB_COLS}",
+                f"ON CONFLICT DO NOTHING RETURNING {self._APP_JOB_COLS}",
                 (
                     job_id, type, STATUS_QUEUED, tenant_id, account_id, space_id, requested_by,
                     json.dumps(payload or {}), max_attempts, dedupe,
@@ -146,11 +158,18 @@ class PostgresJobStore:
             row = cur.fetchone()
             created = row is not None
             if not row:
-                cur.execute(
-                    f"SELECT {self._APP_JOB_COLS} FROM jobs WHERE tenant_id=%s "
-                    "AND account_id=%s AND space_id=%s AND type=%s AND idempotency_key=%s",
-                    (tenant_id, account_id, space_id, type, dedupe),
-                )
+                if dedupe:
+                    cur.execute(
+                        f"SELECT {self._APP_JOB_COLS} FROM jobs WHERE tenant_id=%s "
+                        "AND account_id=%s AND space_id=%s AND type=%s AND idempotency_key=%s",
+                        (tenant_id, account_id, space_id, type, dedupe),
+                    )
+                else:
+                    cur.execute(
+                        f"SELECT {self._APP_JOB_COLS} FROM jobs WHERE id=%s "
+                        "AND tenant_id=%s AND account_id=%s AND space_id=%s AND type=%s",
+                        (job_id, tenant_id, account_id, space_id, type),
+                    )
                 row = cur.fetchone()
                 if not row:
                     raise RuntimeError("Idempotent job enqueue could not recover its existing row.")
@@ -345,6 +364,100 @@ class PostgresJobStore:
         if not row:
             self._raise_missing_or_lost_lease(job_id)
         return self._job(row)
+
+    def enqueue_many(
+        self,
+        specs: Sequence[JobEnqueueSpec],
+    ) -> tuple[Job, ...]:
+        """Resolve an idempotent batch in one RLS-scoped transaction.
+
+        The insert and resolution are deliberately separate set operations.
+        After a concurrent unique-key conflict, PostgreSQL READ COMMITTED gives
+        the resolution statement a fresh snapshot containing the winner. This
+        avoids the well-known data-modifying-CTE snapshot hole while keeping
+        connection and statement counts constant for the whole page.
+        """
+
+        batch = validate_job_enqueue_batch(specs)
+        if not batch:
+            return ()
+        rows = [
+            {
+                "ordinal": ordinal,
+                "id": (spec.job_id or "").strip() or f"job_{uuid4().hex}",
+                "type": spec.type,
+                "tenant_id": spec.tenant_id,
+                "account_id": spec.account_id,
+                "space_id": spec.space_id,
+                "requested_by": spec.requested_by,
+                "payload": dict(spec.payload),
+                "max_attempts": int(spec.max_attempts),
+                "idempotency_key": spec.idempotency_key.strip(),
+            }
+            for ordinal, spec in enumerate(batch)
+        ]
+        encoded = json.dumps(rows)
+        tenant_id, account_id, space_id = (
+            batch[0].tenant_id,
+            batch[0].account_id,
+            batch[0].space_id,
+        )
+        incoming = (
+            "SELECT * FROM jsonb_to_recordset(%s::jsonb) AS item("
+            "ordinal integer, id text, type text, tenant_id text, account_id text, "
+            "space_id text, requested_by text, payload jsonb, max_attempts integer, "
+            "idempotency_key text)"
+        )
+        with self._conn() as conn, conn.cursor() as cur:
+            set_rls_scope(
+                conn,
+                tenant_id=tenant_id,
+                account_id=account_id,
+                space_id=space_id,
+            )
+            cur.execute(
+                f"""
+                WITH incoming AS ({incoming})
+                INSERT INTO jobs (
+                    id, type, status, tenant_id, account_id, space_id,
+                    requested_by, payload, max_attempts, idempotency_key
+                )
+                SELECT id, type, %s, tenant_id, account_id, space_id,
+                       requested_by, payload, max_attempts, idempotency_key
+                FROM incoming
+                ORDER BY ordinal
+                ON CONFLICT DO NOTHING
+                RETURNING id
+                """,
+                (encoded, STATUS_QUEUED),
+            )
+            cur.fetchall()
+            cur.execute(
+                f"""
+                WITH incoming AS ({incoming})
+                SELECT i.ordinal, {self._APP_JOB_COLS_J}
+                FROM incoming i
+                JOIN jobs j
+                  ON j.tenant_id = i.tenant_id
+                 AND j.account_id = i.account_id
+                 AND j.space_id = i.space_id
+                 AND j.type = i.type
+                 AND j.idempotency_key = i.idempotency_key
+                ORDER BY i.ordinal
+                """,
+                (encoded,),
+            )
+            resolved = cur.fetchall()
+            expected_ordinals = list(range(len(batch)))
+            if (
+                len(resolved) != len(batch)
+                or [int(row[0]) for row in resolved] != expected_ordinals
+            ):
+                raise RuntimeError(
+                    "Idempotent job batch could not recover every existing row."
+                )
+            conn.commit()
+        return tuple(self._job(row[1:]) for row in resolved)
 
     def delete_scope(
         self,

@@ -7,7 +7,7 @@ import {
   putDriveUploadContent,
 } from "./drive-client";
 import { DriveIcon } from "./drive-icons";
-import { formatDriveSize } from "./drive-presentation";
+import { driveSecurityPresentation, formatDriveSize } from "./drive-presentation";
 import {
   driveUploadReducer,
   type DriveUploadRecord,
@@ -73,8 +73,12 @@ export function useDriveUploads({
       );
       dispatch({ type: "status", id: record.id, status: "completing" });
       const result = await completeDriveUpload(session.upload_id, `${record.id}:${record.attempt}:complete`);
-      dispatch({ type: "progress", id: record.id, progress: 100 });
-      dispatch({ type: "status", id: record.id, status: "stored" });
+      dispatch({
+        type: "completed",
+        id: record.id,
+        fileId: result.file.id,
+        malwareStatus: result.file.malware_status,
+      });
       onCompleteRef.current(result.file);
     } catch (err) {
       if (controller.signal.aborted) {
@@ -143,7 +147,14 @@ export function useDriveUploads({
     dispatch({ type: "dismiss", id });
   }, []);
 
-  return { cancel, dismiss, enqueue, retry, uploads };
+  const syncSecurity = useCallback((files: DriveFileEntry[]) => {
+    dispatch({
+      type: "sync_security",
+      files: files.map((file) => ({ id: file.id, malwareStatus: file.malware_status })),
+    });
+  }, []);
+
+  return { cancel, dismiss, enqueue, retry, syncSecurity, uploads };
 }
 
 export function DriveUploadTray({
@@ -159,12 +170,21 @@ export function DriveUploadTray({
 }) {
   if (uploads.length === 0) return null;
   const activeCount = uploads.filter((upload) => ACTIVE_UPLOADS.has(upload.status) || upload.status === "queued").length;
+  const scanCount = uploads.filter((upload) => (
+    upload.status === "stored"
+    && (upload.malwareStatus === "pending" || upload.malwareStatus === "scanning")
+  )).length;
+  const heading = activeCount
+    ? `Uploading ${activeCount}`
+    : scanCount
+      ? `Security scanning ${scanCount}`
+      : "Uploads";
   return (
     <section className={styles.uploadTray} aria-label="Uploads" aria-live="polite">
       <header>
         <div>
           <DriveIcon name="upload" />
-          <strong>{activeCount ? `Uploading ${activeCount}` : "Uploads"}</strong>
+          <strong>{heading}</strong>
         </div>
         <span>{uploads.length} file{uploads.length === 1 ? "" : "s"}</span>
       </header>
@@ -197,7 +217,7 @@ function uploadStatusLabel(upload: DriveUploadRecord): string {
     creating: "Preparing upload",
     uploading: `${upload.progress}% uploaded`,
     completing: "Storing and checking",
-    stored: "Stored · Check Drive for AI status",
+    stored: driveSecurityPresentation(upload.malwareStatus).label,
     failed: "Upload needs attention",
     canceled: "Canceled",
   };

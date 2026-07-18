@@ -61,7 +61,14 @@ PRODUCTS = ("onebrain", "assistant", "communication")
 _PRODUCT_OF = {m: ("onebrain" if m.startswith("onebrain") else m.split("-", 1)[0]) for m in MODULE_ORDER}
 # product -> (migrate service base module image, migrate command, db name).
 _MIGRATE = {
-    "onebrain": ("onebrain-api", ["alembic", "upgrade", "head"], "onebrain"),
+    # Drive malware revision 0033 is intentionally schema-only.  The one-shot
+    # maintenance container must run Alembic and the bounded activation before
+    # Compose is allowed to start any long-running OneBrain process.
+    "onebrain": (
+        "onebrain-api",
+        ["python", "-m", "app.drive.malware.activation", "--migrate"],
+        "onebrain",
+    ),
     "communication": ("communication-api", ["pnpm", "db:migrate"], "communication"),
     "assistant": ("assistant-service", ["alembic", "upgrade", "head"], "assistant"),
 }
@@ -88,6 +95,10 @@ _API_EDGE_ALIAS = "api-edge"
 _OPERATOR_TLS_HOST_DIR = "/opt/onebrain/broker-tls"
 _OPERATOR_TLS_CONTAINER_DIR = "/run/onebrain/broker-tls"
 _BOOTSTRAP_ASSET_B85 = "/root/ob.b85"
+_MALWARE_DEFINITION_CACHE_DIR = "/var/lib/onebrain/clamav"
+_MALWARE_DEFINITION_TMPFILES = (
+    f"d {_MALWARE_DEFINITION_CACHE_DIR} 0700 10001 10001 -\n"
+)
 # Assad Dar AI Communication deliberately ships one immutable image that starts a
 # particular service according to SERVICE. Keep the release manifest module IDs
 # separate for health, version, and rollout accounting, while selecting the
@@ -416,6 +427,11 @@ _ONEBRAIN_RUNTIME_TMPFS = ("/tmp:mode=1777,size=64m",)
 _ONEBRAIN_WEB_RUNTIME_TMPFS = _ONEBRAIN_RUNTIME_TMPFS + (
     "/app/.next/cache:mode=1777,size=64m",
 )
+_ONEBRAIN_WORKER_RUNTIME_TMPFS = (
+    # Archive inspection is capped at 512 MiB; leave bounded headroom for the
+    # scanner subprocess and keep all scratch data memory-backed.
+    "/tmp:mode=1777,size=640m",
+)
 _ONEBRAIN_RUNTIME_CAP_DROP = ("ALL",)
 _ONEBRAIN_RUNTIME_SECURITY_OPT = ("no-new-privileges:true",)
 # Kept short because this alias is embedded in Hetzner's size-limited cloud-init.
@@ -556,6 +572,13 @@ def render_compose(inp: BoxRenderInputs) -> str:
             probe = MODULE_HEALTH_PROBES.get(module_id)
             expose = str(probe.port) if (probe and probe.kind == "http") else None
             volumes = ["/data:/data"] if module_id in ("onebrain-api", "onebrain-workers") else None
+            if module_id == "onebrain-workers":
+                # Persistent private definition cache. It is deliberately on
+                # the host root disk, not the customer-data volume or Drive
+                # subtree, so backup/export/erasure cannot absorb signatures.
+                volumes = (volumes or []) + [
+                    f"{_MALWARE_DEFINITION_CACHE_DIR}:{_MALWARE_DEFINITION_CACHE_DIR}"
+                ]
             if volumes is not None and inp.role != "operator":
                 # Drive is an always-on onebrain_core capability on customer boxes. Originals
                 # live on the attached data volume, isolated from the legacy root-disk /data
@@ -592,7 +615,10 @@ def render_compose(inp: BoxRenderInputs) -> str:
                 **(_onebrain_runtime_hardening() if product == "onebrain" else {}),
                 tmpfs_override=(
                     _ONEBRAIN_WEB_RUNTIME_TMPFS
-                    if module_id == "onebrain-admin-ui" else None
+                    if module_id == "onebrain-admin-ui"
+                    else _ONEBRAIN_WORKER_RUNTIME_TMPFS
+                    if module_id == "onebrain-workers"
+                    else None
                 ),
                 networks=(
                     ("default", ""),
@@ -645,6 +671,13 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
         if module_id == "onebrain-workers":
             pairs.append(("ONEBRAIN_WORKER_DATABASE_URL", _role_db_url(
                 inp.postgres_worker_role, refs.worker_db_password_env)))
+            # Malware quarantine is a standard OneBrain capability on every
+            # production customer worker.  There is deliberately no rendered
+            # disable switch; local/test stacks retain the fake adapter default.
+            pairs.append(("ONEBRAIN_DRIVE_MALWARE_SCANNER", "clamav"))
+            # Stable operational row identity; queue claim/lease worker IDs
+            # remain per-process and are intentionally separate.
+            pairs.append(("ONEBRAIN_DRIVE_MALWARE_WORKER_ID", "worker_primary"))
             # Worker startup validates a distinct queue-only login. Mark this
             # container explicitly so deployment safety never mistakes it for
             # an API replica merely because ONEBRAIN_PROCESS defaults to api.
@@ -1378,6 +1411,7 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         ("/etc/systemd/system/onebrain-host-maintenance.service", _read_box_file("onebrain-host-maintenance.service"), "0644"),
         ("/etc/systemd/system/onebrain-host-maintenance.timer", _read_box_file("onebrain-host-maintenance.timer"), "0644"),
         ("/etc/systemd/system/onebrain-metadata-drop.service", _read_box_file("onebrain-metadata-drop.service"), "0644"),
+        ("/etc/tmpfiles.d/onebrain-malware.conf", _MALWARE_DEFINITION_TMPFILES, "0644"),
     ]
     # Mission Control bakes its own bundle and reports its health through the
     # in-app self-heartbeat. Customer boxes additionally need the root-only
@@ -1450,6 +1484,7 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
     smoke_callback = f"; {done_cb} || true" if customer_callbacks else ""
     first_boot_items = [
         "mkdir -p /opt/onebrain/env /opt/onebrain/caddy-data /opt/onebrain/caddy-config /data /mnt/onebrain-data "
+        f"&& install -d -o 10001 -g 10001 -m 0700 {_MALWARE_DEFINITION_CACHE_DIR} "
         "&& chown 10001:10001 /data && chmod 750 /data",
         *([
             *([f"install -d -o 10001 -g 10001 -m 0700 {_OPERATOR_TLS_HOST_DIR}"] if operator_tls_assets else []),

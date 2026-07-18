@@ -86,6 +86,7 @@ fi
 # force the same host-asset check for successors by setting this trusted box.env
 # switch to true.
 : "${UPDATE_ROLE_SPLIT_REQUIRED:=true}"
+MALWARE_DEFINITION_CACHE_DIR="/var/lib/onebrain/clamav"
 
 case "$UPDATE_RECOVERY_HEALTH_ATTEMPTS" in
   ''|*[!0-9]*) UPDATE_RECOVERY_HEALTH_ATTEMPTS=12 ;;
@@ -180,6 +181,12 @@ if ! require_maintenance_dir; then
   exit 0
 fi
 mkdir -p "$WORK"
+
+# Existing boxes predate the persistent scanner cache. Create only this
+# dedicated path; never recursively change ownership below application data.
+if [ "$EUID" -eq 0 ]; then
+  install -d -o 10001 -g 10001 -m 0700 "$MALWARE_DEFINITION_CACHE_DIR"
+fi
 
 # `/data` ownership is established once by first boot. Do not recursively chown
 # a host path here: Postgres data is mounted separately and must remain untouched.
@@ -688,6 +695,9 @@ lines = ["services:"]
 for m, ref in sorted(service_images.items()):
     lines.append("  %s:" % m)
     lines.append("    image: %s" % ref)
+    if m == "onebrain-workers":
+        lines.append("    volumes:")
+        lines.append("      - /var/lib/onebrain/clamav:/var/lib/onebrain/clamav")
 with open(override_path, "w") as fh:
     fh.write("\n".join(lines) + "\n")
 for _, ref in sorted(selected.items()):
@@ -782,6 +792,14 @@ MIGRATION_REACHED="${PRE_MIGRATION_REV:-$MIG_FROM}"
 if ! dc_over "${PROFILE_ARGS[@]}" pull >>"$LOG" 2>&1; then
   recover_failed_candidate "$MIGRATION_REACHED" "compose pull FAILED"
   exit 0
+fi
+if crosses_migration && [[ ",$UPDATE_LOCAL_MODULES," == *",onebrain-api,"* ]]; then
+  log "run schema migration + Drive malware activation while services are quiesced"
+  if ! dc_over "${PROFILE_ARGS[@]}" run --rm onebrain-migrate \
+       python -m app.drive.malware.activation --migrate >>"$LOG" 2>&1; then
+    recover_failed_candidate "$MIGRATION_REACHED" "migration/activation FAILED"
+    exit 0
+  fi
 fi
 if ! dc_over "${PROFILE_ARGS[@]}" up -d >>"$LOG" 2>&1; then
   recover_failed_candidate "$MIGRATION_REACHED" "candidate startup/migration FAILED"

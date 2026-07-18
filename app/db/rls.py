@@ -50,6 +50,10 @@ RLS_REQUIRED_TABLES = (
     "drive_files",
     "drive_file_revisions",
     "drive_upload_sessions",
+    "drive_revision_malware_scans",
+    "drive_malware_runtime_status",
+    "drive_malware_activation_state",
+    "drive_malware_settings",
 )
 
 

@@ -22,6 +22,9 @@ DEFAULT_SCHEMA_WAIT_SECONDS = 60.0
 DEFAULT_SCHEMA_WAIT_POLL_SECONDS = 2.0
 DEFAULT_WORKER_REQUIRED_TABLES = (
     "chunks", "jobs", "job_files", "drive_files", "drive_file_revisions", "drive_upload_sessions",
+    "drive_revision_malware_scans", "drive_malware_runtime_status",
+    "drive_malware_activation_state",
+    "drive_malware_settings",
 )
 DEFAULT_DEPLOYMENT_PROCESS = "api"
 SUPPORTED_DEPLOYMENT_PROCESSES = {"api", "worker"}
@@ -134,14 +137,16 @@ def validate_embedding_runtime_contract(settings: Settings | None = None) -> Non
     build_store(settings, dim=embedder.dim)
 
 
-def run_migrations_if_needed(settings: Settings | None = None) -> None:
+def run_migrations_if_needed(
+    settings: Settings | None = None, *, require_malware_active: bool = True,
+) -> None:
     settings = settings or get_settings()
     validate_runtime_safety(settings)
     if not is_postgres_mode(settings):
         print("Skipping Alembic migrations; ONEBRAIN_VECTOR_STORE is not pgvector.", flush=True)
         return
 
-    _require_database_url(settings)
+    database_url = _require_database_url(settings)
     migration_database_url = _migration_database_url(settings)
     print("Running Alembic migrations before API startup.", flush=True)
     migration_env = os.environ.copy()
@@ -152,6 +157,19 @@ def run_migrations_if_needed(settings: Settings | None = None) -> None:
         env=migration_env,
     )
     enforce_rls_if_needed(settings)
+    # Revision 0033 is schema-only. The maintenance entry point deliberately
+    # passes require_malware_active=False, runs bounded activation, and only
+    # then starts services. Normal API startup keeps this guard enabled.
+    if not require_malware_active:
+        return
+    import psycopg
+
+    with psycopg.connect(database_url) as connection:
+        validate_postgres_schema(
+            connection,
+            DEFAULT_WORKER_REQUIRED_TABLES,
+            require_malware_active=True,
+        )
 
 
 def wait_for_schema_if_needed(
@@ -184,7 +202,7 @@ def wait_for_schema_if_needed(
     while True:
         try:
             with psycopg.connect(database_url) as conn:
-                validate_postgres_schema(conn, required_tables)
+                validate_postgres_schema(conn, required_tables, require_malware_active=True)
                 if settings.rls_enforced:
                     validate_rls_enabled(conn)
                 # The worker uses this regular application connection for

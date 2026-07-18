@@ -109,8 +109,13 @@ sudo rm -f /run/onebrain-drive-backup.sh /run/onebrain_backup_crypto.py \
 sudo systemctl start onebrain-drive-backup.timer
 ```
 
-After restoring, verify login, Drive listing/download, and an indexed-file query
-before returning the deployment to users.
+After restoring, run the normal schema/Drive-malware activation gate, confirm a
+fresh scanner heartbeat and current definitions, then verify login, Drive
+listing, a clean-file download, and an indexed-file query before returning the
+deployment to users. Pending or inconclusive revisions remain quarantined and
+must be reconciled; restore is never permission to bypass their scan state.
+The exact activation, definition-freshness, EICAR, and recovery procedure is in
+the [Drive malware operations runbook](drive-malware-operations.md).
 
 These authenticated local archives protect against logical deletion and bad
 application updates. Because both backups and the external erasure ledger remain
@@ -120,11 +125,15 @@ missing external ledger is intentionally a hard restore blocker.
 
 ## Download and malware posture
 
-Drive Phase 1 does not include a malware scanning engine. Originals are never
-executed or rendered by OneBrain: the API serves them only as attachments with
-`application/octet-stream`, `X-Content-Type-Options: nosniff`, and
-`Cache-Control: private, no-store`; active Office/PDF previews are not exposed.
-Customer deployments must keep host and endpoint protection enabled, and
-operators should treat downloaded originals as untrusted input until a governed
-scanner is integrated. This limitation must remain in the customer launch
-checklist rather than being represented as malware-safe storage.
+Every completed Drive revision enters mandatory malware quarantine, including
+files that are not indexed for AI. Ordinary download, indexing, and original-byte
+export require a current-policy `clean` attestation over the exact stored hash and
+size. Pending, scanning, infected, inconclusive, and rescan-required revisions
+remain locked; approval cannot override that boundary.
+
+OneBrain still never describes a clean verdict as proof that a file is safe.
+Originals are not executed or rendered by the API and are served only as
+attachments with `application/octet-stream`, `X-Content-Type-Options: nosniff`,
+and `Cache-Control: private, no-store`; active Office/PDF previews remain outside
+this release. Host and endpoint protection therefore remain required defense in
+depth.

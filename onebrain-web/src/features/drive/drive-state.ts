@@ -3,6 +3,7 @@ import type {
   DriveBreadcrumb,
   DriveEntry,
   DriveItemsResponse,
+  DriveMalwareStatus,
   DriveRoot,
   DriveView,
 } from "./types";
@@ -31,6 +32,7 @@ export type DriveBrowserAction =
   | { type: "load_error"; message: string }
   | { type: "remove_entry"; id: string }
   | { type: "replace_entry"; entry: DriveEntry }
+  | { type: "merge_security"; entries: DriveEntry[] }
   | { type: "set_notice"; message: string }
   | { type: "clear_feedback" };
 
@@ -115,6 +117,34 @@ export function driveBrowserReducer(
           entry.id === action.entry.id && entry.kind === action.entry.kind ? action.entry : entry
         )),
       };
+    case "merge_security": {
+      const incoming = new Map(action.entries.map((entry) => [`${entry.kind}:${entry.id}`, entry]));
+      let changed = false;
+      const entries = state.entries.map((entry) => {
+        const next = incoming.get(`${entry.kind}:${entry.id}`);
+        if (!next || entry.kind !== "file" || next.kind !== "file") return entry;
+        const isChanged = entry.malware_status !== next.malware_status
+          || entry.malware_scanned_at !== next.malware_scanned_at
+          || entry.malware_definition_version !== next.malware_definition_version
+          || entry.download_url !== next.download_url
+          || entry.index_status !== next.index_status
+          || entry.approval_status !== next.approval_status
+          || entry.updated_at !== next.updated_at;
+        if (!isChanged) return entry;
+        changed = true;
+        return {
+          ...entry,
+          malware_status: next.malware_status,
+          malware_scanned_at: next.malware_scanned_at,
+          malware_definition_version: next.malware_definition_version,
+          download_url: next.download_url,
+          index_status: next.index_status,
+          approval_status: next.approval_status,
+          updated_at: next.updated_at,
+        };
+      });
+      return changed ? { ...state, entries } : state;
+    }
     case "set_notice":
       return { ...state, error: "", notice: action.message };
     case "clear_feedback":
@@ -146,12 +176,16 @@ export type DriveUploadRecord = {
   status: DriveUploadStatus;
   error: string;
   retryable: boolean;
+  fileId?: string;
+  malwareStatus?: DriveMalwareStatus | string;
 };
 
 export type DriveUploadAction =
   | { type: "enqueue"; records: DriveUploadRecord[] }
   | { type: "status"; id: string; status: DriveUploadStatus }
   | { type: "progress"; id: string; progress: number }
+  | { type: "completed"; id: string; fileId: string; malwareStatus?: string }
+  | { type: "sync_security"; files: Array<{ id: string; malwareStatus?: string }> }
   | { type: "failed"; id: string; message: string }
   | { type: "retry"; id: string }
   | { type: "cancel"; id: string }
@@ -174,6 +208,31 @@ export function driveUploadReducer(
           ? { ...record, progress: Math.max(record.progress, Math.min(100, action.progress)) }
           : record
       ));
+    case "completed":
+      return state.map((record) => (
+        record.id === action.id
+          ? {
+              ...record,
+              fileId: action.fileId,
+              malwareStatus: action.malwareStatus,
+              progress: 100,
+              status: "stored",
+              error: "",
+            }
+          : record
+      ));
+    case "sync_security": {
+      const statuses = new Map(action.files.map((file) => [file.id, file.malwareStatus]));
+      let changed = false;
+      const next = state.map((record) => {
+        if (!record.fileId || !statuses.has(record.fileId)) return record;
+        const malwareStatus = statuses.get(record.fileId);
+        if (record.malwareStatus === malwareStatus) return record;
+        changed = true;
+        return { ...record, malwareStatus };
+      });
+      return changed ? next : state;
+    }
     case "failed":
       return state.map((record) => (
         record.id === action.id ? { ...record, status: "failed", error: action.message } : record

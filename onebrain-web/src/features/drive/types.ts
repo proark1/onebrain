@@ -1,8 +1,16 @@
-export const DRIVE_CONTRACT_VERSION = 1;
+export const DRIVE_CONTRACT_VERSION = 2;
 
 export type DriveView = "browse" | "review" | "trash" | "legacy";
 
 export type DrivePolicyMode = "disabled" | "storage_only" | "storage_and_indexing";
+
+export type DriveMalwareStatus =
+  | "pending"
+  | "scanning"
+  | "clean"
+  | "infected"
+  | "scan_error"
+  | "rescan_required";
 
 export type DriveDepartment = {
   id: string;
@@ -63,8 +71,11 @@ export type DriveFileEntry = DriveEntryBase & {
   index_status: string;
   desired_indexed: boolean;
   approval_status?: string;
+  malware_status?: DriveMalwareStatus | string;
+  malware_scanned_at?: string | null;
+  malware_definition_version?: string | null;
   legacy?: boolean;
-  download_url?: string;
+  download_url?: string | null;
 };
 
 export type DriveEntry = DriveFolderEntry | DriveFileEntry;

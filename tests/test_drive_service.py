@@ -8,11 +8,20 @@ from fastapi import HTTPException
 
 from app.auth.principal import Principal
 from app.drive.access import can_access_file, list_drive_roots, resolve_space_context
-from app.drive.base import DriveConflictError, DriveFile, DriveFolder
+from app.drive.base import (
+    DriveConflictError,
+    DriveFile,
+    DriveFolder,
+    DriveMalwareScan,
+    DriveQuarantineCapacityError,
+    DriveQuarantineLockedError,
+    DriveRevision,
+    now_iso,
+)
 from app.drive.blobs import LocalDriveBlobStore, drive_storage_key
 from app.drive.memory import MemoryDriveStore
 from app.drive.service import DriveService
-from app.jobs.base import JOB_DRIVE_FILE_INGEST
+from app.jobs.base import JOB_DRIVE_REVISION_MALWARE_SCAN
 from app.jobs.memory import MemoryJobStore
 from app.platform.base import AccessGroup, Account, LegalHold, Membership, Space
 from app.platform.memory import MemoryPlatformStore
@@ -52,9 +61,12 @@ def _platform(*, kind: str = "business") -> MemoryPlatformStore:
     return platform
 
 
-def _service(tmp_path, *, platform=None, drive_policy_mode="storage_and_indexing"):
+def _service(
+    tmp_path, *, platform=None, drive_policy_mode="storage_and_indexing",
+    quarantine_bytes=5 * 1024 * 1024 * 1024,
+):
     vectors = MemoryStore()
-    drive = MemoryDriveStore(vectors)
+    drive = MemoryDriveStore(vectors, quarantine_limit_bytes=quarantine_bytes)
     jobs = MemoryJobStore()
     blobs = LocalDriveBlobStore(
         str(tmp_path / "d"), min_free_bytes=0, min_free_percent=0,
@@ -63,6 +75,8 @@ def _service(tmp_path, *, platform=None, drive_policy_mode="storage_and_indexing
         drive_max_file_bytes=1024,
         drive_upload_session_seconds=3600,
         drive_policy_mode=drive_policy_mode,
+        drive_malware_quarantine_bytes=quarantine_bytes,
+        drive_malware_retry_attempts=5,
         job_max_attempts=3,
     )
     service = DriveService(
@@ -199,7 +213,7 @@ def test_upload_lifecycle_persists_original_and_enqueues_only_identity_metadata(
     completed, file = service.complete_upload(principal, uploaded.id)
 
     assert completed.status == "completed"
-    assert file.index_status == "queued"
+    assert file.index_status == "awaiting_scan"
     revision = service.store.get_revision(
         file.current_revision_id, account_id=ACCOUNT, space_id=SPACE,
     )
@@ -208,11 +222,13 @@ def test_upload_lifecycle_persists_original_and_enqueues_only_identity_metadata(
 
     assert len(jobs._jobs) == 1
     job = next(iter(jobs._jobs.values()))
-    assert job.type == JOB_DRIVE_FILE_INGEST
+    assert job.type == JOB_DRIVE_REVISION_MALWARE_SCAN
     assert job.payload == {
-        "file_id": file.id,
+        "scan_id": service.store.get_authoritative_malware_scan(
+            file.current_revision_id, account_id=ACCOUNT, space_id=SPACE,
+        ).id,
         "revision_id": file.current_revision_id,
-        "generation": file.generation,
+        "origin": "upload",
     }
     assert jobs.get_file(job.id) is None
     assert all(payload not in str(value).encode() for value in job.payload.values())
@@ -233,6 +249,69 @@ def test_upload_lifecycle_persists_original_and_enqueues_only_identity_metadata(
     assert replay_completed.id == completed.id
     assert replay_file.id == file.id
     assert len(service.store.list_revisions(file.id, account_id=ACCOUNT, space_id=SPACE)) == 1
+
+
+def test_expired_completion_recovers_a_promoted_blob_before_releasing_quarantine(
+    tmp_path, monkeypatch,
+):
+    service, _vectors, jobs = _service(tmp_path)
+    principal = _principal()
+    payload = b"recover promoted original"
+    upload = service.create_upload(
+        principal,
+        account_id=ACCOUNT,
+        space_id=SPACE,
+        folder_id="",
+        name="recovery.txt",
+        size_bytes=len(payload),
+        index_for_ai=True,
+        idempotency_key="promote-crash",
+    )
+    started, writer = service.begin_upload(principal, upload.id)
+    writer.write(payload)
+    uploaded = service.finish_upload_content(
+        principal, started, writer.finish(), "text/plain",
+    )
+    complete = service.store.complete_upload_quarantined
+
+    def crash_after_promote(**_kwargs):
+        raise RuntimeError("simulated metadata outage")
+
+    monkeypatch.setattr(service.store, "complete_upload_quarantined", crash_after_promote)
+    with pytest.raises(RuntimeError, match="simulated metadata outage"):
+        service.complete_upload(principal, uploaded.id)
+
+    completing = service.store.get_upload(upload.id, tenant_id=ACCOUNT)
+    assert completing.status == "completing"
+    permanent_key = drive_storage_key(
+        completing.tenant_id,
+        completing.account_id,
+        completing.space_id,
+        completing.file_id,
+        completing.revision_id,
+    )
+    assert service.blobs.stat(permanent_key).sha256 == completing.sha256
+    assert service.blobs.staging_info(upload.id) is None
+
+    service.store.update_upload(replace(
+        completing,
+        expires_at="2000-01-01T00:00:00+00:00",
+    ))
+    monkeypatch.setattr(service.store, "complete_upload_quarantined", complete)
+
+    assert service.cleanup_expired_uploads(tenant_id=ACCOUNT, account_id=ACCOUNT) == 1
+    recovered = service.store.get_upload(upload.id, tenant_id=ACCOUNT)
+    file = service.store.get_file(
+        recovered.file_id, account_id=ACCOUNT, space_id=SPACE,
+    )
+    assert recovered.status == "completed"
+    assert recovered.reservation_state == "transferred"
+    assert file.current_revision_id == recovered.revision_id
+    assert service.blobs.stat(permanent_key).sha256 == completing.sha256
+    assert len([
+        job for job in jobs._jobs.values()
+        if job.type == JOB_DRIVE_REVISION_MALWARE_SCAN
+    ]) == 1
 
 
 def test_folder_filing_policy_is_inherited_and_children_cannot_widen_it(tmp_path):
@@ -361,7 +440,7 @@ def test_file_index_toggle_cannot_override_non_indexed_folder(tmp_path):
     assert vectors.count() == 0
 
 
-def test_not_indexed_upload_never_enqueues_ai_work(tmp_path):
+def test_not_indexed_upload_still_enqueues_mandatory_security_scan_not_ai_work(tmp_path):
     service, _vectors, jobs = _service(tmp_path)
     principal = _principal()
     payload = b"private notes"
@@ -382,7 +461,9 @@ def test_not_indexed_upload_never_enqueues_ai_work(tmp_path):
 
     assert file.desired_indexed is False
     assert file.index_status == "not_indexed"
-    assert jobs._jobs == {}
+    assert len(jobs._jobs) == 1
+    job = next(iter(jobs._jobs.values()))
+    assert job.type == JOB_DRIVE_REVISION_MALWARE_SCAN
 
 
 def test_queued_projection_is_reconciled_idempotently_when_drive_is_browsed(tmp_path):
@@ -391,6 +472,37 @@ def test_queued_projection_is_reconciled_idempotently_when_drive_is_browsed(tmp_
         current_revision_id="revision_aaaaaaaa",
         index_status="queued",
         desired_indexed=True,
+    ))
+    revision = service.store.create_revision(DriveRevision(
+        id=queued.current_revision_id,
+        tenant_id=ACCOUNT,
+        account_id=ACCOUNT,
+        space_id=SPACE,
+        file_id=queued.id,
+        upload_session_id="upload_reconcile",
+        storage_key="drive/reconcile/original",
+        sha256="a" * 64,
+        size_bytes=12,
+        media_type="text/plain",
+        original_name=queued.name,
+        created_by=OWNER,
+    ))
+    timestamp = now_iso()
+    service.store.create_malware_scan(DriveMalwareScan(
+        id="scan_reconcile",
+        tenant_id=ACCOUNT,
+        account_id=ACCOUNT,
+        space_id=SPACE,
+        file_id=queued.id,
+        revision_id=revision.id,
+        revision_sha256=revision.sha256,
+        revision_size_bytes=revision.size_bytes,
+        status="clean",
+        scanner_engine="clamav",
+        scanner_engine_version="1.4.3",
+        definition_version="main-63",
+        definition_timestamp=timestamp,
+        completed_at=timestamp,
     ))
 
     first = service.list_entries(_principal(), account_id=ACCOUNT, space_id=SPACE)
@@ -474,6 +586,186 @@ def test_new_upload_sweeps_expired_staging_sessions_before_capacity_check(tmp_pa
     assert service.blobs.staging_info(stale.id) is None
 
 
+def test_quarantine_capacity_is_reserved_before_bytes_and_released_after_expiry(tmp_path):
+    service, _vectors, _jobs = _service(tmp_path, quarantine_bytes=8)
+    principal = _principal()
+    first = service.create_upload(
+        principal,
+        account_id=ACCOUNT,
+        space_id=SPACE,
+        folder_id="",
+        name="first.txt",
+        size_bytes=8,
+        index_for_ai=False,
+        idempotency_key="capacity-first",
+    )
+    assert first.reservation_state == "reserved"
+    assert first.quarantine_reserved_bytes == 8
+    with pytest.raises(DriveQuarantineCapacityError):
+        service.create_upload(
+            principal,
+            account_id=ACCOUNT,
+            space_id=SPACE,
+            folder_id="",
+            name="second.txt",
+            size_bytes=1,
+            index_for_ai=False,
+            idempotency_key="capacity-second",
+        )
+
+    service.store.update_upload(replace(
+        first, expires_at="2020-01-01T00:00:00+00:00",
+    ))
+    replacement = service.create_upload(
+        principal,
+        account_id=ACCOUNT,
+        space_id=SPACE,
+        folder_id="",
+        name="replacement.txt",
+        size_bytes=8,
+        index_for_ai=False,
+        idempotency_key="capacity-replacement",
+    )
+    assert replacement.reservation_state == "reserved"
+    assert service.store.get_upload(first.id, tenant_id=ACCOUNT).reservation_state == "released"
+
+
+def test_application_setting_cannot_raise_store_authoritative_quarantine_cap(tmp_path):
+    service, _vectors, _jobs = _service(tmp_path, quarantine_bytes=8)
+    service.settings.drive_malware_quarantine_bytes = 1_000_000
+
+    with pytest.raises(DriveQuarantineCapacityError):
+        service.create_upload(
+            _principal(),
+            account_id=ACCOUNT,
+            space_id=SPACE,
+            folder_id="",
+            name="too-large.txt",
+            size_bytes=9,
+            index_for_ai=False,
+            idempotency_key="cannot-raise-cap",
+        )
+
+
+def test_rescan_atomically_unpublishes_and_is_idempotent_while_pending(tmp_path):
+    service, vectors, jobs = _service(tmp_path)
+    principal = _principal()
+    payload = b"rescan me"
+    upload = service.create_upload(
+        principal,
+        account_id=ACCOUNT,
+        space_id=SPACE,
+        folder_id="",
+        name="rescan.txt",
+        size_bytes=len(payload),
+        index_for_ai=True,
+        idempotency_key="rescan-upload",
+    )
+    started, writer = service.begin_upload(principal, upload.id)
+    writer.write(payload)
+    uploaded = service.finish_upload_content(principal, started, writer.finish(), "text/plain")
+    _completed, file = service.complete_upload(principal, uploaded.id)
+    pending = service.store.get_authoritative_malware_scan(
+        file.current_revision_id, account_id=ACCOUNT, space_id=SPACE,
+    )
+    timestamp = now_iso()
+    scanning = service.store.update_malware_scan(replace(
+        pending, status="scanning", started_at=timestamp,
+    ), expected_status="pending")
+    service.store.update_malware_scan(replace(
+        scanning,
+        status="clean",
+        scanner_engine="clamav",
+        scanner_engine_version="1.4.3",
+        definition_version="main-63",
+        definition_timestamp=timestamp,
+        completed_at=timestamp,
+    ), expected_status="scanning")
+    vectors.add([Chunk(
+        id="old_projection:0",
+        doc_id="old_projection",
+        text="must disappear before pending is visible",
+        meta={"tenant_id": ACCOUNT, "drive_file_id": file.id, "status": "approved"},
+    )])
+    published = service.store.update_file(replace(
+        file,
+        active_doc_id="old_projection",
+        index_status="indexed",
+        generation=file.generation + 1,
+    ), expected_generation=file.generation)
+
+    rescanned = service.rescan_file(
+        principal,
+        account_id=ACCOUNT,
+        space_id=SPACE,
+        file_id=file.id,
+        generation=published.generation,
+        idempotency_key="rescan-request-1",
+    )
+    replay = service.rescan_file(
+        principal,
+        account_id=ACCOUNT,
+        space_id=SPACE,
+        file_id=file.id,
+        generation=published.generation,
+        idempotency_key="rescan-request-1",
+    )
+
+    current = service.store.get_authoritative_malware_scan(
+        file.current_revision_id, account_id=ACCOUNT, space_id=SPACE,
+    )
+    assert current.status == "pending"
+    assert current.origin == "rescan"
+    assert current.attempt_sequence == 2
+    assert rescanned.active_doc_id == ""
+    assert rescanned.index_status == "awaiting_scan"
+    assert replay == rescanned
+    assert vectors.count() == 0
+    assert len(jobs._jobs) == 2
+
+
+@pytest.mark.parametrize("terminal_status", ["failed", "succeeded"])
+def test_manual_rescan_recovers_terminal_job_without_verdict(tmp_path, terminal_status):
+    service, _vectors, jobs = _service(tmp_path)
+    principal = _principal()
+    payload = b"terminal scan job"
+    upload = service.create_upload(
+        principal,
+        account_id=ACCOUNT,
+        space_id=SPACE,
+        folder_id="",
+        name="terminal.txt",
+        size_bytes=len(payload),
+        index_for_ai=True,
+        idempotency_key=f"terminal-upload-{terminal_status}",
+    )
+    started, writer = service.begin_upload(principal, upload.id)
+    writer.write(payload)
+    uploaded = service.finish_upload_content(principal, started, writer.finish(), "text/plain")
+    _completed, file = service.complete_upload(principal, uploaded.id)
+    pending = service.store.get_authoritative_malware_scan(
+        file.current_revision_id, account_id=ACCOUNT, space_id=SPACE,
+    )
+    jobs._jobs[pending.job_id] = replace(jobs._jobs[pending.job_id], status=terminal_status)
+
+    recovered = service.rescan_file(
+        principal,
+        account_id=ACCOUNT,
+        space_id=SPACE,
+        file_id=file.id,
+        generation=file.generation,
+        idempotency_key=f"terminal-rescan-{terminal_status}",
+    )
+
+    current = service.store.get_authoritative_malware_scan(
+        file.current_revision_id, account_id=ACCOUNT, space_id=SPACE,
+    )
+    assert recovered.generation == file.generation + 1
+    assert current.status == "pending"
+    assert current.origin == "rescan"
+    assert current.attempt_sequence == pending.attempt_sequence + 1
+
+
 @pytest.mark.parametrize("operation", ["unindex", "trash"])
 def test_access_tightening_removes_existing_vector_projection_immediately(tmp_path, operation):
     service, vectors, _jobs = _service(tmp_path)
@@ -529,9 +821,32 @@ def test_download_lookup_is_audited_without_exposing_blob_bytes(tmp_path):
     uploaded = service.finish_upload_content(principal, started, writer.finish(), "text/plain")
     _completed, file = service.complete_upload(principal, uploaded.id)
 
-    _file_row, revision = service.get_revision_for_download(
+    with pytest.raises(DriveQuarantineLockedError):
+        service.get_revision_for_download(
+            principal, account_id=ACCOUNT, space_id=SPACE, file_id=file.id,
+        )
+    pending = service.store.get_authoritative_malware_scan(
+        file.current_revision_id, account_id=ACCOUNT, space_id=SPACE,
+    )
+    timestamp = now_iso()
+    scanning = service.store.update_malware_scan(replace(
+        pending, status="scanning", started_at=timestamp,
+    ), expected_status="pending")
+    service.store.update_malware_scan(replace(
+        scanning,
+        status="clean",
+        scanner_engine="clamav",
+        scanner_engine_version="1.4.3",
+        definition_version="main-63",
+        definition_timestamp=timestamp,
+        completed_at=timestamp,
+    ), expected_status="scanning")
+
+    _file_row, revision, info = service.get_revision_for_download(
         principal, account_id=ACCOUNT, space_id=SPACE, file_id=file.id,
     )
+    assert info.size_bytes == len(payload)
+    assert info.sha256 == revision.sha256
     events = service.platform_store.list_data_access_events(ACCOUNT, SPACE)
     assert [(event.action, event.target_id) for event in events] == [
         ("drive.original.download", file.id),
@@ -618,7 +933,13 @@ def test_permanent_delete_honors_exact_legal_hold_then_erases_blob_metadata_and_
         generation=file.generation,
         reason="request",
     )
-    assert counts == {"files": 1, "revisions": 1, "chunks": 0, "blobs_deleted": 2}
+    assert counts == {
+        "files": 1,
+        "revisions": 1,
+        "malware_scans": 1,
+        "chunks": 0,
+        "blobs_deleted": 2,
+    }
     assert service.blobs.stat(revision.storage_key) is None
     assert service.blobs.stat(orphan_key) is None
     assert service.store.get_file(file.id, account_id=ACCOUNT, space_id=SPACE) is None

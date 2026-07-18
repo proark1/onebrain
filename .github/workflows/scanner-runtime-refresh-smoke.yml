@@ -1,0 +1,39 @@
+name: Scanner runtime refresh smoke
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    name: Exercise networked freshclam profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Verify pinned base image index
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_reference=$(python deploy/scanner-sandbox/worker_supply_chain.py \
+            base-reference deploy/scanner-sandbox/worker-supply-chain.lock.json)
+          docker buildx imagetools inspect --raw "${base_reference}" \
+            > "${RUNNER_TEMP}/onebrain-worker-base-index.json"
+          python deploy/scanner-sandbox/worker_supply_chain.py verify-base-index \
+            deploy/scanner-sandbox/worker-supply-chain.lock.json \
+            "${RUNNER_TEMP}/onebrain-worker-base-index.json"
+
+      - name: Build explicit runtime-refresh integration target
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --pull --no-cache --platform linux/amd64 \
+            --target scanner-runtime-refresh-validation \
+            --file Dockerfile.worker .

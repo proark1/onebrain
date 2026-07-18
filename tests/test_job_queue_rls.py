@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from app.db.rls import (
     validate_restricted_runtime_role,
 )
 from app.jobs.postgres import JobWorkerAccessError, PostgresJobStore
+from app.jobs.base import JobEnqueueSpec
 
 
 _AT = datetime(2026, 7, 17, tzinfo=timezone.utc)
@@ -201,6 +203,84 @@ def test_request_job_lookup_sets_scope_and_never_selects_payload(monkeypatch):
     assert "'{}'::jsonb AS payload" in sql
     assert "''::text AS lease_token" in sql
     assert "requested_by, payload, result" not in sql
+
+
+def test_postgres_batch_enqueue_is_constant_for_new_and_existing_100_rows():
+    resolved_rows = []
+    for index in range(100):
+        job_row = list(_JOB_ROW)
+        job_row[0] = f"job_batch_{index:03d}"
+        job_row[1] = "drive_file_ingest"
+        job_row[11] = 0
+        job_row[12] = None
+        resolved_rows.append((index, *job_row))
+
+    class BatchCursor(_Cursor):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            if "SELECT i.ordinal" in sql:
+                self.rows = resolved_rows
+            else:
+                self.rows = []
+
+    app_cursor = BatchCursor()
+    store, driver = _store(app_cursor=app_cursor)
+    specs = tuple(
+        JobEnqueueSpec(
+            job_id=f"job_batch_{index:03d}",
+            type="drive_file_ingest",
+            tenant_id="tenant_a",
+            account_id="account_a",
+            space_id="space_a",
+            requested_by="user_a",
+            payload={"file_id": f"file_{index:03d}"},
+            idempotency_key=f"drive-batch:{index:03d}",
+        )
+        for index in range(100)
+    )
+
+    first = store.enqueue_many(specs)
+
+    assert len(first) == 100
+    assert driver.connected == ["postgresql://app"]
+    assert len(app_cursor.executed) == 3
+    assert "set_config" in app_cursor.executed[0][0]
+    assert "jsonb_to_recordset" in app_cursor.executed[1][0]
+    assert "INSERT INTO jobs" in app_cursor.executed[1][0]
+    assert "jsonb_to_recordset" in app_cursor.executed[2][0]
+    assert "JOIN jobs" in app_cursor.executed[2][0]
+    assert len(json.loads(app_cursor.executed[1][1][0])) == 100
+
+    second = store.enqueue_many(specs)
+
+    assert [job.id for job in second] == [job.id for job in first]
+    assert driver.connected == ["postgresql://app", "postgresql://app"]
+    assert len(app_cursor.executed) == 6
+    assert driver.connections["postgresql://app"].commits == 2
+
+
+def test_postgres_batch_enqueue_rejects_mixed_rls_scopes_before_connecting():
+    store, driver = _store()
+
+    with pytest.raises(ValueError, match="one tenant/account/space scope"):
+        store.enqueue_many((
+            JobEnqueueSpec(
+                type="drive_file_ingest",
+                tenant_id="tenant_a",
+                account_id="account_a",
+                space_id="space_a",
+                idempotency_key="drive-batch:a",
+            ),
+            JobEnqueueSpec(
+                type="drive_file_ingest",
+                tenant_id="tenant_a",
+                account_id="account_a",
+                space_id="space_b",
+                idempotency_key="drive-batch:b",
+            ),
+        ))
+
+    assert driver.connected == []
 
 
 def test_file_reads_and_claims_use_only_the_worker_dsn():

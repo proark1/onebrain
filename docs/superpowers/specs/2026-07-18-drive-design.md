@@ -286,9 +286,10 @@ memory, and execution-time limits. Upload handling validates detected media type
 sanitizes display filenames, rejects path traversal, and does not trust the
 client MIME type.
 
-Executable or active content is not previewed inline. If malware scanning is not
-available in the first release, potentially active formats are download-only and
-the limitation is stated in deployment documentation.
+Executable or active content is not previewed inline. Every stored revision is
+malware-scanned before ordinary download or AI processing, including storage-only
+files. A current clean attestation unlocks the normal authorized download path;
+it does not weaken attachment-only delivery or imply that active content is safe.
 
 ## Indexing and approval lifecycle
 

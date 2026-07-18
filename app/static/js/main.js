@@ -7,7 +7,6 @@ import { initConversations, refreshConversations } from "./conversations.js";
 import { el, qs, toast } from "./dom.js";
 import { initOperator } from "./operator.js";
 import { CLASS_COLORS, getWorkspaceScope } from "./state.js";
-import { initUpload } from "./upload.js";
 import { initWorkspace } from "./workspace.js";
 
 async function refreshDocuments() {
@@ -72,7 +71,6 @@ async function initApp(me) {
 
   initChat({ onConversationChange: () => refreshConversations() });
   initConversations({ onSelect: (id) => loadConversation(id) });
-  initUpload({ onUploaded: () => Promise.all([refreshDocuments(), refreshReview()]) });
   const operator = initOperator(me);
   await initWorkspace(me, {
     onChange: () => {

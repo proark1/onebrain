@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.drive.base import DriveFile, DriveRevision
+from app.drive.base import DriveFile, DriveMalwareScan, DriveRevision, now_iso
 from app.drive.blobs import LocalDriveBlobStore
 from app.drive.indexing import handle_drive_index_job
 from app.drive.memory import MemoryDriveStore
@@ -50,7 +50,7 @@ def _index_fixture(tmp_path, monkeypatch, *, name="knowledge.txt", payload=b"One
         generation=1,
         uploaded_by="user_owner",
     ))
-    drive.create_revision(DriveRevision(
+    revision = drive.create_revision(DriveRevision(
         id=revision_id,
         tenant_id=ACCOUNT,
         account_id=ACCOUNT,
@@ -63,6 +63,23 @@ def _index_fixture(tmp_path, monkeypatch, *, name="knowledge.txt", payload=b"One
         media_type="text/plain",
         original_name=name,
         created_by="user_owner",
+    ))
+    timestamp = now_iso()
+    drive.create_malware_scan(DriveMalwareScan(
+        id="scan_aaaaaaaa",
+        tenant_id=ACCOUNT,
+        account_id=ACCOUNT,
+        space_id=SPACE,
+        file_id=file_id,
+        revision_id=revision_id,
+        revision_sha256=revision.sha256,
+        revision_size_bytes=revision.size_bytes,
+        status="clean",
+        scanner_engine="clamav",
+        scanner_engine_version="1.4.3",
+        definition_version="main-63",
+        definition_timestamp=timestamp,
+        completed_at=timestamp,
     ))
     job = Job(
         id="job_aaaaaaaa",
@@ -117,6 +134,40 @@ def test_stale_or_disabled_index_work_never_reads_or_publishes(tmp_path, monkeyp
 
     stale = Job(**{**job.__dict__, "payload": {**job.payload, "generation": 2}})
     assert handle_drive_index_job(stale)["status"] == "stale"
+    assert vectors.count() == 0
+
+
+@pytest.mark.parametrize("status", ["pending", "scanning", "infected", "scan_error", "rescan_required"])
+def test_non_clean_current_attempt_blocks_before_blob_read(tmp_path, monkeypatch, status):
+    drive, vectors, file, job = _index_fixture(tmp_path, monkeypatch)
+    _settings(monkeypatch)
+    current = drive.get_authoritative_malware_scan(
+        file.current_revision_id, account_id=ACCOUNT, space_id=SPACE,
+    )
+    drive.create_malware_scan(DriveMalwareScan(
+        id=f"scan_{status.replace('_', '')}_2",
+        tenant_id=ACCOUNT,
+        account_id=ACCOUNT,
+        space_id=SPACE,
+        file_id=file.id,
+        revision_id=file.current_revision_id,
+        revision_sha256=current.revision_sha256,
+        revision_size_bytes=current.revision_size_bytes,
+        status=status,
+        attempt_sequence=2,
+        threat_code="eicar_test_signature" if status == "infected" else "",
+        error_code="scanner_unavailable" if status == "scan_error" else "",
+        completed_at=now_iso() if status in {"infected", "scan_error"} else "",
+    ))
+    monkeypatch.setattr(
+        "app.deps.get_drive_blob_store",
+        lambda: pytest.fail("quarantined indexing must not open the blob store"),
+    )
+
+    result = handle_drive_index_job(job)
+
+    assert result["status"] == "quarantined"
+    assert result["malware_status"] == status
     assert vectors.count() == 0
 
     drive.update_file(

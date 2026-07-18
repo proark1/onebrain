@@ -55,7 +55,9 @@ jobs:
         env:
           ONEBRAIN_AUTH_SECRET: ci-test-secret-ci-test-secret-ci-test-secret
           ONEBRAIN_COOKIE_SECURE: "false"
-        run: python scripts/export_openapi.py onebrain-web/src/lib/openapi.json --check
+        run: |
+          python scripts/export_openapi.py onebrain-web/src/lib/openapi.json --check --surface operator
+          python scripts/export_openapi.py onebrain-web/src/lib/openapi.customer.json --check --surface customer
 
   frontend:
     name: Frontend checks
@@ -205,8 +207,16 @@ jobs:
           PY
 
   postgres-migration-smoke:
-    name: PostgreSQL / pgvector migration smoke
+    name: PostgreSQL / pgvector migration and malware boundary
     runs-on: ubuntu-latest
+
+    env:
+      ONEBRAIN_DATABASE_URL: postgresql://onebrain:onebrain@localhost:5432/onebrain_ci
+      ONEBRAIN_MIGRATION_DATABASE_URL: postgresql://onebrain:onebrain@localhost:5432/onebrain_ci
+      ONEBRAIN_POSTGRES_MALWARE_LIVE_OWNER_URL: postgresql://onebrain:onebrain@localhost:5432/onebrain_ci
+      ONEBRAIN_EMBEDDING_DIM: "256"
+      ONEBRAIN_POSTGRES_APP_ROLE: onebrain_app
+      ONEBRAIN_POSTGRES_WORKER_ROLE: onebrain_worker
 
     services:
       postgres:
@@ -239,40 +249,80 @@ jobs:
       - name: Install production dependencies
         run: python -m pip install --require-hashes -r requirements.txt
 
-      - name: Apply and verify production schema
-        env:
-          ONEBRAIN_DATABASE_URL: postgresql://onebrain:onebrain@localhost:5432/onebrain_ci
-          ONEBRAIN_EMBEDDING_DIM: "256"
-          ONEBRAIN_POSTGRES_APP_ROLE: onebrain_app
-          ONEBRAIN_POSTGRES_WORKER_ROLE: onebrain_worker
+      - name: Create restricted CI database identities
         run: |
           python - <<'PY'
           import os
+          import secrets
+          from urllib.parse import quote
 
           import psycopg
+          from psycopg import sql
 
           # Migration 0030 validates that production's independently
           # authenticated application and worker roles already exist. Mirror
-          # that prerequisite here so CI verifies the migration instead of
-          # silently exercising an owner-only database.
+          # that prerequisite with random, masked, job-local passwords so the
+          # live boundary tests authenticate as the real restricted roles.
+          credentials = {
+              "onebrain_app": secrets.token_urlsafe(32),
+              "onebrain_worker": secrets.token_urlsafe(32),
+          }
+          for password in credentials.values():
+              print(f"::add-mask::{password}", flush=True)
           with psycopg.connect(os.environ["ONEBRAIN_DATABASE_URL"], autocommit=True) as conn:
               with conn.cursor() as cur:
-                  cur.execute("""
-                      DO $$
-                      BEGIN
-                          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'onebrain_app') THEN
-                              CREATE ROLE onebrain_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
-                                  NOINHERIT NOBYPASSRLS NOREPLICATION;
-                          END IF;
-                          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'onebrain_worker') THEN
-                              CREATE ROLE onebrain_worker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
-                                  NOINHERIT NOBYPASSRLS NOREPLICATION;
-                          END IF;
-                      END
-                      $$;
-                  """)
+                  for role, password in credentials.items():
+                      cur.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (role,))
+                      if cur.fetchone() is None:
+                          cur.execute(
+                              sql.SQL("CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB "
+                                      "NOCREATEROLE NOINHERIT NOBYPASSRLS NOREPLICATION").format(
+                                  sql.Identifier(role)
+                              )
+                          )
+                      cur.execute(
+                          sql.SQL("ALTER ROLE {} WITH LOGIN NOSUPERUSER NOCREATEDB "
+                                  "NOCREATEROLE NOINHERIT NOBYPASSRLS NOREPLICATION "
+                                  "PASSWORD {}").format(
+                              sql.Identifier(role), sql.Literal(password)
+                          )
+                      )
+
+          env_lines = []
+          for role, variable in (
+              ("onebrain_app", "ONEBRAIN_POSTGRES_MALWARE_LIVE_APP_URL"),
+              ("onebrain_worker", "ONEBRAIN_POSTGRES_MALWARE_LIVE_WORKER_URL"),
+          ):
+              password = credentials[role]
+              dsn = (
+                  f"postgresql://{role}:{quote(password, safe='')}"
+                  "@localhost:5432/onebrain_ci"
+              )
+              env_lines.append(f"{variable}={dsn}\n")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.writelines(env_lines)
           PY
+
+      - name: Migrate to the legacy Drive boundary
+        run: python -m alembic upgrade 0032_onebrain_drive
+
+      - name: Seed a published legacy Drive projection
+        run: python tests/test_drive_malware_postgres_live.py --seed-legacy
+
+      - name: Upgrade and activate mandatory Drive malware quarantine
+        env:
+          ONEBRAIN_VECTOR_STORE: pgvector
+        run: |
           python -m alembic upgrade head
+          python -m app.drive.malware.activation --batch-size 1
+
+      - name: Exercise the live PostgreSQL malware boundary
+        env:
+          ONEBRAIN_REQUIRE_POSTGRES_MALWARE_LIVE: "1"
+        run: python tests/test_drive_malware_postgres_live.py
+
+      - name: Verify production schema
+        run: |
           python - <<'PY'
           import os
 
@@ -286,6 +336,12 @@ jobs:
               "ai_agent_runs",
               "control_customer_teardown_requests",
               "auth_rate_limits",
+              "drive_files",
+              "drive_file_revisions",
+              "drive_revision_malware_scans",
+              "drive_malware_runtime_status",
+              "drive_malware_activation_state",
+              "drive_malware_settings",
           )
           with psycopg.connect(os.environ["ONEBRAIN_DATABASE_URL"]) as conn:
               validate_postgres_schema(conn, required)
@@ -323,7 +379,43 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Build immutable container context
+        if: matrix.name != 'worker'
         run: docker build --pull --tag onebrain/${{ matrix.name }}:ci --file ${{ matrix.file }} ${{ matrix.context }}
+
+      - name: Build worker from cold locked inputs
+        if: matrix.name == 'worker'
+        run: |
+          base_reference=$(python deploy/scanner-sandbox/worker_supply_chain.py \
+            base-reference deploy/scanner-sandbox/worker-supply-chain.lock.json)
+          docker buildx imagetools inspect --raw "${base_reference}" \
+            > "${RUNNER_TEMP}/onebrain-worker-base-index.json"
+          python deploy/scanner-sandbox/worker_supply_chain.py verify-base-index \
+            deploy/scanner-sandbox/worker-supply-chain.lock.json \
+            "${RUNNER_TEMP}/onebrain-worker-base-index.json"
+          docker build --pull --no-cache \
+            --tag onebrain/worker:ci \
+            --file Dockerfile.worker .
+
+      - name: Verify packaged worker supply-chain evidence
+        if: matrix.name == 'worker'
+        run: |
+          docker run --rm --entrypoint python onebrain/worker:ci \
+            /opt/onebrain/worker_supply_chain.py verify-lock \
+            /opt/onebrain/worker-supply-chain.lock.json
+          docker run --rm --entrypoint python onebrain/worker:ci \
+            /opt/onebrain/worker_supply_chain.py verify-evidence \
+            /opt/onebrain/worker-supply-chain.lock.json \
+            /opt/onebrain/worker-supply-chain.json \
+            --inventory /opt/onebrain/scanner-packages.txt
+          docker run --rm --entrypoint python onebrain/worker:ci \
+            -m app.drive.malware.definitions verify-release-evidence \
+            /opt/onebrain/clamav-baseline \
+            --evidence /opt/onebrain/scanner-release.json \
+            --launcher /usr/local/bin/onebrain-scanner-sandbox \
+            --clamav-binary /usr/bin/clamscan \
+            --capabilities /opt/onebrain/scanner-capabilities.json \
+            --packages /opt/onebrain/scanner-packages.txt \
+            --supply-chain /opt/onebrain/worker-supply-chain.json
 
   publish-images:
     name: Publish images

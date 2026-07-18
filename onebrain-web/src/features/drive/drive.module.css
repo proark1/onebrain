@@ -319,7 +319,7 @@
 .listHeader,
 .entryRow {
   display: grid;
-  grid-template-columns: minmax(230px, 1.25fr) minmax(150px, .8fr) minmax(135px, .55fr) minmax(100px, .4fr) 92px;
+  grid-template-columns: minmax(220px, 1.15fr) minmax(135px, .65fr) minmax(155px, .72fr) minmax(125px, .55fr) minmax(95px, .4fr) 92px;
   align-items: center;
   gap: 12px;
 }
@@ -436,11 +436,12 @@
   font-weight: 650;
 }
 
+.securityColumn,
 .aiColumn {
   min-width: 0;
 }
 
-.aiStatus {
+.statusChip {
   position: relative;
   display: inline-grid;
   grid-template-columns: 3px 14px minmax(0, auto);
@@ -459,15 +460,15 @@
   white-space: nowrap;
 }
 
-.aiRail {
+.statusRail {
   align-self: stretch;
   background: var(--slate);
 }
 
-.statusRunning .aiRail { background: var(--copper); }
-.statusSuccess .aiRail { background: var(--green); }
-.statusWarning .aiRail { background: var(--amber); }
-.statusDanger .aiRail { background: var(--red); }
+.statusRunning .statusRail { background: var(--copper); }
+.statusSuccess .statusRail { background: var(--green); }
+.statusWarning .statusRail { background: var(--amber); }
+.statusDanger .statusRail { background: var(--red); }
 .statusSuccess { color: var(--green); background: rgb(var(--brand-success-rgb) / 6%); }
 .statusWarning { color: #785628; background: rgb(var(--brand-warning-rgb) / 8%); }
 .statusDanger { color: var(--red); background: rgb(var(--brand-danger-rgb) / 7%); }
@@ -1036,11 +1037,23 @@
 @media (max-width: 1100px) {
   .listHeader,
   .entryRow {
-    grid-template-columns: minmax(210px, 1.2fr) minmax(135px, .7fr) minmax(130px, .55fr) minmax(110px, auto);
+    grid-template-columns: minmax(205px, 1.1fr) minmax(125px, .62fr) minmax(150px, .7fr) minmax(120px, .55fr) minmax(100px, auto);
   }
 
-  .listHeader > span:nth-child(4),
+  .listHeader > span:nth-child(5),
   .updated {
+    display: none;
+  }
+}
+
+@media (max-width: 960px) and (min-width: 701px) {
+  .listHeader,
+  .entryRow {
+    grid-template-columns: minmax(205px, 1fr) minmax(150px, .72fr) minmax(120px, .55fr) minmax(100px, auto);
+  }
+
+  .listHeader > span:nth-child(2),
+  .audience {
     display: none;
   }
 }
@@ -1128,6 +1141,7 @@
   }
 
   .entryName,
+  .securityColumn,
   .aiColumn,
   .rowActions {
     grid-column: 1 / -1;

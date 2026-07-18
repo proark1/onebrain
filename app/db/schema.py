@@ -6,7 +6,8 @@ from typing import Iterable
 
 
 BASELINE_ALEMBIC_REVISION = "0001_baseline_onebrain_schema"
-REQUIRED_ALEMBIC_REVISION = "0033_onebrain_drive"
+REQUIRED_ALEMBIC_REVISION = "0034_drive_malware_quarantine"
+DRIVE_MALWARE_POLICY_EPOCH = 1
 MIGRATION_GUIDANCE = (
     "Postgres schema is not migrated. Run `alembic upgrade head` with "
     "ONEBRAIN_DATABASE_URL before starting OneBrain."
@@ -17,7 +18,9 @@ class PostgresSchemaError(RuntimeError):
     """Raised when a Postgres-backed store sees an unmigrated database."""
 
 
-def validate_postgres_schema(conn, required_tables: Iterable[str]) -> None:
+def validate_postgres_schema(
+    conn, required_tables: Iterable[str], *, require_malware_active: bool = False,
+) -> None:
     """Require the Alembic baseline and expected tables before using Postgres."""
 
     revision = _read_alembic_revision(conn)
@@ -32,6 +35,8 @@ def validate_postgres_schema(conn, required_tables: Iterable[str]) -> None:
         raise PostgresSchemaError(
             f"{MIGRATION_GUIDANCE} Missing tables: {', '.join(missing)}."
         )
+    if require_malware_active:
+        _validate_drive_malware_activation(conn)
 
 
 def _read_alembic_revision(conn) -> str:
@@ -53,6 +58,30 @@ def _missing_tables(conn, required_tables: Iterable[str]) -> list[str]:
             if not row or row[0] is None:
                 missing.append(table)
     return missing
+
+
+def _validate_drive_malware_activation(conn) -> None:
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT schema_revision, policy_epoch, state "
+                "FROM drive_malware_activation_state WHERE singleton_id=true"
+            )
+            row = cur.fetchone()
+    except Exception as exc:
+        raise PostgresSchemaError(
+            "Drive malware enforcement activation is unavailable; keep API and workers stopped."
+        ) from exc
+    if not row or (
+        str(row[0]) != REQUIRED_ALEMBIC_REVISION
+        or int(row[1]) != DRIVE_MALWARE_POLICY_EPOCH
+        or str(row[2]) != "active"
+    ):
+        state = str(row[2]) if row and len(row) > 2 else "missing"
+        raise PostgresSchemaError(
+            "Drive malware enforcement is not active for the required schema/policy epoch. "
+            f"Current activation state: {state}. Run drive-malware-activate while services remain stopped."
+        )
 
 
 def read_live_alembic_revision(dsn: str) -> str:

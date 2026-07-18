@@ -57,7 +57,7 @@ services:
     profiles: [onebrain]
     <<: *x
     restart: "no"
-    command: ["alembic", "upgrade", "head"]
+    command: ["python", "-m", "app.drive.malware.activation", "--migrate"]
     env_file:
       - env/onebrain-migrate.env
     depends_on:
@@ -103,10 +103,12 @@ services:
     profiles: [onebrain]
     <<: *x
     restart: unless-stopped
+    tmpfs: ["/tmp:mode=1777,size=640m"]
     env_file:
       - env/onebrain-workers.env
     volumes:
       - /data:/data
+      - /var/lib/onebrain/clamav:/var/lib/onebrain/clamav
       - /mnt/onebrain-data/drive:/data/drive
     depends_on:
       postgres-roles:

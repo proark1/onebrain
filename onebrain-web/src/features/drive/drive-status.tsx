@@ -1,5 +1,9 @@
 import { DriveIcon } from "./drive-icons";
-import { driveStatusPresentation, type DriveStatusTone } from "./drive-presentation";
+import {
+  driveSecurityPresentation,
+  driveStatusPresentation,
+  type DriveStatusTone,
+} from "./drive-presentation";
 import styles from "./drive.module.css";
 
 const TONE_CLASSES: Record<DriveStatusTone, string> = {
@@ -12,13 +16,28 @@ const TONE_CLASSES: Record<DriveStatusTone, string> = {
 
 export function DriveAiStatus({ status }: { status: string }) {
   const presentation = driveStatusPresentation(status);
+  return <DriveStatus icon="brain" presentation={presentation} />;
+}
+
+export function DriveSecurityStatus({ status }: { status?: string }) {
+  const presentation = driveSecurityPresentation(status);
+  return <DriveStatus icon="shield" presentation={presentation} />;
+}
+
+function DriveStatus({
+  icon,
+  presentation,
+}: {
+  icon: "brain" | "shield";
+  presentation: ReturnType<typeof driveStatusPresentation>;
+}) {
   return (
     <span
-      className={`${styles.aiStatus} ${TONE_CLASSES[presentation.tone]}`}
+      className={`${styles.statusChip} ${TONE_CLASSES[presentation.tone]}`}
       title={presentation.detail}
     >
-      <span className={styles.aiRail} aria-hidden="true" />
-      <DriveIcon name="brain" size={14} />
+      <span className={styles.statusRail} aria-hidden="true" />
+      <DriveIcon name={icon} size={14} />
       <span>{presentation.label}</span>
       <span className={styles.srOnly}>{presentation.detail}</span>
     </span>

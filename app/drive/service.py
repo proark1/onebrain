@@ -7,6 +7,7 @@ import uuid
 from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from typing import Mapping
 
 from fastapi import HTTPException
 
@@ -15,21 +16,36 @@ from app.drive.access import (
     list_drive_roots,
     require_file_access,
     require_folder_access,
+    resolve_space_context,
 )
 from app.drive.base import (
+    MAX_FILE_LIST_DETAIL_BATCH,
     DriveConflictError,
     DriveEntryPage,
     DriveFile,
+    DriveFileListDetail,
     DriveFolder,
     DriveGenerationConflict,
     DriveLimitError,
+    DriveMalwareScan,
+    DriveMalwareWorkerStore,
+    DriveQuarantineLockedError,
     DriveRevision,
+    DriveStore,
     DriveUploadSession,
+    file_list_detail_matches_file,
+    drive_ingest_idempotency_key,
+    drive_ingest_job_id,
+    is_clean_attestation,
     normalize_name,
     now_iso,
 )
-from app.drive.blobs import drive_scope_prefix, drive_storage_key
-from app.jobs.base import JOB_DRIVE_FILE_INGEST
+from app.drive.blobs import blob_matches_revision, drive_scope_prefix, drive_storage_key
+from app.jobs.base import (
+    JOB_DRIVE_FILE_INGEST,
+    JOB_DRIVE_REVISION_MALWARE_SCAN,
+    JobEnqueueSpec,
+)
 from app.platform.base import AuditEvent, DataAccessEvent, Tombstone, target_is_held
 from app.security.policy import GENERAL_CATEGORY, GLOBAL_LOCATION, Classification
 
@@ -38,13 +54,19 @@ def _id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
 
+_DETAIL_NOT_PROVIDED = object()
+
+
 class DriveService:
-    def __init__(self, *, store, blobs, platform_store, job_store, settings):
-        self.store = store
+    def __init__(self, *, store: DriveStore, blobs, platform_store, job_store, settings):
+        self.store: DriveStore = store
         self.blobs = blobs
         self.platform_store = platform_store
         self.job_store = job_store
         self.settings = settings
+        bind_job_authority = getattr(self.store, "bind_malware_job_authority", None)
+        if callable(bind_job_authority):
+            bind_job_authority(lambda job_id: self.job_store.get(job_id))
 
     def roots(self, principal):
         roots = list_drive_roots(principal, self.platform_store)
@@ -87,18 +109,56 @@ class DriveService:
             cursor=cursor,
             limit=limit,
         )
-        authorized_files = tuple(row for row in page.files if self._can_access(principal, row))
-        self._reconcile_index_jobs(authorized_files)
+        authorized_files = tuple(
+            row for row in page.files
+            if row.account_id == account_id
+            and row.space_id == space_id
+            and self._can_access_in_authorized_space(principal, row)
+        )
+        details = self._file_list_details(
+            authorized_files,
+            account_id=account_id,
+            space_id=space_id,
+        )
+        self._drain_malware_job_outbox()
+        self._reconcile_index_jobs(authorized_files, details)
         return DriveEntryPage(
             folders=tuple(
                 row for row in page.folders
-                if self._can_access_folder(
+                if row.account_id == account_id
+                and row.space_id == space_id
+                and self._can_access_folder(
                     principal, row, space_kind=space.kind, owner_user_id=owner_user_id,
                 )
             ),
             files=authorized_files,
             next_cursor=page.next_cursor,
+            file_details=details,
         )
+
+    def list_pending_review(
+        self, principal, *, account_id: str, space_id: str,
+    ) -> DriveEntryPage:
+        """Return authorized review rows with the same batched detail snapshot as listings."""
+
+        self.authorize_space(principal, account_id, space_id)
+        files = tuple(
+            row for row in self.store.list_pending_review(
+                account_id=account_id,
+                space_id=space_id,
+            )
+            if row.account_id == account_id
+            and row.space_id == space_id
+            and self._can_access_in_authorized_space(principal, row)
+        )
+        details = self._file_list_details(
+            files,
+            account_id=account_id,
+            space_id=space_id,
+        )
+        self._drain_malware_job_outbox()
+        self._reconcile_index_jobs(files, details)
+        return DriveEntryPage(files=files, file_details=details)
 
     def breadcrumbs(self, principal, *, account_id: str, space_id: str, folder_id: str):
         space, owner_user_id = self.authorize_space(principal, account_id, space_id)
@@ -294,7 +354,9 @@ class DriveService:
             category=effective[2],
             desired_indexed=effective[3],
             active_doc_id="",
-            index_status="queued" if effective[3] and not file.trashed_at else "not_indexed",
+            index_status=self._security_index_status(
+                file, desired_indexed=effective[3], trashed=bool(file.trashed_at),
+            ),
             generation=file.generation + 1,
         )
         stored = self.store.update_file(proposed, expected_generation=file.generation)
@@ -359,7 +421,7 @@ class DriveService:
                 seconds=max(60, int(self.settings.drive_upload_session_seconds)),
             )).isoformat(),
         )
-        stored = self.store.create_upload(upload)
+        stored = self.store.reserve_upload(upload)
         if stored.id != upload.id and not self._same_upload_request(stored, upload):
             raise DriveConflictError(
                 "This upload idempotency key was already used with different file parameters."
@@ -371,20 +433,48 @@ class DriveService:
         """Bound abandoned staging data whenever an account initiates new work.
 
         The metadata query is bounded and may be called repeatedly. Each row is
-        marked expired only after its staging bytes are gone, so filesystem
-        failures remain visible and retryable instead of silently leaking data.
+        marked expired only after every possible staging/permanent object is
+        accounted for, so filesystem or metadata failures stay retryable rather
+        than silently leaking data outside the quarantine ledger.
         """
 
-        cleaned = 0
-        for upload in self.store.list_expired_uploads(
+        return self._cleanup_expired_upload_rows(self.store.list_expired_uploads(
             tenant_id=tenant_id,
             account_id=account_id,
             before=now_iso(),
             limit=limit,
-        ):
+        ))
+
+    def cleanup_expired_uploads_for_deployment(
+        self, *, worker_store: DriveMalwareWorkerStore, limit: int = 500,
+    ) -> int:
+        """Worker-only bounded cleanup across accounts, including blob recovery."""
+
+        return self._cleanup_expired_upload_rows(
+            worker_store.list_expired_uploads_for_maintenance(
+                before=now_iso(), limit=limit,
+            )
+        )
+
+    def _cleanup_expired_upload_rows(self, uploads) -> int:
+        cleaned = 0
+        for upload in uploads:
+            # Release metadata only after staging bytes are gone and a promoted
+            # object has either been recovered transactionally or deleted.
             self.blobs.delete_staging(upload.id)
+            if upload.status == "completing":
+                recovered = self._recover_promoted_upload(upload)
+                if recovered:
+                    cleaned += 1
+                    continue
+            released = self.store.release_upload_reservation(
+                upload.id,
+                tenant_id=upload.tenant_id,
+                account_id=upload.account_id,
+                space_id=upload.space_id,
+            )
             self.store.update_upload(replace(
-                upload,
+                released,
                 status="expired",
                 error="Upload session expired.",
             ))
@@ -426,8 +516,14 @@ class DriveService:
     def finish_upload_content(self, principal, upload: DriveUploadSession, info, media_type: str = ""):
         if info.size_bytes != upload.size_bytes:
             self.blobs.delete_staging(upload.id)
+            released = self.store.release_upload_reservation(
+                upload.id,
+                tenant_id=upload.tenant_id,
+                account_id=upload.account_id,
+                space_id=upload.space_id,
+            )
             failed = self.store.update_upload(replace(
-                upload,
+                released,
                 status="failed",
                 bytes_received=info.size_bytes,
                 sha256=info.sha256,
@@ -450,6 +546,7 @@ class DriveService:
             existing = self.store.get_file(upload.file_id, account_id=upload.account_id, space_id=upload.space_id)
             if not existing:
                 raise RuntimeError("Completed Drive upload is missing its file metadata.")
+            self._drain_malware_job_outbox()
             return upload, existing
         if upload.status not in {"uploaded", "completing"}:
             raise ValueError("Upload content must finish before completion.")
@@ -475,28 +572,60 @@ class DriveService:
         if info.size_bytes != upload.size_bytes or info.sha256 != upload.sha256:
             self.blobs.delete(permanent_key)
             raise RuntimeError("Promoted Drive blob does not match the completed upload.")
-        file = self.store.get_file(file_id, account_id=upload.account_id, space_id=upload.space_id)
-        if not file:
-            file = self.store.create_file(DriveFile(
-                id=file_id,
-                tenant_id=upload.tenant_id,
-                account_id=upload.account_id,
-                space_id=upload.space_id,
-                folder_id=upload.folder_id,
-                name=upload.name,
-                classification=upload.classification,
-                location=upload.location,
-                category=upload.category,
-                space_kind=space.kind,
-                owner_user_id=owner_user_id,
-                desired_indexed=upload.desired_indexed,
-                approval_status="not_required",
-                index_status="queued" if upload.desired_indexed else "not_indexed",
-                current_revision_id=revision_id,
-                generation=1,
-                uploaded_by=principal.user_id,
-            ))
-        revision = self.store.create_revision(DriveRevision(
+        file, revision, scan, scan_job_id = self._quarantined_upload_records(
+            upload,
+            space_kind=space.kind,
+            owner_user_id=owner_user_id,
+            permanent_key=permanent_key,
+        )
+        completed = self.store.complete_upload_quarantined(
+            upload=upload,
+            file=file,
+            revision=revision,
+            scan=scan,
+            scan_job_id=scan_job_id,
+            scan_job_max_attempts=max(1, int(getattr(
+                self.settings, "drive_malware_retry_attempts", 5,
+            ))),
+        )
+        upload, file = completed.upload, completed.file
+        self._drain_malware_job_outbox()
+        self._audit(principal, "drive.file.created", "drive_file", file.id, file.space_id, {
+            "generation": file.generation,
+            "index_requested": file.desired_indexed,
+        })
+        return upload, file
+
+    def _quarantined_upload_records(
+        self,
+        upload: DriveUploadSession,
+        *,
+        space_kind: str,
+        owner_user_id: str,
+        permanent_key: str,
+    ) -> tuple[DriveFile, DriveRevision, DriveMalwareScan, str]:
+        file_id = upload.file_id or self._deterministic_id("fil", upload.id)
+        revision_id = upload.revision_id or self._deterministic_id("rev", upload.id)
+        file = DriveFile(
+            id=file_id,
+            tenant_id=upload.tenant_id,
+            account_id=upload.account_id,
+            space_id=upload.space_id,
+            folder_id=upload.folder_id,
+            name=upload.name,
+            classification=upload.classification,
+            location=upload.location,
+            category=upload.category,
+            space_kind=space_kind,
+            owner_user_id=owner_user_id,
+            desired_indexed=upload.desired_indexed,
+            approval_status="not_required",
+            index_status="awaiting_scan" if upload.desired_indexed else "not_indexed",
+            current_revision_id=revision_id,
+            generation=1,
+            uploaded_by=upload.created_by,
+        )
+        revision = DriveRevision(
             id=revision_id,
             tenant_id=upload.tenant_id,
             account_id=upload.account_id,
@@ -508,33 +637,79 @@ class DriveService:
             size_bytes=upload.size_bytes,
             media_type=upload.media_type,
             original_name=upload.name,
-            created_by=principal.user_id,
-        ))
-        if file.current_revision_id != revision.id:
-            file = self.store.update_file(
-                replace(
-                    file,
-                    current_revision_id=revision.id,
-                    generation=file.generation + 1,
-                    active_doc_id="",
-                    index_status="queued" if file.desired_indexed else "not_indexed",
-                ),
-                expected_generation=file.generation,
-            )
-        if file.desired_indexed:
-            self._enqueue_index(file)
-        upload = self.store.update_upload(replace(
-            upload,
-            status="completed",
+            created_by=upload.created_by,
+        )
+        scan_id = self._deterministic_id("scan", f"{revision.id}:1")
+        scan_job_id = self._deterministic_id("job", f"malware:{scan_id}")
+        scan = DriveMalwareScan(
+            id=scan_id,
+            tenant_id=revision.tenant_id,
+            account_id=revision.account_id,
+            space_id=revision.space_id,
             file_id=file.id,
             revision_id=revision.id,
-            error="",
-        ))
-        self._audit(principal, "drive.file.created", "drive_file", file.id, file.space_id, {
-            "generation": file.generation,
-            "index_requested": file.desired_indexed,
-        })
-        return upload, file
+            revision_sha256=revision.sha256,
+            revision_size_bytes=revision.size_bytes,
+            status="pending",
+            origin="upload",
+            attempt_sequence=1,
+            job_id=scan_job_id,
+        )
+        return file, revision, scan, scan_job_id
+
+    def _recover_promoted_upload(self, upload: DriveUploadSession) -> bool:
+        """Finish or remove the deterministic object left by a completion crash."""
+
+        file_id = self._deterministic_id("fil", upload.id)
+        revision_id = self._deterministic_id("rev", upload.id)
+        permanent_key = drive_storage_key(
+            upload.tenant_id, upload.account_id, upload.space_id, file_id, revision_id,
+        )
+        info = self.blobs.stat(permanent_key)
+        if not info:
+            return False
+        if (
+            upload.file_id != file_id
+            or upload.revision_id != revision_id
+            or info.size_bytes != upload.size_bytes
+            or info.sha256 != upload.sha256
+        ):
+            self.blobs.delete(permanent_key)
+            return False
+        try:
+            space, owner_user_id = resolve_space_context(
+                upload.account_id, upload.space_id, self.platform_store,
+            )
+            if upload.folder_id:
+                folder = self.store.get_folder(
+                    upload.folder_id,
+                    account_id=upload.account_id,
+                    space_id=upload.space_id,
+                )
+                if not folder or folder.trashed_at:
+                    self.blobs.delete(permanent_key)
+                    return False
+            file, revision, scan, scan_job_id = self._quarantined_upload_records(
+                upload,
+                space_kind=space.kind,
+                owner_user_id=owner_user_id,
+                permanent_key=permanent_key,
+            )
+            completed = self.store.complete_upload_quarantined(
+                upload=upload,
+                file=file,
+                revision=revision,
+                scan=scan,
+                scan_job_id=scan_job_id,
+                scan_job_max_attempts=max(1, int(getattr(
+                    self.settings, "drive_malware_retry_attempts", 5,
+                ))),
+            )
+        except HTTPException:
+            self.blobs.delete(permanent_key)
+            return False
+        self._drain_malware_job_outbox()
+        return completed.upload.status == "completed"
 
     def get_file(self, principal, *, account_id: str, space_id: str, file_id: str) -> DriveFile:
         self.authorize_space(principal, account_id, space_id)
@@ -546,11 +721,8 @@ class DriveService:
 
     def get_revision_for_download(self, principal, *, account_id: str, space_id: str, file_id: str):
         file = self.get_file(principal, account_id=account_id, space_id=space_id, file_id=file_id)
-        revision = self.store.get_revision(
-            file.current_revision_id, account_id=account_id, space_id=space_id,
-        )
-        if not revision:
-            raise RuntimeError("Drive original is unavailable.")
+        revision = self.require_clean_current_revision(file)
+        info = self.require_revision_blob_integrity(revision)
         self.platform_store.record_data_access(DataAccessEvent(
             id=_id("dae"), account_id=account_id, space_id=space_id,
             actor_id=principal.user_id, actor_type=principal.principal_type,
@@ -558,7 +730,103 @@ class DriveService:
             app_id="onebrain_core", purpose="knowledge_management", decision="allowed",
             meta={"revision_id": revision.id, "size_bytes": revision.size_bytes},
         ))
-        return file, revision
+        return file, revision, info
+
+    def require_revision_blob_integrity(self, revision: DriveRevision):
+        """Resolve original metadata only when bytes match the immutable revision."""
+
+        info = self.blobs.stat(revision.storage_key)
+        if not info:
+            raise FileNotFoundError("Drive original is unavailable.")
+        if not blob_matches_revision(
+            info,
+            size_bytes=revision.size_bytes,
+            sha256=revision.sha256,
+        ):
+            raise DriveConflictError("Drive original failed integrity validation.")
+        return info
+
+    def malware_status(self, file: DriveFile) -> str:
+        """Return the authoritative public security state for a visible file."""
+
+        scan = self.malware_evidence(file)
+        return scan.status if scan else "rescan_required"
+
+    def malware_evidence(self, file: DriveFile) -> DriveMalwareScan | None:
+        """Return authorized current-revision evidence after file authorization."""
+
+        if not file.current_revision_id:
+            return None
+        return self.store.get_authoritative_malware_scan(
+            file.current_revision_id,
+            account_id=file.account_id,
+            space_id=file.space_id,
+        )
+
+    def file_list_detail(self, file: DriveFile) -> DriveFileListDetail:
+        """Load one detail for a file already authorized by the calling operation."""
+
+        details = self._file_list_details(
+            (file,),
+            account_id=file.account_id,
+            space_id=file.space_id,
+        )
+        return details.get(file.current_revision_id, DriveFileListDetail())
+
+    def _file_list_details(
+        self,
+        files,
+        *,
+        account_id: str,
+        space_id: str,
+    ) -> Mapping[str, DriveFileListDetail]:
+        files = tuple(files)
+        revision_ids = tuple(dict.fromkeys(
+            file.current_revision_id
+            for file in files
+            if file.current_revision_id
+            and file.account_id == account_id
+            and file.space_id == space_id
+        ))
+        if not revision_ids:
+            return {}
+        stored: dict[str, DriveFileListDetail] = {}
+        for start in range(0, len(revision_ids), MAX_FILE_LIST_DETAIL_BATCH):
+            stored.update(self.store.get_file_list_details(
+                account_id=account_id,
+                space_id=space_id,
+                revision_ids=revision_ids[start:start + MAX_FILE_LIST_DETAIL_BATCH],
+            ))
+        safe: dict[str, DriveFileListDetail] = {}
+        for file in files:
+            detail = stored.get(file.current_revision_id)
+            if detail and file_list_detail_matches_file(file, detail):
+                safe[file.current_revision_id] = detail
+        return safe
+
+    def require_clean_current_revision(self, file: DriveFile) -> DriveRevision:
+        """Authorize exact current bytes for a previously-authorized file.
+
+        Callers must perform normal file access control first. Keeping that
+        order avoids revealing quarantine state for an otherwise hidden file.
+        """
+
+        revision = self.store.get_revision(
+            file.current_revision_id,
+            account_id=file.account_id,
+            space_id=file.space_id,
+        )
+        scan = (
+            self.store.get_authoritative_malware_scan(
+                file.current_revision_id,
+                account_id=file.account_id,
+                space_id=file.space_id,
+            )
+            if revision else None
+        )
+        if not revision or not is_clean_attestation(revision, scan):
+            raise DriveQuarantineLockedError()
+        return revision
 
     def trash_file(self, principal, *, account_id: str, space_id: str, file_id: str, generation: int) -> DriveFile:
         file = self.get_file(principal, account_id=account_id, space_id=space_id, file_id=file_id)
@@ -605,8 +873,10 @@ class DriveService:
             original_folder_id="",
             trash_operation_id="",
             generation=file.generation + 1,
-            index_status=(
-                "queued" if file.desired_indexed and self._indexing_allowed() else "not_indexed"
+            index_status=self._security_index_status(
+                file,
+                desired_indexed=file.desired_indexed and self._indexing_allowed(),
+                trashed=False,
             ),
         )
         stored = self.store.update_file(proposed, expected_generation=file.generation)
@@ -682,6 +952,20 @@ class DriveService:
             indexing_enabled=self._indexing_allowed(),
         )
         for restored_file in result.files:
+            expected_status = self._security_index_status(
+                restored_file,
+                desired_indexed=restored_file.desired_indexed and self._indexing_allowed(),
+                trashed=False,
+            )
+            if restored_file.index_status != expected_status:
+                restored_file = self.store.update_file(
+                    replace(
+                        restored_file,
+                        index_status=expected_status,
+                        generation=restored_file.generation + 1,
+                    ),
+                    expected_generation=restored_file.generation,
+                )
             if restored_file.desired_indexed and restored_file.index_status == "queued":
                 self._enqueue_index(restored_file)
         self._audit(principal, "drive.folder.restored", "drive_folder", folder.id, space_id)
@@ -723,7 +1007,9 @@ class DriveService:
             file,
             desired_indexed=bool(enabled),
             active_doc_id=file.active_doc_id if enabled else "",
-            index_status="queued" if enabled else "not_indexed",
+            index_status=self._security_index_status(
+                file, desired_indexed=bool(enabled), trashed=bool(file.trashed_at),
+            ),
             generation=file.generation + 1,
         )
         stored = self.store.update_file(proposed, expected_generation=file.generation)
@@ -745,6 +1031,7 @@ class DriveService:
             return file
         if file.generation != generation or file.approval_status != "pending":
             raise DriveGenerationConflict("File is no longer awaiting this approval.")
+        self.require_clean_current_revision(file)
         proposed = replace(
             file,
             approval_status="approved",
@@ -755,6 +1042,56 @@ class DriveService:
         stored = self.store.update_file(proposed, expected_generation=file.generation)
         self._enqueue_index(stored)
         self._audit(principal, "drive.file.approved", "drive_file", file.id, space_id)
+        return stored
+
+    def rescan_file(
+        self, principal, *, account_id: str, space_id: str, file_id: str, generation: int,
+        idempotency_key: str = "",
+    ) -> DriveFile:
+        file = self.get_file(
+            principal, account_id=account_id, space_id=space_id, file_id=file_id,
+        )
+        revision = self.store.get_revision(
+            file.current_revision_id, account_id=account_id, space_id=space_id,
+        )
+        if not revision:
+            raise DriveConflictError("Drive current revision is unavailable.")
+        current = self.store.get_authoritative_malware_scan(
+            revision.id, account_id=account_id, space_id=space_id,
+        )
+        if file.generation == generation and current and current.status in {"pending", "scanning"}:
+            job_status = self.store.malware_scan_job_status(current)
+            if job_status not in {"failed", "succeeded"}:
+                self._drain_malware_job_outbox()
+                return file
+        request_key = (idempotency_key or "").strip() or f"generation:{generation}"
+        scan_id = self._deterministic_id(
+            "scan",
+            f"rescan:{revision.id}:{generation}:{principal.user_id}:{request_key}",
+        )
+        scan_job_id = self._deterministic_id("job", f"malware:{scan_id}")
+        stored, _scan = self.store.request_malware_rescan(
+            file_id=file.id,
+            account_id=account_id,
+            space_id=space_id,
+            expected_generation=generation,
+            requested_by=principal.user_id,
+            scan_id=scan_id,
+            scan_job_id=scan_job_id,
+            idempotency_key=request_key,
+            scan_job_max_attempts=max(1, int(getattr(
+                self.settings, "drive_malware_retry_attempts", 5,
+            ))),
+        )
+        self._drain_malware_job_outbox()
+        self._audit(
+            principal,
+            "drive.file.security_rescan_requested",
+            "drive_file",
+            file.id,
+            space_id,
+            {"generation": stored.generation},
+        )
         return stored
 
     def permanently_delete_file(
@@ -835,14 +1172,74 @@ class DriveService:
         self.authorize_space(principal, upload.account_id, upload.space_id)
         if upload.status not in {"completed", "completing", "expired"} and self._is_expired(upload.expires_at):
             self.blobs.delete_staging(upload.id)
-            self.store.update_upload(replace(upload, status="expired", error="Upload session expired."))
+            released = self.store.release_upload_reservation(
+                upload.id,
+                tenant_id=upload.tenant_id,
+                account_id=upload.account_id,
+                space_id=upload.space_id,
+            )
+            self.store.update_upload(replace(
+                released, status="expired", error="Upload session expired.",
+            ))
             raise DriveConflictError("Upload session expired; start a new upload.")
         if upload.status == "expired":
             raise DriveConflictError("Upload session expired; start a new upload.")
         return upload
 
-    def _enqueue_index(self, file: DriveFile) -> None:
+    def _enqueue_index(
+        self,
+        file: DriveFile,
+        detail: DriveFileListDetail | object = _DETAIL_NOT_PROVIDED,
+    ) -> bool:
+        spec = self._index_job_spec(file, detail)
+        if spec is None:
+            return False
         self.job_store.enqueue(
+            job_id=spec.job_id,
+            type=spec.type,
+            tenant_id=spec.tenant_id,
+            account_id=spec.account_id,
+            space_id=spec.space_id,
+            requested_by=spec.requested_by,
+            payload=dict(spec.payload),
+            max_attempts=spec.max_attempts,
+            idempotency_key=spec.idempotency_key,
+        )
+        return True
+
+    def _index_job_spec(
+        self,
+        file: DriveFile,
+        detail: DriveFileListDetail | object = _DETAIL_NOT_PROVIDED,
+    ) -> JobEnqueueSpec | None:
+        if detail is _DETAIL_NOT_PROVIDED:
+            revision = self.store.get_revision(
+                file.current_revision_id,
+                account_id=file.account_id,
+                space_id=file.space_id,
+            )
+            scan = (
+                self.store.get_authoritative_malware_scan(
+                    file.current_revision_id,
+                    account_id=file.account_id,
+                    space_id=file.space_id,
+                )
+                if revision else None
+            )
+        elif isinstance(detail, DriveFileListDetail) and file_list_detail_matches_file(file, detail):
+            revision = detail.revision
+            scan = detail.malware_scan
+        else:
+            revision = None
+            scan = None
+        if not revision or not is_clean_attestation(revision, scan):
+            return None
+        return JobEnqueueSpec(
+            job_id=drive_ingest_job_id(
+                file.id,
+                file.current_revision_id,
+                file.generation,
+            ),
             type=JOB_DRIVE_FILE_INGEST,
             tenant_id=file.tenant_id,
             account_id=file.account_id,
@@ -854,17 +1251,70 @@ class DriveService:
                 "generation": file.generation,
             },
             max_attempts=self.settings.job_max_attempts,
-            idempotency_key="drive:" + uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"onebrain:drive-job:{file.id}:{file.current_revision_id}:{file.generation}",
-            ).hex,
+            idempotency_key=drive_ingest_idempotency_key(
+                file.id,
+                file.current_revision_id,
+                file.generation,
+            ),
         )
 
-    def _reconcile_index_jobs(self, files) -> None:
+    def _security_index_status(
+        self, file: DriveFile, *, desired_indexed: bool, trashed: bool,
+    ) -> str:
+        if not desired_indexed or trashed:
+            return "not_indexed"
+        status = self.malware_status(file)
+        if status == "clean":
+            return "queued"
+        if status in {"infected", "scan_error"}:
+            return "blocked"
+        return "awaiting_scan"
+
+    def _drain_malware_job_outbox(self, *, limit: int = 100) -> int:
+        """Copy durable memory-store scan work into the normal fenced queue.
+
+        PostgreSQL inserts scan jobs in the same transaction as quarantine
+        metadata and therefore exposes an empty outbox. The memory/JSON store
+        retains each spec until this enqueue succeeds and is acknowledged.
+        """
+
+        list_specs = getattr(self.store, "list_pending_malware_job_specs", None)
+        acknowledge = getattr(self.store, "acknowledge_malware_job_spec", None)
+        if not callable(list_specs) or not callable(acknowledge):
+            return 0
+        drained = 0
+        for spec in list_specs(limit=limit):
+            job = self.job_store.enqueue(
+                job_id=spec.job_id,
+                type=JOB_DRIVE_REVISION_MALWARE_SCAN,
+                tenant_id=spec.tenant_id,
+                account_id=spec.account_id,
+                space_id=spec.space_id,
+                requested_by=spec.requested_by,
+                payload={
+                    "scan_id": spec.scan_id,
+                    "revision_id": spec.revision_id,
+                    "origin": spec.origin,
+                },
+                max_attempts=spec.max_attempts,
+                idempotency_key=spec.idempotency_key,
+            )
+            if job.id != spec.job_id:
+                raise RuntimeError("Malware scan job identity did not match its durable attempt.")
+            acknowledge(spec.job_id)
+            drained += 1
+        return drained
+
+    def _reconcile_index_jobs(
+        self,
+        files,
+        details: Mapping[str, DriveFileListDetail] | None = None,
+    ) -> None:
         """Repair the metadata-to-queue crash window with generation deduplication."""
 
         if not self._indexing_allowed():
             return
+        specs: list[JobEnqueueSpec] = []
         for file in files:
             if (
                 file.index_status == "queued"
@@ -872,12 +1322,22 @@ class DriveService:
                 and not file.trashed_at
                 and file.current_revision_id
             ):
-                try:
-                    self._enqueue_index(file)
-                except Exception:
-                    # Browsing remains available during a queue outage. The
-                    # durable queued state causes the next read to retry.
-                    continue
+                detail = (
+                    _DETAIL_NOT_PROVIDED
+                    if details is None
+                    else details.get(file.current_revision_id, DriveFileListDetail())
+                )
+                spec = self._index_job_spec(file, detail)
+                if spec is not None:
+                    specs.append(spec)
+        if not specs:
+            return
+        try:
+            self.job_store.enqueue_many(specs)
+        except Exception:
+            # Browsing remains available during a queue outage. The durable
+            # queued state causes the next read to retry the atomic batch.
+            return
 
     def _folder_for_principal(
         self,
@@ -1084,6 +1544,13 @@ class DriveService:
     def _can_access(self, principal, file: DriveFile) -> bool:
         try:
             self.authorize_space(principal, file.account_id, file.space_id)
+            return self._can_access_in_authorized_space(principal, file)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _can_access_in_authorized_space(principal, file: DriveFile) -> bool:
+        try:
             require_file_access(principal, file)
             return True
         except Exception:

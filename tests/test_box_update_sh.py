@@ -79,6 +79,10 @@ _STUBS = {
         '    fi\n'
         '  done\n'
         'fi\n'
+        'if [[ "$*" == *"run --rm onebrain-migrate alembic current"* ]]; '
+        'then cat "$CTRL/alembic_current" 2>/dev/null || true; fi\n'
+        'if [ -f "$CTRL/activation_fail" ] && '
+        '[[ "$*" == *"app.drive.malware.activation"* ]]; then exit 1; fi\n'
         'exit 0\n'
     ),
     "curl": (
@@ -444,6 +448,59 @@ def test_migration_crossing_fences(box):
     assert state["migration_reached"] == "0020"
     assert state["backup_status"] == "success"      # schema change -> backup taken
     assert "pg_dump" in box.stub_log() and "openssl" in box.stub_log()
+
+
+def test_migration_crossing_activates_drive_quarantine_before_services_start(box):
+    box.set_serve(
+        signed_serve(
+            migration_from="0033_onebrain_drive",
+            migration_to="0034_drive_malware_quarantine",
+            rollback_kind="restore_required",
+        )
+    )
+    box.set_alembic_current("0034_drive_malware_quarantine")
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    log = box.stub_log()
+    activation = log.index(
+        "run --rm onebrain-migrate python -m app.drive.malware.activation --migrate"
+    )
+    service_start = log.index("up -d", activation)
+    assert activation < service_start
+    assert box.state()["outcome"] == "succeeded"
+
+
+def test_activation_failure_restores_previous_stack(box):
+    previous = (
+        "services:\n  onebrain-api:\n    image: "
+        + "ghcr.io/proark1/onebrain-api@sha256:"
+        + "d" * 64
+        + "\n"
+    )
+    (box.root / "images.override.yml").write_text(previous, encoding="utf-8")
+    box.set_serve(
+        signed_serve(
+            migration_from="0033_onebrain_drive",
+            migration_to="0034_drive_malware_quarantine",
+            rollback_kind="restore_required",
+        )
+    )
+    box.set_alembic_current("0034_drive_malware_quarantine")
+    box.touch("activation_fail")
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    log = box.stub_log()
+    activation = log.index(
+        "run --rm onebrain-migrate python -m app.drive.malware.activation --migrate"
+    )
+    assert log.index("pg_restore", activation) > activation
+    assert log.index("up -d", activation) > activation
+    assert box.state()["outcome"] == "rolled_back"
+    assert (box.root / "images.override.yml").read_text(encoding="utf-8") == previous
 
 
 def test_migration_crossing_fence_mismatch_restores_previous_stack(box):
@@ -1177,6 +1234,19 @@ def test_migration_backup_keeps_postgres_up_and_recovers_failed_backup():
 def test_verified_api_digest_also_pins_migration_service():
     src = _UPDATE_SH.read_text(encoding="utf-8")
     assert 'service_images["onebrain-migrate"] = selected["onebrain-api"]' in src
+
+
+def test_update_override_backfills_persistent_definition_cache_for_existing_boxes():
+    src = _UPDATE_SH.read_text(encoding="utf-8")
+    assert 'MALWARE_DEFINITION_CACHE_DIR="/var/lib/onebrain/clamav"' in src
+    assert (
+        'install -d -o 10001 -g 10001 -m 0700 "$MALWARE_DEFINITION_CACHE_DIR"'
+        in src
+    )
+    assert (
+        'lines.append("      - /var/lib/onebrain/clamav:/var/lib/onebrain/clamav")'
+        in src
+    )
 
 
 # --- P5-07 7d: box records a well-formed backup_manifest (A17 gate) -----------

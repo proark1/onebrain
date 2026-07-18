@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test",
-    "openapi": "python ../scripts/export_openapi.py src/lib/openapi.json"
+    "openapi": "python ../scripts/export_openapi.py src/lib/openapi.json --surface operator",
+    "openapi:customer": "python ../scripts/export_openapi.py src/lib/openapi.customer.json --surface customer"
   },
   "dependencies": {
     "next": "16.2.10",

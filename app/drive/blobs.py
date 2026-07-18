@@ -38,6 +38,18 @@ class DriveBlobStore(Protocol):
     def delete_staging(self, upload_id: str) -> bool: ...
 
 
+def blob_matches_revision(
+    info: DriveBlobInfo | None, *, size_bytes: int, sha256: str,
+) -> bool:
+    """Return whether stored bytes exactly match immutable revision metadata."""
+
+    return bool(
+        info
+        and info.size_bytes == size_bytes
+        and info.sha256 == sha256
+    )
+
+
 def drive_scope_prefix(tenant_id: str, account_id: str, space_id: str = "") -> str:
     """Return the opaque, prefix-deletable object namespace for one scope."""
 

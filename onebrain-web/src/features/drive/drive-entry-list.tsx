@@ -1,9 +1,9 @@
 import type { DragEvent } from "react";
-import { driveDownloadHref } from "./drive-client";
-import { DriveAiStatus } from "./drive-status";
+import { DriveAiStatus, DriveSecurityStatus } from "./drive-status";
 import { DriveIcon } from "./drive-icons";
 import {
   canDownloadDriveEntry,
+  canRescanDriveEntry,
   driveAudienceSummary,
   driveFileKind,
   formatDriveDate,
@@ -32,6 +32,7 @@ type DriveEntryListProps = {
   onManageFolder: (folder: DriveFolderEntry) => void;
   onOpenFolder: (folderId: string) => void;
   onPermanentDelete: (file: DriveFileEntry) => void;
+  onRescan: (file: DriveFileEntry) => void;
   onRestore: (entry: DriveEntry) => void;
   onToggleIndexing: (file: DriveFileEntry) => void;
   onTrash: (entry: DriveEntry) => void;
@@ -51,6 +52,7 @@ export function DriveEntryList({
   onManageFolder,
   onOpenFolder,
   onPermanentDelete,
+  onRescan,
   onRestore,
   onToggleIndexing,
   onTrash,
@@ -58,7 +60,7 @@ export function DriveEntryList({
   return (
     <section className={styles.entryPanel} aria-busy={loading} aria-label="Files and folders">
       <div className={styles.listHeader} aria-hidden="true">
-        <span>Name</span><span>Access</span><span>AI</span><span>Updated</span><span>Actions</span>
+        <span>Name</span><span>Access</span><span>Security</span><span>AI</span><span>Updated</span><span>Actions</span>
       </div>
       <div className={styles.entryList}>
         {entries.map((entry) => (
@@ -74,6 +76,7 @@ export function DriveEntryList({
             onManageFolder={onManageFolder}
             onOpenFolder={onOpenFolder}
             onPermanentDelete={onPermanentDelete}
+            onRescan={onRescan}
             onRestore={onRestore}
             onToggleIndexing={onToggleIndexing}
             onTrash={onTrash}
@@ -104,6 +107,7 @@ function DriveEntryRow({
   onManageFolder,
   onOpenFolder,
   onPermanentDelete,
+  onRescan,
   onRestore,
   onToggleIndexing,
   onTrash,
@@ -118,12 +122,14 @@ function DriveEntryRow({
   onManageFolder: (folder: DriveFolderEntry) => void;
   onOpenFolder: (folderId: string) => void;
   onPermanentDelete: (file: DriveFileEntry) => void;
+  onRescan: (file: DriveFileEntry) => void;
   onRestore: (entry: DriveEntry) => void;
   onToggleIndexing: (file: DriveFileEntry) => void;
   onTrash: (entry: DriveEntry) => void;
 }) {
   const busy = actionId === entry.id;
-  const download = canDownloadDriveEntry(entry);
+  const downloadUrl = canDownloadDriveEntry(entry) ? entry.download_url : "";
+  const download = Boolean(downloadUrl);
   function drop(event: DragEvent<HTMLElement>) {
     if (entry.kind !== "folder" || event.dataTransfer.files.length === 0) return;
     event.preventDefault();
@@ -144,12 +150,15 @@ function DriveEntryRow({
           {entry.kind === "folder" ? (
             <button type="button" onClick={() => onOpenFolder(entry.id)}>{entry.name}</button>
           ) : download ? (
-            <a href={driveDownloadHref(entry)}>{entry.name}</a>
+            <a href={downloadUrl}>{entry.name}</a>
           ) : <strong>{entry.name}</strong>}
           <small>{entry.kind === "file" ? (entry.legacy ? "Original unavailable" : formatDriveSize(entry.size_bytes)) : `${entry.child_count ?? 0} items`}</small>
         </div>
       </div>
       <span className={styles.audience} data-label="Access">{driveAudienceSummary(entry)}</span>
+      <div className={styles.securityColumn} data-label="Security">
+        {entry.kind === "file" ? <DriveSecurityStatus status={entry.malware_status} /> : <span className={styles.folderPolicy}>Scanned on upload</span>}
+      </div>
       <div className={styles.aiColumn} data-label="AI">
         {entry.kind === "file" ? <DriveAiStatus status={entry.index_status} /> : <span className={styles.folderPolicy}>Folder defaults</span>}
       </div>
@@ -158,7 +167,7 @@ function DriveEntryRow({
         {download || view !== "legacy" ? <details className={styles.rowMenu}>
           <summary>{busy ? "Working…" : "Actions"}</summary>
           <div>
-            {download ? <a aria-label={`Download ${entry.name}`} href={driveDownloadHref(entry)} download><DriveIcon name="download" />Download</a> : null}
+            {download ? <a aria-label={`Download ${entry.name}`} href={downloadUrl} download><DriveIcon name="download" />Download</a> : null}
             {view === "trash" ? (
               <>
                 {capabilities.policy_mode !== "disabled" ? <button disabled={busy} type="button" onClick={() => onRestore(entry)}><DriveIcon name="restore" />Restore</button> : null}
@@ -168,8 +177,9 @@ function DriveEntryRow({
               <>
                 {entry.kind === "folder" && capabilities.can_manage_labels ? <button disabled={busy} type="button" onClick={() => onManageFolder(entry)}>Manage defaults</button> : null}
                 {entry.kind === "file" && capabilities.can_manage_labels ? <button disabled={busy} type="button" onClick={() => onManageFile(entry)}>Move / change filing</button> : null}
+                {canRescanDriveEntry(entry) && capabilities.policy_mode !== "disabled" ? <button disabled={busy} type="button" onClick={() => onRescan(entry)}><DriveIcon name="shield" />Scan again</button> : null}
                 {entry.kind === "file" && capabilities.can_index ? <button disabled={busy} type="button" onClick={() => onToggleIndexing(entry)}>{entry.desired_indexed ? "Stop AI indexing" : "Index for AI"}</button> : null}
-                {entry.kind === "file" && capabilities.can_review && isPendingApproval(entry) ? <button disabled={busy} type="button" onClick={() => onApprove(entry)}>Approve for AI</button> : null}
+                {entry.kind === "file" && entry.malware_status === "clean" && capabilities.can_review && isPendingApproval(entry) ? <button disabled={busy} type="button" onClick={() => onApprove(entry)}>Approve for AI</button> : null}
                 {capabilities.policy_mode !== "disabled" ? <button disabled={busy} type="button" onClick={() => onTrash(entry)}><DriveIcon name="trash" />Move to trash</button> : null}
               </>
             ) : null}

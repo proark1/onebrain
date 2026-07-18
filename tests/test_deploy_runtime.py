@@ -57,7 +57,8 @@ def test_run_migrations_runs_alembic_for_postgres(monkeypatch):
     monkeypatch.setattr(runtime, "enforce_rls_if_needed", lambda settings: None)
 
     runtime.run_migrations_if_needed(
-        FakeSettings(vector_store="pgvector", database_url="postgresql://user:pass@host/db")
+        FakeSettings(vector_store="pgvector", database_url="postgresql://user:pass@host/db"),
+        require_malware_active=False,
     )
 
     assert calls == [
@@ -79,7 +80,8 @@ def test_run_migrations_uses_migration_database_url_when_present(monkeypatch):
             vector_store="pgvector",
             database_url="postgresql://app:pass@host/db",
             migration_database_url="postgresql://owner:pass@host/db",
-        )
+        ),
+        require_malware_active=False,
     )
 
     assert calls == [
@@ -90,6 +92,41 @@ def test_run_migrations_uses_migration_database_url_when_present(monkeypatch):
 def test_run_migrations_requires_database_url_for_postgres():
     with pytest.raises(RuntimeError, match="ONEBRAIN_DATABASE_URL"):
         runtime.run_migrations_if_needed(FakeSettings(vector_store="pgvector"))
+
+
+def test_api_migration_startup_requires_completed_malware_activation(monkeypatch):
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    calls = []
+    monkeypatch.setattr(runtime.subprocess, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "enforce_rls_if_needed", lambda _settings: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "psycopg",
+        SimpleNamespace(connect=lambda dsn: calls.append(("connect", dsn)) or Connection()),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "validate_postgres_schema",
+        lambda _connection, tables, *, require_malware_active: calls.append(
+            (tuple(tables), require_malware_active)
+        ),
+    )
+
+    settings = FakeSettings(
+        vector_store="pgvector", database_url="postgresql://app:pass@host/db"
+    )
+    runtime.run_migrations_if_needed(settings)
+
+    assert calls == [
+        ("connect", settings.database_url),
+        (runtime.DEFAULT_WORKER_REQUIRED_TABLES, True),
+    ]
 
 
 def test_api_command_honors_port_override(monkeypatch):
@@ -180,7 +217,9 @@ def test_worker_schema_wait_validates_both_runtime_roles(monkeypatch):
 
     monkeypatch.setenv("ONEBRAIN_PROCESS", "worker")
     monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=connect))
-    monkeypatch.setattr(runtime, "validate_postgres_schema", lambda *_args: None)
+    monkeypatch.setattr(
+        runtime, "validate_postgres_schema", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(runtime, "validate_rls_enabled", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         runtime,
