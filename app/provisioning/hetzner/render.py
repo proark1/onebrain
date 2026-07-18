@@ -87,6 +87,7 @@ _API_EDGE_ALIAS = "api-edge"
 # general asset archive and bind-mounted read-only only into that container.
 _OPERATOR_TLS_HOST_DIR = "/opt/onebrain/broker-tls"
 _OPERATOR_TLS_CONTAINER_DIR = "/run/onebrain/broker-tls"
+_BOOTSTRAP_ASSET_B85 = "/root/ob.b85"
 # Assad Dar AI Communication deliberately ships one immutable image that starts a
 # particular service according to SERVICE. Keep the release manifest module IDs
 # separate for health, version, and rollout accounting, while selecting the
@@ -1037,11 +1038,18 @@ def _compact_shell_asset(content: str) -> str:
                 heredoc_delimiter = None
             continue
 
+        # Empty shell lines outside heredoc data do not affect execution and
+        # consume scarce cloud-init bytes even after compression.
+        if not logical.strip():
+            continue
+
         # The source shebang is part of the executable contract.  All other
         # standalone comments are non-functional in shell source.
         if index and logical.lstrip().startswith("#"):
             continue
-        compacted.append(line)
+        compacted.append(
+            line if index == 0 and line.startswith("#!") else line.lstrip(" \t")
+        )
 
         # Detect a conventional one-delimiter heredoc on executable source. If
         # an asset needs more elaborate shell syntax later, keep it unmodified
@@ -1068,11 +1076,43 @@ def _compact_python_asset(content: str) -> str:
     occupying complete physical lines is eligible; unusual one-line forms that
     share a line with executable code are deliberately retained.
     """
+    try:
+        compact_tree = ast.parse(content)
+        for compact_node in ast.walk(compact_tree):
+            if not isinstance(
+                compact_node,
+                (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
+            ):
+                continue
+            compact_body = compact_node.body
+            if (
+                compact_body
+                and isinstance(compact_body[0], ast.Expr)
+                and isinstance(compact_body[0].value, ast.Constant)
+                and isinstance(compact_body[0].value.value, str)
+            ):
+                compact_body.pop(0)
+        ast.fix_missing_locations(compact_tree)
+        compacted_source = ast.unparse(compact_tree) + "\n"
+        if content.startswith("#!"):
+            compacted_source = content.splitlines()[0] + "\n" + compacted_source
+        compile(compacted_source, "<compact-host-asset>", "exec")
+        return compacted_source
+    except (IndentationError, SyntaxError, ValueError):
+        pass
+
     lines = content.splitlines(keepends=True)
     removable: set[int] = set()
+    string_lines: set[int] = set()
     try:
         tree = ast.parse(content)
         for node in ast.walk(tree):
+            if (
+                isinstance(node, (ast.Constant, ast.JoinedStr))
+                and (not isinstance(node, ast.Constant) or isinstance(node.value, str))
+                and hasattr(node, "end_lineno")
+            ):
+                string_lines.update(range(node.lineno - 1, node.end_lineno))
             if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             body = node.body
@@ -1105,6 +1145,10 @@ def _compact_python_asset(content: str) -> str:
             # represented as data inside a triple-quoted string.
             if not lines[line_index][:token.start[1]].strip():
                 removable.add(line_index)
+        removable.update(
+            index for index, line in enumerate(lines)
+            if not line.strip() and index not in string_lines
+        )
     except (IndentationError, SyntaxError, tokenize.TokenError):
         # A malformed source asset should remain visible to its normal syntax
         # validation instead of being changed by the payload compactor.
@@ -1127,7 +1171,10 @@ def _compact_host_asset(path: str, content: str) -> str:
         return _compact_python_asset(content)
     if suffix in {".service", ".timer"}:
         lines = content.splitlines(keepends=True)
-        return "".join(line for line in lines if not line.lstrip().startswith("#"))
+        return "".join(
+            line for line in lines
+            if line.strip() and not line.lstrip().startswith("#")
+        )
     return content
 
 
@@ -1153,7 +1200,16 @@ def _write_b85_xz_asset_archive(path: str, contents: bytes, permissions: str = "
     alphabet data-only, while the XZ container remains reproducible.
     """
     compressed = lzma.compress(
-        contents, format=lzma.FORMAT_XZ, preset=9 | lzma.PRESET_EXTREME)
+        contents,
+        format=lzma.FORMAT_XZ,
+        filters=[{
+            "id": lzma.FILTER_LZMA2,
+            "preset": 9 | lzma.PRESET_EXTREME,
+            "lc": 3,
+            "lp": 0,
+            "pb": 0,
+        }],
+    )
     blob = base64.b85encode(compressed).decode("ascii")
     return (
         f"  - path: {path}\n"
@@ -1472,7 +1528,7 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         for path, content, permissions in assets
     ]
     entries = [_write_b85_xz_asset_archive(
-        "/opt/onebrain/onebrain-assets.b85", _asset_archive(archive_assets))]
+        _BOOTSTRAP_ASSET_B85, _asset_archive(archive_assets))]
     if operator_secret_assets:
         entries.append(_write_asset_archive(
             "/opt/onebrain/mc-broker-tls.tar", _asset_archive(operator_secret_assets)))
@@ -1480,7 +1536,7 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
 
     runcmd_items = [
         "python3 -c 'import base64,sys;sys.stdout.buffer.write(base64.b85decode(open(0,\"rb\").read().strip()))' "
-        "</opt/onebrain/onebrain-assets.b85 | tar -xJf - -C / && rm -f /opt/onebrain/onebrain-assets.b85",
+        f"<{_BOOTSTRAP_ASSET_B85} | tar -xJf - -C / && rm -f {_BOOTSTRAP_ASSET_B85}",
         "bash /opt/onebrain/onebrain-firstboot.sh",
     ]
     runcmd = "\n".join("  - " + _yaml_sq(item) for item in runcmd_items)

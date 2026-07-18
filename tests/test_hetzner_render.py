@@ -96,7 +96,7 @@ _GZB64_ENTRY = re.compile(
 )
 
 _XZB85_ENTRY = re.compile(
-    r"^  - path: /opt/onebrain/onebrain-assets\.b85\n"
+    r"^  - path: /root/ob\.b85\n"
     r"    permissions: '(?P<perm>[0-7]+)'\n"
     r"    content: \|\n"
     r"      (?P<blob>\S+)\n",
@@ -613,7 +613,7 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
     assert "\n  - python3\n" in ci  # Base85 archive decoder is stdlib Python.
     assert "- python3-cryptography" in ci
     wf = _write_files_section(ci)
-    assert "- path: /opt/onebrain/onebrain-assets.b85" in wf
+    assert "- path: /root/ob.b85" in wf
     assets = _asset_entries(ci)
     for required in (
         "/opt/onebrain/docker-compose.yml", "/opt/onebrain/Caddyfile", "/opt/onebrain/box.env",
@@ -745,7 +745,7 @@ def test_operator_receives_no_drive_mount_or_backup_surface():
     # operators omit only the Drive-specific mount and lifecycle surfaces.
     assert "/opt/onebrain/onebrain-data-volume.sh" in assets
     assert "/etc/systemd/system/onebrain-data-volume.service" in assets
-    assert "scsi-0HC_Volume_*" in first_boot
+    assert "scsi-0HC_Volume_*" in assets["/opt/onebrain/onebrain-data-volume.sh"][1]
 
 
 def test_cloud_init_uses_the_preflighted_callback_url_template():
@@ -862,7 +862,7 @@ def test_cloud_init_compact_xz_archive_roundtrips_safe_host_assets():
     for path, (original, want_perm) in expected.items():
         assert path in assets, f"{path} should remain in the compact archive"
         got_perm, decoded = assets[path]
-        assert decoded == original, f"{path}: compact archive changed a non-comment byte"
+        assert decoded == original, f"{path}: compact archive changed executable content"
         assert got_perm == want_perm, f"{path}: permission {got_perm!r} not preserved (want {want_perm!r})"
     # The executable shell tools stay executable after cloud-init extracts the tar.
     assert assets["/opt/onebrain/update.sh"][0] == "0755"
@@ -928,6 +928,20 @@ def test_compact_shell_asset_preserves_heredoc_data_comments():
     assert R._compact_host_asset("/opt/example.sh", source) == (
         "#!/usr/bin/env bash\ncat <<'DATA'\n# data comment\nDATA\n"
     )
+
+
+def test_compact_host_assets_drop_only_safe_blank_lines():
+    from app.provisioning.hetzner import render as R
+
+    shell = "#!/usr/bin/env bash\n\necho before\ncat <<'DATA'\n\nDATA\n\necho after\n"
+    assert R._compact_host_asset("/opt/example.sh", shell) == (
+        "#!/usr/bin/env bash\necho before\ncat <<'DATA'\n\nDATA\necho after\n"
+    )
+    python = 'value = """first\n\nsecond"""\n\nprint(value)\n'
+    compacted_python = R._compact_host_asset("/opt/example.py", python)
+    namespace: dict[str, object] = {}
+    exec(compacted_python, namespace)
+    assert namespace["value"] == "first\n\nsecond"
 
 
 def test_mc_cloud_init_under_hetzner_user_data_limit():

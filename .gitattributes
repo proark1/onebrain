@@ -9,3 +9,4 @@ deploy/box/*.service text eol=lf
 deploy/box/*.timer text eol=lf
 deploy/templates/* text eol=lf
 tests/golden/hetzner/*.yml text eol=lf
+deploy/scanner-sandbox/*.conf text eol=lf

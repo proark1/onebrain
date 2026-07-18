@@ -63,7 +63,7 @@ def extract_cloud_init_file(cloud_init: str, path: str) -> str:
         # gzip archive reader too, so this helper can inspect older fixtures.
         archives: list[bytes] = []
         for archive_match in re.finditer(
-            r"  - path: /opt/onebrain/onebrain-assets\.b85\n"
+            r"  - path: (?:/root/ob|/opt/onebrain/onebrain-assets)\.b85\n"
             r"    permissions: '[0-7]+'\n"
             r"    content: \|\n"
             r"      (?P<blob>\S+)\n",

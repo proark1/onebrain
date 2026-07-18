@@ -68,7 +68,7 @@ def test_foundation_migration_scopes_groups_and_purges_only_terminal_job_bytes(m
     module = _migration("0032_drive_foundations.py", "drive_foundation_migration")
     sql = _captured_upgrade(monkeypatch, module)
 
-    assert module.down_revision == "0030_job_queue_rls_roles"
+    assert module.down_revision == "0031_mc_user_management"
     for table in ACCESS_GROUP_TABLES:
         assert f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY" in sql
         assert f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY" in sql
