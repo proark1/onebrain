@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -34,6 +35,12 @@ from app.fleet.base import FleetKey
 from app.fleet.keys import hash_secret
 from app.fleet.memory import MemoryFleetStore
 from app.provisioning.bundles import resolve_module_composition
+from app.provisioning.runs import (
+    MemoryProvisioningRunStore,
+    ProvisioningRun,
+    STATUS_FAILED as PROVISIONING_FAILED,
+    STATUS_SUCCEEDED as PROVISIONING_SUCCEEDED,
+)
 from app.routers import operator as operator_router
 from app.trust.release import release_signature_fields, sign_release
 from app.trust.signing import generate_keypair
@@ -1001,6 +1008,427 @@ def test_development_gate_replacement_requires_module_complete_baseline_and_uses
     assert result.environment == "development"
     assert result.release_ring == "internal"
     assert result.external_provisioning is True
+
+
+def _replacement_bootstrap_records(
+    *,
+    candidate_transform=lambda release: release,
+    final_note="development_gate_replacement_required",
+):
+    store = MemoryControlPlaneStore()
+    production_private, production_public = generate_keypair()
+    dev_private, dev_public = generate_keypair()
+    full_baseline = _development_gate_release("2026.07.18.300")
+    core_baseline = replace(
+        full_baseline,
+        modules={
+            module_id: full_baseline.modules[module_id]
+            for module_id in DEVELOPMENT_GATE_CORE_MODULE_IDS
+        },
+        images={
+            module_id: full_baseline.images[module_id]
+            for module_id in DEVELOPMENT_GATE_CORE_MODULE_IDS
+        },
+        status="active",
+        signature="",
+        signing_key_id="",
+    )
+    core_baseline = replace(
+        core_baseline,
+        signature=sign_release(release_signature_fields(core_baseline), production_private),
+        signing_key_id="production-1",
+    )
+    store.create_release(core_baseline)
+    gate = CustomerDeployment(
+        id=operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID,
+        customer_name="Legacy development gate",
+        environment="development",
+        deployment_type="dedicated_server",
+    )
+    store.create_deployment(gate)
+    store.designate_release_gate(gate.id)
+    for module_id in DEVELOPMENT_GATE_CORE_MODULE_IDS:
+        store.upsert_module(DeploymentModule(
+            gate.id,
+            module_id,
+            core_baseline.modules[module_id],
+            status="active",
+        ))
+
+    candidate = candidate_transform(_development_gate_release("2026.07.18.311"))
+    register_candidate(
+        store,
+        candidate,
+        dev_signature=sign_release(release_signature_fields(candidate), dev_private),
+        dev_signing_key_id="dev-1",
+        development_public_key=dev_public,
+        production_public_key=production_public,
+    )
+    store.transition_release_promotion(
+        candidate.version,
+        frozenset({"dev_pending"}),
+        "dev_deploying",
+        actor="ci",
+        action="dev_rollout_started",
+        fields={
+            "gate_deployment_id": gate.id,
+            "dev_attempt_id": "replacement-attempt",
+        },
+    )
+    store.transition_release_promotion(
+        candidate.version,
+        frozenset({"dev_deploying"}),
+        "dev_failed",
+        actor="mission-control",
+        action="dev_preflight_failed",
+        note=final_note,
+        fields={"failure_reason": "dev_preflight_failed"},
+    )
+    return store, core_baseline, candidate, production_public, dev_public, dev_private
+
+
+def _replacement_bootstrap_settings(production_public, dev_public):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        is_operator_surface=True,
+        operator_mode=True,
+        provisioner_backend="hetzner",
+        release_verify_public_key=production_public,
+        release_registry_allowlist="ghcr.io/proark1",
+        dev_release_verify_public_key=dev_public,
+        fleet_public_url="https://mc.example.com",
+    )
+
+
+def test_development_gate_dry_run_uses_exact_replacement_candidate(monkeypatch):
+    store, baseline, candidate, production_public, dev_public, _ = _replacement_bootstrap_records()
+    settings = _replacement_bootstrap_settings(production_public, dev_public)
+    principal = SimpleNamespace(role_id="admin", user_id="operator")
+    monkeypatch.setattr(operator_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+
+    result = operator_router.provision_development_gate(
+        operator_router.DevelopmentGateProvisionIn(
+            owner_email="owner@example.com",
+            dry_run=True,
+        ),
+        principal,
+    )
+
+    assert result["baseline_source"] == "development_replacement_candidate"
+    assert result["initial_version"] == candidate.version
+    assert set(result["modules"]) == DEVELOPMENT_GATE_MODULE_IDS
+    assert set(result["images"]) == DEVELOPMENT_GATE_MODULE_IDS
+    assert result["initial_version"] != baseline.version
+    promotion = store.get_release_promotion(candidate.version)
+    assert promotion.state == "dev_failed"
+    assert promotion.failure_reason == "dev_preflight_failed"
+
+
+@pytest.mark.parametrize("invalid_kind", ["signature", "partial", "registry", "latest_event"])
+def test_development_gate_replacement_candidate_fails_closed(monkeypatch, invalid_kind):
+    def transform(release):
+        return release
+
+    final_note = "development_gate_replacement_required"
+    if invalid_kind == "partial":
+        def transform(release):
+            return replace(
+                release,
+                modules={
+                    module_id: version
+                    for module_id, version in release.modules.items()
+                    if module_id != "communication-workers"
+                },
+                images={
+                    module_id: image
+                    for module_id, image in release.images.items()
+                    if module_id != "communication-workers"
+                },
+            )
+    elif invalid_kind == "registry":
+        def transform(release):
+            return replace(
+                release,
+                images={
+                    **release.images,
+                    "assistant-service": (
+                        f"ghcr.io/foreign/assistant-service@sha256:{'f' * 64}"
+                    ),
+                },
+            )
+    elif invalid_kind == "latest_event":
+        final_note = "restore_required_ack_needed"
+
+    store, _baseline, _candidate, production_public, dev_public, _ = _replacement_bootstrap_records(
+        candidate_transform=transform,
+        final_note=final_note,
+    )
+    if invalid_kind == "signature":
+        _, dev_public = generate_keypair()
+    settings = _replacement_bootstrap_settings(production_public, dev_public)
+    principal = SimpleNamespace(role_id="admin", user_id="operator")
+    monkeypatch.setattr(operator_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+
+    with pytest.raises(HTTPException, match="development gate modules") as exc:
+        operator_router.provision_development_gate(
+            operator_router.DevelopmentGateProvisionIn(
+                owner_email="owner@example.com",
+                dry_run=True,
+            ),
+            principal,
+        )
+
+    assert exc.value.status_code == 409
+
+
+def test_development_gate_prefers_complete_approved_baseline_over_replacement_candidate(monkeypatch):
+    store, _baseline, candidate, _production_public, dev_public, _ = (
+        _replacement_bootstrap_records()
+    )
+    production_private, replacement_production_public = generate_keypair()
+    approved = replace(
+        _development_gate_release("2026.07.18.312"),
+        status="active",
+    )
+    approved = replace(
+        approved,
+        signature=sign_release(release_signature_fields(approved), production_private),
+        signing_key_id="production-2",
+    )
+    store.create_release(approved)
+    settings = _replacement_bootstrap_settings(replacement_production_public, dev_public)
+    principal = SimpleNamespace(role_id="admin", user_id="operator")
+    monkeypatch.setattr(operator_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+
+    result = operator_router.provision_development_gate(
+        operator_router.DevelopmentGateProvisionIn(
+            owner_email="owner@example.com",
+            dry_run=True,
+        ),
+        principal,
+    )
+
+    assert result["baseline_source"] == "approved_release"
+    assert result["initial_version"] == approved.version
+    assert result["initial_version"] != candidate.version
+
+
+def test_development_gate_selects_newest_valid_replacement_candidate():
+    store, _baseline, _candidate, production_public, dev_public, dev_private = (
+        _replacement_bootstrap_records()
+    )
+    gate = store.get_release_gate()
+    newer = _development_gate_release("2026.07.18.312")
+    register_candidate(
+        store,
+        newer,
+        dev_signature=sign_release(release_signature_fields(newer), dev_private),
+        dev_signing_key_id="dev-1",
+        development_public_key=dev_public,
+        production_public_key=production_public,
+    )
+    store.transition_release_promotion(
+        newer.version,
+        frozenset({"dev_pending"}),
+        "dev_deploying",
+        actor="ci",
+        action="dev_rollout_started",
+        fields={
+            "gate_deployment_id": gate.id,
+            "dev_attempt_id": "newer-replacement-attempt",
+        },
+    )
+    store.transition_release_promotion(
+        newer.version,
+        frozenset({"dev_deploying"}),
+        "dev_failed",
+        actor="mission-control",
+        action="dev_preflight_failed",
+        note="development_gate_replacement_required",
+        fields={"failure_reason": "dev_preflight_failed"},
+    )
+    settings = _replacement_bootstrap_settings(production_public, dev_public)
+
+    selected, source = operator_router._development_gate_provisioning_baseline(
+        store,
+        DEVELOPMENT_GATE_MODULES,
+        settings=settings,
+    )
+
+    assert source == "development_replacement_candidate"
+    assert selected.version == newer.version
+
+
+def test_development_gate_prefilters_promotions_before_event_queries():
+    store, _baseline, candidate, production_public, dev_public, dev_private = (
+        _replacement_bootstrap_records()
+    )
+    unrelated = _development_gate_release("2026.07.18.312")
+    register_candidate(
+        store,
+        unrelated,
+        dev_signature=sign_release(release_signature_fields(unrelated), dev_private),
+        dev_signing_key_id="dev-1",
+        development_public_key=dev_public,
+        production_public_key=production_public,
+    )
+    settings = _replacement_bootstrap_settings(production_public, dev_public)
+    original = store.list_release_promotion_events
+    queried_versions = []
+
+    def tracked_events(version):
+        queried_versions.append(version)
+        return original(version)
+
+    store.list_release_promotion_events = tracked_events
+
+    selected, source = operator_router._development_gate_provisioning_baseline(
+        store,
+        DEVELOPMENT_GATE_MODULES,
+        settings=settings,
+    )
+
+    assert source == "development_replacement_candidate"
+    assert selected.version == candidate.version
+    assert queried_versions == [candidate.version]
+
+
+def _provisioned_replacement_gate(store, candidate):
+    suffix = "abc123def456"
+    gate = CustomerDeployment(
+        id=f"{operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID}-{suffix}",
+        account_id=f"{operator_router.DEVELOPMENT_GATE_ACCOUNT_ID}-{suffix}",
+        customer_name="One Brain Development Gate",
+        environment="development",
+        deployment_type="dedicated_server",
+        current_version=candidate.version,
+        current_migration=candidate.migration_to,
+        last_heartbeat_at=datetime.now(timezone.utc).isoformat(),
+        last_heartbeat_healthy=True,
+        last_reported_version=candidate.version,
+        last_reported_migration=candidate.migration_to,
+        selected_module_ids=operator_router.DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS,
+    )
+    store.create_deployment(gate)
+    for module_id, version in candidate.modules.items():
+        store.upsert_module(DeploymentModule(gate.id, module_id, version, status="active"))
+    return gate
+
+
+def _replacement_provisioning_run(gate, candidate, **changes):
+    values = {
+        "id": "prun_replacement",
+        "account_id": gate.account_id,
+        "deployment_id": gate.id,
+        "requested_by": "operator",
+        "module_ids": operator_router.DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS,
+        "status": PROVISIONING_SUCCEEDED,
+        "external_provider": "hetzner",
+        "request_payload": {
+            "module_ids": list(operator_router.DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS),
+            "customer_name": "One Brain Development Gate",
+            "account_kind": "project",
+            "deployment_type": "dedicated_server",
+            "release_ring": "internal",
+            "initial_version": candidate.version,
+            "current_migration": candidate.migration_to,
+            "module_versions": dict(candidate.modules),
+            "dry_run": False,
+        },
+        "migration_revision": candidate.migration_to,
+    }
+    values.update(changes)
+    return ProvisioningRun(**values)
+
+
+def test_development_signed_replacement_remains_ready_after_designation(monkeypatch):
+    store, _baseline, candidate, production_public, dev_public, _ = (
+        _replacement_bootstrap_records()
+    )
+    gate = _provisioned_replacement_gate(store, candidate)
+    runs = MemoryProvisioningRunStore()
+    runs.create_run(_replacement_provisioning_run(gate, candidate))
+    fleet = MemoryFleetStore()
+    fleet.create_key(FleetKey(id="replacement-key", key_hash="hash", deployment_id=gate.id))
+    settings = _replacement_bootstrap_settings(production_public, dev_public)
+    settings.fleet_report_seconds = 60
+    principal = SimpleNamespace(role_id="admin", user_id="operator")
+    monkeypatch.setattr(operator_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(operator_router, "get_control_plane_store", lambda: store)
+    monkeypatch.setattr(operator_router, "get_provisioning_run_store", lambda: runs)
+    monkeypatch.setattr(operator_router, "get_fleet_store", lambda: fleet)
+
+    assert operator_router._development_gate_blockers(store, gate) == []
+    designated = operator_router.designate_development_gate(gate.id, principal)
+
+    assert designated.ready is True
+    assert store.get_release_gate().id == gate.id
+    assert operator_router._development_gate_blockers(store, gate) == []
+
+
+@pytest.mark.parametrize(
+    "invalid_kind",
+    ["missing", "failed", "wrong_deployment", "wrong_version", "wrong_module_set"],
+)
+def test_development_signed_replacement_requires_matching_successful_provision(
+    monkeypatch,
+    invalid_kind,
+):
+    store, _baseline, candidate, production_public, dev_public, _ = (
+        _replacement_bootstrap_records()
+    )
+    gate = _provisioned_replacement_gate(store, candidate)
+    runs = MemoryProvisioningRunStore()
+    if invalid_kind != "missing":
+        changes = {}
+        if invalid_kind == "failed":
+            changes["status"] = PROVISIONING_FAILED
+        elif invalid_kind == "wrong_deployment":
+            changes["deployment_id"] = "unrelated-development-deployment"
+        elif invalid_kind == "wrong_version":
+            payload = dict(_replacement_provisioning_run(gate, candidate).request_payload)
+            payload["initial_version"] = "2026.07.18.999"
+            changes["request_payload"] = payload
+        elif invalid_kind == "wrong_module_set":
+            changes["module_ids"] = operator_router.DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS[:-1]
+        runs.create_run(_replacement_provisioning_run(gate, candidate, **changes))
+    fleet = MemoryFleetStore()
+    fleet.create_key(FleetKey(id="replacement-key", key_hash="hash", deployment_id=gate.id))
+    settings = _replacement_bootstrap_settings(production_public, dev_public)
+    settings.fleet_report_seconds = 60
+    monkeypatch.setattr(operator_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(operator_router, "get_provisioning_run_store", lambda: runs)
+    monkeypatch.setattr(operator_router, "get_fleet_store", lambda: fleet)
+
+    blockers = operator_router._development_gate_blockers(store, gate)
+
+    assert "development_baseline_untrusted" in blockers
+
+
+def test_unrelated_development_deployment_cannot_reuse_replacement_seed(monkeypatch):
+    store, _baseline, candidate, production_public, dev_public, _ = (
+        _replacement_bootstrap_records()
+    )
+    gate = replace(
+        _provisioned_replacement_gate(store, candidate),
+        id="unrelated-development-deployment",
+        account_id="unrelated-development-account",
+    )
+    runs = MemoryProvisioningRunStore()
+    runs.create_run(_replacement_provisioning_run(gate, candidate))
+    settings = _replacement_bootstrap_settings(production_public, dev_public)
+    monkeypatch.setattr(operator_router, "get_provisioning_run_store", lambda: runs)
+
+    assert not operator_router._replacement_development_gate_seed_is_trusted(
+        store,
+        gate,
+        candidate,
+        settings=settings,
+    )
 
 
 def test_development_gate_preflight_names_missing_modules(monkeypatch):
