@@ -964,6 +964,14 @@ def test_compact_host_assets_drop_only_safe_blank_lines():
     exec(compacted_python, namespace)
     assert namespace["value"] == "first\n\nsecond"
 
+    annotated = "def render(value: int, *, enabled: bool = True) -> str:\n    return str(value) if enabled else ''\n"
+    compacted_annotated = R._compact_host_asset("/opt/annotated.py", annotated)
+    annotated_namespace: dict[str, object] = {}
+    exec(compacted_annotated, annotated_namespace)
+    render = annotated_namespace["render"]
+    assert render(7) == "7"
+    assert render.__annotations__ == {}
+
 
 def test_compact_python_asset_drops_inert_function_annotations_but_keeps_future_semantics():
     from app.provisioning.hetzner import render as R

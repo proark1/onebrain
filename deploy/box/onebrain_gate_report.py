@@ -103,12 +103,15 @@ def _release(env: Mapping[str, str], maintenance_dir: Path | None) -> dict:
 def _update_state(maintenance_dir: Path | None) -> dict:
     raw = _read_json(maintenance_dir / "onebrain_update" / "update_state.json") \
         if maintenance_dir is not None else {}
+    applied_secrets_epoch = 0
+    if maintenance_dir is not None:
+        try:
+            applied_secrets_epoch = max(0, int(
+                (maintenance_dir / "onebrain_update/secrets_epoch").read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            pass
     outcome = raw.get("outcome") if raw.get("outcome") in UPDATE_OUTCOMES else "none"
     backup_manifest = _safe_string(raw.get("backup_manifest"), limit=128)
-    try:
-        epoch = max(0, int((maintenance_dir / "onebrain_update/secrets_epoch").read_text()))
-    except Exception:
-        epoch = 0
     return {
         "last_target_version": _safe_string(raw.get("last_target_version")),
         "outcome": outcome,
@@ -118,7 +121,7 @@ def _update_state(maintenance_dir: Path | None) -> dict:
         "backup_status": raw.get("backup_status") if raw.get("backup_status") in {"", "success", "failed"} else "",
         "backup_ts": _safe_string(raw.get("backup_ts"), limit=40),
         "backup_manifest": backup_manifest if _BACKUP_MANIFEST.fullmatch(backup_manifest) else "",
-        "applied_secrets_epoch": epoch,
+        "applied_secrets_epoch": applied_secrets_epoch,
     }
 
 
