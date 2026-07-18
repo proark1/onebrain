@@ -507,12 +507,12 @@ role_split_preflight() {
     log "role-split preflight failed: role names are unsafe or inconsistent"
     return 1
   fi
-  owner_password="${POSTGRES_PASSWORD:-}"
-  app_password="${POSTGRES_APP_PASSWORD:-}"
-  worker_password="${POSTGRES_WORKER_PASSWORD:-}"
-  assistant_password="${POSTGRES_ASSISTANT_PASSWORD:-}"
-  communication_password="${POSTGRES_COMMUNICATION_PASSWORD:-}"
-  rate_limit_secret="${ONEBRAIN_LOGIN_RATE_LIMIT_SECRET:-}"
+  owner_password=${POSTGRES_PASSWORD:-}
+  app_password=${POSTGRES_APP_PASSWORD:-}
+  worker_password=${POSTGRES_WORKER_PASSWORD:-}
+  assistant_password=${POSTGRES_ASSISTANT_PASSWORD:-}
+  communication_password=${POSTGRES_COMMUNICATION_PASSWORD:-}
+  rate_limit_secret=${ONEBRAIN_LOGIN_RATE_LIMIT_SECRET:-}
   if [ "${#owner_password}" -lt 32 ] || [ "${#app_password}" -lt 32 ] \
      || [ "${#worker_password}" -lt 32 ] \
      || [ "${#assistant_password}" -lt 32 ] \
