@@ -1783,8 +1783,9 @@ def prepare_existing_development_gate(
         received_at = datetime.fromisoformat(heartbeat.received_at)
         if received_at.tzinfo is None:
             received_at = received_at.replace(tzinfo=timezone.utc)
+        fleet_report_seconds = int(getattr(settings, "fleet_report_seconds", 300) or 300)
         if (datetime.now(timezone.utc) - received_at).total_seconds() > max(
-            600, settings.fleet_report_seconds * 2
+            600, fleet_report_seconds * 2
         ):
             raise ValueError
     except (TypeError, ValueError):

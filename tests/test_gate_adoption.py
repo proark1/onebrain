@@ -113,6 +113,7 @@ def test_prepare_existing_gate_bundle_is_secret_safe_and_idempotent():
 
 def test_prepare_existing_gate_endpoint_waits_for_epoch_convergence(monkeypatch):
     settings, deployment, prov, keys = _stores()
+    settings.fleet_report_seconds = None
     control = MemoryControlPlaneStore()
     control.create_deployment(deployment)
     control.designate_release_gate(deployment.id)
