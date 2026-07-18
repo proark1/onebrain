@@ -19,13 +19,13 @@ from app.deps import (
     get_user_store,
 )
 from app.deploy.runtime import validate_embedding_runtime_contract, validate_runtime_safety
-from app.http_limits import RequestBodyTooLargeError, limited_receive
+from app.http_limits import RequestBodyTooLargeError, limited_receive, request_body_limit
 from app.monitoring import record_api_error
 from app.provisioning.customer_bootstrap import (
     decode_customer_bootstrap,
     reconcile_customer_bootstrap,
 )
-from app.routers import ai_employees, assistant, auth, chat, conversations, documents, fleet, jobs, kpis, operator, platform, privacy, provisioning, rollouts, service, session, user_management
+from app.routers import ai_employees, assistant, auth, chat, conversations, documents, drive, fleet, jobs, kpis, operator, platform, privacy, provisioning, rollouts, service, session, user_management
 from app.seed import seed_if_empty
 from app.users.seed import seed_admin_from_env, seed_users_if_empty
 
@@ -59,10 +59,16 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def _harden(request, call_next):
         # Cheap edge guards: reject oversized bodies, set conservative security headers.
+        body_limit = request_body_limit(
+            request.method,
+            request.url.path,
+            default_bytes=settings.max_body_bytes,
+            drive_file_bytes=settings.drive_max_file_bytes,
+        )
         cl = request.headers.get("content-length")
-        if cl and cl.isdigit() and int(cl) > settings.max_body_bytes:
+        if cl and cl.isdigit() and int(cl) > body_limit:
             return JSONResponse({"detail": "Payload too large"}, status_code=413)
-        request._receive = limited_receive(request._receive, max_body_bytes=settings.max_body_bytes)
+        request._receive = limited_receive(request._receive, max_body_bytes=body_limit)
         try:
             response = await call_next(request)
         except RequestBodyTooLargeError:
@@ -82,6 +88,11 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(session.router)
     app.include_router(documents.router)
+    # Drive is a standard, always-mounted customer-suite capability. Mission
+    # Control remains a fleet control plane and deliberately receives no file
+    # surface or customer-original storage path.
+    if not settings.operator_mode:
+        app.include_router(drive.router)
     app.include_router(jobs.router)
     app.include_router(conversations.router)
     app.include_router(chat.router)

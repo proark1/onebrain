@@ -189,6 +189,11 @@ class BoxRenderInputs:
     backup_s3_region: str = ""
     backup_retention_days: int = 30
     backup_dbs: tuple = ()                       # the enabled products' Postgres DB names (pg_dump targets)
+    # Drive is always present on customer boxes. Policy is an explicit privacy
+    # state, not an installation flag; new/synthetic deployments default to
+    # durable organization with AI indexing dark until the DPIA is signed.
+    drive_policy_mode: str = "storage_only"
+    pii_phase: str = "synthetic"
 
 
 # --- validation --------------------------------------------------------------
@@ -196,6 +201,12 @@ def _validate(inp: BoxRenderInputs) -> None:
     for label, value in (("deployment_id", inp.deployment_id), ("compose_project", inp.compose_project)):
         if not _ID_RE.match(value or ""):
             raise ValueError(f"invalid {label} (charset ^[a-z0-9][a-z0-9._-]*$): {value!r}")
+    if inp.drive_policy_mode not in {"disabled", "storage_only", "storage_and_indexing"}:
+        raise ValueError("invalid Drive policy mode")
+    if inp.pii_phase not in {"synthetic", "dpia_signed"}:
+        raise ValueError("invalid PII phase")
+    if inp.drive_policy_mode == "storage_and_indexing" and inp.pii_phase != "dpia_signed":
+        raise ValueError("Drive indexing requires a signed DPIA")
     if inp.fqdn and not _ID_RE.match(inp.fqdn):
         raise ValueError(f"invalid fqdn (charset ^[a-z0-9][a-z0-9._-]*$): {inp.fqdn!r}")
     # run_id flows into the cloud-init callback URL (a shell sink) + box.env, so it is
@@ -414,8 +425,9 @@ def _onebrain_runtime_hardening() -> dict:
     """Compose restrictions for the images maintained in this repository.
 
     The images themselves declare the non-root runtime identity. Only API/worker
-    services bind-mount the persistent `/data` state directory; every other
-    filesystem write must use the explicit per-container `/tmp` tmpfs.
+    services bind-mount the persistent `/data` state directory. Customer API
+    and workers also receive the dedicated attached-volume Drive path; every
+    other filesystem write must use the explicit per-container `/tmp` tmpfs.
     """
 
     return {"runtime_hardening_anchor": _ONEBRAIN_RUNTIME_ANCHOR}
@@ -543,6 +555,11 @@ def render_compose(inp: BoxRenderInputs) -> str:
             probe = MODULE_HEALTH_PROBES.get(module_id)
             expose = str(probe.port) if (probe and probe.kind == "http") else None
             volumes = ["/data:/data"] if module_id in ("onebrain-api", "onebrain-workers") else None
+            if volumes is not None and inp.role != "operator":
+                # Drive is an always-on onebrain_core capability on customer boxes. Originals
+                # live on the attached data volume, isolated from the legacy root-disk /data
+                # state. Mission Control deliberately receives no Drive filesystem surface.
+                volumes.append("/mnt/onebrain-data/drive:/data/drive")
             if (
                 module_id == "onebrain-api"
                 and inp.role == "operator"
@@ -597,7 +614,6 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
     """Ordered (key, value) pairs for one service's env file. Secrets are ALWAYS
     ${VAR} refs (never plaintext)."""
     refs = inp.secret_refs
-    product = _PRODUCT_OF[module_id]
     pairs: list = []
     if module_id in ("onebrain-api", "onebrain-workers"):
         pairs += [("ONEBRAIN_VECTOR_STORE", "pgvector"),
@@ -620,7 +636,11 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
                   # The worker does not sign cookies, but it must receive this
                   # dedicated HMAC secret to pass the same runtime safety gate.
                   (f"{refs.login_rate_limit_secret_env}",
-                   "${" + refs.login_rate_limit_secret_env + "}")]
+                   "${" + refs.login_rate_limit_secret_env + "}"),
+                  ("ONEBRAIN_DRIVE_DATA_DIR", "/data/drive"),
+                  ("ONEBRAIN_DRIVE_POLICY_MODE", inp.drive_policy_mode),
+                  ("ONEBRAIN_DRIVE_PRIVATE_SPACES_ENABLED", "false"),
+                  ("ONEBRAIN_PII_PHASE", inp.pii_phase)]
         if module_id == "onebrain-workers":
             pairs.append(("ONEBRAIN_WORKER_DATABASE_URL", _role_db_url(
                 inp.postgres_worker_role, refs.worker_db_password_env)))
@@ -1310,6 +1330,19 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         assets.extend([
             ("/opt/onebrain/onebrain_bootstrap.sh", _read_box_file("onebrain_bootstrap.sh"), "0755"),
             ("/opt/onebrain/onebrain_gate_report.py", _read_box_file("onebrain_gate_report.py"), "0755"),
+            ("/etc/systemd/system/onebrain-drive-backup.service",
+             _read_box_file("onebrain-drive-backup.service").replace(
+                 "{{COMPOSE_PROJECT}}", inp.compose_project), "0644"),
+            ("/etc/systemd/system/onebrain-drive-backup.timer",
+             _read_box_file("onebrain-drive-backup.timer"), "0644"),
+            ("/etc/systemd/system/onebrain-drive-erasure-ledger.service",
+             _read_box_file("onebrain-drive-erasure-ledger.service").replace(
+                 "{{COMPOSE_PROJECT}}", inp.compose_project), "0644"),
+            ("/etc/systemd/system/onebrain-drive-erasure-ledger.timer",
+             _read_box_file("onebrain-drive-erasure-ledger.timer"), "0644"),
+            # Presence is the explicit customer/Drive capability flag consumed by the
+            # volume verifier. Operator boxes never receive it or a Drive directory.
+            ("/etc/onebrain-drive-enabled", "enabled\n", "0644"),
         ])
     # Rendered env files contain `${VAR}` references rather than secret values;
     # package them with the other non-secret assets. The real exchanged/baked
@@ -1364,7 +1397,7 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         "&& chown 10001:10001 /data && chmod 750 /data",
         *([
             *([f"install -d -o 10001 -g 10001 -m 0700 {_OPERATOR_TLS_HOST_DIR}"] if operator_tls_assets else []),
-            f"tar -xf /opt/onebrain/mc-broker-tls.tar -C / && rm -f /opt/onebrain/mc-broker-tls.tar"
+            "tar -xf /opt/onebrain/mc-broker-tls.tar -C / && rm -f /opt/onebrain/mc-broker-tls.tar"
             + (
                 f" && chown -R 10001:10001 {_OPERATOR_TLS_HOST_DIR} && chmod 0700 {_OPERATOR_TLS_HOST_DIR} "
                 f"&& chmod 0400 {_OPERATOR_TLS_HOST_DIR}/*"
@@ -1420,6 +1453,10 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         f"{compose_cmd} up -d",
         "systemctl enable --now onebrain-update.timer",
         "systemctl enable --now onebrain-host-maintenance.timer",
+        *(["systemctl start onebrain-drive-erasure-ledger.service",
+           "systemctl enable --now onebrain-drive-erasure-ledger.timer",
+           "systemctl enable --now onebrain-drive-backup.timer"]
+          if inp.role != "operator" else []),
         # Smoke + customer provisioning callback (bootstrap_password = the owner OTP).
         f'sleep 5; if curl -sf {_health_url(inp)} >/dev/null 2>&1; then ST=succeeded; SMOKE=passed; '
         f"else ST=failed; SMOKE=failed; fi{smoke_callback}",

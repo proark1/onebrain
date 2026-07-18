@@ -47,6 +47,193 @@
         "title": "AccessCheckResponse",
         "type": "object"
       },
+      "AccessGroupIn": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "kind": {
+            "default": "department",
+            "pattern": "^(department|team)$",
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "pattern": "^(active|archived)$",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "AccessGroupIn",
+        "type": "object"
+      },
+      "AccessGroupMembershipIn": {
+        "properties": {
+          "group_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Group Id",
+            "type": "string"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "space_id": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "pattern": "^(active|inactive)$",
+            "title": "Status",
+            "type": "string"
+          },
+          "user_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "group_id",
+          "user_id"
+        ],
+        "title": "AccessGroupMembershipIn",
+        "type": "object"
+      },
+      "AccessGroupMembershipOut": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "group_id": {
+            "title": "Group Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "default": "",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "group_id",
+          "user_id"
+        ],
+        "title": "AccessGroupMembershipOut",
+        "type": "object"
+      },
+      "AccessGroupOut": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "space_id": {
+            "default": "",
+            "title": "Space Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "default": "",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "name",
+          "kind"
+        ],
+        "title": "AccessGroupOut",
+        "type": "object"
+      },
       "AccountCreate": {
         "properties": {
           "id": {
@@ -7512,6 +7699,16 @@
             "title": "Documents Deleted",
             "type": "integer"
           },
+          "drive_blobs_deleted": {
+            "default": 0,
+            "title": "Drive Blobs Deleted",
+            "type": "integer"
+          },
+          "drive_deleted": {
+            "additionalProperties": true,
+            "title": "Drive Deleted",
+            "type": "object"
+          },
           "governance_deleted": {
             "additionalProperties": true,
             "title": "Governance Deleted",
@@ -7520,6 +7717,16 @@
           "intake_records_deleted": {
             "default": 0,
             "title": "Intake Records Deleted",
+            "type": "integer"
+          },
+          "job_files_deleted": {
+            "default": 0,
+            "title": "Job Files Deleted",
+            "type": "integer"
+          },
+          "jobs_deleted": {
+            "default": 0,
+            "title": "Jobs Deleted",
             "type": "integer"
           },
           "kpis_deleted": {
@@ -7603,6 +7810,11 @@
             },
             "title": "Documents",
             "type": "array"
+          },
+          "drive": {
+            "additionalProperties": true,
+            "title": "Drive",
+            "type": "object"
           },
           "exported_at": {
             "title": "Exported At",
@@ -17944,6 +18156,258 @@
         ]
       }
     },
+    "/api/platform/accounts/{account_id}/access-group-memberships": {
+      "get": {
+        "operationId": "list_access_group_memberships_api_platform_accounts__account_id__access_group_memberships_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "user_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AccessGroupMembershipOut"
+                  },
+                  "title": "Response List Access Group Memberships Api Platform Accounts  Account Id  Access Group Memberships Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Access Group Memberships",
+        "tags": [
+          "platform"
+        ]
+      },
+      "post": {
+        "operationId": "upsert_access_group_membership_api_platform_accounts__account_id__access_group_memberships_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccessGroupMembershipIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessGroupMembershipOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upsert Access Group Membership",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/platform/accounts/{account_id}/access-groups": {
+      "get": {
+        "operationId": "list_access_groups_api_platform_accounts__account_id__access_groups_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AccessGroupOut"
+                  },
+                  "title": "Response List Access Groups Api Platform Accounts  Account Id  Access Groups Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Access Groups",
+        "tags": [
+          "platform"
+        ]
+      },
+      "post": {
+        "operationId": "upsert_access_group_api_platform_accounts__account_id__access_groups_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccessGroupIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessGroupOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upsert Access Group",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
     "/api/platform/accounts/{account_id}/apps": {
       "get": {
         "operationId": "list_apps_api_platform_accounts__account_id__apps_get",
@@ -19472,6 +19936,67 @@
           }
         },
         "summary": "Export Account Data",
+        "tags": [
+          "privacy"
+        ]
+      }
+    },
+    "/api/privacy/accounts/{account_id}/export/drive-originals": {
+      "get": {
+        "description": "Stream a portable manifest plus every original Drive revision.",
+        "operationId": "export_drive_originals_api_privacy_accounts__account_id__export_drive_originals_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Drive Originals",
         "tags": [
           "privacy"
         ]

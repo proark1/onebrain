@@ -6,7 +6,7 @@ from typing import Iterable
 
 
 BASELINE_ALEMBIC_REVISION = "0001_baseline_onebrain_schema"
-REQUIRED_ALEMBIC_REVISION = "0031_mc_user_management"
+REQUIRED_ALEMBIC_REVISION = "0033_onebrain_drive"
 MIGRATION_GUIDANCE = (
     "Postgres schema is not migrated. Run `alembic upgrade head` with "
     "ONEBRAIN_DATABASE_URL before starting OneBrain."

@@ -25,6 +25,9 @@ class FakeSettings:
     postgres_app_role: str = "onebrain_app"
     postgres_worker_role: str = "onebrain_worker"
     worker_database_url: str = ""
+    drive_policy_mode: str = "storage_only"
+    drive_private_spaces_enabled: bool = False
+    pii_phase: str = "synthetic"
 
     @property
     def is_production_like(self) -> bool:
@@ -232,6 +235,18 @@ def test_production_like_runtime_accepts_postgres_with_rls():
             rls_enforced=True,
         )
     )
+
+
+def test_production_drive_indexing_requires_signed_dpia():
+    with pytest.raises(RuntimeError, match="PII_PHASE=dpia_signed"):
+        runtime.validate_runtime_safety(FakeSettings(
+            environment="production",
+            vector_store="pgvector",
+            database_url="postgresql://user:pass@host/db",
+            rls_enforced=True,
+            drive_policy_mode="storage_and_indexing",
+            pii_phase="synthetic",
+        ))
 
 
 def test_production_like_runtime_requires_explicit_job_role_split():

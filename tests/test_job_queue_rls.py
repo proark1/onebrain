@@ -30,6 +30,7 @@ class _Cursor:
     def __init__(self, *, row=None, rows=None):
         self.row = row
         self.rows = rows or []
+        self.rowcount = 0
         self.executed: list[tuple[str, object]] = []
 
     def __enter__(self):
@@ -216,6 +217,87 @@ def test_file_reads_and_claims_use_only_the_worker_dsn():
     store.claim("worker_1")
     assert driver.connected == ["postgresql://worker", "postgresql://worker"]
     assert all("jobs" in sql for sql, _params in worker_cursor.executed[-2:])
+    assert "RETURNING j.id" in worker_cursor.executed[-2][0]
+
+
+def test_exhausted_final_lease_deletes_bytes_after_terminalizing_parent():
+    class ExhaustedCursor(_Cursor):
+        def __init__(self):
+            super().__init__()
+            self.fetchall_calls = 0
+
+        def fetchall(self):
+            self.fetchall_calls += 1
+            return [("job_expired",)] if self.fetchall_calls == 1 else []
+
+    worker_cursor = ExhaustedCursor()
+    store, driver = _store(worker_cursor=worker_cursor)
+
+    assert store.claim("worker_1") == []
+
+    assert len(worker_cursor.executed) == 3
+    assert "UPDATE jobs" in worker_cursor.executed[0][0]
+    assert "RETURNING j.id" in worker_cursor.executed[0][0]
+    assert worker_cursor.executed[1] == (
+        "DELETE FROM job_files WHERE job_id = ANY(%s)",
+        (["job_expired"],),
+    )
+    assert "WITH claimed AS" in worker_cursor.executed[2][0]
+    assert driver.connections["postgresql://worker"].commits == 1
+
+
+def test_terminal_transition_deletes_job_bytes_in_the_same_worker_transaction():
+    terminal_row = list(_JOB_ROW)
+    terminal_row[2] = "succeeded"
+    worker_cursor = _Cursor(row=tuple(terminal_row))
+    store, driver = _store(worker_cursor=worker_cursor)
+
+    completed = store.mark_succeeded("job_1", {"ok": True}, lease_token="lease_1")
+
+    assert completed.status == "succeeded"
+    assert len(worker_cursor.executed) == 2
+    assert "UPDATE jobs" in worker_cursor.executed[0][0]
+    assert "lease_token = %s" in worker_cursor.executed[0][0]
+    assert worker_cursor.executed[1] == (
+        "DELETE FROM job_files WHERE job_id = %s",
+        ("job_1",),
+    )
+    assert driver.connections["postgresql://worker"].commits == 1
+
+
+def test_privacy_scope_delete_counts_files_without_selecting_their_data(monkeypatch):
+    class ScopeCursor(_Cursor):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            if "SELECT count(*) FROM deleted" in sql:
+                self.row = (2,)
+            elif "DELETE FROM jobs" in sql:
+                self.rowcount = 3
+
+    app_cursor = ScopeCursor()
+    store, driver = _store(app_cursor=app_cursor)
+    scopes = []
+    monkeypatch.setattr(
+        postgres_jobs,
+        "set_rls_scope",
+        lambda conn, **scope: scopes.append((conn, scope)),
+    )
+
+    deleted = store.delete_scope(
+        "tenant_a", account_id="account_a", space_id="space_a",
+    )
+
+    assert (deleted.jobs, deleted.files) == (3, 2)
+    assert scopes == [
+        (driver.connections["postgresql://app"], {
+            "tenant_id": "tenant_a", "account_id": "account_a", "space_id": "space_a",
+        })
+    ]
+    assert "DELETE FROM job_files" in app_cursor.executed[0][0]
+    assert "RETURNING 1" in app_cursor.executed[0][0]
+    assert "data" not in app_cursor.executed[0][0]
+    assert "DELETE FROM jobs" in app_cursor.executed[1][0]
+    assert driver.connections["postgresql://app"].commits == 1
 
 
 def test_worker_only_methods_fail_closed_without_worker_dsn():

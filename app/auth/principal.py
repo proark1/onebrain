@@ -118,7 +118,7 @@ _MUST_CHANGE_ALLOWED = frozenset({
 
 def resolve_principal(ob_session: str = Cookie(default=""), request: Request = None) -> Principal:
     from app.config import get_settings
-    from app.deps import get_session_store, get_user_store
+    from app.deps import get_platform_store, get_session_store, get_user_store
 
     parsed = read_session_token(ob_session, get_settings().auth_secret) if ob_session else None
     if not parsed:
@@ -143,6 +143,32 @@ def resolve_principal(ob_session: str = Cookie(default=""), request: Request = N
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     principal = replace(principal_from_user(user), session_id=session_id)
+    # Department/team entitlements are platform identity, not Drive-local state.
+    # Enrich the principal once so Drive, chat, AI Employees, and every other
+    # RetrievalService consumer enforce the same stable access-group IDs.
+    if principal.categories is not None:
+        try:
+            platform_store = get_platform_store()
+            memberships = platform_store.list_access_group_memberships(
+                principal.tenant_id, principal.user_id,
+            )
+            active_groups = {
+                group.id for group in platform_store.list_access_groups(principal.tenant_id)
+                if group.status == "active"
+            }
+            active_group_ids = {
+                membership.group_id for membership in memberships
+                if membership.status == "active" and membership.group_id in active_groups
+            }
+            if active_group_ids:
+                principal = replace(
+                    principal,
+                    categories=frozenset(set(principal.categories) | active_group_ids),
+                )
+        except Exception:
+            # Identity enrichment fails closed: role-derived compartments remain,
+            # but no configured group is granted when its store is unavailable.
+            pass
     if principal.must_change_password:
         # Single chokepoint: a must-change user is authenticated (the session is
         # real) but 403'd out of every endpoint except the (module, name)-pinned

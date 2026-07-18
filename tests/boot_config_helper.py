@@ -81,7 +81,7 @@ def extract_cloud_init_file(cloud_init: str, path: str) -> str:
         for archive_match in re.finditer(
             r"  - path: /opt/onebrain/(?:onebrain-assets|mc-broker-tls)\.tar\n"
             r"    permissions: '[0-7]+'\n"
-            r"    encoding: gz\+b64\n"
+            r"    encoding: (?:b64|gz\+b64)\n"
             r"    content: (?P<blob>\S+)\n",
             cloud_init,
         ):

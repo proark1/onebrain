@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.auth.account_access import authorize_account_admin
 from app.auth.principal import Principal, resolve_principal
+from app.drive.blobs import drive_scope_prefix
+from app.drive.export import prepare_drive_export, iter_drive_export_tar
 from app.deps import (
     get_ai_employee_google_calendar_connector,
     get_ai_employee_store,
     get_conversation_store,
+    get_drive_blob_store,
+    get_drive_store,
     get_intake_store,
+    get_job_store,
     get_kpi_store,
     get_platform_store,
     get_store,
@@ -48,6 +55,7 @@ class PrivacyExportOut(BaseModel):
     intake_records: list[dict] = Field(default_factory=list)
     kpis: dict = Field(default_factory=dict)
     ai_employees: dict = Field(default_factory=dict)
+    drive: dict = Field(default_factory=dict)
     governance: dict = Field(default_factory=dict)
     audit_events: list[PrivacyAuditOut]
 
@@ -65,6 +73,10 @@ class PrivacyEraseOut(BaseModel):
     chunks_deleted: int
     conversations_deleted: int
     intake_records_deleted: int = 0
+    jobs_deleted: int = 0
+    job_files_deleted: int = 0
+    drive_deleted: dict = Field(default_factory=dict)
+    drive_blobs_deleted: int = 0
     kpis_deleted: dict = Field(default_factory=dict)
     ai_employees_deleted: dict = Field(default_factory=dict)
     connector_credentials_deleted: int = 0
@@ -157,11 +169,23 @@ def export_account_data(
         account_id=account_id,
         space_id=space_id,
     ))
+    drive = get_drive_store().export_scope(
+        tenant_id=account_id, account_id=account_id, space_id=space_id,
+    )
+
+
+    for revision in drive.get("revisions", []):
+        revision.pop("storage_key", None)
     platform = get_platform_store()
     governance = {
         "organizations": [row.__dict__ for row in ([] if space_id else platform.list_organizations(account_id))],
         "memberships": [
             row.__dict__ for row in platform.list_memberships(account_id)
+            if not space_id or row.space_id == space_id
+        ],
+        "access_groups": [row.__dict__ for row in platform.list_access_groups(account_id, space_id)],
+        "access_group_memberships": [
+            row.__dict__ for row in platform.list_access_group_memberships(account_id)
             if not space_id or row.space_id == space_id
         ],
         "consent_records": [row.__dict__ for row in platform.list_consent_records(account_id, space_id)],
@@ -185,6 +209,7 @@ def export_account_data(
             "intake_records": len(intake_records),
             "kpis": {key: len(value) for key, value in kpis.items()},
             "ai_employees": {key: len(value) for key, value in ai_employees.items()},
+            "drive": {key: len(value) for key, value in drive.items()},
             "governance": {key: len(value) for key, value in governance.items()},
         },
     )
@@ -197,8 +222,46 @@ def export_account_data(
         intake_records=intake_records,
         kpis=kpis,
         ai_employees=ai_employees,
+        drive=drive,
         governance=governance,
         audit_events=audit_events,
+    )
+
+
+@router.get("/accounts/{account_id}/export/drive-originals")
+def export_drive_originals(
+    account_id: str,
+    space_id: str = "",
+    principal: Principal = Depends(resolve_principal),
+):
+    """Stream a portable manifest plus every original Drive revision."""
+
+    authorize_account_admin(principal, account_id, get_platform_store())
+    account_id, space_id = _resolve_scope(account_id, space_id)
+    blobs = get_drive_blob_store()
+    archive = prepare_drive_export(
+        get_drive_store(),
+        blobs,
+        tenant_id=account_id,
+        account_id=account_id,
+        space_id=space_id,
+    )
+    _record_privacy_audit(
+        principal,
+        account_id=account_id,
+        space_id=space_id,
+        action="privacy.drive_originals_exported",
+        purpose="gdpr_export",
+        meta={"revisions": len(archive.items), "bytes": archive.total_bytes},
+    )
+    filename = f"onebrain-drive-export-{account_id}.tar"
+    return StreamingResponse(
+        iter_drive_export_tar(archive, blobs),
+        media_type="application/x-tar",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+        },
     )
 
 
@@ -213,9 +276,31 @@ def erase_account_data(
     if body.confirm_account_id.strip() != account_id:
         raise HTTPException(status_code=400, detail="confirm_account_id must match the account being erased.")
 
+    platform = get_platform_store()
+    guard_factory = getattr(platform, "deletion_guard", None)
+    guard = guard_factory(account_id, space_id) if callable(guard_factory) else nullcontext()
+    with guard:
+        return _erase_account_data_impl(
+            account_id=account_id,
+            space_id=space_id,
+            reason=body.reason.strip(),
+            principal=principal,
+            platform=platform,
+        )
+
+
+def _erase_account_data_impl(
+    *,
+    account_id: str,
+    space_id: str,
+    reason: str,
+    principal: Principal,
+    platform,
+) -> PrivacyEraseOut:
+
     # Legal hold beats erasure. A held scope is refused with an audited denial —
     # never silently partially deleted.
-    if scope_is_held(get_platform_store().list_legal_holds(account_id), space_id):
+    if scope_is_held(platform.list_legal_holds(account_id), space_id):
         _record_privacy_audit(
             principal,
             account_id=account_id,
@@ -223,7 +308,7 @@ def erase_account_data(
             action="privacy.erase_denied",
             purpose="gdpr_delete",
             decision="denied_legal_hold",
-            meta={"reason": body.reason.strip()},
+            meta={"reason": reason},
         )
         raise HTTPException(
             status_code=409,
@@ -241,6 +326,26 @@ def erase_account_data(
         space_id=space_id,
         bindings=connector_bindings,
     )
+    deleted_jobs = get_job_store().delete_scope(
+        account_id,
+        account_id=account_id,
+        space_id=space_id,
+    )
+    drive_store = get_drive_store()
+    drive_scope = drive_store.export_scope(
+        tenant_id=account_id, account_id=account_id, space_id=space_id,
+    )
+    drive_blobs = get_drive_blob_store()
+    drive_blob_prefix = drive_scope_prefix(account_id, account_id, space_id)
+    drive_blobs_deleted = drive_blobs.delete_prefix(drive_blob_prefix)
+    if drive_blobs.delete_prefix(drive_blob_prefix):
+        raise RuntimeError("Drive blob erasure verification found residual objects.")
+    for upload in drive_scope.get("uploads", []):
+        if hasattr(drive_blobs, "delete_staging") and drive_blobs.delete_staging(upload["id"]):
+            drive_blobs_deleted += 1
+    deleted_drive = drive_store.delete_scope(
+        tenant_id=account_id, account_id=account_id, space_id=space_id,
+    )
     deleted_docs = get_store().delete_documents_by_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_conversations = get_conversation_store().delete_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_records = get_intake_store().delete_records_by_scope(account_id, account_id=account_id, space_id=space_id)
@@ -250,7 +355,7 @@ def erase_account_data(
         account_id=account_id,
         space_id=space_id,
     )
-    deleted_governance = get_platform_store().delete_governance_by_scope(account_id, space_id=space_id)
+    deleted_governance = platform.delete_governance_by_scope(account_id, space_id=space_id)
     audit = _record_privacy_audit(
         principal,
         account_id=account_id,
@@ -262,20 +367,24 @@ def erase_account_data(
             "chunks_deleted": deleted_docs["chunks"],
             "conversations_deleted": deleted_conversations,
             "intake_records_deleted": deleted_records,
+            "jobs_deleted": deleted_jobs.jobs,
+            "job_files_deleted": deleted_jobs.files,
+            "drive_deleted": deleted_drive,
+            "drive_blobs_deleted": drive_blobs_deleted,
             "kpis_deleted": deleted_kpis,
             "ai_employees_deleted": deleted_ai_employees,
             "connector_credentials_deleted": deleted_connector_credentials,
             "governance_deleted": deleted_governance,
-            "reason": body.reason.strip(),
+            "reason": reason,
         },
     )
     # Emit a tombstone so modules holding their own copies mirror the erasure.
-    get_platform_store().create_tombstone(Tombstone(
+    platform.create_tombstone(Tombstone(
         id=f"tomb_{uuid4().hex}",
         account_id=account_id,
         space_id=space_id,
         target_type="space" if space_id else "account",
-        reason=body.reason.strip(),
+        reason=reason,
         created_by=principal.user_id,
         created_at=_now(),
     ))
@@ -286,6 +395,10 @@ def erase_account_data(
         chunks_deleted=deleted_docs["chunks"],
         conversations_deleted=deleted_conversations,
         intake_records_deleted=deleted_records,
+        jobs_deleted=deleted_jobs.jobs,
+        job_files_deleted=deleted_jobs.files,
+        drive_deleted=deleted_drive,
+        drive_blobs_deleted=drive_blobs_deleted,
         kpis_deleted=deleted_kpis,
         ai_employees_deleted=deleted_ai_employees,
         connector_credentials_deleted=deleted_connector_credentials,

@@ -20,7 +20,9 @@ from app.db.schema import REQUIRED_ALEMBIC_REVISION, validate_postgres_schema
 
 DEFAULT_SCHEMA_WAIT_SECONDS = 60.0
 DEFAULT_SCHEMA_WAIT_POLL_SECONDS = 2.0
-DEFAULT_WORKER_REQUIRED_TABLES = ("chunks", "jobs", "job_files")
+DEFAULT_WORKER_REQUIRED_TABLES = (
+    "chunks", "jobs", "job_files", "drive_files", "drive_file_revisions", "drive_upload_sessions",
+)
 DEFAULT_DEPLOYMENT_PROCESS = "api"
 SUPPORTED_DEPLOYMENT_PROCESSES = {"api", "worker"}
 
@@ -40,6 +42,26 @@ def deployment_process(raw: str | None = None) -> str:
 
 def validate_runtime_safety(settings: Settings | None = None) -> None:
     settings = settings or get_settings()
+    drive_mode = (settings.drive_policy_mode or "").strip().lower()
+    if drive_mode not in {"disabled", "storage_only", "storage_and_indexing"}:
+        raise RuntimeError(
+            "ONEBRAIN_DRIVE_POLICY_MODE must be disabled, storage_only, or storage_and_indexing."
+        )
+    if settings.is_production_like and settings.drive_private_spaces_enabled:
+        raise RuntimeError(
+            "ONEBRAIN_DRIVE_PRIVATE_SPACES_ENABLED is not production-supported until "
+            "private-owner transfer revocation ships."
+        )
+    if (
+        settings.is_production_like
+        and not getattr(settings, "operator_mode", False)
+        and drive_mode == "storage_and_indexing"
+        and settings.pii_phase != "dpia_signed"
+    ):
+        raise RuntimeError(
+            "Drive AI indexing requires ONEBRAIN_PII_PHASE=dpia_signed in production. "
+            "Use ONEBRAIN_DRIVE_POLICY_MODE=storage_only until the deployment DPIA is signed."
+        )
     if not settings.is_production_like:
         return
     if not is_postgres_mode(settings):

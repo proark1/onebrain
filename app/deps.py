@@ -36,26 +36,29 @@ def get_llm():
 
 
 def _resolve_space_kind_and_owner(space_id: str) -> tuple[str, str]:
-    """space_id -> (space_kind, owner_user_id) for ingest labelling.
+    """Resolve complete ingest labels or reject an unsafe/ambiguous scope.
 
-    Owner of a private space is the employee bound to it by membership, falling
-    back to the account owner. A non-private space returns no owner. Resolution
-    failures return ("", "") — the chunk is then stamped with no space_kind and
-    is treated as non-private, so this can never accidentally widen access.
+    A private space must have exactly one owner, with the account owner used only
+    as a fallback. Unknown spaces and unresolved ownership fail closed.
     """
     from app.platform.base import PRIVATE_SPACE_KINDS
 
     store = get_platform_store()
     space = store.get_space(space_id)
     if not space:
-        return "", ""
+        raise ValueError("Unknown ingestion space; refusing unresolved access labels.")
     if space.kind not in PRIVATE_SPACE_KINDS:
         return space.kind, ""
-    for m in store.list_memberships(space.account_id):
-        if m.space_id == space.id and m.status == "active" and m.user_id:
-            return space.kind, m.user_id
+    candidates = {
+        m.user_id for m in store.list_memberships(space.account_id)
+        if m.space_id == space.id and m.status == "active" and m.user_id
+    }
     account = store.get_account(space.account_id)
-    return space.kind, (account.owner_user_id if account else "")
+    if not candidates and account and account.owner_user_id:
+        candidates.add(account.owner_user_id)
+    if len(candidates) != 1:
+        raise ValueError("Private ingestion space ownership is unresolved or ambiguous.")
+    return space.kind, next(iter(candidates))
 
 
 @lru_cache
@@ -162,6 +165,33 @@ def get_kpi_store():
     from app.kpis.factory import build_kpi_store
 
     return build_kpi_store(get_settings())
+
+
+@lru_cache
+def get_drive_store():
+    from app.drive.factory import build_drive_store
+
+    return build_drive_store(get_settings(), get_store(), dim=get_embedder().dim)
+
+
+@lru_cache
+def get_drive_blob_store():
+    from app.drive.factory import build_drive_blob_store
+
+    return build_drive_blob_store(get_settings())
+
+
+@lru_cache
+def get_drive_service():
+    from app.drive.service import DriveService
+
+    return DriveService(
+        store=get_drive_store(),
+        blobs=get_drive_blob_store(),
+        platform_store=get_platform_store(),
+        job_store=get_job_store(),
+        settings=get_settings(),
+    )
 
 
 @lru_cache

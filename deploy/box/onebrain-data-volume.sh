@@ -8,6 +8,9 @@ set -euo pipefail
 
 DATA_MOUNT="${ONEBRAIN_DATA_MOUNT:-/mnt/onebrain-data}"
 UUID_FILE="${ONEBRAIN_DATA_UUID_FILE:-/etc/onebrain-data-volume.uuid}"
+DRIVE_MARKER="${ONEBRAIN_DRIVE_MARKER:-/etc/onebrain-drive-enabled}"
+DRIVE_DIR="${DATA_MOUNT}/drive"
+LEDGER_INIT_MARKER="${ONEBRAIN_ERASURE_LEDGER_INIT_MARKER:-${DATA_MOUNT}/.onebrain-erasure-ledger-uninitialized}"
 
 die() {
   printf 'OneBrain data volume: %s\n' "$*" >&2
@@ -42,10 +45,15 @@ verify_volume() {
   actual="$(mounted_uuid)" || die "mounted filesystem UUID cannot be read"
   [ "$actual" = "$expected" ] || die "mounted filesystem UUID does not match the provisioned volume"
 
+  if [ -e "$DRIVE_MARKER" ]; then
+    install -d -o 10001 -g 10001 -m 0750 "$DRIVE_DIR"
+    [ "$(stat -c '%u:%g:%a' "$DRIVE_DIR")" = "10001:10001:750" ] \
+      || die "Drive directory ownership or mode is unsafe"
+  fi
 }
 
 setup_volume() {
-  local candidates=() dev fstype uuid fstab_line
+  local candidates=() dev fstype uuid fstab_line created_filesystem=false
   local current_entries=()
   shopt -s nullglob
   for dev in /dev/disk/by-id/scsi-0HC_Volume_*; do
@@ -64,6 +72,7 @@ setup_volume() {
     [ ! -e "$UUID_FILE" ] || die "recorded volume lost its filesystem signature"
     mkfs.ext4 -F "$dev"
     fstype="ext4"
+    created_filesystem=true
   fi
   [ "$fstype" = "ext4" ] || die "attached volume must use ext4, found $fstype"
 
@@ -93,6 +102,15 @@ setup_volume() {
   fi
 
   mountpoint -q "$DATA_MOUNT" || mount "$DATA_MOUNT"
+  # The erasure ledger sits outside the backed-up Drive subtree. Its one-time
+  # initialization authority is created only when this script itself formats a
+  # genuinely new filesystem. A rebuilt host attached to an existing volume
+  # therefore cannot silently replace a missing ledger with an empty one.
+  if [ "$created_filesystem" = true ] && [ -e "$DRIVE_MARKER" ]; then
+    printf '%s\n' 'initialize-once' >"$LEDGER_INIT_MARKER"
+    chown root:root "$LEDGER_INIT_MARKER"
+    chmod 0600 "$LEDGER_INIT_MARKER"
+  fi
   verify_volume
 }
 

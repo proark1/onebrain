@@ -49,8 +49,8 @@ share links, activity, and AI-assisted filing remain later projects.
 
 - Add `app/drive/memory.py`, `app/drive/postgres.py`, and
   `app/drive/factory.py`.
-- Add `migrations/versions/0032_onebrain_drive.py` after the identity/queue
-  foundation migration reserved as `0031_drive_foundations.py`.
+- Add `migrations/versions/0033_onebrain_drive.py` after the identity/queue
+  foundation migration reserved as `0032_drive_foundations.py`.
 - Modify `app/db/rls.py` and `app/deploy/runtime.py` where runtime validation
   enumerates required Core tables.
 - Add `tests/test_drive_store.py`, `tests/test_drive_migration.py`, and RLS tests.
@@ -227,7 +227,7 @@ share links, activity, and AI-assisted filing remain later projects.
 **Files**
 
 - Modify `app/jobs/base.py`, `app/jobs/memory.py`, and `app/jobs/postgres.py`.
-- Add `migrations/versions/0031_drive_foundations.py` before the Drive schema;
+- Add `migrations/versions/0032_drive_foundations.py` before the Drive schema;
   it owns department-group identity plus job-file lifecycle RLS/cleanup, and the
   migration chain remains strictly linear.
 - Modify `app/routers/privacy.py` and related platform-store privacy helpers.

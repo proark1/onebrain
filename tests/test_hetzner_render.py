@@ -103,6 +103,14 @@ _XZB85_ENTRY = re.compile(
     re.MULTILINE,
 )
 
+_XZB64_ENTRY = re.compile(
+    r"^  - path: (?P<path>\S+\.tar\.xz)\n"
+    r"    permissions: '(?P<perm>[0-7]+)'\n"
+    r"    encoding: b64\n"
+    r"    content: (?P<blob>\S+)\n",
+    re.MULTILINE,
+)
+
 
 def _gz_b64_raw_entries(cloud_init: str) -> dict:
     """{path: (permissions, decompressed_bytes)} for gz+b64 write_files entries."""
@@ -119,8 +127,13 @@ def _asset_entries(cloud_init: str) -> dict:
         perm = xz.group("perm")
         archive = lzma.decompress(base64.b85decode(xz.group("blob")))
     else:
-        raw = _gz_b64_raw_entries(cloud_init)
-        perm, archive = raw["/opt/onebrain/onebrain-assets.tar"]
+        legacy_xz = _XZB64_ENTRY.search(_write_files_section(cloud_init))
+        if legacy_xz is not None:
+            perm = legacy_xz.group("perm")
+            archive = lzma.decompress(base64.b64decode(legacy_xz.group("blob")))
+        else:
+            raw = _gz_b64_raw_entries(cloud_init)
+            perm, archive = raw["/opt/onebrain/onebrain-assets.tar"]
     assert perm == "0600"
     out = {}
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
@@ -213,6 +226,7 @@ def test_compose_onebrain_only():
     assert "      onebrain-migrate:\n        condition: service_completed_successfully" in compose
     assert "- env/onebrain-api.env" in compose
     assert "- /data:/data" in compose
+    assert compose.count("- /mnt/onebrain-data/drive:/data/drive") == 2
     assert "x-x: &x {read_only: true" in compose
     assert 'tmpfs: ["/tmp:mode=1777,size=64m", "/app/.next/cache:mode=1777,size=64m"]' in compose
     assert "edge: {ipv4_address: 172.30.0.2}" in compose
@@ -604,9 +618,15 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
     for required in (
         "/opt/onebrain/docker-compose.yml", "/opt/onebrain/Caddyfile", "/opt/onebrain/box.env",
         "/opt/onebrain/postgres-init.sh", "/opt/onebrain/onebrain_dotenv.sh", "/opt/onebrain/update.sh",
+        "/opt/onebrain/onebrain-data-volume.sh",
         "/opt/onebrain/onebrain_box_verify.py", "/opt/onebrain/onebrain-gate-agent.sh",
         "/opt/onebrain/onebrain_gate_report.py", "/opt/onebrain/onebrain-firstboot.sh",
         "/opt/onebrain/installed-release.json",
+        "/etc/onebrain-drive-enabled", "/etc/systemd/system/onebrain-data-volume.service",
+        "/etc/systemd/system/onebrain-drive-backup.service",
+        "/etc/systemd/system/onebrain-drive-backup.timer",
+        "/etc/systemd/system/onebrain-drive-erasure-ledger.service",
+        "/etc/systemd/system/onebrain-drive-erasure-ledger.timer",
         "/etc/systemd/system/onebrain-update.service", "/etc/systemd/system/onebrain-update.timer",
     ):
         assert required in assets
@@ -671,6 +691,61 @@ def test_cloud_init_installs_volume_contract_and_safe_host_maintenance():
     assert stop_docker < volume_setup < maintenance_dir < volume_enable < docker_enable < compose_up
     assert "chown -Rh 10001:10001 /mnt/onebrain-data" not in first_boot
     assert "systemctl enable --now onebrain-host-maintenance.timer" in first_boot
+
+
+def test_customer_drive_volume_is_persistent_verified_and_ordered_before_docker():
+    ci = render_cloud_init(_inputs(_ONEBRAIN))
+    assets = _asset_entries(ci)
+    first_boot = _first_boot_section(ci)
+    setup = first_boot.index("onebrain-data-volume.sh setup")
+    docker = first_boot.index("systemctl enable --now docker")
+
+    assert first_boot.index("systemctl stop docker.service docker.socket") < setup < docker
+    assert first_boot.index("systemctl enable onebrain-data-volume.service") < docker
+    assert "systemctl enable --now onebrain-drive-backup.timer" in first_boot
+    ledger_init = first_boot.index("systemctl start onebrain-drive-erasure-ledger.service")
+    ledger_timer = first_boot.index("systemctl enable --now onebrain-drive-erasure-ledger.timer")
+    backup_timer = first_boot.index("systemctl enable --now onebrain-drive-backup.timer")
+    assert first_boot.index("up -d") < ledger_init < ledger_timer < backup_timer
+
+    volume_script = assets["/opt/onebrain/onebrain-data-volume.sh"][1]
+    volume_unit = assets["/etc/systemd/system/onebrain-data-volume.service"][1]
+    backup_unit = assets["/etc/systemd/system/onebrain-drive-backup.service"][1]
+    assert "UUID=$uuid $DATA_MOUNT ext4" in volume_script
+    assert ">>/etc/fstab" in volume_script
+    assert 'mountpoint -q "$DATA_MOUNT"' in volume_script
+    assert "mounted filesystem UUID does not match" in volume_script
+    assert 'install -d -o 10001 -g 10001 -m 0750 "$DRIVE_DIR"' in volume_script
+    assert "RequiresMountsFor=/mnt/onebrain-data" in volume_unit
+    assert "Before=docker.service" in volume_unit
+    assert "RequiredBy=docker.service" in volume_unit
+    assert "{{COMPOSE_PROJECT}}" not in backup_unit
+    assert "--project-name onebrain-dep_a" in backup_unit
+    assert "onebrain-api:/app/deploy/box/onebrain-drive-backup.sh" in backup_unit
+    assert "onebrain_backup_crypto.py" in backup_unit
+    assert "onebrain_erasure_ledger.py" in backup_unit
+
+
+def test_operator_receives_no_drive_mount_or_backup_surface():
+    inp = _inputs(_ONEBRAIN, role="operator")
+    compose = render_compose(inp)
+    ci = render_cloud_init(inp)
+    assets = _asset_entries(ci)
+    first_boot = _first_boot_section(ci)
+
+    assert "/mnt/onebrain-data/drive:/data/drive" not in compose
+    assert "/etc/onebrain-drive-enabled" not in assets
+    assert "/etc/systemd/system/onebrain-drive-backup.service" not in assets
+    assert "/etc/systemd/system/onebrain-drive-backup.timer" not in assets
+    assert "/etc/systemd/system/onebrain-drive-erasure-ledger.service" not in assets
+    assert "/etc/systemd/system/onebrain-drive-erasure-ledger.timer" not in assets
+    assert "onebrain-drive-backup.timer" not in first_boot
+    assert "onebrain-drive-erasure-ledger" not in first_boot
+    # Current main mounts and verifies the host data volume for every role;
+    # operators omit only the Drive-specific mount and lifecycle surfaces.
+    assert "/opt/onebrain/onebrain-data-volume.sh" in assets
+    assert "/etc/systemd/system/onebrain-data-volume.service" in assets
+    assert "scsi-0HC_Volume_*" in first_boot
 
 
 def test_cloud_init_uses_the_preflighted_callback_url_template():

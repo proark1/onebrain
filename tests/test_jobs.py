@@ -109,6 +109,7 @@ def test_memory_job_store_lifecycle_with_file_payload():
     assert done.status == STATUS_SUCCEEDED
     assert done.result == {"ok": True}
     assert done.completed_at
+    assert store.get_file(job.id) is None
 
 
 def test_memory_job_store_summary_is_sanitized():
@@ -136,8 +137,31 @@ def test_memory_job_store_summary_is_sanitized():
     assert summary.recent_failures[0].error == "provider timeout"
     assert not hasattr(summary.recent_failures[0], "payload")
     assert not hasattr(summary.recent_failures[0], "result")
-    assert store.get_file(failed.id).data == b"not returned"
+    assert store.get_file(failed.id) is None
     assert store.get(queued.id).status == STATUS_QUEUED
+
+
+def test_memory_job_store_retry_keeps_file_until_terminal_result():
+    store = MemoryJobStore()
+    job = store.enqueue(
+        type=JOB_DOCUMENT_INGEST,
+        tenant_id="nft_gym",
+        file=JobFileInput("retry.txt", "text/plain", b"retry me"),
+        max_attempts=2,
+    )
+    first = store.claim("worker_a")[0]
+
+    store.mark_retry(
+        job.id,
+        "temporary failure",
+        utcnow() - timedelta(seconds=1),
+        lease_token=first.lease_token,
+    )
+
+    assert store.get_file(job.id).data == b"retry me"
+    second = store.claim("worker_b")[0]
+    store.mark_failed(job.id, "final failure", lease_token=second.lease_token)
+    assert store.get_file(job.id) is None
 
 
 def test_memory_job_store_reclaims_expired_lease_with_a_new_fencing_token():
@@ -160,7 +184,12 @@ def test_memory_job_store_reclaims_expired_lease_with_a_new_fencing_token():
 
 def test_memory_job_store_fences_stale_lease_updates_and_heartbeat():
     store = MemoryJobStore()
-    job = store.enqueue(type=JOB_SERVICE_CAPTURE, tenant_id="nft_gym", max_attempts=2)
+    job = store.enqueue(
+        type=JOB_SERVICE_CAPTURE,
+        tenant_id="nft_gym",
+        file=JobFileInput("fenced.txt", "text/plain", b"keep until owner finishes"),
+        max_attempts=2,
+    )
     first = store.claim("worker_a")[0]
     store._jobs[job.id] = replace(
         first,
@@ -181,14 +210,21 @@ def test_memory_job_store_fences_stale_lease_updates_and_heartbeat():
             utcnow() + timedelta(seconds=1),
             lease_token=first.lease_token,
         )
+    assert store.get_file(job.id).data == b"keep until owner finishes"
 
     done = store.mark_succeeded(job.id, {"ok": True}, lease_token=second.lease_token)
     assert done.status == STATUS_SUCCEEDED
+    assert store.get_file(job.id) is None
 
 
 def test_memory_job_store_terminalizes_expired_last_attempt_without_reclaiming():
     store = MemoryJobStore()
-    job = store.enqueue(type=JOB_SERVICE_CAPTURE, tenant_id="nft_gym", max_attempts=1)
+    job = store.enqueue(
+        type=JOB_SERVICE_CAPTURE,
+        tenant_id="nft_gym",
+        file=JobFileInput("expired.txt", "text/plain", b"expired"),
+        max_attempts=1,
+    )
     claimed = store.claim("worker_a")[0]
     store._jobs[job.id] = replace(
         claimed,
@@ -202,6 +238,54 @@ def test_memory_job_store_terminalizes_expired_last_attempt_without_reclaiming()
     assert failed.completed_at
     assert failed.lease_token == ""
     assert failed.lease_expires_at == ""
+    assert store.get_file(job.id) is None
+
+
+def test_memory_job_store_delete_scope_is_account_and_space_bound():
+    store = MemoryJobStore()
+    service = store.enqueue(
+        type=JOB_DOCUMENT_INGEST,
+        tenant_id="acme",
+        account_id="acme",
+        space_id="sp_service",
+        file=JobFileInput("service.txt", "text/plain", b"service"),
+    )
+    personal = store.enqueue(
+        type=JOB_DOCUMENT_INGEST,
+        tenant_id="acme",
+        account_id="acme",
+        space_id="sp_personal",
+        file=JobFileInput("personal.txt", "text/plain", b"personal"),
+    )
+    legacy = store.enqueue(
+        type=JOB_DOCUMENT_INGEST,
+        tenant_id="acme",
+        file=JobFileInput("legacy.txt", "text/plain", b"legacy"),
+    )
+    other = store.enqueue(
+        type=JOB_DOCUMENT_INGEST,
+        tenant_id="other",
+        account_id="other",
+        space_id="sp_service",
+        file=JobFileInput("other.txt", "text/plain", b"other"),
+    )
+
+    deleted_space = store.delete_scope(
+        "acme", account_id="acme", space_id="sp_service",
+    )
+
+    assert (deleted_space.jobs, deleted_space.files) == (1, 1)
+    assert store.get(service.id) is None
+    assert store.get(personal.id) is not None
+    assert store.get(legacy.id) is not None
+    assert store.get(other.id) is not None
+
+    deleted_account = store.delete_scope("acme", account_id="acme")
+
+    assert (deleted_account.jobs, deleted_account.files) == (2, 2)
+    assert store.get(personal.id) is None
+    assert store.get(legacy.id) is None
+    assert store.get(other.id) is not None
 
 
 def test_worker_heartbeats_active_job_lease(monkeypatch):

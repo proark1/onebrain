@@ -7,7 +7,7 @@ import { summaryValue } from "../src/lib/platform-summary.ts";
 test("customer boxes expose the complete customer surface without control-plane links", () => {
   assert.deepEqual(
     consoleNavigation(false).map((item) => item.label),
-    ["Status", "Ask", "Knowledge", "KPIs", "AI Employees", "Apps", "Privacy", "Settings"],
+    ["Status", "Ask", "Drive", "KPIs", "AI Employees", "Apps", "Privacy", "Settings"],
   );
 });
 

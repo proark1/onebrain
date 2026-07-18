@@ -523,6 +523,14 @@ def _mc_user_management_module():
     return _load_migration_module("0031_mc_user_management.py", "mc_user_management_migration")
 
 
+def _drive_foundations_module():
+    return _load_migration_module("0032_drive_foundations.py", "drive_foundations_migration")
+
+
+def _onebrain_drive_module():
+    return _load_migration_module("0033_onebrain_drive.py", "onebrain_drive_migration")
+
+
 def test_trust_primitives_migration_structure_and_chain():
     migration = _trust_primitives_module()
 
@@ -591,7 +599,7 @@ def test_required_revision_matches_single_alembic_head():
     heads = ScriptDirectory.from_config(config).get_heads()
 
     assert heads == [REQUIRED_ALEMBIC_REVISION]
-    assert REQUIRED_ALEMBIC_REVISION == "0031_mc_user_management"
+    assert REQUIRED_ALEMBIC_REVISION == _onebrain_drive_module().revision
 
 
 def test_job_leases_migration_precedes_the_current_head():
@@ -611,12 +619,14 @@ def test_job_leases_migration_precedes_the_current_head():
     assert "jobs_lease_claim_idx" in source
 
 
-def test_recovery_auth_and_job_queue_migrations_form_one_additive_chain():
+def test_recovery_auth_job_queue_and_drive_migrations_form_one_chain():
     job_leases = _job_leases_module()
     ai_leases = _ai_agent_run_leases_module()
     teardown = _customer_teardown_module()
     auth_limits = _auth_rate_limits_module()
     job_queue_rls = _job_queue_rls_module()
+    drive_foundations = _drive_foundations_module()
+    onebrain_drive = _onebrain_drive_module()
 
     assert ai_leases.revision == "0027_ai_agent_run_leases"
     assert ai_leases.down_revision == job_leases.revision
@@ -627,8 +637,12 @@ def test_recovery_auth_and_job_queue_migrations_form_one_additive_chain():
     assert job_queue_rls.revision == "0030_job_queue_rls_roles"
     assert job_queue_rls.down_revision == auth_limits.revision
     user_management = _mc_user_management_module()
-    assert user_management.revision == REQUIRED_ALEMBIC_REVISION
+    assert user_management.revision == "0031_mc_user_management"
     assert user_management.down_revision == job_queue_rls.revision
+    assert drive_foundations.revision == "0032_drive_foundations"
+    assert drive_foundations.down_revision == user_management.revision
+    assert onebrain_drive.revision == REQUIRED_ALEMBIC_REVISION
+    assert onebrain_drive.down_revision == drive_foundations.revision
     source = Path(auth_limits.__file__).read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS auth_rate_limits" in source
     assert "subject_hash" in source and "auth_rate_limits_expiry_idx" in source
@@ -640,7 +654,8 @@ def test_recovery_auth_and_job_queue_migrations_form_one_additive_chain():
 def test_mc_user_management_migration_is_ciphertext_only_and_additive():
     migration = _mc_user_management_module()
     source = Path(migration.__file__).read_text(encoding="utf-8")
-    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.revision == "0031_mc_user_management"
+    assert migration.revision != REQUIRED_ALEMBIC_REVISION
     assert "fleet_user_management_jobs" in source
     assert "user_management_receipts" in source
     assert "sealed_payload" in source and "result_ciphertext" in source

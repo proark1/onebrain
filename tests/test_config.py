@@ -40,3 +40,7 @@ def test_hetzner_max_fleet_servers_default_cost_cap():
     # The cost circuit breaker ships ON by default with a small cap — a retry/loop/replay bug
     # must not be able to mint an unbounded number of billable boxes out of the box.
     assert Settings().hetzner_max_fleet_servers == 5
+
+
+def test_drive_defaults_to_storage_only_for_safe_existing_box_rollout():
+    assert Settings().drive_policy_mode == "storage_only"

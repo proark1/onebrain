@@ -219,6 +219,10 @@ pre {
   backdrop-filter: blur(12px);
 }
 
+.commandBar.featureScoped {
+  grid-template-columns: minmax(160px, 1fr) minmax(170px, auto);
+}
+
 .commandContext,
 .commandIdentity {
   display: grid;
@@ -2449,7 +2453,8 @@ button:disabled,
 }
 
 @media (max-width: 1080px) {
-  .commandBar {
+  .commandBar,
+  .commandBar.featureScoped {
     grid-template-columns: 1fr;
     align-items: stretch;
   }

@@ -1,6 +1,6 @@
 import Link from "next/link";
-import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
+import type { ReactNode } from "react";
 import { WorkspaceProvider } from "@/components/workspace-provider";
 import { WorkspaceSelector } from "@/components/workspace-selector";
 import { ALL_NAV, consoleNavigation, type ConsoleSection } from "@/lib/console-navigation";
@@ -10,9 +10,10 @@ type ConsoleShellProps = {
   active: ConsoleSection;
   children: ReactNode;
   session: SessionInfo;
+  workspaceMode?: "console" | "feature";
 };
 
-export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
+export function ConsoleShell({ active, children, session, workspaceMode = "console" }: ConsoleShellProps) {
   if (session.must_change_password) {
     redirect("/settings/password");
   }
@@ -23,49 +24,47 @@ export function ConsoleShell({ active, children, session }: ConsoleShellProps) {
   const nav = consoleNavigation(session.operator_mode);
   const homeHref = session.operator_mode ? "/fleet" : "/chat";
   const activeLabel = ALL_NAV.find((item) => item.id === active)?.label || "Console";
-
-  return (
-    <WorkspaceProvider session={session}>
-      <main className="consoleShell">
-        <aside className="consoleSidebar" aria-label="OneBrain console">
-          <div className="brandBlock">
-            <Link className="brand" href={homeHref}>
-              <span className="brandMark">AD</span>
-              <span>OneBrain</span>
-            </Link>
-          </div>
-
-          <nav className="consoleNav" aria-label="Primary sections">
-            {nav.map((item) => (
-              <Link
-                aria-current={active === item.id ? "page" : undefined}
-                className={active === item.id ? "active" : ""}
-                href={item.href}
-                key={item.id}
-              >
-                {item.label}
-              </Link>
-            ))}
-          </nav>
-          </aside>
-
-        <div className="consoleFrame">
-          <header className="commandBar">
-            <div className="commandContext">
-              <span>{identity}</span>
-              <strong>{activeLabel}</strong>
-            </div>
-            {active === "kpis" ? <span /> : <WorkspaceSelector />}
-            <div className="commandIdentity">
-              <Link aria-label={`Account settings for ${identity}`} href="/settings">{identity}</Link>
-            </div>
-          </header>
-
-          <section className="consoleContent">
-            {children}
-          </section>
+  const shell = (
+    <main className="consoleShell">
+      <aside className="consoleSidebar" aria-label="OneBrain console">
+        <div className="brandBlock">
+          <Link className="brand" href={homeHref}>
+            <span className="brandMark">AD</span>
+            <span>OneBrain</span>
+          </Link>
         </div>
-      </main>
-    </WorkspaceProvider>
+
+        <nav className="consoleNav" aria-label="Primary sections">
+          {nav.map((item) => (
+            <Link
+              aria-current={active === item.id ? "page" : undefined}
+              className={active === item.id ? "active" : ""}
+              href={item.href}
+              key={item.id}
+            >
+              {item.label}
+            </Link>
+          ))}
+        </nav>
+      </aside>
+
+      <div className="consoleFrame">
+        <header className={workspaceMode === "feature" ? "commandBar featureScoped" : "commandBar"}>
+          <div className="commandContext">
+            <span>{identity}</span>
+            <strong>{activeLabel}</strong>
+          </div>
+          {workspaceMode === "feature" ? null : active === "kpis" ? <span /> : <WorkspaceSelector />}
+          <div className="commandIdentity">
+            <Link aria-label={`Account settings for ${identity}`} href="/settings">{identity}</Link>
+          </div>
+        </header>
+
+        <section className="consoleContent">
+          {children}
+        </section>
+      </div>
+    </main>
   );
+  return workspaceMode === "feature" ? shell : <WorkspaceProvider session={session}>{shell}</WorkspaceProvider>;
 }

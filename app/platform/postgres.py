@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from typing import List, Optional
 
 from app.db.rls import set_rls_scope
@@ -11,6 +12,8 @@ from app.platform.base import (
     CUSTOMER_SERVICE_PURPOSES,
     PRIVATE_SPACE_KINDS,
     AccessDecision,
+    AccessGroup,
+    AccessGroupMembership,
     Account,
     AppInstallation,
     AuditEvent,
@@ -32,6 +35,8 @@ from app.platform.base import (
     normalize_unique,
     normalized_brand_theme,
     validate_account,
+    validate_access_group,
+    validate_access_group_membership,
     validate_brand_theme,
     validate_installation,
     validate_space,
@@ -74,7 +79,7 @@ class PostgresPlatformStore:
     def _conn(self, *, account_id: str = "", space_id: str = "", admin: bool = False):
         conn = self._psycopg.connect(self._operator_dsn if admin else self._dsn)
         if account_id or space_id:
-            set_rls_scope(conn, account_id=account_id, space_id=space_id)
+            set_rls_scope(conn, tenant_id=account_id, account_id=account_id, space_id=space_id)
         return conn
 
     def _validate_schema(self) -> None:
@@ -89,6 +94,8 @@ class PostgresPlatformStore:
                     "platform_audit_events",
                     "platform_organizations",
                     "platform_memberships",
+                    "platform_access_groups",
+                    "platform_access_group_memberships",
                     "platform_consent_records",
                     "platform_retention_policies",
                     "platform_legal_holds",
@@ -539,6 +546,131 @@ class PostgresPlatformStore:
             for r in rows
         ]
 
+    def upsert_access_group(self, group: AccessGroup) -> AccessGroup:
+        validate_access_group(group)
+        if not self.get_account(group.account_id):
+            raise ValueError(f"unknown account: {group.account_id}")
+        if group.space_id:
+            space = self.get_space(group.space_id)
+            if not space or space.account_id != group.account_id:
+                raise ValueError("Access group space is not in this account.")
+        current = next((
+            row for row in self.list_access_groups(group.account_id) if row.id == group.id
+        ), None)
+        if current and (
+            current.account_id != group.account_id
+            or current.space_id != group.space_id
+            or current.kind != group.kind
+        ):
+            raise ValueError("Access-group account, space, and kind are immutable.")
+        with self._conn(account_id=group.account_id, space_id=group.space_id) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_access_groups
+                (id, tenant_id, account_id, space_id, kind, name, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    space_id=EXCLUDED.space_id, kind=EXCLUDED.kind, name=EXCLUDED.name,
+                    status=EXCLUDED.status, updated_at=now()
+                RETURNING id, account_id, space_id, kind, name, status, created_at, updated_at
+                """,
+                (group.id, group.account_id, group.account_id, group.space_id, group.kind, group.name, group.status),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return AccessGroup(
+            id=row[0], account_id=row[1], space_id=row[2], kind=row[3], name=row[4],
+            status=row[5], created_at=_iso(row[6]), updated_at=_iso(row[7]),
+        )
+
+    def list_access_groups(self, account_id: str, space_id: str = "") -> List[AccessGroup]:
+        clause = "account_id=%s"
+        params: tuple = (account_id,)
+        if space_id:
+            clause += " AND space_id IN ('', %s)"
+            params = (account_id, space_id)
+        with self._conn(account_id=account_id, space_id=space_id) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, account_id, space_id, kind, name, status, created_at, updated_at "
+                f"FROM platform_access_groups WHERE {clause} ORDER BY kind, lower(name), id",
+                params,
+            )
+            rows = cur.fetchall()
+        return [
+            AccessGroup(id=r[0], account_id=r[1], space_id=r[2], kind=r[3], name=r[4],
+                        status=r[5], created_at=_iso(r[6]), updated_at=_iso(r[7]))
+            for r in rows
+        ]
+
+    def upsert_access_group_membership(
+        self, membership: AccessGroupMembership,
+    ) -> AccessGroupMembership:
+        validate_access_group_membership(membership)
+        group = next((
+            row for row in self.list_access_groups(membership.account_id, membership.space_id)
+            if row.id == membership.group_id
+        ), None)
+        if not group:
+            raise ValueError("Access group is not in this account and space.")
+        if group.status != "active" and membership.status == "active":
+            raise ValueError("Archived access groups cannot grant new memberships.")
+        with self._conn(account_id=membership.account_id, space_id=membership.space_id) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT account_id, space_id, group_id, user_id "
+                "FROM platform_access_group_memberships WHERE id=%s",
+                (membership.id,),
+            )
+            current = cur.fetchone()
+            if current and tuple(current) != (
+                membership.account_id,
+                membership.space_id,
+                membership.group_id,
+                membership.user_id,
+            ):
+                raise ValueError("Access-group membership identity and scope are immutable.")
+            cur.execute(
+                """
+                INSERT INTO platform_access_group_memberships
+                (id, tenant_id, account_id, space_id, group_id, user_id, status)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (id) DO UPDATE SET
+                    status=EXCLUDED.status, updated_at=now()
+                RETURNING id, account_id, space_id, group_id, user_id, status, created_at, updated_at
+                """,
+                (
+                    membership.id, membership.account_id, membership.account_id, membership.space_id,
+                    membership.group_id, membership.user_id, membership.status,
+                ),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return AccessGroupMembership(
+            id=row[0], account_id=row[1], space_id=row[2], group_id=row[3], user_id=row[4],
+            status=row[5], created_at=_iso(row[6]), updated_at=_iso(row[7]),
+        )
+
+    def list_access_group_memberships(
+        self, account_id: str, user_id: str = "",
+    ) -> List[AccessGroupMembership]:
+        clause = "account_id=%s"
+        params: tuple = (account_id,)
+        if user_id:
+            clause += " AND user_id=%s"
+            params = (account_id, user_id)
+        with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, account_id, space_id, group_id, user_id, status, created_at, updated_at "
+                f"FROM platform_access_group_memberships WHERE {clause} ORDER BY user_id, group_id, id",
+                params,
+            )
+            rows = cur.fetchall()
+        return [
+            AccessGroupMembership(
+                id=r[0], account_id=r[1], space_id=r[2], group_id=r[3], user_id=r[4],
+                status=r[5], created_at=_iso(r[6]), updated_at=_iso(r[7]),
+            ) for r in rows
+        ]
+
     def upsert_consent_record(self, record: ConsentRecord) -> ConsentRecord:
         self._validate_governance_scope(record.account_id, record.space_id)
         with self._conn(account_id=record.account_id, space_id=record.space_id) as conn, conn.cursor() as cur:
@@ -627,6 +759,10 @@ class PostgresPlatformStore:
         self._validate_governance_scope(hold.account_id, hold.space_id)
         with self._conn(account_id=hold.account_id, space_id=hold.space_id) as conn, conn.cursor() as cur:
             cur.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (f"onebrain:legal-hold:{hold.account_id}",),
+            )
+            cur.execute(
                 """
                 INSERT INTO platform_legal_holds
                 (id, account_id, space_id, subject_ref, reason, legal_basis, created_by, released_at)
@@ -639,6 +775,29 @@ class PostgresPlatformStore:
             row = cur.fetchone()
             conn.commit()
         return self._legal_hold_row(row)
+
+    @contextmanager
+    def deletion_guard(self, account_id: str, space_id: str = ""):
+        """Hold an account-wide advisory lock across hold check and deletion."""
+
+        self._validate_governance_scope(account_id, space_id)
+        connection = self._conn(account_id=account_id, space_id=space_id)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT pg_advisory_lock(hashtext(%s))",
+                    (f"onebrain:legal-hold:{account_id}",),
+                )
+            yield
+        finally:
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT pg_advisory_unlock(hashtext(%s))",
+                        (f"onebrain:legal-hold:{account_id}",),
+                    )
+            finally:
+                connection.close()
 
     def list_legal_holds(self, account_id: str, space_id: str = "", include_released: bool = False) -> List[LegalHold]:
         rows = self._list_scope(
@@ -937,6 +1096,8 @@ class PostgresPlatformStore:
                 counts["organizations"] = 0
                 counts["credential_metadata"] = 0
             for key, table in [
+                ("access_group_memberships", "platform_access_group_memberships"),
+                ("access_groups", "platform_access_groups"),
                 ("memberships", "platform_memberships"),
                 ("consent_records", "platform_consent_records"),
                 ("retention_policies", "platform_retention_policies"),
