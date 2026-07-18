@@ -7,7 +7,7 @@ export type SessionInfo = {
   display_name: string;
   email: string;
   must_change_password: boolean;
-  // Mission Control: operator_mode hides the customer surface (Ask/Knowledge/Apps/
+  // Mission Control: operator_mode hides the customer surface (Ask/Drive/Apps/
   // Privacy) so the console reads as an admin-only overview.
   operator_mode: boolean;
   is_operator_surface: boolean;

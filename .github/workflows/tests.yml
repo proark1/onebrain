@@ -136,7 +136,11 @@ jobs:
                   if not match:
                       continue
                   image, stage = match.groups()
-                  if image not in stages and not re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", image):
+                  if (
+                      image.lower() != "scratch"
+                      and image not in stages
+                      and not re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", image)
+                  ):
                       invalid.append(f"{path}:{number} ({image})")
                   if stage:
                       stages.add(stage)

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from app.jobs.base import (
     JobFailureSummary,
+    JobScopeDeleteResult,
     JobSummary,
     JobLeaseLostError,
     LEASE_EXPIRED_ERROR,
@@ -52,6 +53,7 @@ class MemoryJobStore:
     def __init__(self):
         self._jobs: dict[str, Job] = {}
         self._files: dict[str, JobFile] = {}
+        self._idempotency: dict[tuple[str, str, str, str, str], str] = {}
         self._lock = threading.RLock()
 
     def enqueue(
@@ -65,7 +67,15 @@ class MemoryJobStore:
         payload: dict | None = None,
         file: JobFileInput | None = None,
         max_attempts: int = 3,
+        idempotency_key: str = "",
     ) -> Job:
+        dedupe = (idempotency_key or "").strip()
+        dedupe_scope = (tenant_id, account_id, space_id, type, dedupe)
+        with self._lock:
+            if dedupe:
+                existing_id = self._idempotency.get(dedupe_scope)
+                if existing_id and existing_id in self._jobs:
+                    return self._jobs[existing_id]
         now = _iso()
         job = Job(
             id=f"job_{uuid4().hex}",
@@ -82,7 +92,13 @@ class MemoryJobStore:
             updated_at=now,
         )
         with self._lock:
+            if dedupe:
+                existing_id = self._idempotency.get(dedupe_scope)
+                if existing_id and existing_id in self._jobs:
+                    return self._jobs[existing_id]
             self._jobs[job.id] = job
+            if dedupe:
+                self._idempotency[dedupe_scope] = job.id
             if file is not None:
                 self._files[job.id] = JobFile(
                     id=f"file_{uuid4().hex}",
@@ -140,6 +156,7 @@ class MemoryJobStore:
                         updated_at=_iso(now),
                         completed_at=_iso(now),
                     )
+                    self._files.pop(job.id, None)
             ready = sorted(
                 (
                     job for job in self._jobs.values()
@@ -204,6 +221,46 @@ class MemoryJobStore:
             self._jobs[job_id] = updated
             return updated
 
+    def delete_scope(
+        self,
+        tenant_id: str,
+        *,
+        account_id: str = "",
+        space_id: str = "",
+    ) -> JobScopeDeleteResult:
+        """Delete jobs and transient bytes in one privacy scope.
+
+        Account-wide erasure intentionally includes legacy jobs whose
+        ``account_id`` predates explicit account stamping, matching the existing
+        document and conversation privacy-scope behavior.
+        """
+
+        tenant_id = (tenant_id or "").strip()
+        account_id = (account_id or "").strip()
+        space_id = (space_id or "").strip()
+
+        def matches(job: Job) -> bool:
+            if job.tenant_id != tenant_id:
+                return False
+            if space_id:
+                return job.account_id == account_id and job.space_id == space_id
+            if account_id and job.account_id not in ("", account_id):
+                return False
+            return True
+
+        with self._lock:
+            job_ids = [job_id for job_id, job in self._jobs.items() if matches(job)]
+            files = sum(1 for job_id in job_ids if job_id in self._files)
+            for job_id in job_ids:
+                self._files.pop(job_id, None)
+                self._jobs.pop(job_id, None)
+            removed = set(job_ids)
+            self._idempotency = {
+                key: job_id for key, job_id in self._idempotency.items()
+                if job_id not in removed
+            }
+        return JobScopeDeleteResult(jobs=len(job_ids), files=files)
+
     def summary(self, recent_failures_limit: int = 10) -> JobSummary:
         with self._lock:
             jobs = list(self._jobs.values())
@@ -265,6 +322,7 @@ class MemoryJobStore:
                 completed_at=now,
             )
             self._jobs[job_id] = updated
+            self._files.pop(job_id, None)
             return updated
 
     def _require(self, job_id: str) -> Job:

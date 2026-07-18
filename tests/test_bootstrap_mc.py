@@ -46,7 +46,7 @@ _IMAGES = json.dumps({m: f"ghcr.io/proark1/{m}@{_D}" for m in mc._MC_MODULES})
 
 def _asset_text(cloud_init: str, path: str) -> str:
     match = re.search(
-        r"  - path: /opt/onebrain/onebrain-assets\.b85\n"
+        r"  - path: (?:/root/ob|/opt/onebrain/onebrain-assets)\.b85\n"
         r"    permissions: '[0-7]+'\n"
         r"    content: \|\n"
         r"      (?P<blob>\S+)\n",

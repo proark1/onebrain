@@ -164,6 +164,21 @@ class MemoryStore:
             self._save()
         return removed
 
+    def delete_by_metadata(self, field: str, value: str) -> int:
+        """Delete chunks matching one exact metadata value.
+
+        Drive uses this as a recovery backstop so stale projections disappear
+        even when metadata lost the formerly active document id.
+        """
+
+        with self._lock:
+            before = len(self._chunks)
+            self._chunks = [chunk for chunk in self._chunks if chunk.meta.get(field) != value]
+            removed = before - len(self._chunks)
+            if removed:
+                self._save()
+        return removed
+
     def export_documents(self, tenant_id: str, account_id: str = "", space_id: str = "") -> List[dict]:
         docs: dict[str, dict] = {}
         with self._lock:

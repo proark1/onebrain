@@ -18,12 +18,13 @@ down the whole governance scope.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 from uuid import uuid4
 
 
-SUPPORTED_DOMAINS = ("documents", "conversations", "intake", "kpis", "governance")
+SUPPORTED_DOMAINS = ("documents", "drive", "conversations", "intake", "kpis", "governance")
 
 
 _retention_run_timestamp_lock = Lock()
@@ -60,10 +61,46 @@ def _older(created_at: str, cutoff: str) -> bool:
 
 
 def run_retention(*, account_id: str, space_id: str = "", domain: str = "", dry_run: bool = True) -> dict:
-    from app.deps import get_conversation_store, get_intake_store, get_kpi_store, get_platform_store, get_store
-    from app.platform.base import RetentionRun, scope_is_held
+    """Run one sweep, serializing destructive work with legal-hold creation."""
+
+    from app.deps import get_platform_store
 
     platform = get_platform_store()
+    guard_factory = getattr(platform, "deletion_guard", None)
+    guard = (
+        guard_factory(account_id, space_id)
+        if not dry_run and callable(guard_factory)
+        else nullcontext()
+    )
+    with guard:
+        return _run_retention_guarded(
+            account_id=account_id,
+            space_id=space_id,
+            domain=domain,
+            dry_run=dry_run,
+            platform=platform,
+        )
+
+
+def _run_retention_guarded(
+    *,
+    account_id: str,
+    space_id: str,
+    domain: str,
+    dry_run: bool,
+    platform,
+) -> dict:
+    from app.deps import (
+        get_conversation_store,
+        get_drive_blob_store,
+        get_drive_store,
+        get_intake_store,
+        get_kpi_store,
+        get_store,
+    )
+    from app.drive.blobs import drive_scope_prefix
+    from app.platform.base import AuditEvent, RetentionRun, Tombstone, scope_is_held, target_is_held
+
     policies = [
         policy for policy in platform.list_retention_policies(account_id, space_id)
         if policy.status == "active" and (not domain or policy.domain == domain)
@@ -73,7 +110,8 @@ def run_retention(*, account_id: str, space_id: str = "", domain: str = "", dry_
         active_domains &= {domain}
     active_domains &= set(SUPPORTED_DOMAINS)
 
-    held = scope_is_held(platform.list_legal_holds(account_id), space_id)
+    active_holds = platform.list_legal_holds(account_id)
+    held = scope_is_held(active_holds, space_id)
     delete_ok = not dry_run and not held
     now = datetime.now(timezone.utc)
 
@@ -109,6 +147,87 @@ def run_retention(*, account_id: str, space_id: str = "", domain: str = "", dry_
             )
             result["counts"]["documents_deleted"] = deleted["documents"]
             result["counts"]["chunks_deleted"] = deleted["chunks"]
+
+    if "drive" in active_domains:
+        cutoff = cutoff_for("drive")
+        result["cutoffs"]["drive"] = cutoff
+        drive_store = get_drive_store()
+        drive_scope = drive_store.export_scope(
+            tenant_id=account_id, account_id=account_id, space_id=space_id,
+        )
+        eligible = [row for row in drive_scope.get("files", []) if _older(row.get("created_at", ""), cutoff)]
+        result["counts"]["drive_files"] = len(eligible)
+        result["counts"]["drive_revisions"] = sum(
+            1 for row in drive_scope.get("revisions", [])
+            if row.get("file_id") in {file["id"] for file in eligible}
+        )
+        revisions_by_file: dict[str, list[dict]] = {}
+        for revision in drive_scope.get("revisions", []):
+            revisions_by_file.setdefault(revision.get("file_id", ""), []).append(revision)
+        held_file_ids = {
+            file["id"]
+            for file in eligible
+            if target_is_held(
+                active_holds,
+                space_id=file["space_id"],
+                target_refs={
+                    file["id"],
+                    f"drive_file:{file['id']}",
+                    *{
+                        value
+                        for revision in revisions_by_file.get(file["id"], [])
+                        for value in (
+                            revision["id"],
+                            f"drive_revision:{revision['id']}",
+                        )
+                    },
+                },
+            )
+        }
+        result["counts"]["drive_files_held"] = len(held_file_ids)
+        if delete_ok:
+            blobs = get_drive_blob_store()
+            deleted_files = deleted_revisions = deleted_chunks = deleted_blobs = 0
+            for file in eligible:
+                if file["id"] in held_file_ids:
+                    continue
+                file_prefix = "/".join((
+                    drive_scope_prefix(
+                        file.get("tenant_id") or account_id,
+                        file.get("account_id") or account_id,
+                        file["space_id"],
+                    ),
+                    file["id"],
+                ))
+                deleted_blobs += blobs.delete_prefix(file_prefix)
+                if blobs.delete_prefix(file_prefix):
+                    raise RuntimeError(
+                        f"Drive retention verification found residual objects for {file['id']}."
+                    )
+                deleted = drive_store.delete_file(
+                    file_id=file["id"], account_id=account_id, space_id=file["space_id"],
+                )
+                deleted_files += deleted["files"]
+                deleted_revisions += deleted["revisions"]
+                deleted_chunks += deleted["chunks"]
+                platform.create_tombstone(Tombstone(
+                    id=f"tomb_{uuid4().hex}", account_id=account_id, space_id=file["space_id"],
+                    target_type="subject", target_ref=f"drive_file:{file['id']}",
+                    reason="drive_retention", created_by="system:retention", created_at=_now(),
+                ))
+                platform.record_audit(AuditEvent(
+                    id=f"aud_{uuid4().hex}", account_id=account_id, space_id=file["space_id"],
+                    actor_id="system:retention", actor_type="system", action="drive.file.retained_delete",
+                    target_type="drive_file", target_id=file["id"], app_id="onebrain_core",
+                    purpose="knowledge_management", decision="completed",
+                    meta={"revisions": deleted["revisions"], "chunks": deleted["chunks"]},
+                ))
+            result["counts"].update({
+                "drive_files_deleted": deleted_files,
+                "drive_revisions_deleted": deleted_revisions,
+                "drive_chunks_deleted": deleted_chunks,
+                "drive_blobs_deleted": deleted_blobs,
+            })
 
     if "conversations" in active_domains:
         cutoff = cutoff_for("conversations")
@@ -150,6 +269,14 @@ def run_retention(*, account_id: str, space_id: str = "", domain: str = "", dry_
 
     if not dry_run:
         recorded_at = _recorded_run_timestamp()
+        previous_timestamps = [
+            row.created_at
+            for row in platform.list_retention_runs(account_id, space_id)
+            if row.created_at
+        ]
+        if previous_timestamps and recorded_at <= max(previous_timestamps):
+            latest = datetime.fromisoformat(max(previous_timestamps).replace("Z", "+00:00"))
+            recorded_at = (latest + timedelta(microseconds=1)).isoformat()
         platform.record_retention_run(RetentionRun(
             id=f"ret_{uuid4().hex}",
             account_id=account_id,

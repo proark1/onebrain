@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Protocol
 
 from app.ai_employees.contracts import AiEmployee, assert_no_raw_secrets
@@ -295,8 +296,19 @@ class AiEmployeeStore(Protocol):
     def delete_scope(self, *, tenant_id: str, account_id: str, space_id: str = "") -> dict[str, int]: ...
 
 
+_NOW_LOCK = threading.Lock()
+_LAST_NOW = datetime.min.replace(tzinfo=timezone.utc)
+
+
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    """Return a process-monotonic UTC timestamp for ordered domain records."""
+    global _LAST_NOW
+    with _NOW_LOCK:
+        current = datetime.now(timezone.utc)
+        if current <= _LAST_NOW:
+            current = _LAST_NOW + timedelta(microseconds=1)
+        _LAST_NOW = current
+        return current.isoformat()
 
 
 def message_sort_key(message: AiEmployeeMessage) -> tuple[str, str, int, str]:

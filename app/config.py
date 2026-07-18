@@ -236,6 +236,22 @@ class Settings(BaseSettings):
     # for large document/PDF uploads while rejecting absurd payloads.
     max_body_bytes: int = 50 * 1024 * 1024
 
+    # Drive is an always-installed OneBrain Core capability. These settings
+    # select replaceable storage/lifecycle limits; there is deliberately no
+    # feature flag that removes the module from a customer deployment.
+    # Safe rollout default for existing customer boxes that predate the explicit
+    # Drive environment contract. Storage remains available; AI indexing must be
+    # deliberately enabled after the deployment DPIA is signed.
+    drive_policy_mode: str = "storage_only"  # disabled | storage_only | storage_and_indexing
+    drive_private_spaces_enabled: bool = False  # Phase 2; ownership transfer needs revocation hooks first
+    drive_data_dir: str = ""
+    drive_max_file_bytes: int = 50 * 1024 * 1024
+    drive_quota_bytes: int = 0
+    drive_min_free_bytes: int = 512 * 1024 * 1024
+    drive_min_free_percent: float = 5.0
+    drive_upload_session_seconds: int = 24 * 60 * 60
+    drive_max_folder_depth: int = 32
+
     # Product UI handoff. FastAPI is API-first; Next.js owns the browser
     # console. The old static UI is available only when explicitly enabled.
     admin_ui_url: str = ""

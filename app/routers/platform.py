@@ -11,6 +11,8 @@ from app.auth.account_access import authorize_account_admin, authorized_account_
 from app.auth.principal import Principal, resolve_principal
 from app.deps import get_platform_store
 from app.platform.base import (
+    AccessGroup,
+    AccessGroupMembership,
     Account,
     AppInstallation,
     AuditEvent,
@@ -153,6 +155,44 @@ class MembershipOut(BaseModel):
     organization_id: str = ""
     status: str = "active"
     created_at: str = ""
+
+
+class AccessGroupIn(BaseModel):
+    id: str | None = Field(default=None, max_length=120)
+    name: str = Field(min_length=1, max_length=120)
+    kind: str = Field(default="department", pattern="^(department|team)$")
+    space_id: str = Field(default="", max_length=120)
+    status: str = Field(default="active", pattern="^(active|archived)$")
+
+
+class AccessGroupOut(BaseModel):
+    id: str
+    account_id: str
+    name: str
+    kind: str
+    space_id: str = ""
+    status: str = "active"
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class AccessGroupMembershipIn(BaseModel):
+    id: str | None = Field(default=None, max_length=120)
+    group_id: str = Field(min_length=1, max_length=120)
+    user_id: str = Field(min_length=1, max_length=200)
+    space_id: str = Field(default="", max_length=120)
+    status: str = Field(default="active", pattern="^(active|inactive)$")
+
+
+class AccessGroupMembershipOut(BaseModel):
+    id: str
+    account_id: str
+    group_id: str
+    user_id: str
+    space_id: str = ""
+    status: str = "active"
+    created_at: str = ""
+    updated_at: str = ""
 
 
 class ConsentIn(BaseModel):
@@ -533,6 +573,82 @@ def upsert_membership(account_id: str, body: MembershipIn, principal: Principal 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return MembershipOut(**saved.__dict__)
+
+
+@router.get("/accounts/{account_id}/access-groups", response_model=list[AccessGroupOut])
+def list_access_groups(
+    account_id: str, space_id: str = "", principal: Principal = Depends(resolve_principal),
+):
+    authorize_account_admin(principal, account_id, get_platform_store())
+    return [
+        AccessGroupOut(**row.__dict__)
+        for row in get_platform_store().list_access_groups(account_id, space_id)
+    ]
+
+
+@router.post("/accounts/{account_id}/access-groups", response_model=AccessGroupOut)
+def upsert_access_group(
+    account_id: str, body: AccessGroupIn, principal: Principal = Depends(resolve_principal),
+):
+    authorize_account_admin(principal, account_id, get_platform_store())
+    try:
+        saved = get_platform_store().upsert_access_group(AccessGroup(
+            id=body.id or f"grp_{uuid4().hex[:16]}",
+            account_id=account_id,
+            name=body.name.strip(),
+            kind=body.kind,
+            space_id=body.space_id.strip(),
+            status=body.status,
+        ))
+        get_platform_store().record_audit(_audit(
+            principal, "access_group.upserted", "access_group", saved.id,
+            account_id, space_id=saved.space_id,
+        ))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AccessGroupOut(**saved.__dict__)
+
+
+@router.get(
+    "/accounts/{account_id}/access-group-memberships",
+    response_model=list[AccessGroupMembershipOut],
+)
+def list_access_group_memberships(
+    account_id: str, user_id: str = "", principal: Principal = Depends(resolve_principal),
+):
+    authorize_account_admin(principal, account_id, get_platform_store())
+    return [
+        AccessGroupMembershipOut(**row.__dict__)
+        for row in get_platform_store().list_access_group_memberships(account_id, user_id)
+    ]
+
+
+@router.post(
+    "/accounts/{account_id}/access-group-memberships",
+    response_model=AccessGroupMembershipOut,
+)
+def upsert_access_group_membership(
+    account_id: str,
+    body: AccessGroupMembershipIn,
+    principal: Principal = Depends(resolve_principal),
+):
+    authorize_account_admin(principal, account_id, get_platform_store())
+    try:
+        saved = get_platform_store().upsert_access_group_membership(AccessGroupMembership(
+            id=body.id or f"grm_{uuid4().hex[:16]}",
+            account_id=account_id,
+            group_id=body.group_id.strip(),
+            user_id=body.user_id.strip(),
+            space_id=body.space_id.strip(),
+            status=body.status,
+        ))
+        get_platform_store().record_audit(_audit(
+            principal, "access_group_membership.upserted", "access_group_membership",
+            saved.id, account_id, space_id=saved.space_id,
+        ))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AccessGroupMembershipOut(**saved.__dict__)
 
 
 @router.get("/accounts/{account_id}/consent", response_model=list[ConsentOut])

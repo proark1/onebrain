@@ -2,7 +2,7 @@ export type ConsoleSection =
   | "ai-employees"
   | "chat"
   | "cockpit"
-  | "documents"
+  | "drive"
   | "kpis"
   | "spaces"
   | "privacy"
@@ -16,7 +16,7 @@ export type ConsoleNavItem = { id: ConsoleSection; href: string; label: string }
 export const STATUS_NAV: ConsoleNavItem = { id: "cockpit", href: "/cockpit", label: "Status" };
 export const CUSTOMER_NAV: ConsoleNavItem[] = [
   { id: "chat", href: "/chat", label: "Ask" },
-  { id: "documents", href: "/documents", label: "Knowledge" },
+  { id: "drive", href: "/drive", label: "Drive" },
   { id: "kpis", href: "/kpis", label: "KPIs" },
   { id: "ai-employees", href: "/ai-employees", label: "AI Employees" },
   { id: "spaces", href: "/spaces", label: "Apps" },

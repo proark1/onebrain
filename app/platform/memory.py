@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -13,6 +14,8 @@ from app.platform.base import (
     CUSTOMER_SERVICE_PURPOSES,
     PRIVATE_SPACE_KINDS,
     AccessDecision,
+    AccessGroup,
+    AccessGroupMembership,
     Account,
     AppInstallation,
     AuditEvent,
@@ -34,10 +37,16 @@ from app.platform.base import (
     normalize_unique,
     normalized_brand_theme,
     validate_account,
+    validate_access_group,
+    validate_access_group_membership,
     validate_brand_theme,
     validate_installation,
     validate_space,
 )
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _account_to_dict(a: Account) -> dict:
@@ -149,6 +158,8 @@ class MemoryPlatformStore:
         self._audit: Dict[str, AuditEvent] = {}
         self._organizations: Dict[str, Organization] = {}
         self._memberships: Dict[str, Membership] = {}
+        self._access_groups: Dict[str, AccessGroup] = {}
+        self._access_group_memberships: Dict[str, AccessGroupMembership] = {}
         self._consent_records: Dict[str, ConsentRecord] = {}
         self._retention_policies: Dict[str, RetentionPolicy] = {}
         self._legal_holds: Dict[str, LegalHold] = {}
@@ -176,6 +187,10 @@ class MemoryPlatformStore:
             self._audit = {d["id"]: _audit_from_dict(d) for d in data.get("audit", [])}
             self._organizations = {d["id"]: Organization(**d) for d in data.get("organizations", [])}
             self._memberships = {d["id"]: Membership(**d) for d in data.get("memberships", [])}
+            self._access_groups = {d["id"]: AccessGroup(**d) for d in data.get("access_groups", [])}
+            self._access_group_memberships = {
+                d["id"]: AccessGroupMembership(**d) for d in data.get("access_group_memberships", [])
+            }
             self._consent_records = {d["id"]: ConsentRecord(**d) for d in data.get("consent_records", [])}
             self._retention_policies = {d["id"]: RetentionPolicy(**d) for d in data.get("retention_policies", [])}
             self._legal_holds = {d["id"]: LegalHold(**d) for d in data.get("legal_holds", [])}
@@ -192,6 +207,7 @@ class MemoryPlatformStore:
         except Exception:
             self._accounts, self._spaces, self._installations, self._brand_themes, self._audit = {}, {}, {}, {}, {}
             self._organizations, self._memberships, self._consent_records, self._retention_policies = {}, {}, {}, {}
+            self._access_groups, self._access_group_memberships = {}, {}
             self._legal_holds, self._retention_runs = {}, {}
             self._tombstones, self._tombstone_acks = {}, {}
             self._data_access_events, self._processors, self._providers, self._credential_metadata = {}, {}, {}, {}
@@ -209,6 +225,8 @@ class MemoryPlatformStore:
                 "audit": [_audit_to_dict(e) for e in self._audit.values()],
                 "organizations": [asdict(v) for v in self._organizations.values()],
                 "memberships": [asdict(v) for v in self._memberships.values()],
+                "access_groups": [asdict(v) for v in self._access_groups.values()],
+                "access_group_memberships": [asdict(v) for v in self._access_group_memberships.values()],
                 "consent_records": [asdict(v) for v in self._consent_records.values()],
                 "retention_policies": [asdict(v) for v in self._retention_policies.values()],
                 "legal_holds": [asdict(v) for v in self._legal_holds.values()],
@@ -435,6 +453,80 @@ class MemoryPlatformStore:
     def list_memberships(self, account_id: str) -> List[Membership]:
         return sorted((v for v in self._memberships.values() if v.account_id == account_id), key=lambda v: (v.user_id, v.id))
 
+    def upsert_access_group(self, group: AccessGroup) -> AccessGroup:
+        validate_access_group(group)
+        self._require_account(group.account_id)
+        self._require_space(group.account_id, group.space_id)
+        with self._lock:
+            conflict = next((
+                row for row in self._access_groups.values()
+                if row.id != group.id and row.account_id == group.account_id
+                and row.space_id == group.space_id and row.kind == group.kind
+                and row.name.casefold() == group.name.casefold()
+            ), None)
+            if conflict:
+                raise ValueError("An access group with this name already exists.")
+            current = self._access_groups.get(group.id)
+            if current and (
+                current.account_id != group.account_id
+                or current.space_id != group.space_id
+                or current.kind != group.kind
+            ):
+                raise ValueError("Access-group account, space, and kind are immutable.")
+            timestamp = _now()
+            stored = replace(
+                group,
+                created_at=(current.created_at if current else group.created_at) or timestamp,
+                updated_at=timestamp,
+            )
+            self._access_groups[stored.id] = stored
+            self._save()
+            return stored
+
+    def list_access_groups(self, account_id: str, space_id: str = "") -> List[AccessGroup]:
+        rows = [row for row in self._access_groups.values() if row.account_id == account_id]
+        if space_id:
+            rows = [row for row in rows if row.space_id in {"", space_id}]
+        return sorted(rows, key=lambda row: (row.kind, row.name.casefold(), row.id))
+
+    def upsert_access_group_membership(
+        self, membership: AccessGroupMembership,
+    ) -> AccessGroupMembership:
+        validate_access_group_membership(membership)
+        group = self._access_groups.get(membership.group_id)
+        if not group or group.account_id != membership.account_id:
+            raise ValueError("Access group is not in this account.")
+        if group.status != "active" and membership.status == "active":
+            raise ValueError("Archived access groups cannot grant new memberships.")
+        if membership.space_id and membership.space_id not in {group.space_id, ""}:
+            raise ValueError("Access-group membership is outside the group scope.")
+        with self._lock:
+            current = self._access_group_memberships.get(membership.id)
+            if current and (
+                current.account_id != membership.account_id
+                or current.space_id != membership.space_id
+                or current.group_id != membership.group_id
+                or current.user_id != membership.user_id
+            ):
+                raise ValueError("Access-group membership identity and scope are immutable.")
+            timestamp = _now()
+            stored = replace(
+                membership,
+                created_at=(current.created_at if current else membership.created_at) or timestamp,
+                updated_at=timestamp,
+            )
+            self._access_group_memberships[stored.id] = stored
+            self._save()
+            return stored
+
+    def list_access_group_memberships(
+        self, account_id: str, user_id: str = "",
+    ) -> List[AccessGroupMembership]:
+        rows = [row for row in self._access_group_memberships.values() if row.account_id == account_id]
+        if user_id:
+            rows = [row for row in rows if row.user_id == user_id]
+        return sorted(rows, key=lambda row: (row.user_id, row.group_id, row.id))
+
     def upsert_consent_record(self, record: ConsentRecord) -> ConsentRecord:
         self._require_account(record.account_id)
         self._require_space(record.account_id, record.space_id)
@@ -472,6 +564,15 @@ class MemoryPlatformStore:
             self._legal_holds[hold.id] = hold
             self._save()
             return hold
+
+    @contextmanager
+    def deletion_guard(self, account_id: str, space_id: str = ""):
+        """Serialize legal-hold creation with destructive scope operations."""
+
+        self._require_account(account_id)
+        self._require_space(account_id, space_id)
+        with self._lock:
+            yield
 
     def list_legal_holds(self, account_id: str, space_id: str = "", include_released: bool = False) -> List[LegalHold]:
         rows = [v for v in self._legal_holds.values() if v.account_id == account_id]
@@ -620,6 +721,14 @@ class MemoryPlatformStore:
                 )
             counts["memberships"] = self._delete_matching(
                 self._memberships,
+                lambda v: v.account_id == account_id and (not space_id or v.space_id == space_id),
+            )
+            counts["access_group_memberships"] = self._delete_matching(
+                self._access_group_memberships,
+                lambda v: v.account_id == account_id and (not space_id or v.space_id == space_id),
+            )
+            counts["access_groups"] = self._delete_matching(
+                self._access_groups,
                 lambda v: v.account_id == account_id and (not space_id or v.space_id == space_id),
             )
             counts["consent_records"] = self._delete_matching(

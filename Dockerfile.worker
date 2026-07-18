@@ -1,4 +1,42 @@
-FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
+FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS definition-worker-base
+
+COPY deploy/scanner-sandbox/worker_supply_chain.py /opt/onebrain/worker_supply_chain.py
+COPY deploy/scanner-sandbox/worker-supply-chain.lock.json /opt/onebrain/worker-supply-chain.lock.json
+
+RUN python /opt/onebrain/worker_supply_chain.py verify-lock \
+        /opt/onebrain/worker-supply-chain.lock.json \
+    && chown root:root /opt/onebrain/worker_supply_chain.py \
+        /opt/onebrain/worker-supply-chain.lock.json \
+    && chmod 0555 /opt/onebrain/worker_supply_chain.py \
+    && chmod 0444 /opt/onebrain/worker-supply-chain.lock.json
+
+
+# First-rollout publication target only. It is deliberately disconnected from
+# the pre-scanner production final stage below.
+FROM definition-worker-base AS scanner-definition-artifact-build
+
+RUN python /opt/onebrain/worker_supply_chain.py install-stage \
+        /opt/onebrain/worker-supply-chain.lock.json worker-runtime \
+    && groupadd --system --gid 10001 onebrain \
+    && useradd --system --uid 10001 --gid onebrain --home-dir /nonexistent \
+        --no-create-home --shell /usr/sbin/nologin onebrain \
+    && install -d --owner=onebrain --group=onebrain --mode=0700 \
+        /tmp/onebrain-definition-bootstrap /out
+COPY deploy/scanner-sandbox/freshclam.conf /etc/onebrain/freshclam.conf
+USER onebrain
+ENV HOME=/tmp/onebrain-definition-bootstrap \
+    TMPDIR=/tmp/onebrain-definition-bootstrap
+RUN python /opt/onebrain/worker_supply_chain.py bootstrap-definitions /out \
+    --freshclam-config /etc/onebrain/freshclam.conf
+
+
+FROM scratch AS scanner-definition-artifact-bootstrap
+
+COPY --from=scanner-definition-artifact-build /out/ /
+
+
+# Keep the first bootstrap commit on the established pre-scanner worker graph.
+FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS final
 
 WORKDIR /app
 

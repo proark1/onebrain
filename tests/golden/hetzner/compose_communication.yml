@@ -74,6 +74,7 @@ services:
       - "8000"
     volumes:
       - /data:/data
+      - /mnt/onebrain-data/drive:/data/drive
     networks:
       default: {}
       edge: {aliases: [api-edge]}
@@ -106,6 +107,7 @@ services:
       - env/onebrain-workers.env
     volumes:
       - /data:/data
+      - /mnt/onebrain-data/drive:/data/drive
     depends_on:
       postgres-roles:
         condition: service_completed_successfully

@@ -17,6 +17,8 @@ RLS_REQUIRED_TABLES = (
     "platform_audit_events",
     "platform_organizations",
     "platform_memberships",
+    "platform_access_groups",
+    "platform_access_group_memberships",
     "platform_consent_records",
     "platform_retention_policies",
     "platform_legal_holds",
@@ -44,6 +46,10 @@ RLS_REQUIRED_TABLES = (
     "ai_action_proposals",
     "jobs",
     "job_files",
+    "drive_folders",
+    "drive_files",
+    "drive_file_revisions",
+    "drive_upload_sessions",
 )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal
 
@@ -15,12 +16,17 @@ from app.auth.principal import Principal
 from app.auth.roles import ROLES
 from app.conversations.base import Scope
 from app.conversations.memory import MemoryConversationStore
+from app.drive.base import DriveFile, DriveRevision
+from app.drive.blobs import LocalDriveBlobStore, drive_storage_key
+from app.drive.memory import MemoryDriveStore
 from app.embeddings.local import LocalEmbedder
 from app.ingest.pipeline import IngestPipeline
 from app.intake.memory import MemoryIntakeStore
 from app.intake.pipeline import IntakeInput, IntakePipeline
 from app.kpis.base import KpiDefinition, KpiSnapshot
 from app.kpis.memory import MemoryKpiStore
+from app.jobs.base import JOB_DOCUMENT_INGEST, JobFileInput
+from app.jobs.memory import MemoryJobStore
 from app.platform.base import (
     Account,
     ConsentRecord,
@@ -173,22 +179,83 @@ def _patch(
     kpis=None,
     ai_employees=None,
     connector=None,
+    jobs=None,
+    drive=None,
+    drive_blobs=None,
 ):
     kpis = kpis or MemoryKpiStore()
     ai_employees = ai_employees or MemoryAiEmployeeStore()
     connector = connector or _ConnectorCleanup()
+    jobs = jobs or MemoryJobStore()
     monkeypatch.setattr(privacy_router, "get_platform_store", lambda: platform)
     monkeypatch.setattr(privacy_router, "get_store", lambda: store)
     monkeypatch.setattr(privacy_router, "get_conversation_store", lambda: conversations)
     monkeypatch.setattr(privacy_router, "get_intake_store", lambda: intake)
     monkeypatch.setattr(privacy_router, "get_kpi_store", lambda: kpis)
+    monkeypatch.setattr(privacy_router, "get_job_store", lambda: jobs)
     monkeypatch.setattr(privacy_router, "get_ai_employee_store", lambda: ai_employees)
+    if drive is not None:
+        monkeypatch.setattr(privacy_router, "get_drive_store", lambda: drive)
+    if drive_blobs is not None:
+        monkeypatch.setattr(privacy_router, "get_drive_blob_store", lambda: drive_blobs)
     monkeypatch.setattr(
         privacy_router,
         "get_ai_employee_google_calendar_connector",
         lambda: connector,
     )
     return kpis
+
+
+def _store_drive_blob(blobs, *, upload_id: str, storage_key: str, payload: bytes = b"original"):
+    writer = blobs.begin_staging(upload_id, max_bytes=len(payload))
+    writer.write(payload)
+    writer.finish()
+    return blobs.promote(upload_id, storage_key)
+
+
+def _seed_drive_file(
+    drive,
+    blobs,
+    *,
+    space_id: str,
+    file_id: str,
+    revision_id: str,
+    created_at: str = "2020-01-01T00:00:00+00:00",
+):
+    storage_key = drive_storage_key("acme", "acme", space_id, file_id, revision_id)
+    file = drive.create_file(DriveFile(
+        id=file_id,
+        tenant_id="acme",
+        account_id="acme",
+        space_id=space_id,
+        folder_id="",
+        name=f"{file_id}.txt",
+        current_revision_id=revision_id,
+        desired_indexed=False,
+        uploaded_by="admin@operator",
+        created_at=created_at,
+    ))
+    revision = drive.create_revision(DriveRevision(
+        id=revision_id,
+        tenant_id="acme",
+        account_id="acme",
+        space_id=space_id,
+        file_id=file_id,
+        upload_session_id=f"upload_{file_id}",
+        storage_key=storage_key,
+        sha256="0" * 64,
+        size_bytes=8,
+        media_type="text/plain",
+        original_name=file.name,
+        created_by="admin@operator",
+        created_at=created_at,
+    ))
+    _store_drive_blob(
+        blobs,
+        upload_id=f"staging_{file_id}",
+        storage_key=storage_key,
+    )
+    return file, revision
 
 
 def test_privacy_export_is_space_scoped_and_audited(monkeypatch):
@@ -281,7 +348,22 @@ def test_privacy_erase_requires_confirmation_and_deletes_only_scope(monkeypatch)
         platform, store, conversations, intake, service_doc, personal_doc,
         service_conv, personal_conv, service_record, personal_record,
     ) = _fixtures()
-    _patch(monkeypatch, platform, store, conversations, intake)
+    jobs = MemoryJobStore()
+    service_job = jobs.enqueue(
+        type=JOB_DOCUMENT_INGEST,
+        tenant_id="acme",
+        account_id="acme",
+        space_id="sp_acme_service",
+        file=JobFileInput("service.txt", "text/plain", b"service bytes"),
+    )
+    personal_job = jobs.enqueue(
+        type=JOB_DOCUMENT_INGEST,
+        tenant_id="acme",
+        account_id="acme",
+        space_id="sp_acme_personal",
+        file=JobFileInput("personal.txt", "text/plain", b"personal bytes"),
+    )
+    _patch(monkeypatch, platform, store, conversations, intake, jobs=jobs)
 
     with pytest.raises(HTTPException) as exc:
         privacy_router.erase_account_data(
@@ -305,6 +387,8 @@ def test_privacy_erase_requires_confirmation_and_deletes_only_scope(monkeypatch)
     assert erased.chunks_deleted == 1
     assert erased.conversations_deleted == 1
     assert erased.intake_records_deleted == 1
+    assert erased.jobs_deleted == 1
+    assert erased.job_files_deleted == 1
     assert erased.governance_deleted["memberships"] == 1
     assert erased.governance_deleted["consent_records"] == 1
     assert erased.governance_deleted["retention_policies"] == 1
@@ -314,6 +398,10 @@ def test_privacy_erase_requires_confirmation_and_deletes_only_scope(monkeypatch)
     assert conversations.export_scope("acme", account_id="acme", space_id="sp_acme_personal")[0]["id"] == personal_conv.id
     assert intake.get(service_record.id) is None
     assert intake.get(personal_record.id) is not None
+    assert jobs.get(service_job.id) is None
+    assert jobs.get_file(service_job.id) is None
+    assert jobs.get(personal_job.id) is not None
+    assert jobs.get_file(personal_job.id).data == b"personal bytes"
     assert platform.list_organizations("acme")[0].id == "org_acme"
     assert [row.id for row in platform.list_memberships("acme")] == []
     assert platform.list_credential_metadata("acme")[0].id == "cred_acme"
@@ -321,6 +409,93 @@ def test_privacy_erase_requires_confirmation_and_deletes_only_scope(monkeypatch)
     assert audit.action == "privacy.erased"
     assert audit.meta["reason"] == "customer requested deletion"
     assert audit.meta["intake_records_deleted"] == 1
+    assert audit.meta["jobs_deleted"] == 1
+    assert audit.meta["job_files_deleted"] == 1
+
+
+def test_privacy_erase_holds_guard_and_removes_the_full_drive_scope_prefix(
+    monkeypatch, tmp_path,
+):
+    platform, store, conversations, intake, *_ = _fixtures()
+    drive = MemoryDriveStore(store)
+    blobs = LocalDriveBlobStore(
+        str(tmp_path / "drive"), min_free_bytes=0, min_free_percent=0,
+    )
+    service_file, _ = _seed_drive_file(
+        drive,
+        blobs,
+        space_id="sp_acme_service",
+        file_id="file_service",
+        revision_id="revision_service",
+    )
+    personal_file, personal_revision = _seed_drive_file(
+        drive,
+        blobs,
+        space_id="sp_acme_personal",
+        file_id="file_personal",
+        revision_id="revision_personal",
+    )
+    orphan_key = drive_storage_key(
+        "acme", "acme", "sp_acme_service", service_file.id, "revision_orphan",
+    )
+    _store_drive_blob(
+        blobs,
+        upload_id="staging_orphan",
+        storage_key=orphan_key,
+        payload=b"orphaned",
+    )
+    _patch(
+        monkeypatch,
+        platform,
+        store,
+        conversations,
+        intake,
+        drive=drive,
+        drive_blobs=blobs,
+    )
+
+    guard_active = False
+    real_guard = platform.deletion_guard
+    real_list_holds = platform.list_legal_holds
+
+    @contextmanager
+    def observed_guard(account_id, space_id=""):
+        nonlocal guard_active
+        with real_guard(account_id, space_id):
+            guard_active = True
+            try:
+                yield
+            finally:
+                guard_active = False
+
+    def guarded_list_holds(*args, **kwargs):
+        assert guard_active
+        return real_list_holds(*args, **kwargs)
+
+    monkeypatch.setattr(platform, "deletion_guard", observed_guard)
+    monkeypatch.setattr(platform, "list_legal_holds", guarded_list_holds)
+
+    erased = privacy_router.erase_account_data(
+        "acme",
+        privacy_router.PrivacyEraseRequest(
+            confirm_account_id="acme",
+            space_id="sp_acme_service",
+            reason="scope erasure",
+        ),
+        principal=_principal("admin"),
+    )
+
+    assert erased.drive_deleted["files"] == 1
+    assert erased.drive_blobs_deleted == 2
+    assert blobs.stat(orphan_key) is None
+    assert drive.get_file(
+        service_file.id, account_id="acme", space_id="sp_acme_service",
+    ) is None
+    assert drive.get_file(
+        personal_file.id, account_id="acme", space_id="sp_acme_personal",
+    ) is not None
+    assert blobs.stat(personal_revision.storage_key) is not None
+    assert guard_active is False
 
 
 def test_privacy_export_and_erase_include_only_matching_kpi_scope(monkeypatch):
@@ -586,6 +761,107 @@ def test_postgres_retention_run_listing_breaks_created_at_ties_by_completion_tim
 
     assert store.list_retention_runs("acme") == []
     assert called["order"] == "created_at, completed_at, id"
+
+
+@pytest.mark.parametrize(
+    "hold_ref_kind",
+    ("raw_file", "prefixed_file", "raw_revision", "prefixed_revision"),
+)
+def test_drive_retention_matches_all_hold_refs_and_verifies_file_prefix_deletion(
+    monkeypatch, tmp_path, hold_ref_kind,
+):
+    import app.deps as deps
+    from app.retention.service import run_retention
+
+    platform, store, *_ = _fixtures()
+    drive = MemoryDriveStore(store)
+    blobs = LocalDriveBlobStore(
+        str(tmp_path / "drive"), min_free_bytes=0, min_free_percent=0,
+    )
+    file, revision = _seed_drive_file(
+        drive,
+        blobs,
+        space_id="sp_acme_service",
+        file_id="file_retained",
+        revision_id="revision_retained",
+    )
+    orphan_key = drive_storage_key(
+        "acme", "acme", file.space_id, file.id, "revision_orphan",
+    )
+    _store_drive_blob(
+        blobs,
+        upload_id="staging_retention_orphan",
+        storage_key=orphan_key,
+        payload=b"orphaned",
+    )
+    platform.upsert_retention_policy(RetentionPolicy(
+        id="ret_drive",
+        account_id="acme",
+        space_id=file.space_id,
+        domain="drive",
+        record_type="file",
+        action="delete",
+        duration_days=30,
+        legal_basis="storage limitation",
+    ))
+    hold_refs = {
+        "raw_file": file.id,
+        "prefixed_file": f"drive_file:{file.id}",
+        "raw_revision": revision.id,
+        "prefixed_revision": f"drive_revision:{revision.id}",
+    }
+    platform.create_legal_hold(LegalHold(
+        id="hold_drive",
+        account_id="acme",
+        space_id=file.space_id,
+        subject_ref=hold_refs[hold_ref_kind],
+        reason="litigation",
+    ))
+    monkeypatch.setattr(deps, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(deps, "get_drive_store", lambda: drive)
+    monkeypatch.setattr(deps, "get_drive_blob_store", lambda: blobs)
+
+    guard_active = False
+    real_guard = platform.deletion_guard
+    real_list_holds = platform.list_legal_holds
+
+    @contextmanager
+    def observed_guard(account_id, space_id=""):
+        nonlocal guard_active
+        with real_guard(account_id, space_id):
+            guard_active = True
+            try:
+                yield
+            finally:
+                guard_active = False
+
+    def guarded_list_holds(*args, **kwargs):
+        assert guard_active
+        return real_list_holds(*args, **kwargs)
+
+    monkeypatch.setattr(platform, "deletion_guard", observed_guard)
+    monkeypatch.setattr(platform, "list_legal_holds", guarded_list_holds)
+
+    blocked = run_retention(
+        account_id="acme", space_id=file.space_id, domain="drive", dry_run=False,
+    )
+    assert blocked["legal_hold"] is True
+    assert blocked["counts"]["drive_files_held"] == 1
+    assert drive.get_file(file.id, account_id="acme", space_id=file.space_id) is not None
+    assert blobs.stat(revision.storage_key) is not None
+    assert blobs.stat(orphan_key) is not None
+
+    platform.release_legal_hold("acme", "hold_drive")
+    completed = run_retention(
+        account_id="acme", space_id=file.space_id, domain="drive", dry_run=False,
+    )
+    assert completed["counts"]["drive_files_deleted"] == 1
+    assert completed["counts"]["drive_revisions_deleted"] == 1
+    assert completed["counts"]["drive_blobs_deleted"] == 2
+    assert drive.get_file(file.id, account_id="acme", space_id=file.space_id) is None
+    assert blobs.stat(revision.storage_key) is None
+    assert blobs.stat(orphan_key) is None
+    assert guard_active is False
 
 
 def test_retention_deletes_only_records_older_than_duration(monkeypatch):

@@ -1,0 +1,108 @@
+name: Publish scanner definitions
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish immutable ClamAV baseline
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: scanner-definitions
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out exact protected-main commit
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Verify pinned base image index
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_reference=$(python deploy/scanner-sandbox/worker_supply_chain.py \
+            base-reference deploy/scanner-sandbox/worker-supply-chain.lock.json)
+          docker buildx imagetools inspect --raw "${base_reference}" \
+            > "${RUNNER_TEMP}/onebrain-worker-base-index.json"
+          python deploy/scanner-sandbox/worker_supply_chain.py verify-base-index \
+            deploy/scanner-sandbox/worker-supply-chain.lock.json \
+            "${RUNNER_TEMP}/onebrain-worker-base-index.json"
+
+      - name: Generate isolated definition artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "${RUNNER_TEMP}/scanner-definitions-output"
+          docker build --pull --no-cache --platform linux/amd64 \
+            --target scanner-definition-artifact-bootstrap \
+            --output "type=local,dest=${RUNNER_TEMP}/scanner-definitions-output" \
+            --file Dockerfile.worker .
+
+      - name: Resolve generated immutable identity
+        id: definition
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/scanner-definitions-output
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          output = Path(os.environ["OUTPUT_DIR"])
+          fragment = output / "worker-supply-chain-definition-fragment.json"
+          value = json.loads(fragment.read_text(encoding="utf-8"))
+          identity = value.get("identity")
+          if not isinstance(identity, str) or not re.fullmatch(
+              r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", identity
+          ):
+              raise SystemExit("generated definition identity is invalid")
+          artifact = output / f"onebrain-clamav-definitions-{identity}.tar.gz"
+          if not artifact.is_file():
+              raise SystemExit("generated definition artifact is missing")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as target:
+              target.write(f"artifact={artifact}\n")
+              target.write(f"fragment={fragment}\n")
+              target.write(f"tag=scanner-definitions-{identity}\n")
+          PY
+
+      - name: Publish validated immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python deploy/scanner-sandbox/publish_definition_asset.py \
+            "${{ steps.definition.outputs.artifact }}" \
+            "${{ steps.definition.outputs.fragment }}" \
+            --supply-chain-lock deploy/scanner-sandbox/worker-supply-chain.lock.json \
+            --target "${GITHUB_SHA}" \
+            --confirm-tag "${{ steps.definition.outputs.tag }}"
+
+      - name: Record lock activation fragment
+        env:
+          FRAGMENT: ${{ steps.definition.outputs.fragment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '## Scanner definition lock activation'
+            echo
+            echo 'Copy this generated object into the follow-up lock activation change:'
+            echo '```json'
+            cat "${FRAGMENT}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"

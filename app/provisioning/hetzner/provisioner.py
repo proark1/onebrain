@@ -315,6 +315,12 @@ class HetznerProvisioner:
                 backup_s3_region=getattr(settings, "backup_object_store_region", "") or "",
                 backup_retention_days=int(getattr(settings, "backup_retention_days", 30) or 30),
                 backup_dbs=enabled_product_dbs(tuple(modules)),
+                drive_policy_mode=(
+                    "storage_and_indexing"
+                    if getattr(settings, "pii_phase", "synthetic") == "dpia_signed"
+                    else "storage_only"
+                ),
+                pii_phase=getattr(settings, "pii_phase", "synthetic"),
             ))
         except ValueError as exc:
             raise RuntimeError(f"cloud-init render failed: {exc}") from exc

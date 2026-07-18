@@ -10,6 +10,7 @@ from app.db.rls import set_rls_scope
 from app.db.schema import validate_postgres_schema
 from app.jobs.base import (
     JobFailureSummary,
+    JobScopeDeleteResult,
     JobSummary,
     JobLeaseLostError,
     LEASE_EXPIRED_ERROR,
@@ -117,8 +118,12 @@ class PostgresJobStore:
         payload: dict | None = None,
         file: JobFileInput | None = None,
         max_attempts: int = 3,
+        idempotency_key: str = "",
     ) -> Job:
         job_id = f"job_{uuid4().hex}"
+        dedupe = (idempotency_key or "").strip()
+        if len(dedupe) > 200:
+            raise ValueError("Job idempotency key is too long.")
         with self._conn() as conn, conn.cursor() as cur:
             set_rls_scope(
                 conn,
@@ -128,15 +133,28 @@ class PostgresJobStore:
             )
             cur.execute(
                 f"INSERT INTO jobs "
-                f"(id, type, status, tenant_id, account_id, space_id, requested_by, payload, max_attempts) "
-                f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING {self._APP_JOB_COLS}",
+                f"(id, type, status, tenant_id, account_id, space_id, requested_by, payload, "
+                f"max_attempts, idempotency_key) "
+                f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                f"ON CONFLICT (tenant_id, account_id, space_id, type, idempotency_key) "
+                f"WHERE idempotency_key <> '' DO NOTHING RETURNING {self._APP_JOB_COLS}",
                 (
                     job_id, type, STATUS_QUEUED, tenant_id, account_id, space_id, requested_by,
-                    json.dumps(payload or {}), max_attempts,
+                    json.dumps(payload or {}), max_attempts, dedupe,
                 ),
             )
             row = cur.fetchone()
-            if file is not None:
+            created = row is not None
+            if not row:
+                cur.execute(
+                    f"SELECT {self._APP_JOB_COLS} FROM jobs WHERE tenant_id=%s "
+                    "AND account_id=%s AND space_id=%s AND type=%s AND idempotency_key=%s",
+                    (tenant_id, account_id, space_id, type, dedupe),
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise RuntimeError("Idempotent job enqueue could not recover its existing row.")
+            if file is not None and created:
                 cur.execute(
                     "INSERT INTO job_files (id, job_id, filename, content_type, size_bytes, data) "
                     "VALUES (%s, %s, %s, %s, %s, %s)",
@@ -217,9 +235,19 @@ class PostgresJobStore:
                     completed_at = now()
                 FROM exhausted
                 WHERE j.id = exhausted.id
+                RETURNING j.id
                 """,
                 (STATUS_RUNNING, STATUS_FAILED, LEASE_EXPIRED_ERROR),
             )
+            exhausted_ids = [row[0] for row in cur.fetchall()]
+            if exhausted_ids:
+                # Keep this as a second statement in the same transaction. A
+                # worker DELETE policy may require the parent job to be
+                # terminal, and a later statement observes the update above.
+                cur.execute(
+                    "DELETE FROM job_files WHERE job_id = ANY(%s)",
+                    (exhausted_ids,),
+                )
             cur.execute(
                 f"""
                 WITH claimed AS (
@@ -318,6 +346,60 @@ class PostgresJobStore:
             self._raise_missing_or_lost_lease(job_id)
         return self._job(row)
 
+    def delete_scope(
+        self,
+        tenant_id: str,
+        *,
+        account_id: str = "",
+        space_id: str = "",
+    ) -> JobScopeDeleteResult:
+        """Delete a privacy scope's jobs and transient file bytes atomically."""
+
+        tenant_id = (tenant_id or "").strip()
+        account_id = (account_id or "").strip()
+        space_id = (space_id or "").strip()
+        clauses = ["j.tenant_id = %s"]
+        params: list = [tenant_id]
+        if space_id:
+            clauses.extend(("j.account_id = %s", "j.space_id = %s"))
+            params.extend((account_id, space_id))
+        elif account_id:
+            # Include legacy jobs created before account scope was stamped,
+            # matching the existing document privacy-erasure contract.
+            clauses.append("j.account_id = ANY(%s)")
+            params.append(["", account_id])
+        where = " AND ".join(clauses)
+
+        with self._conn() as conn, conn.cursor() as cur:
+            # Account-wide erasure needs to see both the selected account and
+            # legacy account_id='' rows. Keep the database GUC tenant-scoped and
+            # let the explicit predicate above narrow the account rows.
+            set_rls_scope(
+                conn,
+                tenant_id=tenant_id,
+                account_id=account_id if space_id else "",
+                space_id=space_id,
+            )
+            cur.execute(
+                f"""
+                WITH deleted AS (
+                    DELETE FROM job_files f
+                    USING jobs j
+                    WHERE f.job_id = j.id AND {where}
+                    RETURNING 1
+                )
+                SELECT count(*) FROM deleted
+                """,
+                params,
+            )
+            file_row = cur.fetchone()
+            files_deleted = int(file_row[0] or 0) if file_row else 0
+            job_where = where.replace("j.", "")
+            cur.execute(f"DELETE FROM jobs WHERE {job_where}", params)
+            jobs_deleted = int(cur.rowcount or 0)
+            conn.commit()
+        return JobScopeDeleteResult(jobs=jobs_deleted, files=files_deleted)
+
     def summary(self, recent_failures_limit: int = 10) -> JobSummary:
         # Only the separate operator surface needs cross-tenant aggregate data;
         # it receives the operator DSN, never the worker credential.
@@ -396,6 +478,11 @@ class PostgresJobStore:
                 ),
             )
             row = cur.fetchone()
+            if row:
+                # Bytes are retry material only. The fenced transition and
+                # deletion share this transaction so terminal status can never
+                # commit while its uploaded payload remains behind.
+                cur.execute("DELETE FROM job_files WHERE job_id = %s", (job_id,))
             conn.commit()
         if not row:
             self._raise_missing_or_lost_lease(job_id)

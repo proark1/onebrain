@@ -1,0 +1,19 @@
+[Unit]
+Description=Export OneBrain erasure tombstones to the external authenticated ledger
+Requires=docker.service onebrain-data-volume.service
+After=docker.service onebrain-data-volume.service
+ConditionPathExists=/etc/onebrain-drive-enabled
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/docker compose --project-name {{COMPOSE_PROJECT}} -f /opt/onebrain/docker-compose.yml cp onebrain-api:/app/deploy/box/onebrain-drive-backup.sh /run/onebrain-drive-ledger-sync.sh
+ExecStartPre=/usr/bin/docker compose --project-name {{COMPOSE_PROJECT}} -f /opt/onebrain/docker-compose.yml cp onebrain-api:/app/deploy/box/onebrain_erasure_ledger.py /run/onebrain_erasure_ledger-sync.py
+ExecStartPre=/usr/bin/chmod 0700 /run/onebrain-drive-ledger-sync.sh /run/onebrain_erasure_ledger-sync.py
+ExecStart=/usr/bin/env DOTENV_LOADER=/opt/onebrain/onebrain_dotenv.sh LEDGER_HELPER=/run/onebrain_erasure_ledger-sync.py /run/onebrain-drive-ledger-sync.sh ledger-sync
+ExecStopPost=-/usr/bin/rm -f /run/onebrain-drive-ledger-sync.sh /run/onebrain_erasure_ledger-sync.py
+User=root
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+Restart=on-failure
+RestartSec=1min

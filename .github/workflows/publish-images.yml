@@ -6,7 +6,6 @@
 name: Publish images
 
 on:
-  workflow_dispatch:
   workflow_call:
     outputs:
       api-digest:

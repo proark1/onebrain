@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Protocol
+from typing import ContextManager, Dict, List, Optional, Protocol
 
 from app.assistant.contracts import ASSISTANT_PURPOSES
 from app.assistant.employees import AI_EMPLOYEE_PURPOSES
@@ -164,6 +164,32 @@ class Membership:
 
 
 @dataclass(frozen=True)
+class AccessGroup:
+    """Tenant-configurable retrieval compartment shown as a department/team."""
+
+    id: str
+    account_id: str
+    name: str
+    kind: str = "department"
+    space_id: str = ""
+    status: str = "active"
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass(frozen=True)
+class AccessGroupMembership:
+    id: str
+    account_id: str
+    group_id: str
+    user_id: str
+    space_id: str = ""
+    status: str = "active"
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass(frozen=True)
 class ConsentRecord:
     id: str
     account_id: str
@@ -258,6 +284,20 @@ def scope_is_held(active_holds, space_id: str = "") -> bool:
         if not space_id:
             return True                          # account-wide op: any active hold blocks
         if not hold.space_id or hold.space_id == space_id:
+            return True
+    return False
+
+
+def target_is_held(active_holds, *, space_id: str, target_refs) -> bool:
+    """Whether an enclosing or exact-subject hold blocks one Drive target."""
+
+    references = {str(value).strip() for value in target_refs if str(value).strip()}
+    for hold in active_holds:
+        if hold.released_at:
+            continue
+        if hold.space_id and hold.space_id != space_id:
+            continue
+        if not hold.subject_ref or hold.subject_ref in references:
             return True
     return False
 
@@ -368,6 +408,18 @@ class PlatformStore(Protocol):
 
     def list_memberships(self, account_id: str) -> List[Membership]: ...
 
+    def upsert_access_group(self, group: AccessGroup) -> AccessGroup: ...
+
+    def list_access_groups(self, account_id: str, space_id: str = "") -> List[AccessGroup]: ...
+
+    def upsert_access_group_membership(
+        self, membership: AccessGroupMembership,
+    ) -> AccessGroupMembership: ...
+
+    def list_access_group_memberships(
+        self, account_id: str, user_id: str = "",
+    ) -> List[AccessGroupMembership]: ...
+
     def upsert_consent_record(self, record: ConsentRecord) -> ConsentRecord: ...
 
     def list_consent_records(self, account_id: str, space_id: str = "") -> List[ConsentRecord]: ...
@@ -377,6 +429,7 @@ class PlatformStore(Protocol):
     def list_retention_policies(self, account_id: str, space_id: str = "") -> List[RetentionPolicy]: ...
 
     def create_legal_hold(self, hold: LegalHold) -> LegalHold: ...
+    def deletion_guard(self, account_id: str, space_id: str = "") -> ContextManager[None]: ...
 
     def list_legal_holds(self, account_id: str, space_id: str = "", include_released: bool = False) -> List[LegalHold]: ...
 
@@ -478,6 +531,24 @@ def validate_space(space: Space) -> None:
         raise ValueError("Space id, account id and name are required.")
 
 
+def validate_access_group(group: AccessGroup) -> None:
+    if not group.id.strip() or not group.account_id.strip() or not group.name.strip():
+        raise ValueError("Access group id, account id, and name are required.")
+    if group.kind not in {"department", "team"}:
+        raise ValueError("Access group kind must be department or team.")
+    if group.status not in {"active", "archived"}:
+        raise ValueError("Access group status must be active or archived.")
+    if len(group.name) > 120:
+        raise ValueError("Access group name must be at most 120 characters.")
+
+
+def validate_access_group_membership(membership: AccessGroupMembership) -> None:
+    if not all((membership.id.strip(), membership.account_id.strip(), membership.group_id.strip(), membership.user_id.strip())):
+        raise ValueError("Access-group membership id, account, group, and user are required.")
+    if membership.status not in {"active", "inactive"}:
+        raise ValueError("Access-group membership status must be active or inactive.")
+
+
 def validate_installation(installation: AppInstallation) -> None:
     if installation.app_id not in APP_IDS:
         raise ValueError(f"Unknown app id: {installation.app_id}")
@@ -493,5 +564,5 @@ def validate_brand_theme(theme: BrandTheme) -> None:
         raise ValueError("Brand theme id and account id are required.")
     if theme.app_id and theme.app_id not in APP_IDS:
         raise ValueError(f"Unknown app id: {theme.app_id}")
-    for field in BRAND_COLOR_FIELDS:
-        normalize_hex_color(getattr(theme, field))
+    for color_field in BRAND_COLOR_FIELDS:
+        normalize_hex_color(getattr(theme, color_field))

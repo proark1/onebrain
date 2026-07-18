@@ -11,6 +11,7 @@ JOB_DOCUMENT_INGEST = "document_ingest"
 JOB_SERVICE_CAPTURE = "service_capture"
 JOB_SERVICE_INTAKE = "service_intake"
 JOB_RETENTION_RUN = "retention_run"
+JOB_DRIVE_FILE_INGEST = "drive_file_ingest"
 
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
@@ -100,6 +101,14 @@ class JobSummary:
     recent_failures: list[JobFailureSummary] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class JobScopeDeleteResult:
+    """Content-free counts returned after deleting a privacy scope's jobs."""
+
+    jobs: int = 0
+    files: int = 0
+
+
 class JobStore(Protocol):
     def enqueue(
         self,
@@ -112,6 +121,7 @@ class JobStore(Protocol):
         payload: Optional[dict] = None,
         file: Optional[JobFileInput] = None,
         max_attempts: int = 3,
+        idempotency_key: str = "",
     ) -> Job: ...
 
     def get(
@@ -141,5 +151,13 @@ class JobStore(Protocol):
         *,
         lease_token: str,
     ) -> Job: ...
+
+    def delete_scope(
+        self,
+        tenant_id: str,
+        *,
+        account_id: str = "",
+        space_id: str = "",
+    ) -> JobScopeDeleteResult: ...
 
     def summary(self, recent_failures_limit: int = 10) -> JobSummary: ...

@@ -9,6 +9,8 @@ service key through retrieval.
 
 from __future__ import annotations
 
+import pytest
+
 import app.deps as deps
 from app.auth.principal import Principal
 from app.auth.roles import ROLES
@@ -70,7 +72,8 @@ def test_resolver_returns_no_owner_for_non_private_space(monkeypatch):
 
 def test_resolver_is_safe_on_unknown_space(monkeypatch):
     monkeypatch.setattr(deps, "get_platform_store", lambda: _platform_with_personal_space("alice"))
-    assert _resolve_space_kind_and_owner("nope") == ("", "")
+    with pytest.raises(ValueError, match="Unknown ingestion space"):
+        _resolve_space_kind_and_owner("nope")
 
 
 # --- end-to-end retrieval --------------------------------------------------------

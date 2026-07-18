@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from app.ingest.chunk import chunk_text
-from app.ingest.extract import extract_text
+from app.ingest.extract import extract_text_isolated
 from app.security.pii import scan_pii
 from app.security.policy import GENERAL_CATEGORY, GLOBAL_LOCATION, STATUS_APPROVED, STATUS_PENDING, Classification
 from app.store.base import Chunk
@@ -171,7 +171,7 @@ class IngestPipeline:
                     account_id: str = "", space_id: str = "",
                     space_kind: str = "", owner_user_id: str = "",
                     idempotency_key: str = "") -> IngestResult:
-        text = extract_text(filename, data)
+        text = extract_text_isolated(filename, data)
         return self.ingest_text(
             title=filename, text=text, classification=classification,
             location=location, category=category, uploaded_by=uploaded_by, tenant=tenant,
