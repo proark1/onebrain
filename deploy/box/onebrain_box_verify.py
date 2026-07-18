@@ -274,11 +274,12 @@ def verify_bytes_multi(envelope_bytes, **kwargs) -> list:
 
 def verified_target(envelope: dict) -> dict:
     """The validated target update.sh drives its pull from (A7): version + the
-    digest-pinned images map + migration bounds + rollback_kind. Derived SOLELY
-    from the verified release block."""
+    exact per-module versions + digest-pinned images map + migration bounds +
+    rollback_kind. Derived SOLELY from the verified release block."""
     block = envelope.get("release", {}) or {}
     return {
         "version": block.get("version", ""),
+        "modules": dict(block.get("modules") or {}),
         "images": dict(block.get("images") or {}),
         "migration_from": block.get("migration_from", ""),
         "migration_to": block.get("migration_to", ""),

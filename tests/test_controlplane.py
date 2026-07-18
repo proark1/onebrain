@@ -28,10 +28,7 @@ from app.jobs.base import JOB_DOCUMENT_INGEST, JOB_SERVICE_CAPTURE
 from app.jobs.memory import MemoryJobStore
 from app.monitoring import record_api_error, record_auth_failure, reset_monitoring_metrics
 from app.controlplane.memory import MemoryControlPlaneStore
-from app.controlplane.development_gate import (
-    DEVELOPMENT_GATE_CORE_MODULE_IDS,
-    DEVELOPMENT_GATE_MODULE_IDS,
-)
+from app.controlplane.development_gate import DEVELOPMENT_GATE_MODULE_IDS
 from app.trust.release import (
     release_signature_fields,
     release_signature_fields_from_body,
@@ -206,7 +203,7 @@ def _development_gate_rollout_store():
     )
     store.create_deployment(gate)
     store.designate_release_gate(gate.id)
-    for module_id in DEVELOPMENT_GATE_CORE_MODULE_IDS:
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
         store.upsert_module(DeploymentModule(gate.id, module_id, "old"))
     target_modules = {
         module_id: "2026.07.18.271"
@@ -226,7 +223,7 @@ def _development_gate_rollout_store():
     return store, gate, release, rollout
 
 
-def test_complete_verified_rollout_atomically_expands_development_gate():
+def test_complete_verified_rollout_atomically_updates_development_gate():
     store, gate, release, rollout = _development_gate_rollout_store()
     completed_at = "2026-07-18T12:00:00+00:00"
 

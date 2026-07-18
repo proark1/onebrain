@@ -245,7 +245,7 @@ def test_successful_dev_rollout_needs_matching_later_heartbeat():
     )
     store.create_deployment(gate)
     store.designate_release_gate(gate.id)
-    for module_id in DEVELOPMENT_GATE_CORE_MODULE_IDS:
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
         store.upsert_module(DeploymentModule(gate.id, module_id, "old"))
     dev_private, dev_public = generate_keypair()
     release = _development_gate_release()
@@ -586,7 +586,7 @@ def test_epoch_pending_candidate_stays_queued_until_next_heartbeat(monkeypatch):
     )
     store.create_deployment(gate)
     store.designate_release_gate(gate.id)
-    for module_id in DEVELOPMENT_GATE_CORE_MODULE_IDS:
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
         store.upsert_module(DeploymentModule(gate.id, module_id, "old"))
     private_key, public_key = generate_keypair()
     release = _development_gate_release()
@@ -656,7 +656,7 @@ def test_dev_dispatch_persists_rollout_before_promotion_foreign_key(
     )
     store.create_deployment(gate)
     store.designate_release_gate(gate.id)
-    for module_id in DEVELOPMENT_GATE_CORE_MODULE_IDS:
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
         store.upsert_module(DeploymentModule(gate.id, module_id, "old"))
     dev_private, dev_public = generate_keypair()
     release = _development_gate_release()
@@ -739,7 +739,7 @@ def test_restore_required_retry_requires_note_and_persists_linked_ack(monkeypatc
     )
     store.create_deployment(gate)
     store.designate_release_gate(gate.id)
-    for module_id in DEVELOPMENT_GATE_CORE_MODULE_IDS:
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
         store.upsert_module(DeploymentModule(gate.id, module_id, "old"))
     store.record_backup(BackupRun("backup", gate.id, "success", "verified"))
 

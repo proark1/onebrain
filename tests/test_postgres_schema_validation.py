@@ -911,7 +911,6 @@ def test_postgres_verified_gate_completion_is_one_transaction_and_fail_closed(mo
     from app.controlplane import postgres as postgres_module
     from app.controlplane.base import RolloutRun
     from app.controlplane.development_gate import (
-        DEVELOPMENT_GATE_CORE_MODULE_IDS,
         DEVELOPMENT_GATE_MODULE_IDS,
     )
 
@@ -948,7 +947,7 @@ def test_postgres_verified_gate_completion_is_one_transaction_and_fail_closed(mo
     )
     module_rows = [
         ("dev-gate", module_id, "old", "active")
-        for module_id in sorted(DEVELOPMENT_GATE_CORE_MODULE_IDS)
+        for module_id in sorted(DEVELOPMENT_GATE_MODULE_IDS)
     ]
     backup_row = ("gate-backup", "dev-gate", "success", "verified", at)
     monkeypatch.setattr(postgres_module, "require_signed_releases", lambda: False)

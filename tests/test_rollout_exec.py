@@ -180,7 +180,7 @@ def test_pull_target_adopts_only_enrolled_fresh_healthy_designated_gate():
     assert result.required_secrets_epoch == 0
 
 
-def test_pull_target_allows_legacy_core_gate_before_verified_expansion():
+def test_pull_target_recognizes_enrolled_legacy_core_for_preparation_only():
     from app.controlplane.development_gate import DEVELOPMENT_GATE_CORE_MODULE_IDS
 
     control, fleet, now, prov = _enrolled_gate(

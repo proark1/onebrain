@@ -1,12 +1,12 @@
 # Full-Stack Development Gate Promotion Repair: Implementation Plan
 
-**Goal:** Safely expand the enrolled legacy development gate from three Core services
-to the exact eight-service OneBrain composition, while preserving restore-required
-acknowledgement, immutable release manifests, promotion linkage, and heartbeat proof.
+**Goal:** Safely replace the enrolled legacy three-service development gate with an
+exact eight-service OneBrain gate, while preserving restore-required acknowledgement,
+immutable release manifests, promotion linkage, and heartbeat proof.
 
 **Working tree:** `.codex-worktrees/dev-gate-adoption`
 
-**Branch:** `codex/dev-gate-adoption` / PR #19
+**Branch:** `codex/dev-gate-promotion-repair` / PR #20
 
 ## Invariants
 
@@ -14,7 +14,8 @@ acknowledgement, immutable release manifests, promotion linkage, and heartbeat p
 - Automatic candidate registration never acknowledges `restore_required`.
 - Only an authenticated administrator can retry with an explicit acknowledgement.
 - A manual, unlinked rollout cannot advance a release promotion.
-- The only accepted pre-expansion active sets are exact Core or exact full-stack.
+- Only an exact full-stack active set may receive a full-stack candidate. A legacy
+  Core-only gate must be replaced through the development-gate provisioner first.
 - The target development manifest must contain exactly all eight services.
 - Missing services are never marked active before an authenticated successful report.
 - Module activation, deployment version update, and rollout completion are atomic.
@@ -35,8 +36,8 @@ acknowledgement, immutable release manifests, promotion linkage, and heartbeat p
 
 1. Define immutable Core and full-stack module ID sets in one dependency-light
    control-plane module.
-2. Add a pure validator that accepts an exact Core or exact full-stack current set
-   and requires an exact full-stack target set.
+2. Add a pure validator that accepts only an exact full-stack current set and
+   requires an exact full-stack target set.
 3. Remove duplicate module constants from router/rollout files.
 4. Keep target eligibility focused on gate identity, key-bound fresh heartbeat,
    encrypted bundle, and applied secrets epoch; do not claim missing modules are
@@ -88,7 +89,7 @@ acknowledgement, immutable release manifests, promotion linkage, and heartbeat p
 5. Test missing, malformed, stale, and matching epoch paths without exposing bundle
    plaintext.
 
-## Task 4: Verify the exact full-stack report independently of legacy rows
+## Task 4: Verify the exact full-stack report independently of stored rows
 
 **Files:**
 
@@ -104,12 +105,12 @@ acknowledgement, immutable release manifests, promotion linkage, and heartbeat p
    health reports.
 2. Reject duplicate IDs before converting to a map.
 3. For a designated development-gate promotion, compare the normalized map against
-   the exact eight-service target release, not only the pre-existing active rows.
+   the exact eight-service target release, not only the stored active rows.
 4. Require every service to be healthy and at the release's expected version.
 5. Reject missing, extra, duplicate, unhealthy, and wrong-version services.
 6. Preserve existing customer reconciliation semantics outside the designated gate.
 
-## Task 5: Atomically activate verified module rows
+## Task 5: Atomically apply verified module rows
 
 **Files:**
 
@@ -128,7 +129,7 @@ acknowledgement, immutable release manifests, promotion linkage, and heartbeat p
    rollout completion under the existing lock and one persistence write.
 4. In PostgreSQL, upsert all eight active rows and update deployment/rollout state in
    one transaction.
-5. Leave the legacy rows unchanged on any validation or persistence failure.
+5. Leave the existing rows unchanged on any validation or persistence failure.
 6. Use the verified map only for the designated gate's authenticated successful
    promotion-linked report; normal rollouts retain existing behavior.
 7. Test atomic success and failure for both stores.
@@ -186,32 +187,38 @@ Also run the existing workflow/secret checks and PostgreSQL migration boundary u
 by CI. Inspect the final diff for secrets, mutable image tags, customer-scope changes,
 and unrelated files.
 
-## Task 8: Ship PR #19
+## Task 8: Ship PR #20
 
-1. Commit only task-related files on `codex/dev-gate-adoption`.
+1. Commit only task-related files on `codex/dev-gate-promotion-repair`.
 2. Push the branch and wait for all required checks.
 3. Resolve only actionable current review threads.
 4. Confirm the four immutable Assistant/Communication repository variables still
    match their green source revisions and digest-pinned images.
-5. Re-enable `ONEBRAIN_RELEASE_CANDIDATE_ENABLED` only immediately before the safe
-   merge/release run.
-6. Merge PR #19 to `main` through the protected branch workflow.
-7. Monitor image publication and registration of a new exact eight-service candidate.
+5. Keep `ONEBRAIN_RELEASE_CANDIDATE_ENABLED=false` through merge, Mission Control
+   upgrade, and full-stack gate replacement so no doomed candidate is registered.
+6. Merge PR #20 to `main` through the protected branch workflow.
+7. Monitor image publication and confirm candidate registration remains skipped.
 
 ## Task 9: Development activation and production boundary
 
 1. Upgrade Mission Control through its separately approved deployment procedure so
    it runs the adoption/acknowledgement code.
-2. Run **Prepare existing server** and wait for a fresh heartbeat proving the exact
-   secrets epoch.
-3. Confirm a fresh successful development-gate backup.
-4. Explicitly acknowledge `restore_required` with an audit note and retry the new
+2. Confirm the legacy Core-only gate returns
+   `development_gate_replacement_required`, then provision, verify, and designate
+   the full-stack replacement.
+3. Run **Prepare existing server** against the designated full-stack gate and wait
+   for a fresh heartbeat proving the exact secrets epoch.
+4. Enable `ONEBRAIN_RELEASE_CANDIDATE_ENABLED` and trigger a fresh `main` workflow
+   to register the new exact eight-service candidate.
+5. Confirm a fresh successful development-gate backup.
+6. Explicitly acknowledge `restore_required` with an audit note and retry the new
    candidate.
-5. Verify `target_source=enrolled_development_gate`, exact linked attempt ID, release,
+7. Verify the target source, exact linked attempt ID, release,
    migration, eight module versions, secrets epoch, and health through
    `dev_verified`.
-6. Confirm no replacement server and no customer rollout were created.
-7. Stop for the exact offline production signature.
-8. After signature verification and explicit approval, roll out only to an explicitly
+8. Confirm only the explicit gate replacement was created and no customer rollout
+   was created.
+9. Stop for the exact offline production signature.
+10. After signature verification and explicit approval, roll out only to an explicitly
    selected customer deployment. If no customer exists, report that production has no
    target rather than provisioning one implicitly.

@@ -6,18 +6,18 @@ from app.controlplane.development_gate import (
     CURRENT_MODULE_SET_INVALID,
     DEVELOPMENT_GATE_CORE_MODULE_IDS,
     DEVELOPMENT_GATE_MODULE_IDS,
+    LEGACY_CORE_GATE_REPLACEMENT_REQUIRED,
     TARGET_MODULE_SET_INVALID,
     validate_module_transition,
     verify_reported_modules,
 )
 
 
-@pytest.mark.parametrize(
-    "current",
-    [DEVELOPMENT_GATE_CORE_MODULE_IDS, DEVELOPMENT_GATE_MODULE_IDS],
-)
-def test_module_transition_accepts_exact_core_or_full_to_full(current):
-    assert validate_module_transition(current, DEVELOPMENT_GATE_MODULE_IDS) == ""
+def test_module_transition_accepts_exact_full_to_full():
+    assert validate_module_transition(
+        DEVELOPMENT_GATE_MODULE_IDS,
+        DEVELOPMENT_GATE_MODULE_IDS,
+    ) == ""
 
 
 @pytest.mark.parametrize(
@@ -36,10 +36,20 @@ def test_module_transition_rejects_partial_or_foreign_current_set(current):
     )
 
 
-def test_module_transition_requires_exact_full_target():
+def test_module_transition_requires_replacement_for_legacy_core_gate():
     assert (
         validate_module_transition(
             DEVELOPMENT_GATE_CORE_MODULE_IDS,
+            DEVELOPMENT_GATE_MODULE_IDS,
+        )
+        == LEGACY_CORE_GATE_REPLACEMENT_REQUIRED
+    )
+
+
+def test_module_transition_requires_exact_full_target():
+    assert (
+        validate_module_transition(
+            DEVELOPMENT_GATE_MODULE_IDS,
             DEVELOPMENT_GATE_MODULE_IDS - {"communication-workers"},
         )
         == TARGET_MODULE_SET_INVALID

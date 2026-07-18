@@ -28,6 +28,7 @@ DEVELOPMENT_GATE_MODULE_IDS = frozenset({
 })
 
 CURRENT_MODULE_SET_INVALID = "development_gate_current_module_set_invalid"
+LEGACY_CORE_GATE_REPLACEMENT_REQUIRED = "development_gate_replacement_required"
 TARGET_MODULE_SET_INVALID = "development_gate_target_module_set_invalid"
 
 
@@ -35,15 +36,20 @@ def validate_module_transition(
     current_module_ids: Iterable[str],
     target_module_ids: Iterable[str],
 ) -> str:
-    """Return an empty string only for an exact Core/full -> full transition."""
+    """Return an empty string only for an exact full-stack -> full-stack update.
+
+    A legacy Core-only host cannot start or report the optional services because
+    its compose profiles and local module allowlist are fixed at provisioning
+    time. Such a gate must be replaced through the development-gate provisioner
+    before it can receive a full-stack candidate.
+    """
     current = frozenset(str(module_id).strip() for module_id in current_module_ids)
     target = frozenset(str(module_id).strip() for module_id in target_module_ids)
     if target != DEVELOPMENT_GATE_MODULE_IDS:
         return TARGET_MODULE_SET_INVALID
-    if current not in {
-        DEVELOPMENT_GATE_CORE_MODULE_IDS,
-        DEVELOPMENT_GATE_MODULE_IDS,
-    }:
+    if current == DEVELOPMENT_GATE_CORE_MODULE_IDS:
+        return LEGACY_CORE_GATE_REPLACEMENT_REQUIRED
+    if current != DEVELOPMENT_GATE_MODULE_IDS:
         return CURRENT_MODULE_SET_INVALID
     return ""
 

@@ -20,10 +20,7 @@ from app.controlplane.base import (
     RolloutRun,
 )
 from app.controlplane.memory import MemoryControlPlaneStore
-from app.controlplane.development_gate import (
-    DEVELOPMENT_GATE_CORE_MODULE_IDS,
-    DEVELOPMENT_GATE_MODULE_IDS,
-)
+from app.controlplane.development_gate import DEVELOPMENT_GATE_MODULE_IDS
 from app.controlplane.orchestration import FleetRolloutRun
 from app.controlplane.pull_reconcile import (
     materialize_backup_from_report,
@@ -359,7 +356,7 @@ def _store_with_development_pull(*, required_secrets_epoch=4):
     )
     store.create_deployment(gate)
     store.designate_release_gate(gate.id)
-    for module_id in DEVELOPMENT_GATE_CORE_MODULE_IDS:
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
         store.upsert_module(DeploymentModule(gate.id, module_id, "2026.07.0"))
     version = "2026.07.1"
     target_modules = {
@@ -467,7 +464,7 @@ def test_development_pull_requires_exact_healthy_full_stack_report(mutation):
         module.module_id
         for module in store.list_modules(gate.id)
         if module.status == "active"
-    } == DEVELOPMENT_GATE_CORE_MODULE_IDS
+    } == DEVELOPMENT_GATE_MODULE_IDS
 
 
 def test_development_pull_requires_persisted_secrets_epoch_evidence():
@@ -542,7 +539,7 @@ def test_reconcile_converges_standalone_development_pull_before_timeout():
     )
     store.create_deployment(gate)
     store.designate_release_gate(gate.id)
-    for module_id in DEVELOPMENT_GATE_CORE_MODULE_IDS:
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
         store.upsert_module(DeploymentModule(gate.id, module_id, "2026.07.0"))
     version = "2026.07.1"
     target_modules = {

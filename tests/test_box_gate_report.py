@@ -130,13 +130,18 @@ def test_host_reporter_builds_closed_full_stack_metadata_only_heartbeat(tmp_path
         assert forbidden not in encoded
 
 
-def test_host_reporter_uses_verified_last_applied_images_as_release_modules(tmp_path):
+def test_host_reporter_uses_exact_versions_from_verified_last_applied_manifest(tmp_path):
     report = _load_report()
     env = _env(tmp_path)
     version = "2026.07.17.172"
     work = tmp_path / "onebrain-maintenance" / "onebrain_update"
     (work / "last_applied.json").write_text(json.dumps({
         "version": version,
+        "modules": {
+            "onebrain-api": version,
+            "onebrain-admin-ui": "admin-ui-v17",
+            "onebrain-workers": "workers-v9",
+        },
         "images": {
             "onebrain-api": "ghcr.io/example/api@sha256:" + "a" * 64,
             "onebrain-admin-ui": "ghcr.io/example/ui@sha256:" + "b" * 64,
@@ -153,8 +158,8 @@ def test_host_reporter_uses_verified_last_applied_images_as_release_modules(tmp_
     assert heartbeat["onebrain"]["healthy"] is True
     assert {row["module_id"]: row["version"] for row in heartbeat["modules"]} == {
         "onebrain-api": version,
-        "onebrain-admin-ui": version,
-        "onebrain-workers": version,
+        "onebrain-admin-ui": "admin-ui-v17",
+        "onebrain-workers": "workers-v9",
         "assistant-service": "",
         "communication-api": "",
         "communication-widget": "",
