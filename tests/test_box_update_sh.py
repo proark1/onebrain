@@ -408,7 +408,11 @@ def test_pulled_digests_equal_verifier_output(box):
     assert override.count(GOOD_IMG) == 2
 
 
-def test_legacy_last_applied_without_images_does_not_kill_update_agent(box):
+@pytest.mark.parametrize(
+    "images_field",
+    [pytest.param({}, id="missing"), pytest.param({"images": None}, id="null")],
+)
+def test_legacy_last_applied_images_shape_does_not_kill_update_agent(box, images_field):
     work = box.data / "onebrain_update"
     work.mkdir(parents=True, exist_ok=True)
     (work / "last_applied.json").write_text(
@@ -416,6 +420,7 @@ def test_legacy_last_applied_without_images_does_not_kill_update_agent(box):
             "version": "2026.07.18.223",
             "migration_to": "0030_job_queue_rls_roles",
             "modules": {"onebrain-api": "2026.07.18.223"},
+            **images_field,
         }),
         encoding="utf-8",
     )
