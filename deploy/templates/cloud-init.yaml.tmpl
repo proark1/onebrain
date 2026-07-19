@@ -2,7 +2,8 @@
 # Rendered per box by app/provisioning/hetzner/render.render_cloud_init. The
 # write-files and runcmd markers are filled with operator-controlled / server-minted
 # values only - never an untrusted caller value (injection discipline).
-package_update: true
+# Cloud-init refreshes package metadata whenever `packages` is non-empty, so a
+# separate package_update flag would only duplicate that work and payload.
 packages: [docker.io,docker-compose-v2,python3-cryptography,unattended-upgrades]
   # Ubuntu 24.04's mirror ships Compose V2 as `docker-compose-v2` (NOT Docker's own-repo
   # name `docker-compose-plugin`, which apt can't find here — that install failure left

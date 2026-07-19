@@ -1643,7 +1643,7 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         f"<{_BOOTSTRAP_ASSET_B85}|tar -xJf- -C/",
         "/opt/onebrain/onebrain-firstboot.sh",
     ]
-    runcmd = "\n".join("  - " + _yaml_sq(item) for item in runcmd_items)
+    runcmd = "\n".join(" - " + _yaml_sq(item) for item in runcmd_items)
 
     # Keep the reviewed template documented in source, but omit non-functional
     # YAML comments from the submitted user-data. ``#cloud-config`` is the
