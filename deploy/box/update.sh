@@ -645,7 +645,7 @@ MIG_TO="$(read_target migration_to)"
 ROLLBACK_KIND="$(read_target rollback_kind)"
 
 # --- 3. NO-OP: compare the verified digest set to the last applied ----------
-new_digest_set() { "$PYTHON" -c 'import sys,json;d=json.load(open(sys.argv[1]))["images"];print("\n".join(sorted(d.values())))' "$1"; }
+new_digest_set() { "$PYTHON" -c 'import sys,json;d=json.load(open(sys.argv[1])).get("images",{});print("\n".join(sorted(d.values())))' "$1"; }
 NEW_DIGESTS="$(new_digest_set "$TARGET")"
 OLD_DIGESTS=""
 if [ -f "$LAST_APPLIED" ]; then
