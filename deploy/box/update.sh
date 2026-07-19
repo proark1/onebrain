@@ -644,27 +644,6 @@ MIG_FROM="$(read_target migration_from)"
 MIG_TO="$(read_target migration_to)"
 ROLLBACK_KIND="$(read_target rollback_kind)"
 
-# --- 3. NO-OP: compare the verified digest set to the last applied ----------
-new_digest_set() { "$PYTHON" -c 'import sys,json;d=json.load(open(sys.argv[1])).get("images") or {};print("\n".join(sorted(d.values())))' "$1"; }
-NEW_DIGESTS="$(new_digest_set "$TARGET")"
-OLD_DIGESTS=""
-if [ -f "$LAST_APPLIED" ]; then
-  OLD_DIGESTS="$(new_digest_set "$LAST_APPLIED")"
-fi
-if [ -n "$NEW_DIGESTS" ] && [ "$NEW_DIGESTS" = "$OLD_DIGESTS" ]; then
-  CURRENT_MIGRATION="$(alembic_current 2>/dev/null | tr -d '[:space:]' || true)"
-  EXPECTED_MIGRATION="${MIG_TO:-$MIG_FROM}"
-  if [ -z "$EXPECTED_MIGRATION" ] || [ "$CURRENT_MIGRATION" = "$EXPECTED_MIGRATION" ]; then
-    log "no-op: already at verified digest set and migration"
-    "$PYTHON" "$UPDATE_VERIFY_BIN" record-apply <"$ENVELOPE" >>"$LOG" 2>&1 \
-      || log "record-apply warned"
-    cp -f "$TARGET" "$LAST_APPLIED"
-    write_state "succeeded" "$CURRENT_MIGRATION" "" "" ""
-    exit 0
-  fi
-  log "digest set is current but migration is not; continuing apply"
-fi
-
 # The gate agent refreshes the re-readable bundle before launching this script.
 # If that refresh failed, still verify the offered target and report this exact
 # attempt as failed, but never stop services or change image pins using stale
@@ -683,6 +662,37 @@ if requires_role_split_preflight && ! role_split_preflight; then
   log "migration prerequisite FAILED; holding current stack"
   write_state "failed" "$MIG_FROM" "" "" ""
   exit 0
+fi
+
+# --- 3. NO-OP: compare the verified digest set to the last applied ----------
+# A no-op is still an acknowledgement of the exact offered attempt, so it is
+# allowed only after all host prerequisites above pass. Restore-required
+# releases deliberately continue through the backup path even when their image
+# and migration state already match; their success report must carry durable
+# backup evidence rather than replace it with empty fields.
+new_digest_set() { "$PYTHON" -c 'import sys,json;d=json.load(open(sys.argv[1])).get("images") or {};print("\n".join(sorted(d.values())))' "$1"; }
+NEW_DIGESTS="$(new_digest_set "$TARGET")"
+OLD_DIGESTS=""
+if [ -f "$LAST_APPLIED" ]; then
+  OLD_DIGESTS="$(new_digest_set "$LAST_APPLIED")"
+fi
+if [ -n "$NEW_DIGESTS" ] && [ "$NEW_DIGESTS" = "$OLD_DIGESTS" ]; then
+  CURRENT_MIGRATION="$(alembic_current 2>/dev/null | tr -d '[:space:]' || true)"
+  EXPECTED_MIGRATION="${MIG_TO:-$MIG_FROM}"
+  if [ "$ROLLBACK_KIND" != "restore_required" ] \
+     && { [ -z "$EXPECTED_MIGRATION" ] || [ "$CURRENT_MIGRATION" = "$EXPECTED_MIGRATION" ]; }; then
+    log "no-op: already at verified digest set and migration"
+    "$PYTHON" "$UPDATE_VERIFY_BIN" record-apply <"$ENVELOPE" >>"$LOG" 2>&1 \
+      || log "record-apply warned"
+    cp -f "$TARGET" "$LAST_APPLIED"
+    write_state "succeeded" "$CURRENT_MIGRATION" "" "" ""
+    exit 0
+  fi
+  if [ "$ROLLBACK_KIND" = "restore_required" ]; then
+    log "digest set is current but restore-required backup evidence is needed; continuing apply"
+  else
+    log "digest set is current but migration is not; continuing apply"
+  fi
 fi
 
 # Select this box's images from the verified target (H-5: the release pins ALL
