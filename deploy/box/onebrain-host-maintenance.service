@@ -6,6 +6,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=root
+ExecStartPre=/usr/bin/docker compose --project-name {{COMPOSE_PROJECT}} -f /opt/onebrain/docker-compose.yml cp onebrain-api:/app/deploy/box/onebrain-host-maintenance.sh /opt/onebrain/onebrain-host-maintenance.sh
+ExecStartPre=/usr/bin/docker compose --project-name {{COMPOSE_PROJECT}} -f /opt/onebrain/docker-compose.yml cp onebrain-api:/app/deploy/box/onebrain-postgres-collation.sh /opt/onebrain/onebrain-postgres-collation.sh
+ExecStartPre=/usr/bin/chmod 0755 /opt/onebrain/onebrain-host-maintenance.sh /opt/onebrain/onebrain-postgres-collation.sh
 ExecStart=/opt/onebrain/onebrain-host-maintenance.sh
 Nice=19
 IOSchedulingClass=idle

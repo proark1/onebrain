@@ -1506,6 +1506,12 @@ def _replacement_development_gate_baseline(
 
     candidates: list[tuple[str, str, ReleaseManifest]] = []
     for promotion in store.list_release_promotions():
+        if (
+            promotion.state != "dev_failed"
+            or promotion.gate_deployment_id != gate.id
+            or promotion.failure_reason != "dev_preflight_failed"
+        ):
+            continue
         if not is_current_replacement_bootstrap_failure(
             promotion,
             store.list_release_promotion_events(promotion.release_version),
@@ -1557,6 +1563,85 @@ def _development_gate_provisioning_baseline(
     if replacement:
         return replacement, "development_replacement_candidate"
     return approved, "approved_release" if approved else ""
+
+
+def _replacement_development_gate_seed_is_trusted(
+    store,
+    gate: CustomerDeployment,
+    release: ReleaseManifest | None,
+    *,
+    settings,
+) -> bool:
+    """Verify the durable evidence for a provisioned replacement gate.
+
+    A replacement is intentionally seeded from the development-signed release
+    that the legacy Core-only gate could not run.  Keep that exception confined
+    to the generated replacement identity and require the successful provision
+    record that installed the exact signed candidate.  This evidence remains
+    valid after the release-gate marker moves to the replacement.
+    """
+    if (
+        release is None
+        or release.status == "yanked"
+        or not gate.id.startswith(DEVELOPMENT_GATE_DEPLOYMENT_ID + "-")
+        or not gate.account_id.startswith(DEVELOPMENT_GATE_ACCOUNT_ID + "-")
+        or not _release_covers_development_gate(
+            release,
+            DEVELOPMENT_GATE_MODULE_IDS,
+            registry_allowlist=settings.release_registry_allowlist,
+            exact=True,
+        )
+    ):
+        return False
+    promotion = store.get_release_promotion(release.version)
+    if not is_current_replacement_bootstrap_failure(
+        promotion,
+        store.list_release_promotion_events(release.version),
+        gate_deployment_id=DEVELOPMENT_GATE_DEPLOYMENT_ID,
+    ):
+        return False
+    development_key = getattr(settings, "dev_release_verify_public_key", "")
+    if (
+        not development_key
+        or not promotion.dev_signature
+        or not verify_release_signature(
+            release_signature_fields(release),
+            promotion.dev_signature,
+            development_key,
+        )
+    ):
+        return False
+
+    expected_optional_modules = frozenset(DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS)
+    expected_versions = {
+        module_id: release.modules[module_id]
+        for module_id in DEVELOPMENT_GATE_MODULE_IDS
+    }
+    runs = get_provisioning_run_store().list_runs(
+        account_id=gate.account_id,
+        deployment_id=gate.id,
+    )
+    for run in runs:
+        payload = run.request_payload or {}
+        if (
+            run.status == "succeeded"
+            and run.external_provider == "hetzner"
+            and run.account_id == gate.account_id
+            and run.deployment_id == gate.id
+            and frozenset(run.module_ids) == expected_optional_modules
+            and frozenset(payload.get("module_ids") or ()) == expected_optional_modules
+            and payload.get("customer_name") == "One Brain Development Gate"
+            and payload.get("account_kind") == "project"
+            and payload.get("deployment_type") == "dedicated_server"
+            and payload.get("release_ring") == "internal"
+            and payload.get("initial_version") == release.version
+            and payload.get("current_migration", "") == release.migration_to
+            and payload.get("module_versions") == expected_versions
+            and payload.get("dry_run") is False
+            and (not release.migration_to or run.migration_revision == release.migration_to)
+        ):
+            return True
+    return False
 
 
 def _development_attempt_note(
@@ -1900,13 +1985,29 @@ def _development_gate_blockers(store, gate: CustomerDeployment) -> list[str]:
     if set(installed_modules) != required_modules:
         blockers.append("development_gate_module_set_invalid")
     release = store.get_release(gate.current_version) if gate.current_version else None
-    production_key = getattr(get_settings(), "release_verify_public_key", "")
+    settings = get_settings()
+    production_key = getattr(settings, "release_verify_public_key", "")
+    production_baseline_trusted = bool(
+        release
+        and release.status == "active"
+        and release.signature
+        and production_key
+        and verify_release_signature(
+            release_signature_fields(release),
+            release.signature,
+            production_key,
+        )
+    )
+    replacement_seed_trusted = False
+    if not production_baseline_trusted:
+        replacement_seed_trusted = _replacement_development_gate_seed_is_trusted(
+            store,
+            gate,
+            release,
+            settings=settings,
+        )
     if (
-        not release
-        or release.status != "active"
-        or not release.signature
-        or not production_key
-        or not verify_release_signature(release_signature_fields(release), release.signature, production_key)
+        not (production_baseline_trusted or replacement_seed_trusted)
         or gate.last_reported_version != release.version
         or (release.migration_to and gate.last_reported_migration != release.migration_to)
     ):

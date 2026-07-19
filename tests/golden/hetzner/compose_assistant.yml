@@ -103,7 +103,7 @@ services:
     profiles: [onebrain]
     <<: *x
     restart: unless-stopped
-    tmpfs: ["/tmp:mode=1777,size=640m"]
+    tmpfs: ["/tmp:mode=1777,size=640m", "/tmp/onebrain-scanner:uid=10001,mode=700,size=512m"]
     env_file:
       - env/onebrain-workers.env
     volumes:
@@ -119,7 +119,7 @@ services:
     image: ghcr.io/proark1/assistant-service@sha256:0000000000000000000000000000000000000000000000000000000000000003
     profiles: [assistant]
     restart: "no"
-    command: ["alembic", "upgrade", "head"]
+    command: ["python", "-c", "import glob,os,psycopg as p;c=p.connect(os.getenv('DATABASE_URL'));c.execute('create table if not exists m(n text primary key)');fs=sorted(glob.glob('/app/services/assistant-runtime/migrations/*.sql'));assert fs;[(r:=c.execute('insert into m values(%s) on conflict do nothing',(f,))).rowcount and(c.execute(open(f).read(),prepare=0),c.commit()) for f in fs]"]
     env_file:
       - env/assistant-migrate.env
     depends_on:
