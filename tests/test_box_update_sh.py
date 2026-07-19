@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -346,8 +347,8 @@ class _Harness:
             timeout=120,
         )
 
-    def run(self) -> subprocess.CompletedProcess:
-        return self._exec(_UPDATE_SH)
+    def run(self, **extra_env: str) -> subprocess.CompletedProcess:
+        return self._exec(_UPDATE_SH, extra_env)
 
     def run_bootstrap(self) -> subprocess.CompletedProcess:
         return self._exec(_BOOTSTRAP_SH)
@@ -431,6 +432,95 @@ def test_legacy_last_applied_images_shape_does_not_kill_update_agent(box, images
     assert result.returncode == 0, result.stderr
     assert box.pulled() == [GOOD_IMG]
     assert box.state()["outcome"] == "succeeded"
+
+
+def test_current_digest_and_migration_acknowledge_exact_attempt_without_restart(box):
+    box.seed_last_applied({"onebrain-api": GOOD_IMG})
+    box.set_alembic_current("0020")
+    box.set_serve(signed_serve(attempt_id="roll_retry"))
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.pulled() == []
+    assert " up -d" not in box.stub_log()
+    state = box.state()
+    assert state["ts"]
+    assert {key: value for key, value in state.items() if key != "ts"} == {
+        "last_target_version": "2026.7.2",
+        "outcome": "succeeded",
+        "migration_reached": "0020",
+        "attempt_id": "roll_retry",
+        "backup_status": "",
+        "backup_ts": "",
+        "backup_manifest": "",
+    }
+    last_applied = json.loads(
+        (box.data / "onebrain_update" / "last_applied.json").read_text(encoding="utf-8")
+    )
+    assert last_applied["version"] == "2026.7.2"
+    assert last_applied["images"] == {"onebrain-api": GOOD_IMG}
+
+
+def test_current_digest_with_migration_drift_continues_apply(box):
+    box.seed_last_applied({"onebrain-api": GOOD_IMG})
+    box.set_alembic_current("0020")
+    box.set_serve(signed_serve(migration_from="0020", migration_to="0021"))
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.pulled() == [GOOD_IMG]
+    assert box.state()["outcome"] == "rolled_back"
+
+
+def test_current_digest_without_migration_contract_acknowledges_attempt(box):
+    box.seed_last_applied({"onebrain-api": GOOD_IMG})
+    box.set_serve(signed_serve(
+        migration_from="",
+        migration_to="",
+        attempt_id="roll_no_migration",
+    ))
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.pulled() == []
+    assert " up -d" not in box.stub_log()
+    assert box.state()["outcome"] == "succeeded"
+    assert box.state()["attempt_id"] == "roll_no_migration"
+    assert box.state()["migration_reached"] == ""
+
+
+def test_current_digest_does_not_bypass_failed_bundle_refresh(box):
+    box.seed_last_applied({"onebrain-api": GOOD_IMG})
+    box.set_alembic_current("0020")
+    box.set_serve(signed_serve(attempt_id="roll_bundle_failed"))
+
+    result = box.run(UPDATE_BUNDLE_REFRESH_FAILED="true")
+
+    assert result.returncode == 0, result.stderr
+    assert box.pulled() == []
+    assert " up -d" not in box.stub_log()
+    assert box.state()["outcome"] == "failed"
+    assert box.state()["attempt_id"] == "roll_bundle_failed"
+
+
+def test_restore_required_current_digest_still_records_backup_evidence(box):
+    box.seed_last_applied({"onebrain-api": GOOD_IMG})
+    box.set_alembic_current("0020")
+    box.set_serve(signed_serve(rollback_kind="restore_required", attempt_id="roll_restore_retry"))
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.pulled() == [GOOD_IMG]
+    assert "pg_dump" in box.stub_log()
+    state = box.state()
+    assert state["outcome"] == "succeeded"
+    assert state["attempt_id"] == "roll_restore_retry"
+    assert state["backup_status"] == "success"
+    assert re.match(r"^sha256:[0-9a-f]{64}:\d+$", state["backup_manifest"])
 
 
 def test_verify_failure_holds(box):
