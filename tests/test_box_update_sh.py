@@ -408,6 +408,31 @@ def test_pulled_digests_equal_verifier_output(box):
     assert override.count(GOOD_IMG) == 2
 
 
+@pytest.mark.parametrize(
+    "images_field",
+    [pytest.param({}, id="missing"), pytest.param({"images": None}, id="null")],
+)
+def test_legacy_last_applied_images_shape_does_not_kill_update_agent(box, images_field):
+    work = box.data / "onebrain_update"
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "last_applied.json").write_text(
+        json.dumps({
+            "version": "2026.07.18.223",
+            "migration_to": "0030_job_queue_rls_roles",
+            "modules": {"onebrain-api": "2026.07.18.223"},
+            **images_field,
+        }),
+        encoding="utf-8",
+    )
+    box.set_serve(signed_serve())
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.pulled() == [GOOD_IMG]
+    assert box.state()["outcome"] == "succeeded"
+
+
 def test_verify_failure_holds(box):
     box.set_serve(signed_serve(tamper_wrapper=True))
     result = box.run()
