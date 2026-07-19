@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 type PageHeaderProps = {
   actions?: ReactNode;
+  description?: ReactNode;
   eyebrow: string;
   meta?: ReactNode;
   title: string;
@@ -34,12 +35,13 @@ type PanelProps = {
   title: string;
 };
 
-export function PageHeader({ actions, eyebrow, meta, title }: PageHeaderProps) {
+export function PageHeader({ actions, description, eyebrow, meta, title }: PageHeaderProps) {
   return (
     <header className="pageHeader">
       <div className="pageHeaderMain">
         <p className="eyebrow">{eyebrow}</p>
         <h1>{title}</h1>
+        {description ? <div className="pageHeaderDescription">{description}</div> : null}
         {meta ? <div className="pageHeaderMeta">{meta}</div> : null}
       </div>
       {actions ? <div className="pageHeaderActions">{actions}</div> : null}

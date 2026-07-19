@@ -646,6 +646,7 @@ export function OperatorPanel() {
   return (
     <div className="operatorWorkspace">
       <PageHeader
+        description="Provision customers, manage releases, and review deployment activity."
         eyebrow="Control plane"
         title="Operator"
         meta={(

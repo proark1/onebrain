@@ -402,6 +402,7 @@ export function KpiPanel() {
   return (
     <div className="kpiWorkspace">
       <PageHeader
+        description="Track the measures that matter and understand what changed."
         eyebrow="Operating ledger"
         title="KPIs"
         meta={selectedWorkspace ? (

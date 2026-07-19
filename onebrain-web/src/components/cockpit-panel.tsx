@@ -189,6 +189,7 @@ export function CockpitPanel() {
   return (
     <div className="cockpitWorkspace">
       <PageHeader
+        description="See what needs attention across OneBrain and act on the latest signals."
         eyebrow="Mission Control"
         title="Status"
         actions={(

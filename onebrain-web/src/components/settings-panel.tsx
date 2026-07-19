@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { PageHeader, Panel } from "@/components/admin-ui";
 
 export function SettingsPanel() {
   const router = useRouter();
@@ -28,26 +29,25 @@ export function SettingsPanel() {
   }
 
   return (
-    <main className="stateScreen">
-      <section className="statePanel settingsPanel">
-        <div className="brand"><span className="brandMark">AD</span><span>OneBrain</span></div>
-        <div className="loginHeading">
-          <p className="eyebrow">Account</p>
-          <h1>Settings</h1>
-          <p>Manage your password and current OneBrain session.</p>
-        </div>
+    <div className="adminSurface settingsSurface">
+      <PageHeader description="Manage your security and the current OneBrain session." eyebrow="Account" title="Settings" />
+      <Panel eyebrow="Security" title="Password">
         <div className="settingsActions">
           <Link className="settingsAction" href="/settings/password">
             <span><strong>Change password</strong><small>Update your password and sign in again.</small></span>
             <span aria-hidden="true">→</span>
           </Link>
+        </div>
+      </Panel>
+      <Panel eyebrow="Current device" title="Session">
+        <div className="settingsActions">
           <button className="settingsAction dangerAction" disabled={isLoggingOut} onClick={logout} type="button">
             <span><strong>{isLoggingOut ? "Logging out..." : "Log out"}</strong><small>End this signed-in session on this device.</small></span>
             <span aria-hidden="true">→</span>
           </button>
           {error ? <p className="inlineError" role="alert">{error}</p> : null}
         </div>
-      </section>
-    </main>
+      </Panel>
+    </div>
   );
 }

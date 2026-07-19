@@ -12,6 +12,7 @@ export type ConsoleSection =
   | "users";
 
 export type ConsoleNavItem = { id: ConsoleSection; href: string; label: string };
+export type ConsoleNavGroup = { id: string; label: string; items: ConsoleNavItem[] };
 
 export const STATUS_NAV: ConsoleNavItem = { id: "cockpit", href: "/cockpit", label: "Status" };
 export const CUSTOMER_NAV: ConsoleNavItem[] = [
@@ -35,4 +36,32 @@ export function consoleNavigation(operatorMode: boolean): ConsoleNavItem[] {
   return operatorMode
     ? [STATUS_NAV, ...MISSION_CONTROL_NAV]
     : [STATUS_NAV, ...CUSTOMER_NAV];
+}
+
+const CUSTOMER_GROUPS: Array<{ id: string; label: string; sections: ConsoleSection[] }> = [
+  { id: "monitor", label: "Monitor", sections: ["cockpit"] },
+  { id: "work", label: "Work", sections: ["chat", "drive", "kpis", "ai-employees"] },
+  { id: "manage", label: "Manage", sections: ["spaces", "privacy"] },
+  { id: "account", label: "Account", sections: ["settings"] },
+];
+
+const OPERATOR_GROUPS: Array<{ id: string; label: string; sections: ConsoleSection[] }> = [
+  { id: "monitor", label: "Monitor", sections: ["cockpit"] },
+  { id: "manage", label: "Manage", sections: ["operator", "fleet", "users"] },
+  { id: "account", label: "Account", sections: ["settings"] },
+];
+
+export function consoleNavigationGroups(operatorMode: boolean): ConsoleNavGroup[] {
+  const items = consoleNavigation(operatorMode);
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  return (operatorMode ? OPERATOR_GROUPS : CUSTOMER_GROUPS)
+    .map((group) => ({
+      id: group.id,
+      label: group.label,
+      items: group.sections.flatMap((section) => {
+        const item = itemById.get(section);
+        return item ? [item] : [];
+      }),
+    }))
+    .filter((group) => group.items.length > 0);
 }

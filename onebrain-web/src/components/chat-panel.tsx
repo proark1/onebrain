@@ -292,6 +292,7 @@ export function ChatPanel({ initialConversations, session }: ChatPanelProps) {
 
       <section className="chatMain">
         <PageHeader
+          description="Ask questions grounded in the knowledge available to this workspace."
           eyebrow={selectedConversation?.title ? `Chat / ${selectedConversation.title}` : "OneBrain chat"}
           meta={<span className="scopePill"><span className="statusDot" />{scopeLabel}</span>}
           title="Ask OneBrain"

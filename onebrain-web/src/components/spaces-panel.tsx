@@ -408,6 +408,7 @@ export function SpacesPanel() {
             </button>
           </>
         )}
+        description="Connect accounts, spaces, and apps to the work they support."
         eyebrow="Connected apps"
         meta={selectedAccount ? <span className="scopePill"><span className="statusDot" />{selectedAccount.name}</span> : null}
         title="Accounts and app access"

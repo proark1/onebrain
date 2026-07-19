@@ -3,8 +3,9 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { FormEvent } from "react";
+import { PageHeader, Panel } from "@/components/admin-ui";
 
-export function PasswordChangePanel() {
+export function PasswordChangePanel({ standalone = false }: { standalone?: boolean }) {
   const router = useRouter();
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -48,23 +49,36 @@ export function PasswordChangePanel() {
     }
   }
 
+  const form = (
+    <form className="loginForm accountForm" onSubmit={submit}>
+      <label className="field"><span className="fieldLabel">Current password</span><input autoComplete="current-password" className="input" name="current_password" required type="password" /></label>
+      <label className="field"><span className="fieldLabel">New password</span><input autoComplete="new-password" className="input" minLength={12} name="new_password" required type="password" /></label>
+      <label className="field"><span className="fieldLabel">Confirm new password</span><input autoComplete="new-password" className="input" minLength={12} name="confirmation" required type="password" /></label>
+      {error ? <p className="inlineError" role="alert">{error}</p> : null}
+      <button className="primaryButton" disabled={isSubmitting} type="submit">{isSubmitting ? "Changing password…" : "Change password"}</button>
+    </form>
+  );
+
+  if (standalone) {
+    return (
+      <main className="stateScreen">
+        <section className="statePanel loginPanel">
+          <div className="brand"><span className="brandMark">AD</span><span>OneBrain</span></div>
+          <div className="loginHeading">
+            <p className="eyebrow">Account security</p>
+            <h1>Change password</h1>
+            <p>Choose a new password with at least 12 characters. You will sign in again afterwards.</p>
+          </div>
+          {form}
+        </section>
+      </main>
+    );
+  }
+
   return (
-    <main className="stateScreen">
-      <section className="statePanel loginPanel">
-        <div className="brand"><span className="brandMark">AD</span><span>OneBrain</span></div>
-        <div className="loginHeading">
-          <p className="eyebrow">Account security</p>
-          <h1>Change password</h1>
-          <p>Choose a new password with at least 12 characters. You will need to sign in again afterwards.</p>
-        </div>
-        <form className="loginForm" onSubmit={submit}>
-          <label className="field"><span className="fieldLabel">Current password</span><input autoComplete="current-password" className="input" name="current_password" required type="password" /></label>
-          <label className="field"><span className="fieldLabel">New password</span><input autoComplete="new-password" className="input" minLength={12} name="new_password" required type="password" /></label>
-          <label className="field"><span className="fieldLabel">Confirm new password</span><input autoComplete="new-password" className="input" minLength={12} name="confirmation" required type="password" /></label>
-          {error ? <p className="inlineError" role="alert">{error}</p> : null}
-          <button className="primaryButton" disabled={isSubmitting} type="submit">{isSubmitting ? "Changing password..." : "Change password"}</button>
-        </form>
-      </section>
-    </main>
+    <div className="adminSurface settingsSurface">
+      <PageHeader description="Choose a new password. You will sign in again after it changes." eyebrow="Account" title="Change password" />
+      <Panel eyebrow="Security" title="Password">{form}</Panel>
+    </div>
   );
 }

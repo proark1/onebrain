@@ -233,6 +233,7 @@ export function PrivacyPanel() {
             </button>
           </>
         )}
+        description="Review data scope, export records, and manage deletion requests."
         eyebrow="Data rights"
         meta={selectedAccount ? <span className="scopePill"><span className="statusDot" />{selectedAccount.name}</span> : null}
         title="Privacy"
