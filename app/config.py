@@ -661,6 +661,21 @@ class Settings(BaseSettings):
             errors.append("set ONEBRAIN_VECTOR_STORE=pgvector")
         if not self.database_url.strip():
             errors.append("set ONEBRAIN_DATABASE_URL")
+        if not self.operator_database_url.strip():
+            errors.append("set ONEBRAIN_OPERATOR_DATABASE_URL")
+        elif self.database_url.strip():
+            app_database_role = (urlsplit(self.database_url.strip()).username or "").lower()
+            operator_database_role = (
+                urlsplit(self.operator_database_url.strip()).username or ""
+            ).lower()
+            if not app_database_role:
+                errors.append("ONEBRAIN_DATABASE_URL must include a PostgreSQL login role")
+            if not operator_database_role:
+                errors.append("ONEBRAIN_OPERATOR_DATABASE_URL must include a PostgreSQL login role")
+            elif operator_database_role == app_database_role:
+                errors.append(
+                    "ONEBRAIN_OPERATOR_DATABASE_URL must use a distinct PostgreSQL login role"
+                )
         if not self.rls_enforced:
             errors.append("set ONEBRAIN_RLS_ENFORCED=true")
         try:
