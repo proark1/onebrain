@@ -32,7 +32,7 @@ export default async function CockpitPage() {
 
   return (
     <ConsoleShell active="cockpit" session={sessionResult.session}>
-      <CockpitPanel />
+      <CockpitPanel isOperatorSurface={sessionResult.session.is_operator_surface} />
     </ConsoleShell>
   );
 }
