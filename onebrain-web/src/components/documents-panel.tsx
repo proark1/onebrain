@@ -261,6 +261,7 @@ export function DocumentsPanel({
             </button>
           </>
         )}
+        description="Find, review, and add the knowledge available to this workspace."
         eyebrow="Knowledge"
         meta={<span className="scopePill"><span className="statusDot" />Workspace scoped</span>}
         title="Knowledge library"

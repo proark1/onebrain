@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
+import { ConsoleNavigation } from "@/components/console-navigation";
 import { WorkspaceProvider } from "@/components/workspace-provider";
 import { WorkspaceSelector } from "@/components/workspace-selector";
-import { ALL_NAV, consoleNavigation, type ConsoleSection } from "@/lib/console-navigation";
+import { ALL_NAV, consoleNavigationGroups, type ConsoleSection } from "@/lib/console-navigation";
 import type { SessionInfo } from "@/lib/onebrain-types";
 
 type ConsoleShellProps = {
@@ -21,42 +22,33 @@ export function ConsoleShell({ active, children, session, workspaceMode = "conso
   // Mission Control is admin-only. A customer box can never expose Control/Fleet
   // merely because its user is an administrator; that requires the server-issued
   // operator-surface capability.
-  const nav = consoleNavigation(session.operator_mode);
+  const navGroups = consoleNavigationGroups(session.operator_mode);
   const homeHref = session.operator_mode ? "/fleet" : "/chat";
   const activeLabel = ALL_NAV.find((item) => item.id === active)?.label || "Console";
+  const surfaceLabel = session.operator_mode ? "Mission Control" : "Workspace";
+  const initials = identity
+    .split(/\s+|@/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("") || "OB";
   const shell = (
     <main className="consoleShell">
-      <aside className="consoleSidebar" aria-label="OneBrain console">
-        <div className="brandBlock">
-          <Link className="brand" href={homeHref}>
-            <span className="brandMark">AD</span>
-            <span>OneBrain</span>
-          </Link>
-        </div>
-
-        <nav className="consoleNav" aria-label="Primary sections">
-          {nav.map((item) => (
-            <Link
-              aria-current={active === item.id ? "page" : undefined}
-              className={active === item.id ? "active" : ""}
-              href={item.href}
-              key={item.id}
-            >
-              {item.label}
-            </Link>
-          ))}
-        </nav>
-      </aside>
+      <ConsoleNavigation active={active} groups={navGroups} homeHref={homeHref} />
 
       <div className="consoleFrame">
         <header className={workspaceMode === "feature" ? "commandBar featureScoped" : "commandBar"}>
           <div className="commandContext">
-            <span>{identity}</span>
+            <span>{surfaceLabel}</span>
+            <i aria-hidden="true">/</i>
             <strong>{activeLabel}</strong>
           </div>
           {workspaceMode === "feature" ? null : active === "kpis" ? <span /> : <WorkspaceSelector />}
           <div className="commandIdentity">
-            <Link aria-label={`Account settings for ${identity}`} href="/settings">{identity}</Link>
+            <Link aria-label={`Account settings for ${identity}`} href="/settings">
+              <span>{identity}</span>
+              <strong className="commandAvatar" aria-hidden="true">{initials}</strong>
+            </Link>
           </div>
         </header>
 

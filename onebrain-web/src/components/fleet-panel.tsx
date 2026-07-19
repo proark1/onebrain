@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { MetricStrip, Notice, PageHeader, Panel, StatusBadge, Tabs } from "@/components/admin-ui";
+import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
+import { Notice, PageHeader, Panel, StatusBadge, Tabs } from "@/components/admin-ui";
+import { StatusSummary } from "@/components/operational/status-summary";
 import { Timestamp } from "@/components/operational/timestamp";
 import {
   abortFleetRollout,
@@ -18,11 +19,13 @@ import {
 import type {
   CreateFleetRolloutInput,
   FleetKeyInfo,
+  FleetDeploymentOverview,
   FleetOverview,
   FleetRollout,
   FleetStorageCapacity,
   FleetStorageReport,
 } from "@/lib/onebrain-types";
+import { describeFleetOverview, fleetHealthLabel, fleetHealthTone } from "@/lib/fleet-presentation";
 
 type FleetTab = "overview" | "rollouts" | "keys";
 type StatusTone = "success" | "danger" | "running" | "warning" | "neutral";
@@ -30,18 +33,8 @@ type StatusTone = "success" | "danger" | "running" | "warning" | "neutral";
 const TABS: Array<{ id: FleetTab; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "rollouts", label: "Rollouts" },
-  { id: "keys", label: "Keys" },
+  { id: "keys", label: "Enrollment keys" },
 ];
-
-function healthTone(healthy: boolean | null): "success" | "danger" | "neutral" {
-  if (healthy === null) return "neutral";
-  return healthy ? "success" : "danger";
-}
-
-function healthLabel(healthy: boolean | null): string {
-  if (healthy === null) return "No signal yet";
-  return healthy ? "Healthy" : "Needs attention";
-}
 
 function formatBytes(bytes: number): string {
   if (bytes <= 0) return "0 B";
@@ -64,10 +57,76 @@ function capacityLabel(capacity?: FleetStorageCapacity): string {
 
 function StorageSummary({ storage }: { storage?: FleetStorageReport }) {
   return (
-    <div>
-      <div><span className="muted">Root </span>{capacityLabel(storage?.root)}</div>
-      <div><span className="muted">Data </span>{capacityLabel(storage?.data)}</div>
+    <div className="fleetStorageSummary">
+      <div><span>Root</span><strong>{capacityLabel(storage?.root)}</strong></div>
+      <div><span>Data</span><strong>{capacityLabel(storage?.data)}</strong></div>
     </div>
+  );
+}
+
+function DeploymentRow({ deployment }: { deployment: FleetDeploymentOverview }) {
+  const [expanded, setExpanded] = useState(false);
+  const detailId = useId();
+  const displayedVersion = deployment.reported_version || deployment.current_version || "—";
+  const versionMismatch = Boolean(
+    deployment.reported_version
+    && deployment.current_version
+    && deployment.reported_version !== deployment.current_version,
+  );
+
+  return (
+    <>
+      <tr className="fleetDeploymentRow">
+        <td data-label="Health">
+          <div className="fleetHealthCell">
+            <button
+              aria-controls={detailId}
+              aria-expanded={expanded}
+              aria-label={`${expanded ? "Hide" : "Show"} details for ${deployment.customer_name || deployment.deployment_id}`}
+              className="fleetRowToggle"
+              onClick={() => setExpanded((current) => !current)}
+              type="button"
+            >
+              <span aria-hidden="true">›</span>
+            </button>
+            <StatusBadge tone={fleetHealthTone(deployment.healthy)}>{fleetHealthLabel(deployment.healthy)}</StatusBadge>
+          </div>
+        </td>
+        <td data-label="Deployment">
+          <strong>{deployment.customer_name || deployment.deployment_id}</strong>
+          <small>{deployment.deployment_id}{deployment.is_release_gate ? " · development gate" : ""} · {deployment.release_ring || "no ring"}</small>
+        </td>
+        <td data-label="Release">
+          <strong>{displayedVersion}</strong>
+          <small>{versionMismatch ? `Registry expects ${deployment.current_version}` : deployment.migration_revision || "No migration reported"}</small>
+        </td>
+        <td data-label="Activity">
+          <Timestamp label="Reported" value={deployment.last_reported_at} />
+          <div className="fleetSecondaryTimestamp"><Timestamp label="Received" value={deployment.last_received_at} /></div>
+        </td>
+        <td data-label="Usage">
+          <strong>{deployment.counts?.users ?? "—"} user{deployment.counts?.users === 1 ? "" : "s"}</strong>
+          <StorageSummary storage={deployment.storage} />
+        </td>
+        <td data-label="Alerts">
+          {deployment.open_alerts.length
+            ? <StatusBadge tone="danger">{deployment.open_alerts.length} open</StatusBadge>
+            : <span className="fleetNoAlerts">None</span>}
+        </td>
+      </tr>
+      <tr className="fleetDeploymentDetail" hidden={!expanded} id={detailId}>
+        <td colSpan={6}>
+          <div className="fleetDetailGrid">
+            <div><span>Added</span><Timestamp value={deployment.created_at} /></div>
+            <div><span>Version active since</span><Timestamp value={deployment.current_version_deployed_at} /></div>
+            <div><span>Environment</span><strong>{deployment.environment || deployment.deployment_type || "Not reported"}</strong></div>
+            <div><span>Migration</span><code>{deployment.migration_revision || "Not reported"}</code></div>
+            <div><span>User management</span><strong>{deployment.user_management_v1 ? "Ready" : "Upgrade required"}</strong></div>
+            <div><span>Open alerts</span><strong>{deployment.open_alerts.length ? deployment.open_alerts.join(", ") : "None"}</strong></div>
+          </div>
+        </td>
+      </tr>
+    </>
   );
 }
 
@@ -172,7 +231,12 @@ export function FleetPanel() {
 
   return (
     <div className="adminSurface">
-      <PageHeader eyebrow="Mission Control" title="Fleet" meta={overview ? `${overview.total} deployments` : undefined} />
+      <PageHeader
+        actions={<button className="secondaryButton" type="button" onClick={() => void refresh()}>Refresh data</button>}
+        description="Monitor health, releases, and enrollment from one place."
+        eyebrow="Fleet"
+        title="Deployments"
+      />
 
       {unavailable ? (
         <Notice tone="warning">
@@ -192,44 +256,32 @@ export function FleetPanel() {
       <Tabs<FleetTab> active={tab} items={TABS} label="Fleet sections" onChange={setTab} />
 
       {tab === "overview" && overview ? (
-        <Panel eyebrow="Health" title="Deployments" count={overview.total}>
-          <MetricStrip
-            metrics={[
-              { label: "Total", value: String(overview.total) },
-              { label: "Healthy", value: String(overview.healthy) },
-              { label: "With alerts", value: String(overview.with_open_alerts) },
-            ]}
-          />
-          <Timestamp label="Snapshot generated" value={overview.generated_at} />
+        <>
+          <StatusSummary status={describeFleetOverview(overview)} updatedAt={overview.generated_at} updatedLabel="Snapshot generated">
+            <div className="fleetSummaryCounts" aria-label="Fleet summary counts">
+              <div><strong>{overview.total}</strong><span>Total</span></div>
+              <div><strong>{overview.healthy}</strong><span>Healthy</span></div>
+              <div><strong>{overview.with_open_alerts}</strong><span>Alerts</span></div>
+            </div>
+          </StatusSummary>
+          <Panel title="All deployments" count={overview.total}>
           <div className="tableScroll">
-            <table className="adminTable">
+            <table className="adminTable fleetTable">
               <thead>
                 <tr>
-                  <th>Health</th><th>Customer</th><th>Ring</th><th>Version</th>
-                  <th>Added</th><th>Version active since</th><th>Last report</th><th>Received</th><th>Users</th><th>Storage</th><th>Alerts</th>
+                  <th>Health</th><th>Deployment</th><th>Release</th><th>Activity</th><th>Usage</th><th>Alerts</th>
                 </tr>
               </thead>
               <tbody>
-                {overview.deployments.map((d) => (
-                  <tr key={d.deployment_id}>
-                    <td><StatusBadge tone={healthTone(d.healthy)}>{healthLabel(d.healthy)}</StatusBadge></td>
-                    <td>{d.customer_name || d.deployment_id}{d.is_release_gate ? " · dev gate" : ""}</td>
-                    <td>{d.release_ring}</td>
-                    <td>{d.reported_version || d.current_version || "—"}{d.reported_version && d.current_version && d.reported_version !== d.current_version ? ` (registry ${d.current_version})` : ""}</td>
-                    <td><Timestamp label="Added" value={d.created_at} /></td>
-                    <td><Timestamp label="Active since" value={d.current_version_deployed_at} /></td>
-                    <td><Timestamp label="Reported" value={d.last_reported_at} /></td>
-                    <td><Timestamp label="Received" value={d.last_received_at} /></td>
-                    <td>{d.counts?.users ?? "—"}</td>
-                    <td><StorageSummary storage={d.storage} /></td>
-                    <td>{d.open_alerts.length ? <StatusBadge tone="danger">{d.open_alerts.join(", ")}</StatusBadge> : "—"}</td>
-                  </tr>
-                ))}
+                {overview.deployments.map((deployment) => <DeploymentRow deployment={deployment} key={deployment.deployment_id} />)}
               </tbody>
             </table>
           </div>
-        </Panel>
+          </Panel>
+        </>
       ) : null}
+
+      {tab === "overview" && !overview && !error ? <div className="loadingState" role="status">Loading deployments…</div> : null}
 
       {tab === "rollouts" ? (
         <>

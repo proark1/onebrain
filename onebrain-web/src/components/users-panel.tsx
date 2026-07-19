@@ -193,9 +193,9 @@ export function UsersPanel() {
   return (
     <div className="adminSurface userManagementSurface">
       <PageHeader
+        description="Manage account access and recovery on one customer server at a time."
         eyebrow="Mission Control"
         title="Users"
-        meta="Account access and recovery, one server at a time"
       />
 
       {error ? <Notice tone="error">{error}</Notice> : null}
