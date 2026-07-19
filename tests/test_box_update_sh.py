@@ -473,6 +473,24 @@ def test_current_digest_with_migration_drift_continues_apply(box):
     assert box.state()["outcome"] == "rolled_back"
 
 
+def test_current_digest_without_migration_contract_acknowledges_attempt(box):
+    box.seed_last_applied({"onebrain-api": GOOD_IMG})
+    box.set_serve(signed_serve(
+        migration_from="",
+        migration_to="",
+        attempt_id="roll_no_migration",
+    ))
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.pulled() == []
+    assert " up -d" not in box.stub_log()
+    assert box.state()["outcome"] == "succeeded"
+    assert box.state()["attempt_id"] == "roll_no_migration"
+    assert box.state()["migration_reached"] == ""
+
+
 def test_verify_failure_holds(box):
     box.set_serve(signed_serve(tamper_wrapper=True))
     result = box.run()

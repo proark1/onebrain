@@ -654,7 +654,7 @@ fi
 if [ -n "$NEW_DIGESTS" ] && [ "$NEW_DIGESTS" = "$OLD_DIGESTS" ]; then
   CURRENT_MIGRATION="$(alembic_current 2>/dev/null | tr -d '[:space:]' || true)"
   EXPECTED_MIGRATION="${MIG_TO:-$MIG_FROM}"
-  if [ -n "$EXPECTED_MIGRATION" ] && [ "$CURRENT_MIGRATION" = "$EXPECTED_MIGRATION" ]; then
+  if [ -z "$EXPECTED_MIGRATION" ] || [ "$CURRENT_MIGRATION" = "$EXPECTED_MIGRATION" ]; then
     log "no-op: already at verified digest set and migration"
     "$PYTHON" "$UPDATE_VERIFY_BIN" record-apply <"$ENVELOPE" >>"$LOG" 2>&1 \
       || log "record-apply warned"
