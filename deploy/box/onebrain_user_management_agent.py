@@ -22,6 +22,25 @@ ALLOWED_ACTIONS = {
 }
 
 
+def _load_host_environment(paths=("/opt/onebrain/box.env", "/opt/onebrain/.env")) -> None:
+    values = {}
+    for path in paths:
+        try:
+            lines = Path(path).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key and (key[0].isalpha() or key[0] == "_") and all(
+                char.isalnum() or char == "_" for char in key
+            ):
+                values[key] = value
+    for key, value in values.items():
+        os.environ.setdefault(key, value)
+
+
 def _valid_command(command: dict, deployment_id: str, public_keys: str) -> bool:
     try:
         signature = command["signature"]
@@ -110,6 +129,12 @@ def _run_cli(command: dict, deployment_id: str, public_keys: str) -> dict:
         "compose",
         "--project-name", (os.environ.get("UPDATE_COMPOSE_PROJECT") or "onebrain").strip(),
         "-f", compose_dir + "/docker-compose.yml",
+    ]
+    enabled_profiles = {"onebrain", "assistant", "communication"}
+    for profile in (os.environ.get("UPDATE_PROFILES") or "").split():
+        if profile in enabled_profiles:
+            args.extend(("--profile", profile))
+    args += [
         "exec", "-T",
         "-e", f"ONEBRAIN_MANAGEMENT_DEPLOYMENT_ID={deployment_id}",
         "-e", f"ONEBRAIN_MANAGEMENT_PUBLIC_KEYS={public_keys}",
@@ -177,4 +202,5 @@ def run_once() -> bool:
 
 
 if __name__ == "__main__":
+    _load_host_environment()
     raise SystemExit(0 if run_once() else 1)

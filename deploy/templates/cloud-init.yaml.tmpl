@@ -3,17 +3,10 @@
 # write-files and runcmd markers are filled with operator-controlled / server-minted
 # values only - never an untrusted caller value (injection discipline).
 package_update: true
-package_upgrade: false
-packages:
+packages: [docker.io,docker-compose-v2,python3-cryptography,unattended-upgrades]
   # Ubuntu 24.04's mirror ships Compose V2 as `docker-compose-v2` (NOT Docker's own-repo
   # name `docker-compose-plugin`, which apt can't find here — that install failure left
   # `docker compose` absent and bricked first-boot with `unknown flag: --project-name`).
-  - docker.io
-  - docker-compose-v2
-  - python3
-  - python3-cryptography
-  - unattended-upgrades
-
 write_files:
 {{WRITE_FILES}}
 

@@ -173,3 +173,50 @@ def test_host_agent_rejects_wrong_deployment_and_tampered_command():
     assert module._valid_command(value, "dep-1", signing_public)
     assert not module._valid_command(value, "dep-2", signing_public)
     assert not module._valid_command({**value, "action": "user.delete"}, "dep-1", signing_public)
+
+
+def test_host_agent_enables_configured_compose_profiles(monkeypatch):
+    path = Path(__file__).parents[1] / "deploy" / "box" / "onebrain_user_management_agent.py"
+    spec = importlib.util.spec_from_file_location("onebrain_user_management_agent_profiles", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    captured = {}
+
+    class Completed:
+        returncode = 0
+        stdout = '{"ok":true,"result":{}}'
+
+    def run(args, **kwargs):
+        captured["args"] = args
+        return Completed()
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    monkeypatch.setenv("UPDATE_PROFILES", "onebrain assistant ignored communication")
+    value = module._run_cli({}, "dep", "keys")
+
+    assert value["ok"] is True
+    assert captured["args"][6:12] == [
+        "--profile", "onebrain", "--profile", "assistant", "--profile", "communication",
+    ]
+
+
+def test_host_agent_loads_box_then_secret_environment_without_overriding_process(tmp_path, monkeypatch):
+    path = Path(__file__).parents[1] / "deploy" / "box" / "onebrain_user_management_agent.py"
+    spec = importlib.util.spec_from_file_location("onebrain_user_management_agent_environment", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    box = tmp_path / "box.env"
+    secret = tmp_path / ".env"
+    box.write_text("ONEBRAIN_FLEET_KEY=${ONEBRAIN_FLEET_KEY}\nUPDATE_PROFILES=onebrain assistant\n")
+    secret.write_text("ONEBRAIN_FLEET_KEY=secret-value\n")
+    monkeypatch.setenv("UPDATE_PROFILES", "process-value")
+    monkeypatch.delenv("ONEBRAIN_FLEET_KEY", raising=False)
+
+    module._load_host_environment((box, secret))
+
+    assert module.os.environ["ONEBRAIN_FLEET_KEY"] == "secret-value"
+    assert module.os.environ["UPDATE_PROFILES"] == "process-value"

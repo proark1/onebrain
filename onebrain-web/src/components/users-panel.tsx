@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Notice, PageHeader, Panel, StatusBadge } from "@/components/admin-ui";
 import { Timestamp } from "@/components/operational/timestamp";
 import {
@@ -21,8 +21,14 @@ import type {
   ManagedUserMutationResult,
   UserManagementJob,
 } from "@/lib/onebrain-types";
+import {
+  parseUserManagementState,
+  userManagementState,
+  USER_MANAGEMENT_STATE_KEY,
+} from "@/lib/user-management-pending";
 
 const TERMINAL = new Set(["completed", "failed", "expired"]);
+const POLLING_PAUSED = Symbol("user-management-polling-paused");
 
 const ERROR_COPY: Record<string, string> = {
   capability_unavailable: "This server must be upgraded before MC can manage its users.",
@@ -53,7 +59,33 @@ function wait(delay: number) {
   return new Promise((resolve) => window.setTimeout(resolve, delay));
 }
 
+function readStoredState() {
+  try {
+    return parseUserManagementState(window.sessionStorage.getItem(USER_MANAGEMENT_STATE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+function storeState(deploymentId: string, includeDeleted: boolean, jobId = "") {
+  if (!deploymentId) return;
+  try {
+    window.sessionStorage.setItem(
+      USER_MANAGEMENT_STATE_KEY,
+      JSON.stringify(userManagementState(deploymentId, includeDeleted, jobId)),
+    );
+  } catch {
+    // A blocked session store must not block account recovery.
+  }
+}
+
+function clearStoredJob(jobId: string, deploymentId: string, includeDeleted: boolean) {
+  const current = readStoredState();
+  if (!current || current.job_id === jobId) storeState(deploymentId, includeDeleted);
+}
+
 export function UsersPanel() {
+  const mounted = useRef(true);
   const [deployments, setDeployments] = useState<FleetDeploymentOverview[]>([]);
   const [deploymentId, setDeploymentId] = useState("");
   const [directory, setDirectory] = useState<ManagedUserDirectory | null>(null);
@@ -72,6 +104,11 @@ export function UsersPanel() {
   const busy = pending !== null && !TERMINAL.has(pending.status);
 
   useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  useEffect(() => {
     let active = true;
     getFleetOverview()
       .then((overview) => {
@@ -86,12 +123,88 @@ export function UsersPanel() {
     return () => { active = false; };
   }, []);
 
+  useEffect(() => {
+    const stored = readStoredState();
+    if (!stored) return;
+    const { deployment_id: storedDeploymentId, include_deleted: storedIncludeDeleted, job_id: storedJobId } = stored;
+    let cancelled = false;
+    window.queueMicrotask(() => {
+      if (!cancelled) {
+        setDeploymentId(storedDeploymentId);
+        setIncludeDeleted(storedIncludeDeleted);
+      }
+    });
+    if (!storedJobId) return () => { cancelled = true; };
+    const resumableJobId = storedJobId;
+    let activeJobId = resumableJobId;
+
+    async function poll<T>(created: UserManagementJob<T>) {
+      let job = created;
+      activeJobId = job.id;
+      storeState(job.deployment_id, storedIncludeDeleted, job.id);
+      if (!cancelled) setPending(job);
+      for (let attempt = 0; attempt < 180 && !TERMINAL.has(job.status); attempt += 1) {
+        await wait(1_000);
+        if (cancelled) throw POLLING_PAUSED;
+        job = await getUserManagementJob<T>(job.id);
+        if (cancelled) throw POLLING_PAUSED;
+        setPending(job);
+      }
+      if (!TERMINAL.has(job.status)) throw new Error("The server has not completed this request yet.");
+      return job;
+    }
+
+    async function restore() {
+      try {
+        const job = await poll(await getUserManagementJob(resumableJobId));
+        let finalJobId = job.id;
+        if (job.status !== "completed") throw new Error(job.error_code || "Account request failed.");
+
+        if (job.action === "directory.snapshot") {
+          const result = job.result as UserManagementJob<ManagedUserDirectory>["result"];
+          if (!result?.ok || !result.data) throw new Error(result?.error_code || "Directory refresh failed.");
+          setDirectory(result.data);
+          setDraft((current) => ({ ...current, role_id: current.role_id || result.data?.roles[0]?.id || "" }));
+        } else {
+          if (job.action === "user.create" || job.action === "user.password.reset") {
+            const revealed = await revealManagedUserSecret(job.id);
+            const password = revealed.data?.one_time_password;
+            if (!revealed.ok || !password) throw new Error(revealed.error_code || "One-time password unavailable.");
+            setSecret({ label: "One-time password", value: password });
+          }
+          setNotice("The account request completed while you were away.");
+          const directoryJob = await poll(await refreshManagedUserDirectory(storedDeploymentId, storedIncludeDeleted));
+          finalJobId = directoryJob.id;
+          const result = directoryJob.result;
+          if (directoryJob.status !== "completed" || !result?.ok || !result.data) {
+            throw new Error(directoryJob.error_code || result?.error_code || "Directory refresh failed.");
+          }
+          setDirectory(result.data);
+          setDraft((current) => ({ ...current, role_id: current.role_id || result.data?.roles[0]?.id || "" }));
+        }
+        clearStoredJob(finalJobId, storedDeploymentId, storedIncludeDeleted);
+        setPending(null);
+      } catch (reason) {
+        if (reason === POLLING_PAUSED) return;
+        clearStoredJob(activeJobId, storedDeploymentId, storedIncludeDeleted);
+        setPending(null);
+        setError(errorCopy(reason));
+      }
+    }
+    void restore();
+    return () => { cancelled = true; };
+  }, []);
+
   async function awaitJob<T>(created: UserManagementJob<T>): Promise<UserManagementJob<T>> {
     let job = created;
+    storeState(job.deployment_id, includeDeleted, job.id);
+    if (!mounted.current) throw POLLING_PAUSED;
     setPending(job);
     for (let attempt = 0; attempt < 180 && !TERMINAL.has(job.status); attempt += 1) {
       await wait(1_000);
+      if (!mounted.current) throw POLLING_PAUSED;
       job = await getUserManagementJob<T>(job.id);
+      if (!mounted.current) throw POLLING_PAUSED;
       setPending(job);
     }
     if (!TERMINAL.has(job.status)) throw new Error("The server has not completed this request yet.");
@@ -115,8 +228,12 @@ export function UsersPanel() {
         ...current,
         role_id: current.role_id || job.result?.data?.roles[0]?.id || "",
       }));
+      clearStoredJob(job.id, targetId, showDeleted);
       setPending(null);
     } catch (reason) {
+      if (reason === POLLING_PAUSED) return;
+      const jobId = readStoredState()?.job_id || "";
+      if (jobId) clearStoredJob(jobId, targetId, showDeleted);
       setPending(null);
       setError(errorCopy(reason));
     }
@@ -131,6 +248,10 @@ export function UsersPanel() {
     setDeleteConfirmation("");
     setError("");
     setNotice("");
+    if (value) storeState(value, includeDeleted);
+    else {
+      try { window.sessionStorage.removeItem(USER_MANAGEMENT_STATE_KEY); } catch { /* no-op */ }
+    }
   }
 
   async function runMutation(
@@ -151,9 +272,13 @@ export function UsersPanel() {
         setSecret({ label: revealLabel, value: password });
       }
       setNotice(success);
+      clearStoredJob(job.id, deploymentId, includeDeleted);
       setPending(null);
       await loadDirectory(deploymentId, includeDeleted, true);
     } catch (reason) {
+      if (reason === POLLING_PAUSED) return;
+      const jobId = readStoredState()?.job_id || "";
+      if (jobId) clearStoredJob(jobId, deploymentId, includeDeleted);
       setPending(null);
       setError(errorCopy(reason));
     }
@@ -247,7 +372,10 @@ export function UsersPanel() {
             count={directory?.users.length ?? 0}
             actions={
               <div className="userDirectoryTools">
-                <label><input checked={includeDeleted} type="checkbox" onChange={(event) => setIncludeDeleted(event.target.checked)} /> Include deleted</label>
+                <label><input checked={includeDeleted} type="checkbox" onChange={(event) => {
+                  setIncludeDeleted(event.target.checked);
+                  storeState(deploymentId, event.target.checked, readStoredState()?.job_id || "");
+                }} /> Include deleted</label>
                 <button disabled={busy} type="button" onClick={() => void loadDirectory(deploymentId, includeDeleted)}>
                   {busy ? "Waiting for server…" : directory ? "Refresh" : "Load users"}
                 </button>
