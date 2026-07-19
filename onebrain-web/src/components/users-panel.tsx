@@ -185,7 +185,7 @@ export function UsersPanel() {
         clearStoredJob(finalJobId, storedDeploymentId, storedIncludeDeleted);
         setPending(null);
       } catch (reason) {
-        if (reason === POLLING_PAUSED) return;
+        if (cancelled || reason === POLLING_PAUSED) return;
         clearStoredJob(activeJobId, storedDeploymentId, storedIncludeDeleted);
         setPending(null);
         setError(errorCopy(reason));
@@ -231,7 +231,7 @@ export function UsersPanel() {
       clearStoredJob(job.id, targetId, showDeleted);
       setPending(null);
     } catch (reason) {
-      if (reason === POLLING_PAUSED) return;
+      if (!mounted.current || reason === POLLING_PAUSED) return;
       const jobId = readStoredState()?.job_id || "";
       if (jobId) clearStoredJob(jobId, targetId, showDeleted);
       setPending(null);
@@ -276,7 +276,7 @@ export function UsersPanel() {
       setPending(null);
       await loadDirectory(deploymentId, includeDeleted, true);
     } catch (reason) {
-      if (reason === POLLING_PAUSED) return;
+      if (!mounted.current || reason === POLLING_PAUSED) return;
       const jobId = readStoredState()?.job_id || "";
       if (jobId) clearStoredJob(jobId, deploymentId, includeDeleted);
       setPending(null);

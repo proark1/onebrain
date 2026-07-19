@@ -30,9 +30,13 @@ def _load_host_environment(paths=("/opt/onebrain/box.env", "/opt/onebrain/.env")
         except OSError:
             continue
         for line in lines:
+            line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
+            key, value = key.strip(), value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
             if key and (key[0].isalpha() or key[0] == "_") and all(
                 char.isalnum() or char == "_" for char in key
             ):

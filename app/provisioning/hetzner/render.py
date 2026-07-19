@@ -1072,7 +1072,7 @@ def _asset_archive(entries: list[tuple[str, str, str]]) -> bytes:
             info.uid = info.gid = 0
             info.uname = info.gname = ""
             archive.addfile(info, io.BytesIO(data))
-        payload_end = archive.offset
+        payload_end = buffer.tell()
     # tarfile pads archives to a 10 KiB record. Two zero blocks are the actual
     # end marker; dropping the redundant record padding saves scarce user-data.
     return buffer.getvalue()[:payload_end] + (b"\0" * 1024)

@@ -211,12 +211,19 @@ def test_host_agent_loads_box_then_secret_environment_without_overriding_process
 
     box = tmp_path / "box.env"
     secret = tmp_path / ".env"
-    box.write_text("ONEBRAIN_FLEET_KEY=${ONEBRAIN_FLEET_KEY}\nUPDATE_PROFILES=onebrain assistant\n")
-    secret.write_text("ONEBRAIN_FLEET_KEY=secret-value\n")
+    box.write_text(
+        "ONEBRAIN_FLEET_KEY=${ONEBRAIN_FLEET_KEY}\n"
+        " UPDATE_PROFILES = 'onebrain assistant' \n"
+        " HOST_LABEL = 'dev gate' \n"
+        "INVALID KEY=ignored\n"
+    )
+    secret.write_text(' ONEBRAIN_FLEET_KEY = "secret-value" \n')
     monkeypatch.setenv("UPDATE_PROFILES", "process-value")
     monkeypatch.delenv("ONEBRAIN_FLEET_KEY", raising=False)
+    monkeypatch.delenv("HOST_LABEL", raising=False)
 
     module._load_host_environment((box, secret))
 
     assert module.os.environ["ONEBRAIN_FLEET_KEY"] == "secret-value"
     assert module.os.environ["UPDATE_PROFILES"] == "process-value"
+    assert module.os.environ["HOST_LABEL"] == "dev gate"
