@@ -26,7 +26,6 @@ ENV ONEBRAIN_DATA_DIR=/data \
     TMPDIR=/tmp/onebrain \
     XDG_CACHE_HOME=/tmp/onebrain/cache
 
-VOLUME ["/data"]
 USER onebrain
 EXPOSE 8000
 
