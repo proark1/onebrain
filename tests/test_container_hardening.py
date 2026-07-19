@@ -10,7 +10,7 @@ def test_python_images_have_a_non_root_data_and_temp_contract():
     for name in ("Dockerfile", "Dockerfile.worker"):
         dockerfile = (_ROOT / name).read_text(encoding="utf-8")
         assert "USER onebrain" in dockerfile
-        assert 'VOLUME ["/data"]' not in dockerfile
+        assert "VOLUME" not in dockerfile
         assert "PYTHONDONTWRITEBYTECODE=1" in dockerfile
         assert "TMPDIR=/tmp/onebrain" in dockerfile
         assert "install -d --owner=onebrain --group=onebrain --mode=0750 /data" in dockerfile
