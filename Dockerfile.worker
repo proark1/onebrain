@@ -195,7 +195,6 @@ COPY --from=scanner-validation --chown=root:root \
     /tmp/onebrain-scanner-validation-passed \
     /opt/onebrain/scanner-validation-passed
 
-VOLUME ["/data"]
 USER onebrain
 
 CMD ["python", "-m", "app.deploy.start_worker"]
