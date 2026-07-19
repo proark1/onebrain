@@ -103,7 +103,7 @@ services:
     profiles: [onebrain]
     <<: *x
     restart: unless-stopped
-    tmpfs: ["/tmp:mode=1777,size=640m"]
+    tmpfs: ["/tmp:mode=1777,size=640m", "/tmp/onebrain-scanner:uid=10001,mode=700,size=512m"]
     env_file:
       - env/onebrain-workers.env
     volumes:
@@ -129,6 +129,7 @@ services:
     image: ghcr.io/proark1/communication-api@sha256:0000000000000000000000000000000000000000000000000000000000000004
     profiles: [communication]
     restart: unless-stopped
+    command: ["pnpm", "-F", "@assaddar/api", "start"]
     env_file:
       - env/communication-api.env
     expose:

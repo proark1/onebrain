@@ -60,6 +60,16 @@ PRODUCTS = ("onebrain", "assistant", "communication")
 # module_id -> the product profile it belongs to.
 _PRODUCT_OF = {m: ("onebrain" if m.startswith("onebrain") else m.split("-", 1)[0]) for m in MODULE_ORDER}
 # product -> (migrate service base module image, migrate command, db name).
+_ASSISTANT_SQL_MIGRATE = (
+    "import glob,os,psycopg as p;"
+    "c=p.connect(os.getenv('DATABASE_URL'));"
+    "c.execute('create table if not exists m(n text primary key)');"
+    "fs=sorted(glob.glob('/app/services/assistant-runtime/migrations/*.sql'));assert fs;"
+    "[(r:=c.execute('insert into m values(%s) on conflict do nothing',(f,))).rowcount"
+    " and(c.execute(open(f).read(),prepare=0),c.commit()) for f in fs]"
+)
+
+
 _MIGRATE = {
     # Drive malware revision 0033 is intentionally schema-only.  The one-shot
     # maintenance container must run Alembic and the bounded activation before
@@ -70,7 +80,18 @@ _MIGRATE = {
         "onebrain",
     ),
     "communication": ("communication-api", ["pnpm", "db:migrate"], "communication"),
-    "assistant": ("assistant-service", ["alembic", "upgrade", "head"], "assistant"),
+    "assistant": (
+        "assistant-service",
+        ["python", "-c", _ASSISTANT_SQL_MIGRATE],
+        "assistant",
+    ),
+}
+_MODULE_COMMAND = {
+    # The Communication image's generic launcher is Railway-oriented and runs
+    # database migrations before starting the API. Box deployments already
+    # have a dedicated owner-credential migration service, so start the API
+    # directly and keep its runtime database role DML-only.
+    "communication-api": ["pnpm", "-F", "@assaddar/api", "start"],
 }
 _DB_OF = {"onebrain": "onebrain", "assistant": "assistant", "communication": "communication"}
 _PG_USER = "onebrain"
@@ -94,7 +115,7 @@ _API_EDGE_ALIAS = "api-edge"
 # general asset archive and bind-mounted read-only only into that container.
 _OPERATOR_TLS_HOST_DIR = "/opt/onebrain/broker-tls"
 _OPERATOR_TLS_CONTAINER_DIR = "/run/onebrain/broker-tls"
-_BOOTSTRAP_ASSET_B85 = "/root/ob.b85"
+_BOOTSTRAP_ASSET_B85 = "/o"
 _MALWARE_DEFINITION_CACHE_DIR = "/var/lib/onebrain/clamav"
 _MALWARE_DEFINITION_TMPFILES = (
     f"d {_MALWARE_DEFINITION_CACHE_DIR} 0700 10001 10001 -\n"
@@ -431,6 +452,7 @@ _ONEBRAIN_WORKER_RUNTIME_TMPFS = (
     # Archive inspection is capped at 512 MiB; leave bounded headroom for the
     # scanner subprocess and keep all scratch data memory-backed.
     "/tmp:mode=1777,size=640m",
+    "/tmp/onebrain-scanner:uid=10001,mode=700,size=512m",
 )
 _ONEBRAIN_RUNTIME_CAP_DROP = ("ALL",)
 _ONEBRAIN_RUNTIME_SECURITY_OPT = ("no-new-privileges:true",)
@@ -608,6 +630,7 @@ def render_compose(inp: BoxRenderInputs) -> str:
                 module_id,
                 image=inp.images[module_id],
                 profiles=[product],
+                command=_MODULE_COMMAND.get(module_id),
                 env_file=f"env/{module_id}.env",
                 expose=expose,
                 volumes=volumes,
@@ -739,12 +762,23 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             (refs.space_id_env, "${" + refs.communication_space_id_env + "}"),
         ]
         if module_id == "communication-api":
-            pairs += [("ONEBRAIN_ACCOUNT_ID", inp.account_id)]
+            pairs += [
+                ("ONEBRAIN_ACCOUNT_ID", inp.account_id),
+                ("ADMIN_API_TOKEN", "${ONEBRAIN_SERVICE_KEY}"),
+                ("META_VERIFY_TOKEN", "${ONEBRAIN_SERVICE_KEY}"),
+                ("META_APP_SECRET", "${ONEBRAIN_SERVICE_KEY}"),
+            ]
         pairs += [("DATABASE_URL", _role_db_url(
             inp.postgres_communication_role, refs.communication_db_password_env, "communication")),
                   ("REDIS_URL", _redis_url(refs.redis_password_env))]
     if module_id == "communication-voice":
-        pairs += [("DATABASE_URL", _role_db_url(
+        pairs += [
+                  # The eight-service box has no separate SIP-edge secret in
+                  # the legacy bundle contract. Use the strong, per-deployment
+                  # Communication credential as the product-scoped HMAC key;
+                  # never leave the production voice endpoint unauthenticated.
+                  ("VOICE_EDGE_SECRET", "${ONEBRAIN_SERVICE_KEY}"),
+                  ("DATABASE_URL", _role_db_url(
             inp.postgres_communication_role, refs.communication_db_password_env, "communication")),
                   ("REDIS_URL", _redis_url(refs.redis_password_env))]
     if module_id == "communication-widget":
@@ -1038,7 +1072,10 @@ def _asset_archive(entries: list[tuple[str, str, str]]) -> bytes:
             info.uid = info.gid = 0
             info.uname = info.gname = ""
             archive.addfile(info, io.BytesIO(data))
-    return buffer.getvalue()
+        payload_end = buffer.tell()
+    # tarfile pads archives to a 10 KiB record. Two zero blocks are the actual
+    # end marker; dropping the redundant record padding saves scarce user-data.
+    return buffer.getvalue()[:payload_end] + (b"\0" * 1024)
 
 
 # The ordinary source files deliberately keep their operational comments: they are
@@ -1429,12 +1466,12 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         ("/opt/onebrain/onebrain-gate-agent.sh", _read_box_file("onebrain-gate-agent.sh"), "0755"),
         ("/opt/onebrain/onebrain_box_verify.py", _read_box_file("onebrain_box_verify.py"), "0644"),
         ("/opt/onebrain/onebrain-data-volume.sh", _read_box_file("onebrain-data-volume.sh"), "0755"),
-        ("/opt/onebrain/onebrain-host-maintenance.sh", _read_box_file("onebrain-host-maintenance.sh"), "0755"),
-        ("/opt/onebrain/onebrain-postgres-collation.sh", _read_box_file("onebrain-postgres-collation.sh"), "0755"),
         ("/etc/systemd/system/onebrain-data-volume.service", _read_box_file("onebrain-data-volume.service"), "0644"),
         ("/etc/systemd/system/onebrain-update.service", _read_box_file("onebrain-update.service"), "0644"),
         ("/etc/systemd/system/onebrain-update.timer", _read_box_file("onebrain-update.timer"), "0644"),
-        ("/etc/systemd/system/onebrain-host-maintenance.service", _read_box_file("onebrain-host-maintenance.service"), "0644"),
+        ("/etc/systemd/system/onebrain-host-maintenance.service",
+         _read_box_file("onebrain-host-maintenance.service").replace(
+             "{{COMPOSE_PROJECT}}", inp.compose_project), "0644"),
         ("/etc/systemd/system/onebrain-host-maintenance.timer", _read_box_file("onebrain-host-maintenance.timer"), "0644"),
         ("/etc/systemd/system/onebrain-metadata-drop.service", _read_box_file("onebrain-metadata-drop.service"), "0644"),
         ("/etc/tmpfiles.d/onebrain-malware.conf", _MALWARE_DEFINITION_TMPFILES, "0644"),
@@ -1446,6 +1483,8 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         assets.extend([
             ("/opt/onebrain/onebrain_bootstrap.sh", _read_box_file("onebrain_bootstrap.sh"), "0755"),
             ("/opt/onebrain/onebrain_gate_report.py", _read_box_file("onebrain_gate_report.py"), "0755"),
+            ("/etc/systemd/system/onebrain-u.service",
+             _read_box_file("onebrain-u.service"), "0644"),
             ("/etc/systemd/system/onebrain-drive-backup.service",
              _read_box_file("onebrain-drive-backup.service").replace(
                  "{{COMPOSE_PROJECT}}", inp.compose_project), "0644"),
@@ -1568,9 +1607,15 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         *(["bash /opt/onebrain/onebrain_bootstrap.sh || true"] if inp.role != "operator" else []),
         f"{compose_cmd} pull",
         f"{compose_cmd} up -d",
+        f"{compose_cmd} cp onebrain-api:/app/deploy/box/update.sh "
+        "/opt/onebrain/update.sh && chmod 755 /opt/onebrain/update.sh",
+        *([f"{compose_cmd} cp onebrain-api:/app/deploy/box/onebrain_user_management_agent.py "
+           "/opt/onebrain/u && chmod 700 /opt/onebrain/u"]
+          if inp.role != "operator" else []),
         "systemctl enable --now onebrain-update.timer",
         "systemctl enable --now onebrain-host-maintenance.timer",
-        *(["systemctl start onebrain-drive-erasure-ledger.service",
+        *(["systemctl enable --now onebrain-u.service",
+           "systemctl start onebrain-drive-erasure-ledger.service",
            "systemctl enable --now onebrain-drive-erasure-ledger.timer",
            "systemctl enable --now onebrain-drive-backup.timer"]
           if inp.role != "operator" else []),
@@ -1596,11 +1641,11 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
     write_files = "".join(entries).rstrip("\n")
 
     runcmd_items = [
-        "python3 -c 'import base64,sys;sys.stdout.buffer.write(base64.b85decode(open(0,\"rb\").read().strip()))' "
-        f"<{_BOOTSTRAP_ASSET_B85} | tar -xJf - -C / && rm -f {_BOOTSTRAP_ASSET_B85}",
-        "bash /opt/onebrain/onebrain-firstboot.sh",
+        "python3 -c'import base64 as b;open(1,\"wb\").write(b.b85decode(open(0,\"rb\").read()[:-1]))'"
+        f"<{_BOOTSTRAP_ASSET_B85}|tar -xJf- -C/",
+        "/opt/onebrain/onebrain-firstboot.sh",
     ]
-    runcmd = "\n".join("  - " + _yaml_sq(item) for item in runcmd_items)
+    runcmd = "\n".join(" - " + _yaml_sq(item) for item in runcmd_items)
 
     # Keep the reviewed template documented in source, but omit non-functional
     # YAML comments from the submitted user-data. ``#cloud-config`` is the

@@ -96,7 +96,7 @@ _GZB64_ENTRY = re.compile(
 )
 
 _XZB85_ENTRY = re.compile(
-    r"^  - path: /root/ob\.b85\n"
+    r"^  - path: /o\n"
     r"    permissions: '(?P<perm>[0-7]+)'\n"
     r"    content: \|\n"
     r"      (?P<blob>\S+)\n",
@@ -234,7 +234,11 @@ def test_compose_onebrain_only():
     assert compose.count(
         "- /var/lib/onebrain/clamav:/var/lib/onebrain/clamav"
     ) == 1
-    assert 'tmpfs: ["/tmp:mode=1777,size=640m"]' in compose
+    assert (
+        'tmpfs: ["/tmp:mode=1777,size=640m", '
+        '"/tmp/onebrain-scanner:uid=10001,mode=700,size=512m"]'
+        in compose
+    )
     assert "x-x: &x {read_only: true" in compose
     assert 'tmpfs: ["/tmp:mode=1777,size=64m", "/app/.next/cache:mode=1777,size=64m"]' in compose
     assert "edge: {ipv4_address: 172.30.0.2}" in compose
@@ -263,6 +267,7 @@ def test_compose_with_communication():
     compose = render_compose(_inputs(modules))
     _assert_golden("compose_communication.yml", compose)
     assert "communication-migrate" in _service_names(compose)
+    assert 'command: ["pnpm", "-F", "@assaddar/api", "start"]' in compose
     assert 'command: ["pnpm", "db:migrate"]' in compose
     for port in ("4000", "5174", "4100", "4200"):
         assert port in compose
@@ -273,6 +278,8 @@ def test_compose_with_assistant():
     compose = render_compose(_inputs(modules))
     _assert_golden("compose_assistant.yml", compose)
     assert "assistant-migrate" in _service_names(compose)
+    assert 'command: ["python", "-c", "import glob' in compose
+    assert "create table if not exists m" in compose
     # assistant-service depends on redis (service_healthy)
     assert "      redis:\n        condition: service_healthy" in compose
 
@@ -327,6 +334,12 @@ def test_env_files_are_per_service_and_cover_requirements():
     assert "ONEBRAIN_SERVICE_KEY=" in comm and "ONEBRAIN_SPACE_ID=" in comm   # via MODULE_ENV_REQUIREMENTS
     assert "ONEBRAIN_SERVICE_KEY=${ONEBRAIN_COMMUNICATION_SERVICE_KEY}" in comm
     assert "ONEBRAIN_SPACE_ID=${ONEBRAIN_COMMUNICATION_SPACE_ID}" in comm
+    assert "ADMIN_API_TOKEN=${ONEBRAIN_SERVICE_KEY}" in comm
+    assert "META_VERIFY_TOKEN=${ONEBRAIN_SERVICE_KEY}" in comm
+    assert "META_APP_SECRET=${ONEBRAIN_SERVICE_KEY}" in comm
+    assert "VOICE_EDGE_SECRET=${ONEBRAIN_SERVICE_KEY}" in env[
+        "env/communication-voice.env"
+    ]
     assistant = env["env/assistant-service.env"]
     assert "ONEBRAIN_SERVICE_KEY=${ONEBRAIN_ASSISTANT_SERVICE_KEY}" in assistant
     api = env["env/onebrain-api.env"]
@@ -622,10 +635,10 @@ def test_initial_release_descriptor_is_metadata_only_and_complete():
 # --- cloud-init --------------------------------------------------------------
 def test_cloud_init_embeds_all_artifacts_and_egress_block():
     ci = render_cloud_init(_inputs(_ALL))
-    assert "\n  - python3\n" in ci  # Base85 archive decoder is stdlib Python.
-    assert "- python3-cryptography" in ci
+    assert "python3 -c" in ci  # Base85 archive decoder is stdlib Python.
+    assert "python3-cryptography" in ci
     wf = _write_files_section(ci)
-    assert "- path: /root/ob.b85" in wf
+    assert "- path: /o" in wf
     assets = _asset_entries(ci)
     for required in (
         "/opt/onebrain/docker-compose.yml", "/opt/onebrain/Caddyfile", "/opt/onebrain/box.env",
@@ -640,6 +653,7 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
         "/etc/systemd/system/onebrain-drive-erasure-ledger.service",
         "/etc/systemd/system/onebrain-drive-erasure-ledger.timer",
         "/etc/systemd/system/onebrain-update.service", "/etc/systemd/system/onebrain-update.timer",
+        "/etc/systemd/system/onebrain-u.service",
         "/etc/tmpfiles.d/onebrain-malware.conf",
     ):
         assert required in assets
@@ -662,9 +676,14 @@ def test_cloud_init_embeds_all_artifacts_and_egress_block():
     assert "ONEBRAIN_RUN_ID=prun_fixture" in assets["/opt/onebrain/box.env"][1]
     assert "{run_id}" not in callback
     assert assets["/opt/onebrain/onebrain_gate_report.py"][0] == "0755"
-    assert "base64.b85decode" in _runcmd_section(ci)
-    assert "tar -xJf - -C /" in _runcmd_section(ci)
-    assert "bash /opt/onebrain/onebrain-firstboot.sh" in _runcmd_section(ci)
+    assert "/opt/onebrain/u" in assets[
+        "/etc/systemd/system/onebrain-u.service"
+    ][1]
+    assert "Restart=always" in assets["/etc/systemd/system/onebrain-u.service"][1]
+    assert "RestartSec=30" in assets["/etc/systemd/system/onebrain-u.service"][1]
+    assert "b.b85decode" in _runcmd_section(ci)
+    assert "tar -xJf- -C/" in _runcmd_section(ci)
+    assert "/opt/onebrain/onebrain-firstboot.sh" in _runcmd_section(ci)
     assert (
         assets["/etc/tmpfiles.d/onebrain-malware.conf"][1]
         == "d /var/lib/onebrain/clamav 0700 10001 10001 -\n"
@@ -678,10 +697,8 @@ def test_cloud_init_installs_volume_contract_and_safe_host_maintenance():
     for path, perm in (
         ("/opt/onebrain/onebrain-data-volume.sh", "0755"),
         ("/etc/systemd/system/onebrain-data-volume.service", "0644"),
-        ("/opt/onebrain/onebrain-host-maintenance.sh", "0755"),
         ("/etc/systemd/system/onebrain-host-maintenance.service", "0644"),
         ("/etc/systemd/system/onebrain-host-maintenance.timer", "0644"),
-        ("/opt/onebrain/onebrain-postgres-collation.sh", "0755"),
     ):
         assert assets[path][0] == perm
 
@@ -692,11 +709,12 @@ def test_cloud_init_installs_volume_contract_and_safe_host_maintenance():
     assert "User=root" in maintenance_unit
     assert "Nice=19" in maintenance_unit
     assert "IOSchedulingClass=idle" in maintenance_unit
-    maintenance = assets["/opt/onebrain/onebrain-host-maintenance.sh"][1]
-    assert "images.override.yml" in maintenance
-    assert "images.override.prev.yml" in maintenance
-    assert "last_applied.json" in maintenance
-    assert "docker image prune" not in maintenance
+    assert "{{COMPOSE_PROJECT}}" not in maintenance_unit
+    assert "--project-name onebrain-dep_a" in maintenance_unit
+    assert "onebrain-api:/app/deploy/box/onebrain-host-maintenance.sh" in maintenance_unit
+    assert "onebrain-api:/app/deploy/box/onebrain-postgres-collation.sh" in maintenance_unit
+    assert "/opt/onebrain/onebrain-host-maintenance.sh" not in assets
+    assert "/opt/onebrain/onebrain-postgres-collation.sh" not in assets
 
     first_boot = _first_boot_section(ci)
     stop_docker = first_boot.index("systemctl stop docker.service docker.socket")
@@ -708,6 +726,17 @@ def test_cloud_init_installs_volume_contract_and_safe_host_maintenance():
     assert stop_docker < volume_setup < maintenance_dir < volume_enable < docker_enable < compose_up
     assert "chown -Rh 10001:10001 /mnt/onebrain-data" not in first_boot
     assert "systemctl enable --now onebrain-host-maintenance.timer" in first_boot
+    assert "systemctl enable --now onebrain-u.service" in first_boot
+    assert (
+        "cp onebrain-api:/app/deploy/box/update.sh /opt/onebrain/update.sh"
+        in first_boot
+    )
+    assert "chmod 755 /opt/onebrain/update.sh" in first_boot
+    assert (
+        "cp onebrain-api:/app/deploy/box/onebrain_user_management_agent.py "
+        "/opt/onebrain/u"
+    ) in first_boot
+    assert "chmod 700 /opt/onebrain/u" in first_boot
 
 
 def test_customer_drive_volume_is_persistent_verified_and_ordered_before_docker():
@@ -913,13 +942,11 @@ def test_compact_host_assets_extract_as_valid_executable_source():
         "/opt/onebrain/onebrain_gate_report.py": "onebrain_gate_report.py",
         "/opt/onebrain/onebrain_box_verify.py": "onebrain_box_verify.py",
         "/opt/onebrain/onebrain-data-volume.sh": "onebrain-data-volume.sh",
-        "/opt/onebrain/onebrain-host-maintenance.sh": "onebrain-host-maintenance.sh",
-        "/opt/onebrain/onebrain-postgres-collation.sh": "onebrain-postgres-collation.sh",
         "/opt/onebrain/onebrain_bootstrap.sh": "onebrain_bootstrap.sh",
         "/etc/systemd/system/onebrain-data-volume.service": "onebrain-data-volume.service",
         "/etc/systemd/system/onebrain-update.service": "onebrain-update.service",
         "/etc/systemd/system/onebrain-update.timer": "onebrain-update.timer",
-        "/etc/systemd/system/onebrain-host-maintenance.service": "onebrain-host-maintenance.service",
+        "/etc/systemd/system/onebrain-u.service": "onebrain-u.service",
         "/etc/systemd/system/onebrain-host-maintenance.timer": "onebrain-host-maintenance.timer",
         "/etc/systemd/system/onebrain-metadata-drop.service": "onebrain-metadata-drop.service",
     }
@@ -927,7 +954,17 @@ def test_compact_host_assets_extract_as_valid_executable_source():
         source = R._read_box_file(filename)
         assert assets[path][1] == R._compact_host_asset(path, source)
 
-    for path in ("/opt/onebrain/onebrain_gate_report.py", "/opt/onebrain/onebrain_box_verify.py"):
+    maintenance_unit = R._read_box_file("onebrain-host-maintenance.service").replace(
+        "{{COMPOSE_PROJECT}}", "onebrain-dep_a"
+    )
+    assert assets["/etc/systemd/system/onebrain-host-maintenance.service"][1] == R._compact_host_asset(
+        "/etc/systemd/system/onebrain-host-maintenance.service", maintenance_unit
+    )
+
+    for path in (
+        "/opt/onebrain/onebrain_gate_report.py",
+        "/opt/onebrain/onebrain_box_verify.py",
+    ):
         compile(assets[path][1], path, "exec")
 
     bash = _find_usable_bash()

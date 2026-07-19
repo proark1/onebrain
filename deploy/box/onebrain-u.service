@@ -1,0 +1,7 @@
+[Service]
+ExecStart=/opt/onebrain/u
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
