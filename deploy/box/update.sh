@@ -652,8 +652,17 @@ if [ -f "$LAST_APPLIED" ]; then
   OLD_DIGESTS="$(new_digest_set "$LAST_APPLIED")"
 fi
 if [ -n "$NEW_DIGESTS" ] && [ "$NEW_DIGESTS" = "$OLD_DIGESTS" ]; then
-  log "no-op: already at verified digest set"
-  exit 0
+  CURRENT_MIGRATION="$(alembic_current 2>/dev/null | tr -d '[:space:]' || true)"
+  EXPECTED_MIGRATION="${MIG_TO:-$MIG_FROM}"
+  if [ -n "$EXPECTED_MIGRATION" ] && [ "$CURRENT_MIGRATION" = "$EXPECTED_MIGRATION" ]; then
+    log "no-op: already at verified digest set and migration"
+    "$PYTHON" "$UPDATE_VERIFY_BIN" record-apply <"$ENVELOPE" >>"$LOG" 2>&1 \
+      || log "record-apply warned"
+    cp -f "$TARGET" "$LAST_APPLIED"
+    write_state "succeeded" "$CURRENT_MIGRATION" "" "" ""
+    exit 0
+  fi
+  log "digest set is current but migration is not; continuing apply"
 fi
 
 # The gate agent refreshes the re-readable bundle before launching this script.

@@ -433,6 +433,46 @@ def test_legacy_last_applied_images_shape_does_not_kill_update_agent(box, images
     assert box.state()["outcome"] == "succeeded"
 
 
+def test_current_digest_and_migration_acknowledge_exact_attempt_without_restart(box):
+    box.seed_last_applied({"onebrain-api": GOOD_IMG})
+    box.set_alembic_current("0020")
+    box.set_serve(signed_serve(attempt_id="roll_retry"))
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.pulled() == []
+    assert " up -d" not in box.stub_log()
+    state = box.state()
+    assert state["ts"]
+    assert {key: value for key, value in state.items() if key != "ts"} == {
+        "last_target_version": "2026.7.2",
+        "outcome": "succeeded",
+        "migration_reached": "0020",
+        "attempt_id": "roll_retry",
+        "backup_status": "",
+        "backup_ts": "",
+        "backup_manifest": "",
+    }
+    last_applied = json.loads(
+        (box.data / "onebrain_update" / "last_applied.json").read_text(encoding="utf-8")
+    )
+    assert last_applied["version"] == "2026.7.2"
+    assert last_applied["images"] == {"onebrain-api": GOOD_IMG}
+
+
+def test_current_digest_with_migration_drift_continues_apply(box):
+    box.seed_last_applied({"onebrain-api": GOOD_IMG})
+    box.set_alembic_current("0020")
+    box.set_serve(signed_serve(migration_from="0020", migration_to="0021"))
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.pulled() == [GOOD_IMG]
+    assert box.state()["outcome"] == "rolled_back"
+
+
 def test_verify_failure_holds(box):
     box.set_serve(signed_serve(tamper_wrapper=True))
     result = box.run()
