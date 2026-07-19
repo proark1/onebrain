@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 
 
 DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS = (
@@ -30,6 +30,37 @@ DEVELOPMENT_GATE_MODULE_IDS = frozenset({
 CURRENT_MODULE_SET_INVALID = "development_gate_current_module_set_invalid"
 LEGACY_CORE_GATE_REPLACEMENT_REQUIRED = "development_gate_replacement_required"
 TARGET_MODULE_SET_INVALID = "development_gate_target_module_set_invalid"
+
+
+def is_current_replacement_bootstrap_failure(
+    promotion,
+    events: Sequence,
+    *,
+    gate_deployment_id: str,
+) -> bool:
+    """Return whether the current failure authorizes replacement provisioning.
+
+    Promotion-event stores return events in ascending creation order. Requiring
+    the final event prevents an older replacement failure from surviving a later
+    retry that failed for a different reason.
+    """
+    if (
+        not gate_deployment_id
+        or promotion is None
+        or promotion.state != "dev_failed"
+        or promotion.gate_deployment_id != gate_deployment_id
+        or promotion.failure_reason != "dev_preflight_failed"
+        or not events
+    ):
+        return False
+    latest = events[-1]
+    return bool(
+        latest.release_version == promotion.release_version
+        and latest.action == "dev_preflight_failed"
+        and latest.from_state == "dev_deploying"
+        and latest.to_state == "dev_failed"
+        and latest.note == LEGACY_CORE_GATE_REPLACEMENT_REQUIRED
+    )
 
 
 def validate_module_transition(

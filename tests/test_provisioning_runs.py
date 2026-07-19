@@ -16,6 +16,7 @@ from app.provisioning.runs import (
     OneTimeSecretCipher,
     OneTimeSecretEnvelope,
     ProvisioningRun,
+    ProvisioningOperatorAccessError,
     create_run,
 )
 
@@ -194,6 +195,43 @@ def _bare_postgres_provisioning_store():
 
     # Skip __init__ (DSN + schema validation) — the mappers are pure.
     return object.__new__(PostgresProvisioningRunStore)
+
+
+def test_postgres_provisioning_store_requires_explicit_operator_dsn():
+    store = _bare_postgres_provisioning_store()
+    connected = []
+    store._psycopg = SimpleNamespace(connect=lambda dsn: connected.append(dsn) or dsn)
+    store._operator_dsn = ""
+
+    with pytest.raises(ProvisioningOperatorAccessError, match="OPERATOR_DATABASE_URL"):
+        store._conn()
+
+    store._operator_dsn = "postgresql://operator"
+    assert store._conn() == "postgresql://operator"
+    assert connected == ["postgresql://operator"]
+
+
+def test_provisioning_factory_passes_explicit_operator_dsn(monkeypatch):
+    import app.provisioning.factory as provisioning_factory
+    import app.provisioning.runs as provisioning_runs
+
+    captured = {}
+
+    class FakeStore:
+        def __init__(self, *, operator_dsn):
+            captured.update(operator_dsn=operator_dsn)
+
+    monkeypatch.setattr(provisioning_runs, "PostgresProvisioningRunStore", FakeStore)
+    settings = SimpleNamespace(
+        vector_store="pgvector",
+        pg_operator_database_url="postgresql://operator",
+    )
+
+    provisioning_factory.build_provisioning_run_store(settings)
+
+    assert captured == {
+        "operator_dsn": "postgresql://operator",
+    }
 
 
 def test_postgres_secret_bundle_and_token_mappers_positional():

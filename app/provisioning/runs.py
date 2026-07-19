@@ -48,6 +48,10 @@ STATUS_RANK = {
 }
 
 
+class ProvisioningOperatorAccessError(RuntimeError):
+    """Raised when Mission Control provisioning lacks its privileged DB role."""
+
+
 @dataclass(frozen=True)
 class ProvisioningRun:
     id: str
@@ -460,15 +464,19 @@ class MemoryProvisioningRunStore:
 
 
 class PostgresProvisioningRunStore:
-    def __init__(self, dsn: str):
+    def __init__(self, *, operator_dsn: str):
         import psycopg
 
         self._psycopg = psycopg
-        self._dsn = dsn
+        self._operator_dsn = operator_dsn.strip()
         self._validate_schema()
 
     def _conn(self):
-        return self._psycopg.connect(self._dsn)
+        if not self._operator_dsn:
+            raise ProvisioningOperatorAccessError(
+                "Provisioning state requires ONEBRAIN_OPERATOR_DATABASE_URL."
+            )
+        return self._psycopg.connect(self._operator_dsn)
 
     def _validate_schema(self) -> None:
         with self._conn() as conn:
@@ -894,7 +902,7 @@ def apply_callback(
                 plaintext=callback.bootstrap_password,
             )
             bootstrap_secret_id = store.create_secret(envelope).id
-        except Exception as exc:
+        except Exception:
             status = STATUS_FAILED
             failure_reason = "bootstrap_secret_encryption_failed"
             bootstrap_secret_id = ""
