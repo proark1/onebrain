@@ -155,6 +155,7 @@ export function UsersPanel() {
     }
 
     async function restore() {
+      let preserveStoredJob = false;
       try {
         const job = await poll(await getUserManagementJob(resumableJobId));
         let finalJobId = job.id;
@@ -167,10 +168,15 @@ export function UsersPanel() {
           setDraft((current) => ({ ...current, role_id: current.role_id || result.data?.roles[0]?.id || "" }));
         } else {
           if (job.action === "user.create" || job.action === "user.password.reset") {
+            preserveStoredJob = true;
             const revealed = await revealManagedUserSecret(job.id);
             const password = revealed.data?.one_time_password;
-            if (!revealed.ok || !password) throw new Error(revealed.error_code || "One-time password unavailable.");
+            if (!revealed.ok || !password) {
+              if (revealed.error_code === "secret_already_consumed") preserveStoredJob = false;
+              throw new Error(revealed.error_code || "One-time password unavailable.");
+            }
             setSecret({ label: "One-time password", value: password });
+            preserveStoredJob = false;
           }
           setNotice("The account request completed while you were away.");
           const directoryJob = await poll(await refreshManagedUserDirectory(storedDeploymentId, storedIncludeDeleted));
@@ -186,7 +192,7 @@ export function UsersPanel() {
         setPending(null);
       } catch (reason) {
         if (cancelled || reason === POLLING_PAUSED) return;
-        clearStoredJob(activeJobId, storedDeploymentId, storedIncludeDeleted);
+        if (!preserveStoredJob) clearStoredJob(activeJobId, storedDeploymentId, storedIncludeDeleted);
         setPending(null);
         setError(errorCopy(reason));
       }
@@ -259,6 +265,7 @@ export function UsersPanel() {
     success: string,
     revealLabel = "",
   ) {
+    let preserveStoredJob = false;
     setError("");
     setNotice("");
     setSecret(null);
@@ -266,10 +273,15 @@ export function UsersPanel() {
       const job = await awaitJob(await start());
       if (job.status !== "completed") throw new Error(job.error_code || "Account change failed.");
       if (revealLabel) {
+        preserveStoredJob = true;
         const revealed = await revealManagedUserSecret(job.id);
         const password = revealed.data?.one_time_password;
-        if (!revealed.ok || !password) throw new Error(revealed.error_code || "One-time password unavailable.");
+        if (!revealed.ok || !password) {
+          if (revealed.error_code === "secret_already_consumed") preserveStoredJob = false;
+          throw new Error(revealed.error_code || "One-time password unavailable.");
+        }
         setSecret({ label: revealLabel, value: password });
+        preserveStoredJob = false;
       }
       setNotice(success);
       clearStoredJob(job.id, deploymentId, includeDeleted);
@@ -278,7 +290,7 @@ export function UsersPanel() {
     } catch (reason) {
       if (!mounted.current || reason === POLLING_PAUSED) return;
       const jobId = readStoredState()?.job_id || "";
-      if (jobId) clearStoredJob(jobId, deploymentId, includeDeleted);
+      if (jobId && !preserveStoredJob) clearStoredJob(jobId, deploymentId, includeDeleted);
       setPending(null);
       setError(errorCopy(reason));
     }
