@@ -1462,7 +1462,6 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         ("/opt/onebrain/installed-release.json", _initial_release_descriptor(inp), "0644"),
         ("/opt/onebrain/postgres-init.sh", _read_box_file("postgres-init.sh"), "0755"),
         ("/opt/onebrain/onebrain_dotenv.sh", _read_box_file("onebrain_dotenv.sh"), "0644"),
-        ("/opt/onebrain/update.sh", _read_box_file("update.sh"), "0755"),
         ("/opt/onebrain/onebrain-gate-agent.sh", _read_box_file("onebrain-gate-agent.sh"), "0755"),
         ("/opt/onebrain/onebrain_box_verify.py", _read_box_file("onebrain_box_verify.py"), "0644"),
         ("/opt/onebrain/onebrain-data-volume.sh", _read_box_file("onebrain-data-volume.sh"), "0755"),
@@ -1607,6 +1606,8 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
         *(["bash /opt/onebrain/onebrain_bootstrap.sh || true"] if inp.role != "operator" else []),
         f"{compose_cmd} pull",
         f"{compose_cmd} up -d",
+        f"{compose_cmd} cp onebrain-api:/app/deploy/box/update.sh "
+        "/opt/onebrain/update.sh && chmod 755 /opt/onebrain/update.sh",
         *([f"{compose_cmd} cp onebrain-api:/app/deploy/box/onebrain_user_management_agent.py "
            "/opt/onebrain/u && chmod 700 /opt/onebrain/u"]
           if inp.role != "operator" else []),
