@@ -64,6 +64,10 @@ EPOCH_FILE="${WORK}/secrets_epoch"
 LOG="${WORK}/bootstrap.log"
 RESP="${WORK}/bootstrap_resp.json"
 NEW_ENV="${WORK}/env.new"
+# One-shot marker so a terminal first-boot failure is reported to Mission Control
+# once, not on every timer tick.
+REPORTED_MARKER="${WORK}/provision_failure_reported"
+GATE_AGENT="${ONEBRAIN_GATE_AGENT:-$(dirname "$0")/onebrain-gate-agent.sh}"
 
 # The exchange carries secrets, so its state belongs in the root-owned
 # maintenance subtree of the UUID-verified attached volume, never `/data`.
@@ -151,15 +155,50 @@ else
   AUTH="${ONEBRAIN_BOOTSTRAP_TOKEN:-}"
 fi
 
+# A first-boot token is single-use, short-lived, and cannot be reissued, so a 401
+# is TERMINAL: this box will never obtain its bundle. Holding silently is what
+# left a dead box reporting `dispatched` with every module `active` while it
+# served 502 (2026-07-20). Report it once so the run fails with a reason. Only a
+# never-provisioned box reports; a rotation failure on a working box is a
+# transient the timer retries, not a provisioning outcome.
+report_unrecoverable_first_boot() {
+  [ "$FIRST_BOOT" = "1" ] || return 0
+  [ -n "${ONEBRAIN_PROVISIONING_CALLBACK_TOKEN:-}" ] || return 0
+  [ -x "$GATE_AGENT" ] || return 0
+  # `[ ... ] && return 0` would abort the script under `set -e` on the common
+  # path where the marker does not exist yet.
+  if [ -e "$REPORTED_MARKER" ]; then return 0; fi
+  # Marker first: a callback that half-succeeds must not be retried every tick.
+  : >"$REPORTED_MARKER" 2>/dev/null || true
+  ONEBRAIN_CALLBACK_STATUS="failed" \
+  ONEBRAIN_CALLBACK_SMOKE="failed" \
+  ONEBRAIN_CALLBACK_KIND="failure" \
+    "$GATE_AGENT" --provision-callback >>"$LOG" 2>&1 \
+    && log "reported unrecoverable bootstrap to Mission Control" \
+    || log "unrecoverable bootstrap report failed; run stays dispatched"
+}
+
 log "bootstrap exchange (first_boot=$FIRST_BOOT)"
-if ! "$CURL" -sf -X POST \
+# -sf hid the status code, so a rejected token and an unreachable control plane
+# were indistinguishable in the log. Capture the code and treat them differently.
+HTTP_CODE="$("$CURL" -s -o "$RESP" -w '%{http_code}' -X POST \
      -H "Authorization: Bearer ${AUTH}" \
      -H "X-OneBrain-Deployment-Id: ${ONEBRAIN_DEPLOYMENT_ID:-}" \
-     "${ONEBRAIN_FLEET_URL:-}/api/fleet/bootstrap" >"$RESP" 2>>"$LOG"; then
-  # Non-2xx/unreachable: hold without advancing the epoch.
-  log "bootstrap exchange unreachable/rejected; holding"
-  refresh_hold
-fi
+     "${ONEBRAIN_FLEET_URL:-}/api/fleet/bootstrap" 2>>"$LOG")" || HTTP_CODE="000"
+case "$HTTP_CODE" in
+  2??) ;;
+  401)
+    log "bootstrap exchange rejected (401: invalid, expired, or consumed credential)"
+    report_unrecoverable_first_boot
+    refresh_hold
+    ;;
+  *)
+    # Unreachable, rate-limited, or a control-plane error: retryable, so hold
+    # without advancing the epoch and without failing the run.
+    log "bootstrap exchange unreachable/rejected (http=$HTTP_CODE); holding"
+    refresh_hold
+    ;;
+esac
 
 # Parse a strictly newer bundle to a temporary file (exit 3 means no change).
 CURRENT_EPOCH="$(cat "$EPOCH_FILE" 2>/dev/null || echo -1)"
