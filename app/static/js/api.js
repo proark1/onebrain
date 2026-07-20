@@ -16,11 +16,36 @@ function scopeQuery(scope = {}) {
   return `?${params.toString()}`;
 }
 
+// Describe a failed response. The API reports its own failures as a JSON
+// `detail`, which is always the best message. But a failure can also come from
+// the edge rather than the API — a Caddy deny, a 502, an HTML error page — and
+// those bodies are not JSON. Fall back to the caller's label plus the status
+// and path, so the message still names what failed instead of collapsing every
+// such case to a bare verb with no detail.
+//
+// The body itself is deliberately never echoed: it can carry arbitrary content
+// and must not be rendered into the browser. The path comes from res.url with
+// the query string dropped, so account and space ids stay out of UI text.
+async function describeFailure(res, fallback) {
+  const body = await res.json().catch(() => null);
+  if (body && typeof body.detail === "string" && body.detail) {
+    return body.detail;
+  }
+  const status = `${res.status} ${res.statusText}`.trim();
+  let path = "";
+  try {
+    path = new URL(res.url).pathname;
+  } catch {
+    path = "";
+  }
+  const where = [status, path].filter(Boolean).join(" ");
+  return where ? `${fallback} (${where})` : fallback;
+}
+
 async function requestJson(url, options = {}) {
   const res = await fetch(url, options);
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || "Request failed");
+    throw new Error(await describeFailure(res, "Request failed"));
   }
   return res.json();
 }
@@ -37,8 +62,7 @@ export async function login(email, password) {
     body: JSON.stringify({ email, password }),
   });
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || "Login failed");
+    throw new Error(await describeFailure(res, "Login failed"));
   }
   return res.json();
 }
@@ -51,8 +75,7 @@ export const listPending = (scope = {}) => fetch(`/api/documents/pending${scopeQ
 export async function approveDocument(id, scope = {}) {
   const res = await fetch(`/api/documents/${id}/approve${scopeQuery(scope)}`, { method: "POST" });
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || "Approval failed");
+    throw new Error(await describeFailure(res, "Approval failed"));
   }
   return res.json();
 }
@@ -69,8 +92,7 @@ export async function uploadDocument(formData, scope = {}) {
   }
   const res = await fetch("/api/upload", { method: "POST", body: formData });
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || "Upload failed");
+    throw new Error(await describeFailure(res, "Upload failed"));
   }
   return res.json();
 }
@@ -176,7 +198,9 @@ export async function askStream(question, conversationId, scopeOrCallback, maybe
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok || !res.body) throw new Error("Request failed");
+  if (!res.ok || !res.body) {
+    throw new Error(await describeFailure(res, "Request failed"));
+  }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
