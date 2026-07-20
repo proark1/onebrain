@@ -103,6 +103,10 @@ function labelFor(value: string): string {
   return (value || "none").replace(/_/g, " ");
 }
 
+function countLabel(count: number, noun: string): string {
+  return count === 1 ? `One ${noun} is` : `${count} ${noun}s are`;
+}
+
 function statusTone(value: string): "danger" | "neutral" | "running" | "success" | "warning" {
   if (["active", "clear", "healthy", "success", "dpia_signed"].includes(value)) {
     return "success";
@@ -187,6 +191,10 @@ function WorkspaceCockpit() {
   }, []);
 
   const apps = snapshot?.apps ?? [];
+  // A connected app that is itself failing must not read as a healthy workspace.
+  // The app rows below already carry these tones; the summary has to agree.
+  const failedApps = apps.filter((app) => statusTone(app.status) === "danger");
+  const degradedApps = apps.filter((app) => statusTone(app.status) === "warning");
   const status: OperationalStatus = !snapshot
     ? {
       condition: "Not yet reported",
@@ -201,12 +209,26 @@ function WorkspaceCockpit() {
         nextAction: "Open Apps to connect the data sources this workspace should use.",
         tone: "running",
       }
-      : {
-        condition: "Healthy",
-        explanation: "Your workspace is online and serving its connected apps.",
-        nextAction: "No immediate action is needed. Keep an eye on Apps and Privacy.",
-        tone: "success",
-      };
+      : failedApps.length
+        ? {
+          condition: "Needs attention",
+          explanation: `${countLabel(failedApps.length, "connected app")} in a failed state, so the data behind this workspace is not current.`,
+          nextAction: `Open Apps and reconnect ${failedApps[0].displayName}.`,
+          tone: "danger",
+        }
+        : degradedApps.length
+          ? {
+            condition: "Needs attention",
+            explanation: `${countLabel(degradedApps.length, "connected app")} reporting a state that should be reviewed.`,
+            nextAction: `Open Apps and check ${degradedApps[0].displayName}.`,
+            tone: "warning",
+          }
+          : {
+            condition: "Healthy",
+            explanation: "Your workspace is online and serving its connected apps.",
+            nextAction: "No immediate action is needed. Keep an eye on Apps and Privacy.",
+            tone: "success",
+          };
 
   return (
     <div className="cockpitWorkspace">
