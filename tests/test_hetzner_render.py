@@ -511,6 +511,32 @@ def test_operator_render_rejects_customer_bootstrap_descriptor():
         render_env_files(_inputs(_ALL, role="operator", customer_bootstrap=descriptor))
 
 
+def test_box_env_is_shell_sourceable_for_a_multi_product_box():
+    """box.env is `.`-sourced by the host scripts, so a space MUST be quoted.
+
+    A full-stack box renders UPDATE_PROFILES="onebrain assistant communication".
+    Unquoted, the shell ran `assistant` as a command and `set -e` killed the
+    bootstrap before it fetched any secret, leaving Postgres with no password.
+    Core-only boxes have a single profile, which is why this stayed hidden.
+    """
+    import shlex
+
+    from app.provisioning.hetzner.render import _box_env
+    be = _box_env(_inputs(_ALL))
+    assert 'UPDATE_PROFILES="onebrain assistant communication"' in be
+    # The whole file must parse as shell, not just this one line.
+    for line in be.splitlines():
+        assert shlex.split(line), f"box.env line is not shell-safe: {line}"
+    # A single-profile box keeps its bare, unquoted shape.
+    assert "UPDATE_PROFILES=onebrain\n" in _box_env(_inputs(_ONEBRAIN))
+
+
+def test_box_env_rejects_a_value_that_escapes_its_quotes():
+    from app.provisioning.hetzner.render import _box_env
+    with pytest.raises(ValueError, match="not shell-safe"):
+        _box_env(_inputs(_ONEBRAIN, compose_project='onebrain";id;"'))
+
+
 # --- BK3: offsite-backup config delivery -------------------------------------
 def test_box_env_bakes_backup_config_off_by_default():
     from app.provisioning.hetzner.render import _box_env
@@ -538,7 +564,9 @@ def test_box_env_bakes_backup_config_when_enabled():
     assert "ONEBRAIN_BACKUP_S3_ENDPOINT=https://fsn1.your-objectstorage.com" in be
     assert "ONEBRAIN_BACKUP_S3_BUCKET=ob-backups" in be
     assert "ONEBRAIN_BACKUP_S3_REGION=fsn1" in be
-    assert "ONEBRAIN_BACKUP_DBS=onebrain assistant communication" in be
+    # Quoted for the same reason as UPDATE_PROFILES: box.env is shell-sourced, so a
+    # bare multi-word value is parsed as a command and kills the host scripts.
+    assert 'ONEBRAIN_BACKUP_DBS="onebrain assistant communication"' in be
     # the two S3 credentials are ${VAR} refs — NEVER literal secrets baked into box.env
     assert "ONEBRAIN_BACKUP_S3_ACCESS_KEY=${ONEBRAIN_BACKUP_S3_ACCESS_KEY}" in be
     assert "ONEBRAIN_BACKUP_S3_SECRET_KEY=${ONEBRAIN_BACKUP_S3_SECRET_KEY}" in be

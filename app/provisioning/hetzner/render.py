@@ -660,6 +660,28 @@ def _kv(pairs) -> str:
     return "\n".join(f"{k}={v}" for k, v in pairs) + "\n"
 
 
+def _shell_kv(pairs) -> str:
+    """Render a dotenv that is `.`-sourced by the host scripts, not read literally.
+
+    box.env is deliberately sourced (onebrain_bootstrap.sh / update.sh) so its
+    ${VAR} refs expand from the already-loaded exchange bundle. An UNQUOTED value
+    containing a space is therefore parsed as `KEY=word` plus a command, so a
+    multi-product box died with `assistant: command not found` before it could
+    fetch a single secret — no .env, no POSTGRES_PASSWORD, no database. Double
+    quotes keep ${VAR} expansion working; a value that could break out of them is
+    a render-time failure rather than another silent unbootable box.
+    """
+    out = []
+    for key, value in pairs:
+        text = str(value)
+        if any(ch in text for ch in ('"', "\\", "\n", "\r", "`", "'", ";", "&", "|")):
+            raise ValueError(f"box.env value for {key} is not shell-safe")
+        # Only whitespace actually needs quoting, so every already-safe line keeps
+        # its bare KEY=value shape for the host verifier and existing tooling.
+        out.append(f'{key}="{text}"' if any(ch.isspace() for ch in text) else f"{key}={text}")
+    return "\n".join(out) + "\n"
+
+
 def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
     """Ordered (key, value) pairs for one service's env file. Secrets are ALWAYS
     ${VAR} refs (never plaintext)."""
@@ -1405,7 +1427,7 @@ def _box_env(inp: BoxRenderInputs) -> str:
     # its .env directly and is never minted a token, so no exchange runs for it.
     if inp.role != "operator":
         pairs.append(("ONEBRAIN_BOOTSTRAP_TOKEN", inp.bootstrap_token))
-    return _kv(pairs)
+    return _shell_kv(pairs)
 
 
 def _initial_release_descriptor(inp: BoxRenderInputs) -> str:
