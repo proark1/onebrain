@@ -170,12 +170,14 @@ report_unrecoverable_first_boot() {
   if [ -e "$REPORTED_MARKER" ]; then return 0; fi
   # Marker first: a callback that half-succeeds must not be retried every tick.
   : >"$REPORTED_MARKER" 2>/dev/null || true
-  ONEBRAIN_CALLBACK_STATUS="failed" \
-  ONEBRAIN_CALLBACK_SMOKE="failed" \
-  ONEBRAIN_CALLBACK_KIND="failure" \
-    "$GATE_AGENT" --provision-callback >>"$LOG" 2>&1 \
-    && log "reported unrecoverable bootstrap to Mission Control" \
-    || log "unrecoverable bootstrap report failed; run stays dispatched"
+  if ONEBRAIN_CALLBACK_STATUS="failed" \
+     ONEBRAIN_CALLBACK_SMOKE="failed" \
+     ONEBRAIN_CALLBACK_KIND="failure" \
+     "$GATE_AGENT" --provision-callback >>"$LOG" 2>&1; then
+    log "reported unrecoverable bootstrap to Mission Control"
+  else
+    log "unrecoverable bootstrap report failed; run stays dispatched"
+  fi
 }
 
 log "bootstrap exchange (first_boot=$FIRST_BOOT)"
