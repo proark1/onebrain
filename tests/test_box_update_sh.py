@@ -89,12 +89,22 @@ _STUBS = {
     "curl": (
         '#!/usr/bin/env bash\n'
         'echo "curl $*" >> "$STUB_LOG"\n'
-        'url=""; for a in "$@"; do url="$a"; done\n'
+        'url=""; out=""; want_code=0; prev=""\n'
+        # onebrain_bootstrap.sh reads the status code via -o/-w so it can tell a
+        # rejected credential from an unreachable control plane. Honour both.
+        'for a in "$@"; do\n'
+        '  case "$prev" in -o) out="$a" ;; esac\n'
+        '  case "$a" in -w) want_code=1 ;; esac\n'
+        '  prev="$a"; url="$a"\n'
+        'done\n'
+        'emit() { if [ -n "$out" ]; then printf "%s" "$1" > "$out"; else printf "%s" "$1"; fi; '
+        '[ "$want_code" = "1" ] && printf "%s" "${2:-200}"; }\n'
         'case "$url" in\n'
         '  *floor-bump*) [ -f "$CTRL/floor_bump_fail" ] && exit 22; '
         'cat "$CTRL/floor_bump_serve.json" 2>/dev/null || printf "null" ;;\n'
         '  *bootstrap*) [ -f "$CTRL/bootstrap_fail" ] && exit 22; '
-        'cat "$CTRL/bootstrap_resp.json" 2>/dev/null || printf "" ;;\n'
+        'emit "$(cat "$CTRL/bootstrap_resp.json" 2>/dev/null || printf "")" '
+        '"$(cat "$CTRL/bootstrap_http_code" 2>/dev/null || printf "200")" ;;\n'
         '  *desired-state*) [ -f "$CTRL/fetch_fail" ] && exit 22; cat "$CTRL/serve.json" ;;\n'
         '  *health*) if [ -f "$CTRL/smoke_fail_once" ]; then rm -f "$CTRL/smoke_fail_once"; exit 22; fi; '
         '[ -f "$CTRL/smoke_fail" ] && exit 22; printf "OK" ;;\n'
@@ -350,8 +360,8 @@ class _Harness:
     def run(self, **extra_env: str) -> subprocess.CompletedProcess:
         return self._exec(_UPDATE_SH, extra_env)
 
-    def run_bootstrap(self) -> subprocess.CompletedProcess:
-        return self._exec(_BOOTSTRAP_SH)
+    def run_bootstrap(self, **extra_env: str) -> subprocess.CompletedProcess:
+        return self._exec(_BOOTSTRAP_SH, extra_env)
 
     def run_gate_agent(self, **extra_env: str) -> subprocess.CompletedProcess:
         return self._exec(_GATE_AGENT_SH, extra_env)
@@ -1012,6 +1022,78 @@ def test_bootstrap_first_boot_writes_env_then_records_epoch(box):
     assert box.applied_epoch() == "0"
     # First boot leaves `compose up` to the cloud-init runcmd (no dc up here).
     assert "up -d" not in box.stub_log()
+
+
+def _callback_agent_stub(tmp_path):
+    """Stand in for onebrain-gate-agent.sh --provision-callback."""
+    agent = tmp_path / "gate-agent-stub.sh"
+    agent.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s %s\\n" "$1" "$ONEBRAIN_CALLBACK_STATUS" >> "$CTRL/provision_callback"\n',
+        encoding="utf-8",
+    )
+    agent.chmod(0o755)
+    return agent
+
+
+def _with_callback_token(box):
+    box_env = box.root / "box.env"
+    box_env.write_text(
+        box_env.read_text(encoding="utf-8") + "ONEBRAIN_PROVISIONING_CALLBACK_TOKEN=cbt_test\n",
+        encoding="utf-8",
+    )
+
+
+def test_bootstrap_reports_a_rejected_first_boot_token_to_mission_control(box, tmp_path):
+    """A 401 is terminal: a single-use first-boot token cannot be reissued.
+
+    Holding silently is what left a dead box reporting `dispatched` with every
+    module `active` while it served 502 (2026-07-20). The run must fail loudly.
+    """
+    _with_callback_token(box)
+    agent = _callback_agent_stub(tmp_path)
+    (box.ctrl / "bootstrap_http_code").write_text("401", encoding="utf-8")
+    box.set_bootstrap_resp({"detail": "Invalid, expired, or consumed bootstrap token."})
+
+    result = box.run_bootstrap(ONEBRAIN_GATE_AGENT=_unix(agent))
+
+    # Reporting must not itself break cloud-init, and no bundle was written.
+    assert result.returncode == 0, result.stderr
+    assert box.env_content() is None
+    assert (box.ctrl / "provision_callback").read_text().splitlines() == [
+        "--provision-callback failed"
+    ]
+
+    # The run is terminal, so a later timer tick must not report it again.
+    box.run_bootstrap(ONEBRAIN_GATE_AGENT=_unix(agent))
+    assert (box.ctrl / "provision_callback").read_text().splitlines() == [
+        "--provision-callback failed"
+    ]
+
+
+def test_bootstrap_holds_quietly_when_the_control_plane_is_unreachable(box, tmp_path):
+    """Unreachable is retryable — failing the run would be wrong."""
+    _with_callback_token(box)
+    agent = _callback_agent_stub(tmp_path)
+    box.touch("bootstrap_fail")
+
+    result = box.run_bootstrap(ONEBRAIN_GATE_AGENT=_unix(agent))
+
+    assert result.returncode == 0, result.stderr
+    assert not (box.ctrl / "provision_callback").exists()
+
+
+def test_bootstrap_rotation_failure_is_not_a_provisioning_failure(box, tmp_path):
+    """A working box whose rotation is rejected has already provisioned."""
+    _with_callback_token(box)
+    agent = _callback_agent_stub(tmp_path)
+    (box.root / ".env").write_text("ONEBRAIN_FLEET_KEY=fk_real\n", encoding="utf-8")
+    (box.ctrl / "bootstrap_http_code").write_text("401", encoding="utf-8")
+
+    result = box.run_bootstrap(ONEBRAIN_GATE_AGENT=_unix(agent))
+
+    assert result.returncode == 0, result.stderr
+    assert not (box.ctrl / "provision_callback").exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode assertion")

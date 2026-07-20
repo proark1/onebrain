@@ -64,6 +64,18 @@ Super admin
   firewall, mTLS certificates, a broker credential, and the Hetzner API token
   installed only in the broker's root-owned environment.
 
+### Rendered box environment
+
+- `box.env` is `.`-sourced by the host scripts so its `${VAR}` refs expand from
+  the exchanged bundle. Every value the renderer writes into it must be
+  shell-safe; use `_shell_kv`, never `_kv`. An unquoted multi-word value is
+  parsed as a command and kills the bootstrap before any secret is fetched,
+  leaving an unreachable box that Mission Control still reports as healthy.
+- The literal loader in `deploy/box/onebrain_dotenv.sh` applies to `.env` only.
+  Do not use it for `box.env`; it deliberately does not expand `${VAR}`.
+- See [the provisioning runbook](docs/customer-box-provisioning-runbook.md) for
+  the bootstrap-token and one-time-password expiry windows.
+
 ## Release and secret rules
 
 - Every deployable image is digest-pinned. Do not substitute floating tags.
