@@ -83,11 +83,32 @@ import { cleanScope, scopeQuery } from "@/lib/onebrain-types";
 // address for login and abuse limits.
 const PROXY_BASE = "/api";
 
+/**
+ * Describe a failed response for the UI.
+ *
+ * The API reports its own failures as a JSON `detail`, which is always the best
+ * message. But a failure can also come from the edge rather than the API -- a
+ * Caddy deny, a 502, an HTML error page -- and those bodies are not JSON. Fall
+ * back to the status and path so the message still names what failed instead of
+ * collapsing every such case to an undiagnosable "Request failed".
+ *
+ * The body itself is deliberately never echoed: it can carry arbitrary content,
+ * and it must not be rendered into the browser.
+ */
+async function describeFailure(path: string, response: Response): Promise<string> {
+  const body = await response.json().catch(() => null);
+  const detail = body && typeof body.detail === "string" ? body.detail : "";
+  if (detail) {
+    return detail;
+  }
+  const status = `${response.status} ${response.statusText}`.trim();
+  return `${status || "Request failed"} (${path.split("?")[0]})`;
+}
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${PROXY_BASE}${path}`, init);
   if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(typeof body.detail === "string" ? body.detail : "Request failed");
+    throw new Error(await describeFailure(path, response));
   }
   return response.json() as Promise<T>;
 }
@@ -107,8 +128,7 @@ async function streamSse(
     body: JSON.stringify(body),
   });
   if (!response.ok || !response.body) {
-    const payload = await response.json().catch(() => ({}));
-    throw new Error(typeof payload.detail === "string" ? payload.detail : "Request failed");
+    throw new Error(await describeFailure(path, response));
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -833,8 +853,7 @@ export async function askStream(
     body: JSON.stringify(payload),
   });
   if (!response.ok || !response.body) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(typeof body.detail === "string" ? body.detail : "Request failed");
+    throw new Error(await describeFailure("/ask", response));
   }
 
   const reader = response.body.getReader();
