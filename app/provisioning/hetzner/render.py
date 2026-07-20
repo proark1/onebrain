@@ -674,7 +674,7 @@ def _shell_kv(pairs) -> str:
     out = []
     for key, value in pairs:
         text = str(value)
-        if any(ch in text for ch in ('"', "\\", "\n", "\r", "`", "'", ";", "&", "|")):
+        if any(ch in text for ch in ('"', "\\", "\n", "\r", "`", "'", ";", "&", "|")) or '$(' in text:
             raise ValueError(f"box.env value for {key} is not shell-safe")
         # Only whitespace actually needs quoting, so every already-safe line keeps
         # its bare KEY=value shape for the host verifier and existing tooling.
