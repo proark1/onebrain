@@ -6,17 +6,86 @@ import { AiEmployeeDirectory } from "@/components/ai-employee-directory";
 import { MetricStrip, Notice, PageHeader, Panel, StatusBadge } from "@/components/admin-ui";
 import { StatusSummary } from "@/components/operational/status-summary";
 import { Timestamp } from "@/components/operational/timestamp";
-import { getAiEmployeeTeam, getOperatorObservability, listAiEmployeeWorkspaces, listOperatorCustomers } from "@/lib/onebrain-client";
+import {
+  getAiEmployeeTeam,
+  getOperatorObservability,
+  listAiEmployeeWorkspaces,
+  listOperatorCustomers,
+  listPlatformAccounts,
+  listPlatformApps,
+  listPlatformSpaces,
+} from "@/lib/onebrain-client";
 import { type OperationalStatus } from "@/lib/operational";
-import type { AiEmployeeTeam, OperatorCustomer, OperatorObservability } from "@/lib/onebrain-types";
+import type {
+  AiEmployeeTeam,
+  OperatorCustomer,
+  OperatorObservability,
+  PlatformAppInstallation,
+  PlatformSpace,
+} from "@/lib/onebrain-types";
 
 type LoadState = "idle" | "loading";
+
+/** One connected app row, built from either the operator or the platform surface. */
+type ConnectedApp = {
+  accountName: string;
+  displayName: string;
+  id: string;
+  purposes: number;
+  spaces: number;
+  status: string;
+};
+
+type WorkspaceSnapshot = {
+  apps: ConnectedApp[];
+  spaces: PlatformSpace[];
+};
 
 async function fetchCockpitData(): Promise<[OperatorObservability, OperatorCustomer[]]> {
   return Promise.all([
     getOperatorObservability(),
     listOperatorCustomers(),
   ]);
+}
+
+/**
+ * Customer-scoped equivalent of fetchCockpitData. A customer deployment (and the
+ * development gate) denies /api/operator at both the router and the edge, so the
+ * same counts are assembled from the always-mounted platform surface instead.
+ */
+async function fetchWorkspaceSnapshot(): Promise<WorkspaceSnapshot> {
+  const accounts = await listPlatformAccounts();
+  const perAccount = await Promise.all(accounts.map(async (account) => {
+    const [apps, spaces] = await Promise.all([
+      listPlatformApps(account.id),
+      listPlatformSpaces(account.id),
+    ]);
+    return { accountName: account.name, apps, spaces };
+  }));
+  return {
+    apps: perAccount.flatMap((entry) => entry.apps.map(
+      (app: PlatformAppInstallation) => connectedApp(entry.accountName, app),
+    )),
+    spaces: perAccount.flatMap((entry) => entry.spaces),
+  };
+}
+
+function connectedApp(accountName: string, app: {
+  allowed_purposes: string[];
+  app_id: string;
+  display_name: string;
+  enabled_space_ids: string[];
+  id: string;
+  status: string;
+}): ConnectedApp {
+  return {
+    accountName,
+    displayName: app.display_name || app.app_id,
+    id: app.id,
+    purposes: app.allowed_purposes.length,
+    spaces: app.enabled_space_ids.length,
+    status: app.status,
+  };
 }
 
 async function fetchCanonicalEmployeeTeam(): Promise<AiEmployeeTeam | null> {
@@ -32,6 +101,10 @@ async function fetchCanonicalEmployeeTeam(): Promise<AiEmployeeTeam | null> {
 
 function labelFor(value: string): string {
   return (value || "none").replace(/_/g, " ");
+}
+
+function countLabel(count: number, noun: string): string {
+  return count === 1 ? `One ${noun} is` : `${count} ${noun}s are`;
 }
 
 function statusTone(value: string): "danger" | "neutral" | "running" | "success" | "warning" {
@@ -54,7 +127,149 @@ function alertTone(severity: string): "danger" | "warning" {
   return severity === "critical" ? "danger" : "warning";
 }
 
-export function CockpitPanel() {
+/**
+ * Status is the one page both surfaces share, so it is the one page that cannot
+ * assume the operator control plane exists. Select the variant with the same
+ * server-issued capability that mounts /api/operator (and that /operator and
+ * /fleet guard on): a customer box and the development gate deny that namespace
+ * at both the router and the edge, so the fleet variant must never load there.
+ */
+export function CockpitPanel({ isOperatorSurface }: { isOperatorSurface: boolean }) {
+  return isOperatorSurface ? <MissionControlCockpit /> : <WorkspaceCockpit />;
+}
+
+function WorkspaceCockpit() {
+  const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null);
+  const [employeeTeam, setEmployeeTeam] = useState<AiEmployeeTeam | null>(null);
+  const [loadState, setLoadState] = useState<LoadState>("loading");
+  const [error, setError] = useState("");
+
+  const loadWorkspace = useCallback(async () => {
+    setLoadState("loading");
+    setError("");
+    try {
+      const [nextSnapshot, nextEmployeeTeam] = await Promise.all([
+        fetchWorkspaceSnapshot(),
+        fetchCanonicalEmployeeTeam(),
+      ]);
+      setSnapshot(nextSnapshot);
+      setEmployeeTeam(nextEmployeeTeam);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load workspace status.");
+    } finally {
+      setLoadState("idle");
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    async function loadInitial() {
+      try {
+        const [nextSnapshot, nextEmployeeTeam] = await Promise.all([
+          fetchWorkspaceSnapshot(),
+          fetchCanonicalEmployeeTeam(),
+        ]);
+        if (!active) {
+          return;
+        }
+        setSnapshot(nextSnapshot);
+        setEmployeeTeam(nextEmployeeTeam);
+      } catch (err) {
+        if (active) {
+          setError(err instanceof Error ? err.message : "Could not load workspace status.");
+        }
+      } finally {
+        if (active) {
+          setLoadState("idle");
+        }
+      }
+    }
+    void loadInitial();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const apps = snapshot?.apps ?? [];
+  // A connected app that is itself failing must not read as a healthy workspace.
+  // The app rows below already carry these tones; the summary has to agree.
+  const failedApps = apps.filter((app) => statusTone(app.status) === "danger");
+  const degradedApps = apps.filter((app) => statusTone(app.status) === "warning");
+  const status: OperationalStatus = !snapshot
+    ? {
+      condition: "Not yet reported",
+      explanation: "This workspace has not returned its configuration yet.",
+      nextAction: "Refresh Status in a moment. If it stays empty, check the OneBrain service connection.",
+      tone: "neutral",
+    }
+    : apps.length === 0
+      ? {
+        condition: "Pending",
+        explanation: "Your workspace is ready, but no apps are connected to it yet.",
+        nextAction: "Open Apps to connect the data sources this workspace should use.",
+        tone: "running",
+      }
+      : failedApps.length
+        ? {
+          condition: "Needs attention",
+          explanation: `${countLabel(failedApps.length, "connected app")} in a failed state, so the data behind this workspace is not current.`,
+          nextAction: `Open Apps and reconnect ${failedApps[0].displayName}.`,
+          tone: "danger",
+        }
+        : degradedApps.length
+          ? {
+            condition: "Needs attention",
+            explanation: `${countLabel(degradedApps.length, "connected app")} reporting a state that should be reviewed.`,
+            nextAction: `Open Apps and check ${degradedApps[0].displayName}.`,
+            tone: "warning",
+          }
+          : {
+            condition: "Healthy",
+            explanation: "Your workspace is online and serving its connected apps.",
+            nextAction: "No immediate action is needed. Keep an eye on Apps and Privacy.",
+            tone: "success",
+          };
+
+  return (
+    <div className="cockpitWorkspace">
+      <PageHeader
+        description="See how this workspace is set up and what it is connected to."
+        eyebrow="Workspace"
+        title="Status"
+        actions={(
+          <button className="secondaryButton" disabled={loadState === "loading"} type="button" onClick={() => void loadWorkspace()}>
+            {loadState === "loading" ? "Refreshing" : "Refresh"}
+          </button>
+        )}
+      />
+
+      {error ? <Notice tone="error">{error}</Notice> : null}
+
+      <StatusSummary status={status}>
+        <div className="brainActionRail">
+          <Link className="primaryButton" href="/spaces">Open Apps</Link>
+          <Link className="secondaryButton" href="/privacy">Privacy</Link>
+        </div>
+      </StatusSummary>
+
+      <MetricStrip
+        metrics={[
+          { label: "spaces", value: snapshot ? snapshot.spaces.length : "-" },
+          { label: "connected apps", value: snapshot ? apps.length : "-" },
+          { label: "AI employees", value: employeeTeam?.agents.length ?? "-" },
+        ]}
+      />
+
+      <EmployeeDirectoryPanel team={employeeTeam} />
+
+      <section className="cockpitGrid" aria-label="OneBrain workspace status">
+        <ConnectedAppsPanel apps={apps} loaded={Boolean(snapshot)} />
+      </section>
+    </div>
+  );
+}
+
+function MissionControlCockpit() {
   const [observability, setObservability] = useState<OperatorObservability | null>(null);
   const [customers, setCustomers] = useState<OperatorCustomer[]>([]);
   const [employeeTeam, setEmployeeTeam] = useState<AiEmployeeTeam | null>(null);
@@ -110,16 +325,9 @@ export function CockpitPanel() {
   }, []);
 
   const connectedApps = useMemo(() => (
-    customers.flatMap((customer) => customer.apps.map((app) => ({
-      accountId: customer.account.id,
-      accountName: customer.account.name,
-      id: app.id,
-      appId: app.app_id,
-      displayName: app.display_name || app.app_id,
-      purposes: app.allowed_purposes.length,
-      spaces: app.enabled_space_ids.length,
-      status: app.status,
-    })))
+    customers.flatMap((customer) => customer.apps.map(
+      (app) => connectedApp(customer.account.name, app),
+    ))
   ), [customers]);
 
   const alerts = observability?.alerts ?? [];
@@ -223,15 +431,7 @@ export function CockpitPanel() {
         ]}
       />
 
-      <Panel
-        actions={<Link className="secondaryButton" href="/ai-employees">Open AI Employees</Link>}
-        count={employeeTeam?.agents.length ?? 0}
-        eyebrow="AI Employees"
-        title="Employee directory"
-      >
-        <p className="mutedLine">Every employee is visible here. Expand one only when you need their working rules, safe actions, or technical details.</p>
-        {employeeTeam ? <AiEmployeeDirectory employees={employeeTeam.agents} /> : <p className="aiDirectoryEmpty">No active AI Employees team is available to this session yet.</p>}
-      </Panel>
+      <EmployeeDirectoryPanel team={employeeTeam} />
 
       <section className="cockpitGrid" aria-label="OneBrain cockpit">
         <Panel eyebrow="Signals" title="Alerts" count={alerts.length}>
@@ -259,20 +459,7 @@ export function CockpitPanel() {
           </div>
         </Panel>
 
-        <Panel eyebrow="Apps" title="Connected data sources" count={connectedApps.length}>
-          <div className="cockpitList">
-            {connectedApps.length === 0 ? <p className="mutedLine">No apps connected yet.</p> : null}
-            {connectedApps.slice(0, 8).map((app) => (
-              <article className="signalRow" key={app.id}>
-                <div>
-                  <strong>{app.displayName}</strong>
-                  <span>{app.accountName} / {app.spaces} spaces / {app.purposes} purposes</span>
-                </div>
-                <StatusBadge tone={statusTone(app.status)}>{labelFor(app.status)}</StatusBadge>
-              </article>
-            ))}
-          </div>
-        </Panel>
+        <ConnectedAppsPanel apps={connectedApps} loaded={Boolean(observability)} />
 
         <Panel eyebrow="Data flow" title="Jobs and storage">
           <div className="statusMatrix">
@@ -316,6 +503,39 @@ export function CockpitPanel() {
         </Panel>
       </section>
     </div>
+  );
+}
+
+function EmployeeDirectoryPanel({ team }: { team: AiEmployeeTeam | null }) {
+  return (
+    <Panel
+      actions={<Link className="secondaryButton" href="/ai-employees">Open AI Employees</Link>}
+      count={team?.agents.length ?? 0}
+      eyebrow="AI Employees"
+      title="Employee directory"
+    >
+      <p className="mutedLine">Every employee is visible here. Expand one only when you need their working rules, safe actions, or technical details.</p>
+      {team ? <AiEmployeeDirectory employees={team.agents} /> : <p className="aiDirectoryEmpty">No active AI Employees team is available to this session yet.</p>}
+    </Panel>
+  );
+}
+
+function ConnectedAppsPanel({ apps, loaded }: { apps: ConnectedApp[]; loaded: boolean }) {
+  return (
+    <Panel eyebrow="Apps" title="Connected data sources" count={apps.length}>
+      <div className="cockpitList">
+        {loaded && apps.length === 0 ? <p className="mutedLine">No apps connected yet.</p> : null}
+        {apps.slice(0, 8).map((app) => (
+          <article className="signalRow" key={app.id}>
+            <div>
+              <strong>{app.displayName}</strong>
+              <span>{app.accountName} / {app.spaces} spaces / {app.purposes} purposes</span>
+            </div>
+            <StatusBadge tone={statusTone(app.status)}>{labelFor(app.status)}</StatusBadge>
+          </article>
+        ))}
+      </div>
+    </Panel>
   );
 }
 
