@@ -306,6 +306,99 @@ def test_successful_dev_rollout_needs_matching_later_heartbeat():
     assert reconcile_heartbeat_promotion(store, heartbeat, received_at=completed) is None
 
 
+def _gate_with_completed_dev_rollout(store):
+    """A designated gate whose dev rollout has already completed successfully."""
+    now = datetime.now(timezone.utc).isoformat()
+    gate = CustomerDeployment(
+        id="dev",
+        customer_name="Development",
+        environment="development",
+        deployment_type="dedicated_server",
+        release_ring="internal",
+        last_heartbeat_at=now,
+        last_heartbeat_healthy=True,
+    )
+    store.create_deployment(gate)
+    store.designate_release_gate(gate.id)
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
+        store.upsert_module(DeploymentModule(gate.id, module_id, "old"))
+    dev_private, dev_public = generate_keypair()
+    release = _development_gate_release()
+    register_candidate(
+        store,
+        release,
+        dev_signature=sign_release(release_signature_fields(release), dev_private),
+        dev_signing_key_id="dev-1",
+        development_public_key=dev_public,
+    )
+    rollout = RolloutRun("roll-dev", gate.id, release.version, "pending", "ci")
+    store.transition_release_promotion(
+        release.version,
+        frozenset({"dev_pending"}),
+        "dev_deploying",
+        actor="ci",
+        action="dev_rollout_started",
+        fields={"gate_deployment_id": gate.id, "dev_rollout_id": rollout.id},
+    )
+    store.start_rollout(rollout)
+    store.update_rollout_exec(rollout.id, exec_status="running")
+    completed = datetime.now(timezone.utc).isoformat()
+    store.complete_verified_rollout(
+        rollout.id, verified_modules=release.modules, completed_at=completed,
+    )
+    return gate, release, rollout, completed
+
+
+def _post_completion_heartbeat(gate, release, *, attempt_id, at):
+    return build_heartbeat_v2(
+        deployment_id=gate.id,
+        reported_at=at,
+        version=release.version,
+        modules=_development_gate_reports(release),
+        update=UpdateReport(
+            last_target_version=release.version,
+            outcome="succeeded",
+            attempt_id=attempt_id,
+            ts=at,
+        ),
+    )
+
+
+def test_dev_gate_verifies_when_the_attempt_hint_has_already_expired():
+    """MC serves the attempt_id hint only while the rollout is non-terminal, and
+    this check only evaluates heartbeats received at/after completed_at. Requiring
+    a non-empty match therefore rejected every heartbeat it could ever see, so no
+    release could reach dev_verified and none could be signed for customers."""
+    store = MemoryControlPlaneStore()
+    gate, release, _rollout, completed = _gate_with_completed_dev_rollout(store)
+    later = (datetime.fromisoformat(completed) + timedelta(hours=3)).isoformat()
+
+    verified = reconcile_heartbeat_promotion(
+        store,
+        _post_completion_heartbeat(gate, release, attempt_id="", at=later),
+        received_at=later,
+    )
+
+    assert verified.state == "dev_verified"
+    assert verified.failure_reason == ""
+
+
+def test_dev_gate_still_rejects_a_heartbeat_from_a_different_attempt():
+    """An ABSENT hint is expected after completion; a WRONG one never is."""
+    store = MemoryControlPlaneStore()
+    gate, release, _rollout, completed = _gate_with_completed_dev_rollout(store)
+    later = (datetime.fromisoformat(completed) + timedelta(hours=3)).isoformat()
+
+    result = reconcile_heartbeat_promotion(
+        store,
+        _post_completion_heartbeat(gate, release, attempt_id="roll-someone-else", at=later),
+        received_at=later,
+    )
+
+    assert result.state == "dev_failed"
+    assert result.failure_reason == "dev_attempt_mismatch"
+
+
 def test_dev_success_without_verification_heartbeat_times_out_and_cannot_revive():
     store = MemoryControlPlaneStore()
     now = datetime.now(timezone.utc)
