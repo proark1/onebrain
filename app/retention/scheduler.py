@@ -33,19 +33,21 @@ operator-triggered sweep uses). Per-space jobs would multiply the job count by
 the space count for no added coverage, since `run_retention` already resolves
 each policy's own scope.
 
-WHY THE ACCOUNT SET IS NOT `list_accounts()`. That is a cross-account operator
-read: it connects on the operator DSN, which bypasses RLS by identity. A
+THE ACCOUNT SET IS WHATEVER `list_accounts()` RETURNS, and that is now the right
+answer on every stack. It used to be the wrong one on the stack that mattered: a
 customer box is never given the owner connection (`render.py`: "Customer API
-containers never receive the owner connection"), so the operator DSN falls back
-to the application DSN, `platform_accounts` has FORCED row-level security with
-`id = current_setting('app.account_id', true)`, and an unscoped read matches
-nothing. Enumerating would therefore return zero accounts on precisely the
-deployments that hold customer data — sweeping nothing, forever, with no error.
-So the box names its own account from its bootstrap descriptor, which is exactly
-the scope every downstream read is already scoped to. `list_accounts()` remains
-the fallback for stacks that legitimately see every account (Mission Control,
-local, and test stores), and resolving to an empty set is logged rather than
-treated as "nothing to do".
+containers never receive the owner connection"), the operator DSN fell back to
+the application DSN, and `platform_accounts` — FORCED RLS, matching on
+`id = current_setting('app.account_id', true)` — emptied the unscoped read. So
+enumerating returned zero accounts on precisely the deployments holding customer
+data, and this file resolved the box's own account from its bootstrap descriptor
+to work around it.
+
+#36 fixed that at the store: `_conn(admin=True)` detects the fallback and scopes
+to the box's own account, so `list_accounts()` returns it. Keeping a second copy
+of the tenancy rule here would mean two places to be wrong. Resolving to an empty
+set is still logged rather than treated as "nothing to do" — that is the shape a
+misconfiguration takes, and it is indistinguishable from a healthy no-op.
 """
 
 from __future__ import annotations
@@ -70,25 +72,7 @@ def sweep_idempotency_key(account_id: str, now: datetime) -> str:
     return f"retention-sweep:{account_id}:{now.astimezone(timezone.utc).date().isoformat()}"
 
 
-def target_account_ids(settings, platform) -> list[str]:
-    """Resolve the accounts this deployment may sweep.
-
-    A provisioned box names its own account, because it cannot enumerate (see
-    the module docstring). Everything else falls back to the cross-account read.
-    """
-    from app.provisioning.customer_bootstrap import decode_customer_bootstrap
-
-    try:
-        descriptor = decode_customer_bootstrap(getattr(settings, "customer_bootstrap", "") or "")
-    except Exception as exc:  # a malformed descriptor must not stop the fallback
-        _log.warning("Retention sweep could not read the bootstrap descriptor: %s", exc)
-        descriptor = None
-    if descriptor and descriptor.account_id:
-        return [descriptor.account_id]
-    return [account.id for account in platform.list_accounts()]
-
-
-def sweep_once(platform, jobs, *, settings=None, now: datetime | None = None) -> list[str]:
+def sweep_once(platform, jobs, *, now: datetime | None = None) -> list[str]:
     """Enqueue a whole-account retention sweep for every account holding a policy.
 
     Returns the enqueued job ids. Accounts with no active retention policy are
@@ -96,9 +80,7 @@ def sweep_once(platform, jobs, *, settings=None, now: datetime | None = None) ->
     never configured retention generates no queue traffic.
     """
     stamp = now or datetime.now(timezone.utc)
-    account_ids = target_account_ids(settings, platform) if settings is not None else [
-        account.id for account in platform.list_accounts()
-    ]
+    account_ids = [account.id for account in platform.list_accounts()]
     if not account_ids:
         # Distinguish "this deployment can see no account" from "no policy is
         # configured". The first is a misconfiguration that would otherwise look
@@ -153,7 +135,7 @@ def start_retention_scheduler(settings) -> bool:
 
         while True:
             try:
-                enqueued = sweep_once(get_platform_store(), get_job_store(), settings=settings)
+                enqueued = sweep_once(get_platform_store(), get_job_store())
                 if enqueued:
                     _log.info("Enqueued %s retention sweep(s).", len(enqueued))
             except Exception as exc:  # pragma: no cover - defensive (store getters)

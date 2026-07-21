@@ -162,6 +162,11 @@ export function FleetPanel() {
   const [notice, setNotice] = useState<string>("");
   const [reveal, setReveal] = useState<Record<string, string> | string>("");
   const [unavailable, setUnavailable] = useState(false);
+  // `rollouts` and `keys` start as [], so before the first fetch resolves their
+  // tables render exactly like "there are none" -- on the surface where "no
+  // rollout is running" and "we have not looked yet" mean opposite things. The
+  // overview tab already distinguishes them only because `overview` starts null.
+  const [loaded, setLoaded] = useState(false);
 
   const [form, setForm] = useState<CreateFleetRolloutInput>({
     target_version: "",
@@ -182,6 +187,7 @@ export function FleetPanel() {
       setRollouts(ro);
       setKeys(ks);
       setUnavailable(false);
+      setLoaded(true);
     } catch (err) {
       // Fleet endpoints exist only on a Mission Control (operator_mode) deployment.
       setUnavailable(true);
@@ -321,6 +327,11 @@ export function FleetPanel() {
           </Panel>
           <Panel eyebrow="Active + history" title="Fleet rollouts" count={rollouts.length}>
             <p className="muted">Every rollout shows when it started and when the control plane last recorded a state change.</p>
+            {!loaded && !error ? <div className="loadingState" role="status">Loading rollouts…</div> : null}
+            {loaded && rollouts.length === 0 ? (
+              <div className="emptyState">No rollout has been started. Use the form above to plan one.</div>
+            ) : null}
+            {loaded && rollouts.length > 0 ? (
             <div className="tableScroll">
               <table className="adminTable">
                 <thead>
@@ -375,6 +386,7 @@ export function FleetPanel() {
                 </tbody>
               </table>
             </div>
+            ) : null}
           </Panel>
         </>
       ) : null}
@@ -394,6 +406,11 @@ export function FleetPanel() {
               Enroll (env vars)
             </button>
           </form>
+          {!loaded && !error ? <div className="loadingState" role="status">Loading enrollment keys…</div> : null}
+          {loaded && keys.length === 0 ? (
+            <div className="emptyState">No enrollment key exists. Mint one to let a deployment report in.</div>
+          ) : null}
+          {loaded && keys.length > 0 ? (
           <div className="tableScroll">
             <table className="adminTable">
               <thead>
@@ -424,6 +441,7 @@ export function FleetPanel() {
               </tbody>
             </table>
           </div>
+          ) : null}
         </Panel>
       ) : null}
     </div>
