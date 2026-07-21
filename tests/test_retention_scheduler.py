@@ -18,10 +18,6 @@ from app.jobs.base import JOB_RETENTION_RUN
 from app.jobs.memory import MemoryJobStore
 from app.platform.base import Account, RetentionPolicy
 from app.platform.memory import MemoryPlatformStore
-from app.provisioning.customer_bootstrap import (
-    CustomerBootstrapDescriptor,
-    encode_customer_bootstrap,
-)
 from app.retention.scheduler import (
     start_retention_scheduler,
     sweep_idempotency_key,
@@ -108,25 +104,26 @@ def test_one_unreadable_account_does_not_stop_the_others():
     assert jobs.get(enqueued[0]).account_id == "healthy"
 
 
-def test_a_box_that_cannot_enumerate_accounts_still_sweeps_its_own(monkeypatch):
+def test_the_sweep_covers_exactly_what_the_store_can_see(monkeypatch):
     """The customer-box case, which is the one that matters.
 
-    A box never receives the owner connection, so the operator DSN falls back to
-    the application DSN and `platform_accounts` -- FORCED RLS, matching on
-    `id = current_setting('app.account_id', true)` -- returns nothing to an
-    unscoped read. Enumerating would sweep nothing on exactly the deployments
-    holding customer data. The box names its own account instead.
+    A box never receives the owner connection, so `_conn(admin=True)` resolves to
+    the ordinary app role. #36 made the store scope that connection to the box's
+    own account instead of issuing an unscoped query RLS empties, so
+    `list_accounts()` is authoritative here and the scheduler holds no second
+    copy of the tenancy rule. Whatever the store can see is what gets swept --
+    one account on a box, every account on a stack that legitimately sees them.
     """
-    platform = _platform("acme")
+    platform = _platform("acme", "beta")
     platform.upsert_retention_policy(_policy("acme"))
-    monkeypatch.setattr(platform, "list_accounts", lambda: [])   # RLS-blind, as on a box
+    platform.upsert_retention_policy(_policy("beta"))
+    # A box: the store returns its own account and no other.
+    monkeypatch.setattr(platform, "list_accounts", lambda: [
+        Account(id="acme", kind="organization", name="acme"),
+    ])
     jobs = MemoryJobStore()
-    settings = SimpleNamespace(customer_bootstrap=encode_customer_bootstrap(
-        CustomerBootstrapDescriptor(account_id="acme", account_kind="organization",
-                                    customer_name="Acme"),
-    ))
 
-    enqueued = sweep_once(platform, jobs, settings=settings)
+    enqueued = sweep_once(platform, jobs)
 
     assert len(enqueued) == 1
     assert jobs.get(enqueued[0]).account_id == "acme"
@@ -137,7 +134,7 @@ def test_resolving_no_account_is_reported_not_silently_treated_as_no_work(caplog
     jobs = MemoryJobStore()
 
     with caplog.at_level("WARNING"):
-        assert sweep_once(platform, jobs, settings=SimpleNamespace(customer_bootstrap="")) == []
+        assert sweep_once(platform, jobs) == []
 
     assert "resolved no account" in caplog.text
 
