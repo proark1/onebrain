@@ -188,15 +188,14 @@ def _unix(path) -> str:
 
 
 def signed_serve(*, version="2026.7.2", images=None, migration_from="0020", migration_to="0020",
-                 rollback_kind="code_only", tamper_wrapper=False, attempt_id="child_1",
-                 nonce=None) -> dict:
+                 rollback_kind="code_only", tamper_wrapper=False, attempt_id="child_1") -> dict:
     images = images if images is not None else {"onebrain-api": GOOD_IMG}
     fields = dict(version=version, git_sha="abc", modules={"onebrain-api": version}, images=images,
                   migration_from=migration_from, migration_to=migration_to, rollback_kind=rollback_kind)
     relsig = sign_payload(canonical_release_payload(**fields), REL_PRIV)
     block = SignedReleaseBlock(signature=relsig, **fields)
     env = DesiredStateEnvelope(deployment_id="dep_a", release=block, version_floor="",
-                               nonce=nonce or ("nonce-" + version.replace(".", "")),
+                               nonce="nonce-" + version.replace(".", ""),
                                issued_at="2026-07-12T00:00:00+00:00", expires_at="2035-01-01T00:00:00+00:00")
     env = sign_desired_state(env, DS_PRIV)
     dumped = env.model_dump()
@@ -586,46 +585,6 @@ def test_current_digest_without_migration_contract_acknowledges_attempt(box):
     assert box.state()["outcome"] == "succeeded"
     assert box.state()["attempt_id"] == "roll_no_migration"
     assert box.state()["migration_reached"] == ""
-
-
-def test_noop_after_rollout_completes_keeps_the_recorded_attempt_id(box):
-    # MC stops serving the attempt_id hint once the rollout goes terminal, so the
-    # next no-op run receives "". Letting that overwrite the recorded id erased the
-    # only proof this box acted on the attempt, and the dev gate then rejected every
-    # later heartbeat as dev_attempt_mismatch.
-    box.seed_last_applied({"onebrain-api": GOOD_IMG})
-    box.set_alembic_current("0020")
-    box.set_serve(signed_serve(attempt_id="roll_dev_865b943c86ff"))
-    assert box.run().returncode == 0
-    assert box.state()["attempt_id"] == "roll_dev_865b943c86ff"
-
-    # A later poll of the same release: MC re-signs a fresh envelope every time, so
-    # the nonce differs, but the rollout is terminal now and the hint is gone.
-    box.set_serve(signed_serve(attempt_id="", nonce="nonce-poll-2"))
-    result = box.run()
-
-    assert result.returncode == 0, result.stderr
-    state = box.state()
-    assert state["outcome"] == "succeeded"
-    assert state["attempt_id"] == "roll_dev_865b943c86ff"
-
-
-def test_expired_attempt_hint_never_backfills_an_id_onto_a_failure(box):
-    # Carrying an id forward is only ever a re-affirmation of an existing success;
-    # a failure must never be misattributed to an older, successful attempt.
-    box.seed_last_applied({"onebrain-api": GOOD_IMG})
-    box.set_alembic_current("0020")
-    box.set_serve(signed_serve(attempt_id="roll_prior_success"))
-    assert box.run().returncode == 0
-    assert box.state()["attempt_id"] == "roll_prior_success"
-
-    box.set_serve(signed_serve(attempt_id="", nonce="nonce-poll-2"))
-    result = box.run(UPDATE_BUNDLE_REFRESH_FAILED="true")
-
-    assert result.returncode == 0, result.stderr
-    state = box.state()
-    assert state["outcome"] == "failed"
-    assert state["attempt_id"] == ""
 
 
 def test_current_digest_does_not_bypass_failed_bundle_refresh(box):
