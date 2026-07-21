@@ -94,7 +94,7 @@ def _require_rotation_if_unrotated(store, user, password: str) -> bool:
     and it does so per request — so this takes hold on sessions already open,
     not just at the next login. Returns True when it changed something.
     """
-    if getattr(user, "must_change_password", False):
+    if user.must_change_password:
         return False
     if not verify_password(password, user.password_hash):
         return False
