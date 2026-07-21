@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { PageHeader, Panel } from "@/components/admin-ui";
+import { describeFailure } from "@/lib/describe-failure";
 
 export function SettingsPanel() {
   const router = useRouter();
@@ -16,7 +17,7 @@ export function SettingsPanel() {
     try {
       const response = await fetch("/api/auth/logout", { method: "POST" });
       if (!response.ok) {
-        setError("Could not log out. Please try again.");
+        setError(await describeFailure("/api/auth/logout", response));
         return;
       }
       router.replace("/login");
