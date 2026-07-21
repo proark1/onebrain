@@ -94,7 +94,7 @@ function BindingEditor({ accountId, spaceId, agents, binding, onChanged }: {
       <div className="aiConnectorGrantColumn"><h3>Assigned employees</h3>{agents.map((agent) => <label key={agent.employee_id}><input checked={employeeIds.includes(agent.employee_id)} onChange={() => toggle(employeeIds, agent.employee_id, setEmployeeIds)} type="checkbox" /><span>{agent.name}<small>{agent.role}</small></span></label>)}</div>
       <div className="aiConnectorGrantColumn"><h3>Capabilities</h3>{CAPABILITIES.map(([id, label]) => <label key={id}><input checked={capabilities.includes(id)} onChange={() => toggle(capabilities, id, setCapabilities)} type="checkbox" /><span>{label}<small>{id === "calendar_create_private_focus" ? "Only private, no attendees, low-risk data" : "Human approval remains required for writes"}</small></span></label>)}</div>
       <div className="aiCalendarAllowlist"><h3>Allowed calendars</h3><textarea onChange={(event) => setResourceIds(event.target.value)} rows={5} value={resourceIds} /><button className="quiet" disabled={busy || !capabilities.includes("calendar_read")} onClick={discoverCalendars} type="button">Discover calendars</button>{calendars.map((calendar) => <button key={calendar.id} onClick={() => setResourceIds((current) => current.split(/\r?\n/).includes(calendar.id) ? current : `${current.trim()}\n${calendar.id}`.trim())} type="button"><span>{calendar.summary}</span><small>{calendar.primary ? "Primary" : calendar.access_role}</small></button>)}</div>
-      {error ? <p className="inlineError">{error}</p> : null}
+      {error ? <p className="inlineError" role="alert">{error}</p> : null}
       <footer><button disabled={busy || !employeeIds.length || !capabilities.length || !resourceIds.trim()} onClick={save} type="button">Save grants</button><button className="danger" disabled={busy} onClick={revoke} type="button">Revoke connection</button></footer>
     </div>
   );
@@ -135,7 +135,7 @@ export function AiEmployeeConnectors({ accountId, spaceId, agents, bindings, hea
         <div className="aiConnectorState"><span className={googleHealth?.available ? "ready" : "off"}>{googleHealth?.available ? "OAuth ready" : "Needs configuration"}</span><strong>{bindings.filter((row) => row.status === "active").length} active bindings</strong><small>{googleHealth?.reason || "Encrypted OAuth token storage enabled"}</small></div>
         {canManage ? <button disabled={busy || !googleHealth?.available} onClick={connect} type="button">Connect Google Calendar</button> : null}
       </div>
-      {error ? <p className="inlineError">{error}</p> : null}
+      {error ? <p className="inlineError" role="alert">{error}</p> : null}
       {bindings.length ? <div className="aiConnectorDesk"><nav>{bindings.map((binding) => <button className={selected?.id === binding.id ? "active" : ""} key={binding.id} onClick={() => setSelectedId(binding.id)} type="button"><span>{binding.provider.replaceAll("_", " ")}</span><small>{binding.status} · {binding.resource_ids.length} calendars</small></button>)}</nav>{selected ? <BindingEditor accountId={accountId} agents={agents} binding={selected} key={`${selected.id}-${selected.updated_at}`} onChanged={onConnectorsChanged} spaceId={spaceId} /> : null}</div> : <div className="aiEmptyPanel"><span>CONNECT</span><h2>No external tools connected</h2><p>The team already works inside OneBrain. Connect Calendar when you are ready to approve real scheduling actions.</p></div>}
     </section>
   );

@@ -78,6 +78,7 @@ export function CreateFolderDialog({
         <DialogHeader eyebrow="Drive filing template" id={titleId} title="New folder" copy="Files inherit these defaults when they are uploaded or moved here." />
         <label>
           <span>Folder name</span>
+          {/* eslint-disable-next-line jsx-a11y/no-autofocus -- seeds initial focus inside a just-opened <dialog>, which is the expected place for it; this is not a focus jump on page load. */}
           <input autoFocus maxLength={180} value={name} onChange={(event) => setName(event.target.value)} />
         </label>
         <DriveFilingPolicyFields audience={audience} canIndex={canIndex} policy={policy} policyMode={policyMode} onChange={setPolicy} />
@@ -310,6 +311,7 @@ export function PermanentDeleteDialog({
         <DialogHeader eyebrow="Administrator action" id={titleId} title={`Delete ${file.name}?`} copy="This removes the original, all revisions, and AI content. Legal holds can still block deletion. This cannot be undone." />
         <label>
           <span>Audit reason</span>
+          {/* eslint-disable-next-line jsx-a11y/no-autofocus -- seeds initial focus inside a just-opened <dialog>, which is the expected place for it; this is not a focus jump on page load. */}
           <textarea autoFocus maxLength={500} rows={3} value={reason} onChange={(event) => setReason(event.target.value)} />
         </label>
         <DialogError error={error} />
