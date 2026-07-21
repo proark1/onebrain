@@ -274,16 +274,38 @@ class GoogleCalendarConnector:
         ))
 
     def revoke(self, binding: AiConnectorBinding) -> AiConnectorBinding:
+        """Revoke at Google, then erase locally. Only claim what actually happened.
+
+        The local credential is deleted either way: OneBrain must not retain a
+        credential it was told to revoke. But deleting it also means the upstream
+        call can never be retried, so if Google did not accept the revocation the
+        offline grant is still live there and can only be removed from the user's
+        own Google account. Recording "revoked" in that case would write a
+        revocation that did not happen into the audit trail — precisely the record
+        an offboarding is performed to produce.
+        """
         self._validate_binding(binding)
+        revoked_upstream = True
         try:
             credential = self.secret_store.get(binding.credential_ref)
-            token = credential.get("refresh_token") or credential.get("access_token")
-            if token:
-                self._form_request(GOOGLE_REVOKE_URL, {"token": token})
+        except KeyError:
+            # Already erased: there is no grant of ours left to revoke.
+            credential = {}
         except Exception:
-            pass
+            # The store is unreachable, so we cannot even establish that there was
+            # nothing to revoke. Fail closed rather than claim success.
+            credential = {}
+            revoked_upstream = False
+        token = credential.get("refresh_token") or credential.get("access_token")
+        if token:
+            try:
+                self._form_request(GOOGLE_REVOKE_URL, {"token": token})
+            except Exception:
+                revoked_upstream = False
         self.secret_store.delete(binding.credential_ref)
-        return self.store.save_connector_binding(replace(binding, status="revoked"))
+        return self.store.save_connector_binding(
+            replace(binding, status="revoked" if revoked_upstream else "error"),
+        )
 
     def purge_local_credentials(
         self,

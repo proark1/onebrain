@@ -46,6 +46,9 @@ answer = client.ask(
 - `PUT /api/service/brand-theme`
 - `POST /api/service/intake`
 - `POST /api/service/capture`
+- `POST /api/service/records/delete`
+- `GET /api/service/tombstones`
+- `POST /api/service/tombstones/{tombstone_id}/ack`
 - `POST /api/service/ask`
 - `POST /api/service/kpis/snapshots`
 
@@ -56,6 +59,13 @@ incoming data into a structured OneBrain record with record type, intent,
 classification, confidence, status, summary, safe extracted facts, account,
 space, app, and purpose. `/api/service/capture` remains available for raw legacy
 capture.
+
+Erasure moves in both directions and always takes the write scope.
+`/api/service/records/delete` is module-initiated: the module names a record by
+the same `source_ref` it used at intake, and the canonical copy here is erased.
+It is idempotent, audited, and refused while the scope is under a legal hold.
+`/api/service/tombstones` is the reverse feed: the module polls forward from
+`cursor` for erasures raised here, mirrors each one, and acks it.
 
 `/api/service/kpis/snapshots` accepts bounded, transactional batches of
 aggregate KPI observations for the key's pinned account and spaces. It requires

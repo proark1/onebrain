@@ -177,7 +177,7 @@ export function AiEmployeesPanel() {
       </header>
 
       {team.installation_status !== "active" ? <p className="notice warning">The module is paused. History remains readable; chats, missions, configuration, and actions stay locked.</p> : null}
-      {error ? <p className="inlineError">{error}</p> : null}
+      {error ? <p className="inlineError" role="alert">{error}</p> : null}
 
       <nav className="aiModuleTabs" aria-label="AI Employees sections">
         {tabs.map((item) => <button aria-current={tab === item.id ? "page" : undefined} className={tab === item.id ? "active" : ""} key={item.id} onClick={() => setTab(item.id)} type="button"><span>{item.label}</span>{typeof item.count === "number" ? <small>{item.count}</small> : null}</button>)}

@@ -1,5 +1,5 @@
 import { headers } from "next/headers";
-import type { ConversationSummary, DocumentSummary, PendingDocument, SessionInfo } from "@/lib/onebrain-types";
+import type { ConversationSummary, SessionInfo } from "@/lib/onebrain-types";
 
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
 
@@ -35,14 +35,4 @@ async function serverRequestJson<T>(path: string, nullableOnUnauthorized = false
 export async function listServerConversations(): Promise<ConversationSummary[]> {
   const conversations = await serverRequestJson<ConversationSummary[]>("/api/conversations");
   return conversations ?? [];
-}
-
-export async function listServerDocuments(): Promise<DocumentSummary[]> {
-  const documents = await serverRequestJson<DocumentSummary[]>("/api/documents");
-  return documents ?? [];
-}
-
-export async function listServerPendingDocuments(): Promise<PendingDocument[]> {
-  const documents = await serverRequestJson<PendingDocument[]>("/api/documents/pending");
-  return documents ?? [];
 }

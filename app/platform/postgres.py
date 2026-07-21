@@ -66,7 +66,7 @@ def _json(value) -> dict:
 
 
 class PostgresPlatformStore:
-    def __init__(self, dsn: str, operator_dsn: str | None = None):
+    def __init__(self, dsn: str, operator_dsn: str | None = None, bootstrap_account_id: str = ""):
         import psycopg
 
         self._psycopg = psycopg
@@ -74,10 +74,34 @@ class PostgresPlatformStore:
         # Cross-account operator reads connect as the privileged operator role,
         # which bypasses RLS by identity — never via a runtime-settable flag.
         self._operator_dsn = operator_dsn or dsn
+        # A customer box is deliberately denied the owner connection (see the
+        # renderer: "Customer API containers never receive the owner connection"),
+        # so `admin=True` there resolves to the ordinary app role. Its own account
+        # id is the tenancy boundary such a box may legitimately act within.
+        self._bootstrap_account_id = (bootstrap_account_id or "").strip()
         self._validate_schema()
 
+    @property
+    def _has_privileged_role(self) -> bool:
+        """Whether `admin=True` actually reaches a role that bypasses RLS.
+
+        `pg_operator_database_url` falls back to the app DSN, so asking for an
+        admin connection on a customer box silently returned an UNPRIVILEGED one
+        with no RLS scope set. Every account-table policy then failed closed:
+        the bootstrap reconciler could not insert its own account (the box
+        crash-looped on startup) and `list_accounts` returned zero rows, which
+        surfaced as an empty Apps page. Detect the fallback instead of trusting
+        the flag.
+        """
+        return self._operator_dsn != self._dsn
+
     def _conn(self, *, account_id: str = "", space_id: str = "", admin: bool = False):
-        conn = self._psycopg.connect(self._operator_dsn if admin else self._dsn)
+        privileged = admin and self._has_privileged_role
+        conn = self._psycopg.connect(self._operator_dsn if privileged else self._dsn)
+        if admin and not privileged and not account_id:
+            # No owner role available: scope to this box's own account rather
+            # than issuing an unscoped query that RLS silently empties.
+            account_id = self._bootstrap_account_id
         if account_id or space_id:
             set_rls_scope(conn, tenant_id=account_id, account_id=account_id, space_id=space_id)
         return conn
@@ -167,7 +191,10 @@ class PostgresPlatformStore:
 
     def upsert_bootstrap_account(self, account: Account) -> Account:
         validate_account(account)
-        with self._conn(admin=True) as conn, conn.cursor() as cur:
+        # Scope to the row being written: the platform_accounts policy accepts
+        # `id = current_setting('app.account_id')`, so a box may converge its OWN
+        # account without an owner connection — and no other.
+        with self._conn(admin=True, account_id=account.id) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO platform_accounts (id, kind, name, owner_user_id, status)

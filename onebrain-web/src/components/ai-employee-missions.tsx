@@ -148,7 +148,7 @@ export function AiEmployeeMissions({ accountId, spaceId, agents, missions, maxSq
               </div>
             </header>
             <div className="aiMissionRoster">{selected.participants.map((participant) => <span className={participant.mission_role} key={participant.employee_id}>{agentById.get(participant.employee_id)?.name || participant.employee_id}<small>{participant.mission_role}</small></span>)}</div>
-            {error ? <p className="inlineError">{error}</p> : null}
+            {error ? <p className="inlineError" role="alert">{error}</p> : null}
             <div className="aiMissionTurns" aria-live="polite">
               {(visibleTurns.length ? visibleTurns : storedMessages.map((message) => ({
                 type: "agent_turn", employee_id: message.speaker_id, content: message.content, phase: "stored",

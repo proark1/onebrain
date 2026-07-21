@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { PageHeader, Panel } from "@/components/admin-ui";
+import { describeFailure } from "@/lib/describe-failure";
 
 export function PasswordChangePanel({ standalone = false }: { standalone?: boolean }) {
   const router = useRouter();
@@ -35,8 +36,7 @@ export function PasswordChangePanel({ standalone = false }: { standalone?: boole
         body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
       });
       if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        setError(typeof body.detail === "string" ? body.detail : "Could not change your password.");
+        setError(await describeFailure("/api/auth/change-password", response));
         return;
       }
       await fetch("/api/auth/logout", { method: "POST" });

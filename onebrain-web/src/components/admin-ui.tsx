@@ -62,15 +62,27 @@ export function MetricStrip({ metrics }: { metrics: Metric[] }) {
   );
 }
 
+// Deliberately NOT an ARIA tabs widget. The WAI-ARIA tabs pattern is a package
+// deal: every `role="tab"` must point at a real `role="tabpanel"` via
+// `aria-controls`, and the tablist must implement roving `tabIndex` plus
+// Home/End/Arrow key navigation. This component renders only the button strip —
+// each caller (fleet-panel, operator-panel, spaces-panel) owns its panel content
+// and renders it as a sibling, so `Tabs` has no panel element to identify or
+// label without an API change at all three call sites. The previous markup
+// declared `role="tablist"`/`role="tab"`/`aria-selected` with none of that
+// wiring, so a screen reader announced "tab 2 of 5", promised arrow keys that
+// did nothing, and never associated a panel. Honest buttons in a labelled
+// navigation landmark, with `aria-current` marking the active section, describe
+// what this control actually is. `aria-current="true"` (not "page") because the
+// buttons swap an in-page section rather than navigate between pages.
 export function Tabs<T extends string>({ active, items, label, onChange }: TabsProps<T>) {
   return (
-    <div className="tabBar" role="tablist" aria-label={label}>
+    <nav className="tabBar" aria-label={label}>
       {items.map((item) => (
         <button
-          aria-selected={active === item.id}
+          aria-current={active === item.id ? "true" : undefined}
           className={active === item.id ? "active" : ""}
           key={item.id}
-          role="tab"
           type="button"
           onClick={() => onChange(item.id)}
         >
@@ -78,7 +90,7 @@ export function Tabs<T extends string>({ active, items, label, onChange }: TabsP
           {item.meta ? <small>{item.meta}</small> : null}
         </button>
       ))}
-    </div>
+    </nav>
   );
 }
 

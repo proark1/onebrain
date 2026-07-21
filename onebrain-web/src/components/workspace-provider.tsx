@@ -16,6 +16,8 @@ import { cleanScope } from "@/lib/onebrain-types";
 type WorkspaceContextValue = {
   accounts: PlatformAccount[];
   available: boolean;
+  /** Why the scope could not be loaded. Empty when there is simply nothing to scope. */
+  error: string;
   loading: boolean;
   scope: ChatScope;
   selectedAccountId: string;
@@ -32,6 +34,7 @@ function emptyWorkspaceValue(): WorkspaceContextValue {
   return {
     accounts: [],
     available: false,
+    error: "",
     loading: false,
     scope: {},
     selectedAccountId: "",
@@ -62,6 +65,7 @@ export function WorkspaceProvider({ children, session }: { children: ReactNode; 
   const [selectedAccountId, setSelectedAccountIdState] = useState("");
   const [selectedSpaceId, setSelectedSpaceId] = useState("");
   const [available, setAvailable] = useState(false);
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(isAdmin);
 
   useEffect(() => {
@@ -74,6 +78,7 @@ export function WorkspaceProvider({ children, session }: { children: ReactNode; 
       }
 
       setLoading(true);
+      setError("");
       try {
         const nextAccounts = await listPlatformAccounts();
         if (!active) {
@@ -83,10 +88,14 @@ export function WorkspaceProvider({ children, session }: { children: ReactNode; 
         setAccounts(tenantAccount ? [tenantAccount] : []);
         setSelectedAccountIdState(tenantAccount?.id ?? "");
         setAvailable(Boolean(tenantAccount));
-      } catch {
+      } catch (cause) {
         if (!active) {
           return;
         }
+        // Keep the reason. Dropping it here used to hide the scope picker
+        // entirely, so every later request silently ran unscoped and the user
+        // was never told why their workspace controls had disappeared.
+        setError(cause instanceof Error ? cause.message : "Could not load your workspace scope.");
         setAccounts([]);
         setSpaces([]);
         setSelectedAccountIdState("");
@@ -128,10 +137,13 @@ export function WorkspaceProvider({ children, session }: { children: ReactNode; 
           }
           return nextSpaces[0]?.id ?? "";
         });
-      } catch {
+      } catch (cause) {
         if (!active) {
           return;
         }
+        // An empty space list and a failed space lookup are different states;
+        // saying so is what stops "All visible data" from looking deliberate.
+        setError(cause instanceof Error ? cause.message : "Could not load the spaces for this account.");
         setSpaces([]);
         setSelectedSpaceId("");
       } finally {
@@ -164,6 +176,7 @@ export function WorkspaceProvider({ children, session }: { children: ReactNode; 
     return {
       accounts,
       available,
+      error,
       loading,
       scope: cleanScope({ account_id: selectedAccountId, space_id: selectedSpaceId }),
       selectedAccountId,
@@ -176,6 +189,7 @@ export function WorkspaceProvider({ children, session }: { children: ReactNode; 
   }, [
     accounts,
     available,
+    error,
     isAdmin,
     loading,
     selectedAccountId,

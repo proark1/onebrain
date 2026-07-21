@@ -29,6 +29,13 @@ from app.security.policy import Classification
 
 ACCOUNTABLE_EXECUTIVE_IDS = frozenset(LEADERSHIP_COUNCIL_IDS)
 
+# Mission runs share the UNIQUE (tenant, account, space, idempotency_key) space
+# with direct-chat turns, whose key is entirely client-supplied. This prefix is
+# what separates the two: it is reserved at the API boundary
+# (AiEmployeeTurnCreate) so a client cannot mint a key that collides with a
+# mission run. Changing it here without changing that guard reopens the hole.
+MISSION_RUN_KEY_PREFIX = "mission:"
+
 
 @dataclass(frozen=True)
 class MissionAgentRequest:
@@ -417,7 +424,9 @@ class AiMissionService:
         hits,
         scope,
     ) -> MissionAgentResult:
-        idempotency_key = f"mission:{mission.id}:{phase}:{participant.employee_id}"
+        idempotency_key = (
+            f"{MISSION_RUN_KEY_PREFIX}{mission.id}:{phase}:{participant.employee_id}"
+        )
         input_hash = hashlib.sha256(json.dumps({
             "mission_id": mission.id,
             "phase": phase,

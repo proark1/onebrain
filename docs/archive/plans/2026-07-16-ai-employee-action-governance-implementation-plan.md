@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-16
 **Status:** Draft plan
-**Design:** `docs/superpowers/specs/2026-07-16-ai-employee-action-governance-design.md`
+**Design:** `docs/archive/specs/2026-07-16-ai-employee-action-governance-design.md`
 
 ## Objective
 

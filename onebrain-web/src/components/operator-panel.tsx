@@ -151,6 +151,22 @@ function releaseOptionLabel(release: OperatorRelease): string {
   return timestamp.isMissing ? release.version : `${release.version} — ${timestamp.local}`;
 }
 
+/**
+ * Look the development gate up without letting its failure abort the whole
+ * dashboard load -- but keep the reason, so the card can say the lookup failed
+ * instead of asserting that no gate is designated.
+ */
+async function describeGateLookup(): Promise<{ gate: DevelopmentGate | null; error: string }> {
+  try {
+    return { gate: await getDevelopmentGate(), error: "" };
+  } catch (cause) {
+    return {
+      gate: null,
+      error: cause instanceof Error ? cause.message : "The request failed.",
+    };
+  }
+}
+
 function newestFirst(releases: OperatorRelease[]): OperatorRelease[] {
   return [...releases].sort((left, right) => {
     const timestampDifference = releaseTimestamp(right) - releaseTimestamp(left);
@@ -189,6 +205,9 @@ export function OperatorPanel() {
   const [deployments, setDeployments] = useState<DeploymentRow[]>([]);
   const [releases, setReleases] = useState<OperatorRelease[]>([]);
   const [developmentGate, setDevelopmentGate] = useState<DevelopmentGate | null>(null);
+  // The gate lookup is deliberately non-fatal to the dashboard load, but a
+  // failed lookup must not be reported as "no gate is designated".
+  const [developmentGateError, setDevelopmentGateError] = useState("");
   const [gatePreparation, setGatePreparation] = useState<DevelopmentGatePreparation | null>(null);
   const [provisioningRuns, setProvisioningRuns] = useState<ProvisioningRun[]>([]);
   const [credentials, setCredentials] = useState<ProvisionedCredential[]>([]);
@@ -279,7 +298,7 @@ export function OperatorPanel() {
         listOperatorDeployments(),
         listOperatorReleases(),
         listProvisioningRuns(),
-        getDevelopmentGate().catch(() => null),
+        describeGateLookup(),
       ]);
       const nextRows = await Promise.all(nextDeployments.map(async (deployment) => {
         const [modules, rollouts, backup, health] = await Promise.all([
@@ -296,7 +315,8 @@ export function OperatorPanel() {
       setDeployments(nextRows);
       setReleases(newestFirst(nextReleases));
       setProvisioningRuns(nextProvisioningRuns);
-      setDevelopmentGate(nextGate);
+      setDevelopmentGate(nextGate.gate);
+      setDevelopmentGateError(nextGate.error);
       setLastRefreshedAt(new Date().toISOString());
       setSelectedProvisionModuleIds((current) => current.filter((moduleId) =>
         nextModuleCatalog.optional_modules.some((module) => module.id === moduleId),
@@ -332,7 +352,7 @@ export function OperatorPanel() {
           listOperatorDeployments(),
           listOperatorReleases(),
           listProvisioningRuns(),
-        getDevelopmentGate().catch(() => null),
+          describeGateLookup(),
         ]);
         const nextRows = await Promise.all(nextDeployments.map(async (deployment) => {
           const [modules, rollouts, backup, health] = await Promise.all([
@@ -351,7 +371,8 @@ export function OperatorPanel() {
         setDeployments(nextRows);
         setReleases(newestFirst(nextReleases));
         setProvisioningRuns(nextProvisioningRuns);
-        setDevelopmentGate(nextGate);
+        setDevelopmentGate(nextGate.gate);
+        setDevelopmentGateError(nextGate.error);
         setLastRefreshedAt(new Date().toISOString());
         setSelectedProvisionModuleIds((current) => current.filter((moduleId) =>
           nextModuleCatalog.optional_modules.some((module) => module.id === moduleId),
@@ -381,6 +402,19 @@ export function OperatorPanel() {
     event.preventDefault();
     if (!provisionName.trim() || !provisionOwnerEmail.trim() || !moduleCatalog
       || !hasDeployableProvisionVersion || !provisionCallbackUrl.trim() || busyAction) {
+      return;
+    }
+    // This submits dry_run: false -- it bills a real Hetzner server into
+    // existence. Name what is about to be created before it is.
+    if (!window.confirm(
+      `Provision a real Hetzner server for "${provisionName.trim()}"?\n\n`
+      + `Region: ${HETZNER_REGION}\n`
+      + `Release: ${provisionVersion} (${provisionRing} ring)\n`
+      + `Owner: ${provisionOwnerEmail.trim()}\n`
+      + `Modules: ${selectedProvisionModuleIds.length ? selectedProvisionModuleIds.join(", ") : "core only"}\n\n`
+      + "This is not a dry run. It creates billable infrastructure and DNS, and "
+      + "teardown is disabled -- removing it later is a manual operation.",
+    )) {
       return;
     }
     setBusyAction("provision");
@@ -482,6 +516,7 @@ export function OperatorPanel() {
     try {
       const gate = await designateDevelopmentGate(deploymentId);
       setDevelopmentGate(gate);
+      setDevelopmentGateError("");
       setNotice(`${gate.deployment?.customer_name || deploymentId} is the development gate.`);
       await loadOperator();
     } catch (err) {
@@ -520,6 +555,14 @@ export function OperatorPanel() {
     action: "retry" | "signature" | "approve" | "pause" | "resume" | "yank",
   ) {
     if (busyAction) {
+      return;
+    }
+    if (action === "yank" && !window.confirm(
+      `Yank release ${release.version}?\n\n`
+      + "It can no longer be selected for any customer rollout, and this cannot "
+      + "be undone -- recovering means cutting a new release. Deployments already "
+      + "running this version are not rolled back.",
+    )) {
       return;
     }
     setBusyAction("promotion");
@@ -565,6 +608,13 @@ export function OperatorPanel() {
 
   async function onRevokeKey(accountId: string, key: ServiceKeyInfo) {
     if (busyAction || key.status !== "active") {
+      return;
+    }
+    if (!window.confirm(
+      `Revoke the ${key.app_id || key.id} service key?\n\n`
+      + "That integration stops working for this customer immediately. The key "
+      + "cannot be restored -- a replacement has to be issued and deployed.",
+    )) {
       return;
     }
     setBusyAction("revoke");
@@ -783,6 +833,7 @@ export function OperatorPanel() {
               busyId={busyId}
               deployments={deployments.map((row) => row.deployment)}
               gate={developmentGate}
+              gateError={developmentGateError}
               preparation={gatePreparation}
               onDesignate={onDesignateGate}
               onPrepare={onPrepareDevelopmentGate}
@@ -1122,6 +1173,7 @@ function DevelopmentGateCard({
   busyId,
   deployments,
   gate,
+  gateError,
   onDesignate,
   onPrepare,
   preparation,
@@ -1130,6 +1182,7 @@ function DevelopmentGateCard({
   busyId: string;
   deployments: OperatorDeployment[];
   gate: DevelopmentGate | null;
+  gateError: string;
   onDesignate: (deploymentId: string) => Promise<void>;
   onPrepare: () => Promise<void>;
   preparation: DevelopmentGatePreparation | null;
@@ -1186,6 +1239,10 @@ function DevelopmentGateCard({
             <div className="pillRail">{gate.blockers.map((blocker) => <span key={blocker}>{labelFor(blocker)}</span>)}</div>
           ) : null}
         </article>
+      ) : gateError ? (
+        <p className="inlineError" role="alert">
+          Could not read the development gate, so it is unknown whether one is designated. {gateError}
+        </p>
       ) : (
         <p className="mutedLine">No development gate is designated. Enroll and select the existing development server below; this screen will not create a replacement.</p>
       )}
