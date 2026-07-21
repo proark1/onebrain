@@ -234,7 +234,16 @@ def _heartbeat_failure_reason(store, release, promotion, body, received_at: str)
     if release.migration_to and body.onebrain.migration_revision != release.migration_to:
         return "dev_migration_mismatch"
     update = getattr(body, "update", None)
-    if not update or update.attempt_id != rollout.id or update.outcome != "succeeded":
+    if not update or update.outcome != "succeeded":
+        return "dev_attempt_mismatch"
+    # attempt_id is an UNSIGNED advisory hint (see active_pull_attempt_id): MC
+    # stops serving it the moment the rollout goes terminal, so a box that keeps
+    # reporting after completion necessarily reports "". Since this function only
+    # evaluates heartbeats received AFTER completion, requiring a non-empty match
+    # rejected every heartbeat it was ever able to see. Accept an absent hint, but
+    # never a DIFFERENT one -- that is a genuinely mismatched attempt.
+    # last_target_version below remains the real anti-misattribution guard.
+    if update.attempt_id and update.attempt_id != rollout.id:
         return "dev_attempt_mismatch"
     if update.last_target_version != release.version:
         return "dev_target_mismatch"

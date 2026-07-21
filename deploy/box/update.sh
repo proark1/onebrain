@@ -618,6 +618,27 @@ write_state() {
   "$PYTHON" - "$STATE_FILE" "$1" "$2" "$TARGET_VERSION" "$ATTEMPT_ID" "$3" "$4" "$5" <<'PYEOF'
 import sys, json, datetime
 path, outcome, migration_reached, version, attempt_id, backup_status, backup_ts, backup_manifest = sys.argv[1:9]
+# MC serves the attempt_id hint ONLY while the rollout is non-terminal
+# (active_pull_attempt_id -> list_active_rollout), so every no-op run AFTER that
+# rollout completes receives "". Letting that empty hint overwrite the recorded
+# id destroys the only evidence that this box acted on the attempt, and the dev
+# gate then rejects every later heartbeat as dev_attempt_mismatch -- which
+# deadlocks promotion, because the gate only evaluates heartbeats received after
+# completion. Carry the id forward ONLY when re-affirming an existing success
+# for the same target, so a failure can never be misattributed to an older
+# attempt.
+if not attempt_id and outcome == "succeeded":
+    try:
+        with open(path) as handle:
+            previous = json.load(handle)
+    except (OSError, ValueError):
+        previous = {}
+    if (
+        isinstance(previous, dict)
+        and previous.get("outcome") == "succeeded"
+        and previous.get("last_target_version") == version
+    ):
+        attempt_id = str(previous.get("attempt_id") or "")
 json.dump({
     "last_target_version": version,
     "outcome": outcome,
