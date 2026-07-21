@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-17
 
-**Design:** `docs/superpowers/specs/2026-07-17-mission-control-ux-redesign-design.md`
+**Design:** `docs/archive/specs/2026-07-17-mission-control-ux-redesign-design.md`
 
 ## Objective
 

@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.ai_employees.access import (
     authorize_ai_employee_purpose,
@@ -32,6 +32,7 @@ from app.ai_employees.contracts import (
     MAX_MISSION_SQUAD_SIZE,
     get_ai_employee,
 )
+from app.ai_employees.missions import MISSION_RUN_KEY_PREFIX
 from app.auth.account_access import authorize_account_admin, is_account_admin, is_account_member
 from app.auth.principal import Principal, resolve_principal
 from app.deps import (
@@ -163,6 +164,27 @@ class AiEmployeeTurnCreate(StrictModel):
     space_id: str = Field(min_length=1, max_length=120)
     question: str = Field(min_length=1, max_length=8_000)
     idempotency_key: str = Field(min_length=1, max_length=160)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def _reject_reserved_namespace(cls, value: str) -> str:
+        """`mission:` belongs to server-generated mission run keys.
+
+        Mission turns derive `mission:<mission_id>:<phase>:<employee_id>` and
+        store it in the same UNIQUE (tenant, account, space, idempotency_key)
+        space as this fully client-supplied key. Mission ids are readable by any
+        space member from the missions list, so without this a member could post
+        one ordinary chat turn carrying another user's mission key and claim it.
+        The sponsor's next run would then find a row whose input hash does not
+        match, raise, and pause the mission — permanently, because nothing
+        deletes that run and cancelling does not clear it.
+        """
+        if value.startswith(MISSION_RUN_KEY_PREFIX):
+            raise ValueError(
+                f"idempotency_key must not begin with {MISSION_RUN_KEY_PREFIX!r}; "
+                "that namespace is reserved for mission runs."
+            )
+        return value
 
 
 class AiEmployeeModelHealthOut(StrictModel):
@@ -930,7 +952,12 @@ def list_ai_employee_memories(
         employee_id=employee_id,
         status=status,
     )
-    return [_memory_out(row) for row in rows]
+    # A memory carries at least its source's classification, so it can sit above
+    # the caller's clearance. authorize_ai_employee_reader is space membership,
+    # not a clearance check — apply the same ceiling the work-product, action, and
+    # proposal listers apply, or a space member reads restricted content verbatim.
+    return [_memory_out(row) for row in rows
+            if _can_view_classification(principal, row.classification)]
 
 
 @router.post("/memories", response_model=AiEmployeeMemoryOut)
@@ -946,6 +973,7 @@ def create_ai_employee_memory(
         memory = create_memory_candidate(
             get_ai_employee_store(),
             get_intake_store(),
+            principal=principal,
             tenant_id=principal.tenant_id,
             account_id=body.account_id,
             space_id=body.space_id,

@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-13
 **Status:** Ready for implementation after review
-**Design:** `docs/superpowers/specs/2026-07-13-onebrain-dev-release-promotion-gate-design.md`
+**Design:** `docs/archive/specs/2026-07-13-onebrain-dev-release-promotion-gate-design.md`
 
 ## Objective
 

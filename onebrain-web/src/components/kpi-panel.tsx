@@ -593,6 +593,7 @@ export function KpiPanel() {
           <form className="kpiManualForm" onSubmit={(event) => void recordObservation(event)}>
             <label className="field">
               <span className="fieldLabel">Value {manualDefinition.unit ? `(${manualDefinition.unit})` : ""}</span>
+              {/* eslint-disable-next-line jsx-a11y/no-autofocus -- this form only renders after the operator opens manual entry, so focus lands where they just asked to type; it is not a focus jump on page load. */}
               <input required autoFocus className="input" step="any" type="number" value={manualValue} onChange={(event) => setManualValue(event.target.value)} />
             </label>
             <label className="field">

@@ -195,7 +195,14 @@ export function FleetPanel() {
     void refresh();
   }, [refresh]);
 
-  async function run<T>(fn: () => Promise<T>, ok: string): Promise<void> {
+  /**
+   * `confirmMessage` gates the actions that change a live customer's state.
+   * It must name the consequence, not just ask "are you sure?".
+   */
+  async function run<T>(fn: () => Promise<T>, ok: string, confirmMessage?: string): Promise<void> {
+    if (confirmMessage && !window.confirm(confirmMessage)) {
+      return;
+    }
     setError("");
     setNotice("");
     try {
@@ -350,7 +357,17 @@ export function FleetPanel() {
                         <td className="rowActions">
                           {r.status === "running" ? <button onClick={() => run(() => pauseFleetRollout(r.id), "Paused.")}>Pause</button> : null}
                           {r.status === "paused" ? <button onClick={() => run(() => resumeFleetRollout(r.id), "Resumed.")}>Resume</button> : null}
-                          {(r.status === "running" || r.status === "paused") ? <button onClick={() => run(() => abortFleetRollout(r.id), "Aborted.")}>Abort</button> : null}
+                          {(r.status === "running" || r.status === "paused") ? (
+                            <button
+                              onClick={() => run(
+                                () => abortFleetRollout(r.id),
+                                "Aborted.",
+                                `Abort this rollout?\n\nDeployments already updated stay on the new release; the rest keep the old one, leaving the fleet on mixed versions. Aborting cannot be resumed -- you would need to create a new rollout.`,
+                              )}
+                            >
+                              Abort
+                            </button>
+                          ) : null}
                         </td>
                       </tr>
                     );
@@ -391,7 +408,17 @@ export function FleetPanel() {
                     <td><StatusBadge tone={k.status === "active" ? "success" : "neutral"}>{k.status}</StatusBadge></td>
                     <td><Timestamp label="Created" value={k.created_at} /></td>
                     <td><Timestamp label="Last used" value={k.last_used_at} /></td>
-                    <td>{k.status === "active" ? <button onClick={() => run(() => revokeFleetKey(k.id), "Key revoked.")}>Revoke</button> : null}</td>
+                    <td>{k.status === "active" ? (
+                      <button
+                        onClick={() => run(
+                          () => revokeFleetKey(k.id),
+                          "Key revoked.",
+                          `Revoke enrollment key ${k.id}?\n\nThe deployment using it stops reporting heartbeats and cannot fetch desired state or re-enrol. Recovering it needs host access. This cannot be undone.`,
+                        )}
+                      >
+                        Revoke
+                      </button>
+                    ) : null}</td>
                   </tr>
                 ))}
               </tbody>

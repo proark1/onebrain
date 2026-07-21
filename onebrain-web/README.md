@@ -7,12 +7,13 @@ This directory contains the optional OneBrain web client.
 ```powershell
 cd onebrain-web
 npm install
-copy .env.example .env.local
 npm run dev
 ```
 
-Set `ONEBRAIN_API_BASE_URL` to the local OneBrain API for development. The
-browser-facing API URL must be HTTPS in a deployed environment.
+The client reads one variable, `ONEBRAIN_API_BASE_URL`, which defaults to
+`http://127.0.0.1:8000`. Put an override in `.env.local` when the API is
+somewhere else. The browser-facing API URL must be HTTPS in a deployed
+environment.
 
 ## Deployment
 

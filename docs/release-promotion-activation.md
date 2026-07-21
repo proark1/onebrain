@@ -74,7 +74,8 @@ firewall, or release-trust change, complete the following with dummy data:
 Failure pauses delivery. It does not expand the rollout, auto-roll back every
 customer, or authorize a customer teardown.
 
-See [deployment](deployment.md) and [Mission Control architecture]
-(mission-control-architecture.md) for the boundaries that make this safe, and
+See [deployment](deployment.md) and
+[Mission Control architecture](mission-control-architecture.md) for the
+boundaries that make this safe, and
 the [production activation runbook](production-activation-runbook.md) for the
 external activation evidence.

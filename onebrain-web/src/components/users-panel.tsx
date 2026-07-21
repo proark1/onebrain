@@ -458,6 +458,7 @@ export function UsersPanel() {
           {deleteTarget ? (
             <section className="userDeleteConfirm" aria-labelledby="userDeleteTitle">
               <div><p className="eyebrow">Permanent account action</p><h2 id="userDeleteTitle">Delete {deleteTarget.display_name}?</h2><p>Login identity is anonymized. Company content and audit history remain. Owned workspaces must be reassigned first.</p></div>
+              {/* eslint-disable-next-line jsx-a11y/no-autofocus -- this confirmation only renders after the operator picks a delete target, so focus lands on the field that gates the action; it is not a focus jump on page load. */}
               <label>Type {deleteTarget.email} to confirm<input autoFocus value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} /></label>
               <div><button className="secondaryButton" type="button" onClick={() => setDeleteTarget(null)}>Cancel</button><button className="danger" disabled={deleteConfirmation !== deleteTarget.email || busy} type="button" onClick={() => void confirmDelete()}>Delete and anonymize</button></div>
             </section>

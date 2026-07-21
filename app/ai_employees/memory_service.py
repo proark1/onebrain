@@ -15,6 +15,7 @@ def create_memory_candidate(
     store,
     intake_store,
     *,
+    principal,
     tenant_id: str,
     account_id: str,
     space_id: str,
@@ -40,9 +41,25 @@ def create_memory_candidate(
             account_id=account_id,
             space_id=space_id,
         )
+        # Anything the caller may not read has to fail identically, or this
+        # endpoint is a classification oracle: the scope check alone is space
+        # membership, so a holder of ai_employee_mission_run could otherwise
+        # binary-search the classification of any intake id in the space --
+        # including HR and finance records far above their clearance -- from
+        # which of the two distinct errors came back. `_accessible_sources` in
+        # actions.py collapses the same cases for the same reason.
+        unavailable = PermissionError(f"AI employee memory source is unavailable: {source_ref}")
         if not record or record.status != "approved":
-            raise ValueError("Every AI employee memory source must be approved and in scope.")
-        if requested_classification < Classification.parse(record.classification):
+            raise unavailable
+        source_classification = Classification.parse(record.classification)
+        if source_classification > principal.clearance:
+            raise unavailable
+        category = record.metadata.get("category", "general")
+        if principal.categories is not None and category != "general" and category not in principal.categories:
+            raise unavailable
+        # Past this point the caller demonstrably may read the record, so naming
+        # the reason leaks nothing they do not already hold.
+        if requested_classification < source_classification:
             raise ValueError("AI employee memory cannot lower its source classification.")
     retention = _parse_future_timestamp(retention_until, "retention_until")
     return store.save_memory(AiEmployeeMemory(

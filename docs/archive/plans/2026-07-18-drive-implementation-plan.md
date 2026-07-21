@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-18
 **Status:** Approved for implementation
-**Design:** `docs/superpowers/specs/2026-07-18-drive-design.md`
+**Design:** `docs/archive/specs/2026-07-18-drive-design.md`
 
 ## Objective
 

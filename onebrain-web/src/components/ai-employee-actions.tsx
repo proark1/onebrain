@@ -61,7 +61,7 @@ export function AiEmployeeActions({ accountId, spaceId, agents, actions, onActio
           <p className="aiApprovalReason">{selected.reason}</p>
           <div className="aiPayload"><header><span>Exact normalized payload</span><code>{selected.payload_hash}</code></header><pre>{JSON.stringify(selected.payload, null, 2)}</pre></div>
           <div className="aiSourceChips">{selected.source_record_ids.map((id) => <span key={id}>Source · {id}</span>)}</div>
-          {error ? <p className="inlineError">{error}</p> : null}
+          {error ? <p className="inlineError" role="alert">{error}</p> : null}
           <footer className="aiApprovalControls">
             {selected.status === "proposed" || selected.status === "changes_requested" ? <>
               <button disabled={busy} onClick={() => void decide("approved")} type="button">Approve exact payload</button>

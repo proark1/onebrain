@@ -221,3 +221,133 @@ def test_full_stack_bootstrap_requires_distinct_assistant_and_communication_keys
             administrator_email="owner@example.test",
             integration_keys={"assistant": shared, "communication": shared},
         )
+
+
+# --- RLS scoping on a box with no owner connection ---------------------------
+# A customer box is deliberately denied ONEBRAIN_OPERATOR_DATABASE_URL, and
+# pg_operator_database_url then falls back to the app DSN. `admin=True` silently
+# became an unprivileged, unscoped connection, so every platform_accounts policy
+# failed closed: the reconciler could not insert its own account (startup
+# crash-looped) and list_accounts returned nothing (an empty Apps page).
+
+
+class _FakeConn:
+    def __init__(self, dsn):
+        self.dsn = dsn
+
+
+def _store(monkeypatch, *, dsn, operator_dsn, bootstrap_account_id=""):
+    from app.platform import postgres as pg_module
+    from app.platform.postgres import PostgresPlatformStore
+
+    store = object.__new__(PostgresPlatformStore)
+    store._psycopg = type("_Pg", (), {"connect": staticmethod(_FakeConn)})
+    store._dsn = dsn
+    store._operator_dsn = operator_dsn
+    store._bootstrap_account_id = bootstrap_account_id
+
+    scopes: list[dict] = []
+    monkeypatch.setattr(
+        pg_module,
+        "set_rls_scope",
+        lambda conn, **kw: scopes.append({"dsn": conn.dsn, **kw}),
+    )
+    return store, scopes
+
+
+def test_bootstrap_account_write_is_scoped_to_its_own_account_without_an_owner_role(monkeypatch):
+    store, scopes = _store(monkeypatch, dsn="app-dsn", operator_dsn="app-dsn")
+
+    conn = store._conn(admin=True, account_id="onebrain_development_x")
+
+    # It must not pretend to be privileged when no owner role exists, and must
+    # scope to the row it writes — which the policy accepts as
+    # `id = current_setting('app.account_id')`, and only for that one account.
+    assert conn.dsn == "app-dsn"
+    assert scopes == [{
+        "dsn": "app-dsn",
+        "tenant_id": "onebrain_development_x",
+        "account_id": "onebrain_development_x",
+        "space_id": "",
+    }]
+
+
+def test_upsert_bootstrap_account_asks_for_its_own_account_scope():
+    """The regression itself: it requested `admin=True` and no scope at all.
+
+    On a box with no owner role that resolves to an unprivileged, unscoped
+    connection, and the INSERT fails the platform_accounts WITH CHECK with
+    InsufficientPrivilege — which crash-looped onebrain-api at startup.
+    """
+    from app.platform.base import Account
+    from app.platform.postgres import PostgresPlatformStore
+
+    captured: dict = {}
+
+    class _Cur:
+        def execute(self, *a, **k):
+            return None
+
+        def fetchone(self):
+            return ("acct_x", "organization", "Name", "usr_1", "active", None)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def commit(self):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    store = object.__new__(PostgresPlatformStore)
+    store._conn = lambda **kw: captured.update(kw) or _Conn()
+
+    store.upsert_bootstrap_account(
+        Account(id="acct_x", kind="organization", name="Name", owner_user_id="usr_1")
+    )
+
+    assert captured == {"admin": True, "account_id": "acct_x"}
+
+
+def test_admin_reads_fall_back_to_the_boxs_own_account_when_no_owner_role_exists(monkeypatch):
+    store, scopes = _store(
+        monkeypatch, dsn="app-dsn", operator_dsn="app-dsn",
+        bootstrap_account_id="onebrain_development_x",
+    )
+
+    store._conn(admin=True)
+
+    # Unscoped, RLS empties the result rather than erroring — silently.
+    assert scopes and scopes[0]["account_id"] == "onebrain_development_x"
+
+
+def test_a_box_without_a_descriptor_gains_no_implicit_account_scope(monkeypatch):
+    store, scopes = _store(monkeypatch, dsn="app-dsn", operator_dsn="app-dsn")
+
+    store._conn(admin=True)
+
+    assert scopes == []
+
+
+def test_mission_control_keeps_its_privileged_unscoped_admin_connection(monkeypatch):
+    store, scopes = _store(
+        monkeypatch, dsn="app-dsn", operator_dsn="owner-dsn",
+        bootstrap_account_id="ignored",
+    )
+
+    conn = store._conn(admin=True)
+
+    # MC bypasses RLS by role identity; narrowing it would break cross-account reads.
+    assert conn.dsn == "owner-dsn"
+    assert scopes == []

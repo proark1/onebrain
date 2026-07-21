@@ -14,26 +14,23 @@ record before it becomes usable knowledge.
 7. Store the original content and structured metadata in the intake store.
 8. Include intake records in GDPR export/delete operations.
 
-## First Supported Records
+## Record Types
 
-- `message`
-- `document`
-- `contact`
-- `task`
-- `fact`
-- `policy`
-- `note`
-- `transcript`
+[`app/intake/base.py`](../app/intake/base.py) holds the authoritative sets. This
+doc names a representative few; it does not mirror them.
 
-## First Supported Intents
+`RECORD_TYPES` currently has 29 members, including `message`, `document`,
+`contact`, `task`, and `transcript`.
 
-- `question`
-- `complaint`
-- `booking`
-- `sales_lead`
-- `task`
-- `knowledge_update`
-- `internal_note`
+## Intents
+
+`INTENTS` currently has 23 members, including `question`, `complaint`,
+`booking`, `sales_lead`, and `knowledge_update`.
+
+An explicit `record_type` or `intent` is taken as given only when it is a member
+of its set, and is then stored at 0.98 confidence. Any other value falls through
+to keyword classification, which defaults to `note` and `internal_note` at low
+confidence.
 
 The current classifier is deterministic and auditable. A later LLM classifier
 can be added behind the same output contract, but the storage and privacy model
