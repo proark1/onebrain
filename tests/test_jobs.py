@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import time
 from types import SimpleNamespace
 
@@ -599,6 +599,15 @@ def test_worker_processes_retention_run_with_dry_run_and_enforcement(monkeypatch
         content="Customer retention sample.",
         source="communication",
     ))
+    # Age the record. Retention compares created_at against a now - duration_days
+    # cutoff, so a record written in this same instant is not provably older than
+    # a duration_days=0 cutoff and both assertions below race the clock's
+    # resolution -- which reproduces on Windows once anything else shifts timing.
+    aged = replace(
+        next(iter(intake_store._records.values())),
+        created_at=(datetime.now(timezone.utc) - timedelta(days=30)).isoformat(),
+    )
+    intake_store._records[aged.id] = aged
     job_store = MemoryJobStore()
     monkeypatch.setattr(app.deps, "get_platform_store", lambda: platform)
     monkeypatch.setattr(app.deps, "get_intake_store", lambda: intake_store)
