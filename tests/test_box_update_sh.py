@@ -82,6 +82,10 @@ _STUBS = {
         'fi\n'
         'if [[ "$*" == *"run --rm onebrain-migrate alembic current"* ]]; '
         'then cat "$CTRL/alembic_current" 2>/dev/null || true; fi\n'
+        # Local image inventory for the post-success prune. With no control file
+        # the listing is empty, so every other scenario keeps its old behaviour.
+        'if [[ "$1" == "image" && "$2" == "ls" ]]; '
+        'then cat "$CTRL/image_list" 2>/dev/null || true; fi\n'
         'if [ -f "$CTRL/activation_fail" ] && '
         '[[ "$*" == *"app.drive.malware.activation"* ]]; then exit 1; fi\n'
         'exit 0\n'
@@ -404,6 +408,87 @@ def test_happy_path_no_migration(box):
         (box.data / "onebrain_update" / "last_applied.json").read_text(encoding="utf-8")
     )
     assert last_applied["modules"] == {"onebrain-api": "2026.7.2"}
+
+
+def test_verified_update_prunes_superseded_images(box):
+    """Images from retired releases are reclaimed once the new one is healthy.
+
+    update.sh pulls a digest-pinned set every release and used to remove none of
+    them, so /var/lib/containerd grew until the root disk filled and the box
+    could no longer start a container (2026-07-20: the development gate died at
+    0 bytes free).
+    """
+    stale = "ghcr.io/proark1/onebrain-api@sha256:" + "9" * 64
+    (box.ctrl / "image_list").write_bytes(f"{stale}\n{GOOD_IMG}\n".encode("utf-8"))
+    box.set_serve(signed_serve(migration_from="0020", migration_to="0020"))
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert box.state()["outcome"] == "succeeded"
+    assert f"image rm {stale}" in box.stub_log()
+
+
+def test_prune_never_removes_the_rollback_or_current_images(box):
+    """Reclaiming disk must never destroy the path back to the previous release.
+
+    The rollback override is not referenced by any running container, so an
+    unguarded `docker image prune -a` would delete exactly the images recovery
+    depends on -- strictly worse than the full disk it is meant to prevent.
+    """
+    previous = "ghcr.io/proark1/onebrain-api@sha256:" + "b" * 64
+    # Seed the CURRENT override: install_next_override rotates it to .prev during
+    # the update, which is what actually makes it the rollback target. Writing
+    # .prev directly would be unrealistic -- the update overwrites it.
+    (box.root / "images.override.yml").write_text(
+        f"services:\n  onebrain-api:\n    image: {previous}\n", encoding="utf-8"
+    )
+    (box.ctrl / "image_list").write_bytes(f"{previous}\n{GOOD_IMG}\n".encode("utf-8"))
+    box.set_serve(signed_serve(migration_from="0020", migration_to="0020"))
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    log = box.stub_log()
+    assert f"image rm {previous}" not in log      # the rollback path survives
+    assert f"image rm {GOOD_IMG}" not in log      # so does the release just installed
+
+
+def test_prune_protects_a_kept_image_pinned_with_a_tag_and_a_digest(box):
+    """The keep comparison is on the digest, because references do not survive.
+
+    `docker image ls --format '{{.Repository}}@{{.Digest}}'` drops the tag, so an
+    image pinned `name:tag@sha256:...` -- the form render.py already uses for
+    caddy and redis -- lists as `name@sha256:...`. Comparing whole references
+    fails toward deletion: the live image stops matching its own keep entry, and
+    survives only because `image rm` is unforced and a container holds it.
+    """
+    kept = "ghcr.io/proark1/onebrain-api@sha256:" + "c" * 64
+    (box.root / "images.override.yml").write_text(
+        # Same digest as `kept`, written with a tag as well.
+        "services:\n  onebrain-api:\n    image: "
+        "ghcr.io/proark1/onebrain-api:2026.7.2@sha256:" + "c" * 64 + "\n",
+        encoding="utf-8",
+    )
+    (box.ctrl / "image_list").write_bytes(f"{kept}\n{GOOD_IMG}\n".encode("utf-8"))
+    box.set_serve(signed_serve(migration_from="0020", migration_to="0020"))
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert f"image rm {kept}" not in box.stub_log()
+
+
+def test_prune_is_skipped_when_no_protected_digests_resolve(box):
+    """Fail closed: an empty keep set must authorise no deletion at all."""
+    stale = "ghcr.io/proark1/onebrain-api@sha256:" + "9" * 64
+    (box.ctrl / "image_list").write_bytes(f"{stale}\n".encode("utf-8"))
+    box.set_serve(signed_serve(migration_from="0020", migration_to="0020"))
+    result = box.run()
+    assert result.returncode == 0, result.stderr
+    # The override always names the installed release, so the keep set is never
+    # empty on a real success -- and the stale image is still reclaimed.
+    assert f"image rm {stale}" in box.stub_log()
 
 
 def test_pulled_digests_equal_verifier_output(box):
@@ -1479,3 +1564,4 @@ def test_shellcheck_clean():
     for script in (_UPDATE_SH, _BOOTSTRAP_SH, _GATE_AGENT_SH, _DOTENV_SH):
         result = subprocess.run([checker, str(script)], capture_output=True, text=True)
         assert result.returncode == 0, result.stdout + result.stderr
+
