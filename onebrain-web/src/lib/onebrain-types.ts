@@ -1019,6 +1019,8 @@ export interface FleetDeploymentOverview {
   storage?: FleetStorageReport;
   open_alerts: string[];
   user_management_v1: boolean;
+  /** Absolute URL of the box's own console; "" when the control plane cannot place it. */
+  console_url: string;
 }
 
 export interface ManagedUser {

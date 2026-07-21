@@ -26,7 +26,6 @@ bootstrap-token exchange), so it is not exercised end-to-end here (dormant).
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import secrets
@@ -49,6 +48,7 @@ from app.provisioning.hetzner.client import (
 )
 from app.provisioning.hetzner.render import BoxRenderInputs, enabled_product_dbs, render_cloud_init
 from app.provisioning.customer_bootstrap import CustomerBootstrapDescriptor, encode_customer_bootstrap
+from app.provisioning.hostnames import provider_hostname_label
 from app.provisioning.runs import (
     STATUS_DISPATCHED,
     BoxBootstrapToken,
@@ -105,13 +105,11 @@ def _ssh_key_ids(csv: str) -> tuple:
     return tuple(out)
 
 
-def _provider_hostname_label(value: str) -> str:
-    """Map a normalized deployment id to one stable RFC 1123 label."""
-    label = value.strip().lower().replace("_", "-").strip("-")
-    if len(label) <= 63:
-        return label
-    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
-    return f"{label[:54].rstrip('-')}-{digest}"
+# Re-exported under the module-private name this file has always used. The rule
+# itself lives in app/provisioning/hostnames.py so read-only callers -- the fleet
+# overview, which only wants a link to a box -- can derive the same name without
+# importing this module's broker and client dependencies.
+_provider_hostname_label = provider_hostname_label
 
 
 def _is_valid_dns_hostname(value: str) -> bool:

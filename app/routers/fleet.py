@@ -45,6 +45,7 @@ from app.fleet.keys import (
     parse_fleet_key,
     verify_secret,
 )
+from app.provisioning.hostnames import resolve_console_url
 from app.provisioning.runs import OneTimeSecretCipher
 from app.trust.envelope import FloorBump, verify_floor_bump
 
@@ -568,6 +569,10 @@ class DeploymentOverview(BaseModel):
     storage: StorageReport = Field(default_factory=StorageReport)
     open_alerts: list[str] = Field(default_factory=list)
     user_management_v1: bool = False
+    # Absolute URL of the box's own console, or "" when neither a provisioning
+    # run nor ONEBRAIN_FLEET_BASE_DOMAIN can tell us where it lives. Derived per
+    # request rather than stored: no deployment record carries a hostname.
+    console_url: str = ""
 
 
 class FleetOverviewOut(BaseModel):
@@ -587,12 +592,27 @@ def _reported_storage(payload: dict | None) -> StorageReport:
         return StorageReport()
 
 
+def _provisioning_runs_by_deployment() -> dict[str, list]:
+    """Provisioning runs grouped by deployment, newest first.
+
+    One unfiltered read instead of a per-row query: the overview already walks
+    every deployment, and a per-deployment `list_runs` would turn one page into
+    N round trips against the operator DSN.
+    """
+    grouped: dict[str, list] = {}
+    for run in get_provisioning_run_store().list_runs():
+        grouped.setdefault(run.deployment_id, []).append(run)
+    return grouped
+
+
 @router.get("/overview", response_model=FleetOverviewOut)
 def fleet_overview(principal: Principal = Depends(resolve_principal)):
     _require_operator_admin(principal)
     control = get_control_plane_store()
     fleet = get_fleet_store()
     latest = fleet.latest_heartbeats()
+    runs_by_deployment = _provisioning_runs_by_deployment()
+    base_domain = get_settings().fleet_base_domain
 
     rows: list[DeploymentOverview] = []
     healthy = 0
@@ -629,6 +649,7 @@ def fleet_overview(principal: Principal = Depends(resolve_principal)):
             storage=_reported_storage(hb.payload if hb else None),
             open_alerts=alerts,
             user_management_v1=bool(ob.get("user_management_v1", False)),
+            console_url=resolve_console_url(dep.id, runs_by_deployment.get(dep.id, ()), base_domain),
         )
         rows.append(row)
         if hb and hb.healthy:

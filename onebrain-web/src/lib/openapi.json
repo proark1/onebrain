@@ -4380,6 +4380,11 @@
             "title": "Applied Secrets Epoch",
             "type": "integer"
           },
+          "console_url": {
+            "default": "",
+            "title": "Console Url",
+            "type": "string"
+          },
           "counts": {
             "additionalProperties": true,
             "title": "Counts",

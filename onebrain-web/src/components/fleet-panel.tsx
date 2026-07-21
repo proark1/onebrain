@@ -95,6 +95,21 @@ function DeploymentRow({ deployment }: { deployment: FleetDeploymentOverview }) 
         <td data-label="Deployment">
           <strong>{deployment.customer_name || deployment.deployment_id}</strong>
           <small>{deployment.deployment_id}{deployment.is_release_gate ? " · development gate" : ""} · {deployment.release_ring || "no ring"}</small>
+          {deployment.console_url ? (
+            <a
+              aria-label={`Open the console for ${deployment.customer_name || deployment.deployment_id} in a new tab`}
+              className="fleetConsoleLink"
+              href={deployment.console_url}
+              rel="noreferrer"
+              target="_blank"
+            >
+              Open console<span aria-hidden="true">↗</span>
+            </a>
+          ) : (
+            <small className="fleetNoConsole" title="Set ONEBRAIN_FLEET_BASE_DOMAIN, or provision this deployment, to give it a console link.">
+              No console address on record
+            </small>
+          )}
         </td>
         <td data-label="Release">
           <strong>{displayedVersion}</strong>
@@ -277,7 +292,11 @@ export function FleetPanel() {
               <div><strong>{overview.with_open_alerts}</strong><span>Alerts</span></div>
             </div>
           </StatusSummary>
-          <Panel title="All deployments" count={overview.total}>
+          <Panel
+            count={overview.total}
+            intro="Every deployment that reports to Mission Control, including this control plane and the development gate. Each row is what the box last told us about itself; open a row for its environment and migration, or use Open console to go to the box itself."
+            title="All deployments"
+          >
           <div className="tableScroll">
             <table className="adminTable fleetTable">
               <thead>
@@ -298,7 +317,18 @@ export function FleetPanel() {
 
       {tab === "rollouts" ? (
         <>
-          <Panel eyebrow="Steer" title="Start a fleet rollout">
+          <Panel
+            eyebrow="Steer"
+            intro={(
+              <>
+                Moves <strong>many deployments</strong> onto one release in ordered waves, ring by ring,
+                stopping on its own if too many fail. To move a single named customer instead, use
+                Control → Rollouts. Leave <strong>Dry run</strong> ticked to rehearse the plan: it reports
+                what would happen and changes no version.
+              </>
+            )}
+            title="Start a fleet rollout"
+          >
             <form className="adminForm" onSubmit={onCreateRollout}>
               <label>Target release version
                 <input value={form.target_version} onChange={(e) => setForm({ ...form, target_version: e.target.value })} required />
@@ -325,8 +355,12 @@ export function FleetPanel() {
               <button type="submit">Plan &amp; start</button>
             </form>
           </Panel>
-          <Panel eyebrow="Active + history" title="Fleet rollouts" count={rollouts.length}>
-            <p className="muted">Every rollout shows when it started and when the control plane last recorded a state change.</p>
+          <Panel
+            count={rollouts.length}
+            eyebrow="Active + history"
+            intro="Fleet rollouts that are running now or have already finished, with when each started and when the control plane last recorded a state change. Pause holds the next wave, Abort stops for good — deployments already moved stay on the new release."
+            title="Fleet rollouts"
+          >
             {!loaded && !error ? <div className="loadingState" role="status">Loading rollouts…</div> : null}
             {loaded && rollouts.length === 0 ? (
               <div className="emptyState">No rollout has been started. Use the form above to plan one.</div>
@@ -392,7 +426,19 @@ export function FleetPanel() {
       ) : null}
 
       {tab === "keys" ? (
-        <Panel eyebrow="Enrollment" title="Fleet keys" count={keys.length}>
+        <Panel
+          count={keys.length}
+          eyebrow="Enrollment"
+          intro={(
+            <>
+              A deployment cannot report to Mission Control until it holds a key pinned to its own
+              deployment id — this is how a new box joins the fleet. Mint one, then use Enroll to get the
+              environment variables to set on it. <strong>Revoking a key silences that box:</strong> it stops
+              sending heartbeats and cannot fetch its desired state or re-enrol without host access.
+            </>
+          )}
+          title="Fleet keys"
+        >
           <form className="adminForm inline" onSubmit={(e) => { e.preventDefault(); }}>
             <label>Deployment id
               <input value={mintDeployment} onChange={(e) => setMintDeployment(e.target.value)} placeholder="dep_..." />
