@@ -930,7 +930,12 @@ def list_ai_employee_memories(
         employee_id=employee_id,
         status=status,
     )
-    return [_memory_out(row) for row in rows]
+    # A memory carries at least its source's classification, so it can sit above
+    # the caller's clearance. authorize_ai_employee_reader is space membership,
+    # not a clearance check — apply the same ceiling the work-product, action, and
+    # proposal listers apply, or a space member reads restricted content verbatim.
+    return [_memory_out(row) for row in rows
+            if _can_view_classification(principal, row.classification)]
 
 
 @router.post("/memories", response_model=AiEmployeeMemoryOut)

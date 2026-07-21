@@ -43,6 +43,15 @@ def seed_admin_from_env(store, settings, tenant: str = "nft_gym") -> int:
 
     This is the safe production login path — a per-deployment credential, never a
     shared/default one. Returns 1 if it created the account, 0 otherwise.
+
+    The account is created with must_change_password=True. On a provisioned box
+    ONEBRAIN_ADMIN_PASSWORD *is* the one-time owner password minted by Mission
+    Control (which sets the same flag on its own row), so leaving it clear would
+    install a "one-time" credential as a permanent admin login — one that stays
+    recoverable from the box's .env and from MC's re-fetchable secret bundle.
+    Even when an operator sets the variable by hand it is a plaintext on-disk
+    credential, so first-login rotation is the right default either way. This
+    only affects accounts at creation time; existing rows are untouched.
     """
     email = (settings.admin_email or "").strip().lower()
     password = settings.admin_password or ""
@@ -53,6 +62,6 @@ def seed_admin_from_env(store, settings, tenant: str = "nft_gym") -> int:
     store.create(User(
         id=uuid.uuid4().hex, email=email, display_name="Administrator",
         password_hash=hash_password(password), tenant_id=tenant,
-        role_id="admin", location="all",
+        role_id="admin", location="all", must_change_password=True,
     ))
     return 1

@@ -6,6 +6,7 @@ export function WorkspaceSelector() {
   const {
     accounts,
     available,
+    error,
     loading,
     selectedAccountId,
     selectedSpaceId,
@@ -14,6 +15,21 @@ export function WorkspaceSelector() {
     setSelectedSpaceId,
     spaces,
   } = useWorkspace();
+
+  // A failed scope load is not the same as having nothing to scope. Silently
+  // returning null told the user their workspace controls did not exist, while
+  // every request they made afterwards ran unscoped.
+  if (error) {
+    return (
+      <section className="workspaceSelector" aria-label="Workspace scope">
+        <div className="workspaceSelectorHead">
+          <span>Workspace</span>
+          <strong>Unavailable</strong>
+        </div>
+        <p className="inlineError" role="alert">{error}</p>
+      </section>
+    );
+  }
 
   if (!available) {
     return null;

@@ -1,6 +1,6 @@
 # Hetzner Mission Control and development-template activation plan
 
-**Design:** `docs/superpowers/specs/2026-07-14-hetzner-mc-development-template-activation-design.md`
+**Design:** `docs/archive/specs/2026-07-14-hetzner-mc-development-template-activation-design.md`
 
 ## 1. Correct the shared communication-image contract
 

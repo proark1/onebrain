@@ -97,11 +97,15 @@ and pending OAuth state, subject to the existing legal-hold gate.
 Run the backend and web checks before rollout:
 
 ```powershell
-python -m ruff check app tests
 python -m pytest -q
 cd onebrain-web
 npm run openapi
+npm run openapi:customer
 npm run typecheck
 npm run lint
+npm run test
 npm run build
 ```
+
+Both OpenAPI surfaces must be regenerated together; CI verifies each against
+its checked-in contract.

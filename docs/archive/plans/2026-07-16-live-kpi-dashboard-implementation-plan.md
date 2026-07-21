@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-16
 **Status:** Approved design; ready for implementation
-**Design:** `docs/superpowers/specs/2026-07-16-live-kpi-dashboard-design.md`
+**Design:** `docs/archive/specs/2026-07-16-live-kpi-dashboard-design.md`
 
 ## Objective
 

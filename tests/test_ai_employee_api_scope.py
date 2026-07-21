@@ -13,6 +13,7 @@ from pydantic import ValidationError
 import app.routers.ai_employees as ai_router
 from app.ai_employees.backends.base import BackendEvent
 from app.ai_employees.backends.registry import BackendRegistry
+from app.ai_employees.base import AiEmployeeMemory
 from app.ai_employees.contracts import AI_EMPLOYEE_PURPOSES, get_ai_employee
 from app.ai_employees.memory import MemoryAiEmployeeStore
 from app.ai_employees.missions import AiMissionService, MissionAgentResult
@@ -408,6 +409,47 @@ def test_mission_api_creates_streams_and_exposes_separate_employee_turns(monkeyp
     assert ai_router.list_ai_employee_missions(
         account_id="acme", space_id="sp_business", principal=admin,
     )[0].id == created.id
+
+
+def test_memory_listing_applies_the_caller_clearance_ceiling(monkeypatch):
+    """A memory can sit above the reader's clearance, so the lister must filter.
+
+    authorize_ai_employee_reader is space membership plus app purpose; it has no
+    clearance dimension. Memories must carry at least their source's
+    classification, so without this ceiling any space member reads `restricted`
+    content verbatim -- while the work-product, action, and proposal listers in
+    this same router all apply it.
+    """
+    platform, employees = _wire(monkeypatch)
+    platform.upsert_membership(Membership(
+        id="m_frontdesk", account_id="acme", user_id="frontdesk@acme",
+        role_id="front_desk", space_id="sp_business",
+    ))
+    scope = {"tenant_id": "acme", "account_id": "acme", "space_id": "sp_business"}
+    retention = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+    for suffix, classification in (("internal", "internal"), ("restricted", "restricted")):
+        employees.save_memory(AiEmployeeMemory(
+            id=f"mem-{suffix}", **scope, employee_id="finance_manager",
+            content=f"{classification} board detail", source_refs=("rec-1",),
+            classification=classification, status="approved",
+            retention_until=retention, author_id="admin@acme",
+            approved_by="admin@acme",
+            approved_at=datetime.now(timezone.utc).isoformat(),
+        ))
+
+    admin = _human()                                   # RESTRICTED clearance
+    front_desk = _human(role_id="front_desk", user_id="frontdesk@acme")  # INTERNAL
+
+    visible_to_admin = ai_router.list_ai_employee_memories(
+        account_id="acme", space_id="sp_business", principal=admin,
+    )
+    assert {row.id for row in visible_to_admin} == {"mem-internal", "mem-restricted"}
+
+    visible_to_front_desk = ai_router.list_ai_employee_memories(
+        account_id="acme", space_id="sp_business", principal=front_desk,
+    )
+    assert {row.id for row in visible_to_front_desk} == {"mem-internal"}
+    assert all("restricted board detail" not in row.content for row in visible_to_front_desk)
 
 
 def test_work_product_and_action_queue_api_preserve_sources_hash_and_fresh_approval(monkeypatch):

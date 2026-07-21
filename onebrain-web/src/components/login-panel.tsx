@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { FormEvent } from "react";
+import { describeFailure } from "@/lib/describe-failure";
 
 type LoginPanelProps = {
   nextPath: string;
@@ -31,8 +32,7 @@ export function LoginPanel({ nextPath, passwordChanged = false }: LoginPanelProp
       });
 
       if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        setError(typeof body.detail === "string" ? body.detail : "Could not sign in.");
+        setError(await describeFailure("/api/auth/login", response));
         return;
       }
 

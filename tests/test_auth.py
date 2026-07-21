@@ -61,6 +61,30 @@ def test_seed_admin_from_env_creates_real_admin_and_is_idempotent():
     assert verify_password("a-strong-one", admin.password_hash)
 
 
+def test_seed_admin_from_env_forces_rotation_of_the_env_credential():
+    """On a provisioned box ONEBRAIN_ADMIN_PASSWORD *is* the one-time owner OTP.
+
+    Without this flag the "one-time" password becomes a permanent admin login
+    that stays recoverable from the box's .env and MC's re-fetchable bundle, and
+    the whole H-10 must-change chokepoint never fires on a customer deployment.
+    """
+    store = MemoryUserStore()
+    settings = SimpleNamespace(admin_email="owner@example.de", admin_password="provisioning-otp")
+    assert seed_admin_from_env(store, settings) == 1
+    admin = store.get_by_email("owner@example.de")
+    assert admin.must_change_password is True
+
+    # The tenant rebind that reconcile_customer_bootstrap performs must not
+    # silently clear the gate.
+    rebound = store.update_scope(admin.id, tenant_id="acct", role_id="admin", location="all")
+    assert rebound.must_change_password is True
+
+    # Rotating the credential is what clears it.
+    rotated = store.update_password(admin.id, hash_password("new-strong-password"),
+                                    must_change_password=False)
+    assert rotated.must_change_password is False
+
+
 def test_seed_admin_from_env_is_noop_without_config():
     store = MemoryUserStore()
     assert seed_admin_from_env(store, SimpleNamespace(admin_email="", admin_password="")) == 0

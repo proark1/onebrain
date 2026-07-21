@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-13  
 **Status:** Approved design; implementation in progress  
-**Design:** `docs/superpowers/specs/2026-07-13-full-stack-dev-gate-isolation-design.md`
+**Design:** `docs/archive/specs/2026-07-13-full-stack-dev-gate-isolation-design.md`
 
 ## Objective
 

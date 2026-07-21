@@ -162,7 +162,21 @@ class AiEmployeeRuntime:
             raise ValueError("AI employee configuration is incomplete.")
 
         hits = self.retrieval_service.retrieve(principal, question)
-        classification = self._max_classification(hits)
+        memories = active_approved_memories(self.store.list_memories(
+            tenant_id=principal.tenant_id,
+            account_id=account_id,
+            space_id=space_id,
+            employee_id=conversation.employee_id,
+            status="approved",
+        ))
+        # Memories are rendered into the prompt alongside retrieval hits, so they
+        # have to raise the provider data ceiling as well. Resolving the backend
+        # from hits alone would ship a `restricted` memory to a provider whose
+        # policy only clears `internal`.
+        classification = max(
+            self._max_classification(hits),
+            self._max_memory_classification(memories),
+        )
         try:
             backend, model = self.backend_registry.resolve(policy, classification)
         except BackendUnavailableError:
@@ -174,13 +188,6 @@ class AiEmployeeRuntime:
             account_id=account_id,
             space_id=space_id,
         )
-        memories = active_approved_memories(self.store.list_memories(
-            tenant_id=principal.tenant_id,
-            account_id=account_id,
-            space_id=space_id,
-            employee_id=conversation.employee_id,
-            status="approved",
-        ))
         messages = compile_agent_messages(
             employee=get_ai_employee(conversation.employee_id),
             character_payload=version.payload,
@@ -493,6 +500,17 @@ class AiEmployeeRuntime:
         highest = Classification.PUBLIC
         for hit in hits:
             value = Classification.parse(hit.chunk.meta.get("classification", Classification.RESTRICTED))
+            highest = max(highest, value)
+        return highest
+
+    @staticmethod
+    def _max_memory_classification(memories) -> Classification:
+        """Fail closed, like _max_classification: an unlabelled memory is restricted."""
+        highest = Classification.PUBLIC
+        for memory in memories:
+            value = Classification.parse(
+                getattr(memory, "classification", None) or Classification.RESTRICTED
+            )
             highest = max(highest, value)
         return highest
 

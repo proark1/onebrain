@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-17
 **Status:** Approved design; implementation ready
-**Design:** `docs/superpowers/specs/2026-07-17-hetzner-production-hardening-design.md`
+**Design:** `docs/archive/specs/2026-07-17-hetzner-production-hardening-design.md`
 
 ## Objective
 
