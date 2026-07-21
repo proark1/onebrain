@@ -79,6 +79,52 @@ def test_seed_admin_from_env_forces_rotation_of_the_env_credential():
     rebound = store.update_scope(admin.id, tenant_id="acct", role_id="admin", location="all")
     assert rebound.must_change_password is True
 
+
+def test_seed_admin_repairs_a_box_provisioned_before_the_flag_existed():
+    """Creating with the flag is forward-only, so existing rows need repairing.
+
+    Every box provisioned before that fix kept an admin row without the flag, so
+    the one-time owner password is still a permanent full-admin login there --
+    readable from the box's .env and re-fetchable from MC's secret bundle. Those
+    are the deployments holding customer data, and nothing else repairs them.
+    """
+    store = MemoryUserStore()
+    settings = SimpleNamespace(admin_email="owner@example.de", admin_password="provisioning-otp")
+    # A row exactly as the old code left it: env credential, no flag.
+    store.create(User(
+        id="u-legacy", email="owner@example.de", display_name="Administrator",
+        password_hash=hash_password("provisioning-otp"), tenant_id="acct",
+        role_id="admin", location="all",
+    ))
+
+    assert seed_admin_from_env(store, settings) == 0        # it did not create one
+    admin = store.get_by_email("owner@example.de")
+    assert admin.must_change_password is True
+    # Repair must not double as a password reset: an operator mid-incident needs
+    # the credential they hold to keep working long enough to rotate it.
+    assert verify_password("provisioning-otp", admin.password_hash)
+    assert admin.id == "u-legacy"
+
+
+def test_seed_admin_never_disturbs_an_owner_who_already_rotated():
+    """A stale ONEBRAIN_ADMIN_PASSWORD must not re-gate a rotated account.
+
+    After rotation the env variable still holds the old OTP, so keying off its
+    presence alone would force a password change on every restart forever.
+    """
+    store = MemoryUserStore()
+    settings = SimpleNamespace(admin_email="owner@example.de", admin_password="provisioning-otp")
+    store.create(User(
+        id="u-rotated", email="owner@example.de", display_name="Administrator",
+        password_hash=hash_password("the-owners-own-password"), tenant_id="acct",
+        role_id="admin", location="all",
+    ))
+
+    assert seed_admin_from_env(store, settings) == 0
+    admin = store.get_by_email("owner@example.de")
+    assert admin.must_change_password is False
+    assert verify_password("the-owners-own-password", admin.password_hash)
+
     # Rotating the credential is what clears it.
     rotated = store.update_password(admin.id, hash_password("new-strong-password"),
                                     must_change_password=False)
