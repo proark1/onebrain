@@ -368,6 +368,77 @@ prune_encrypted_backups() {
   done < <(find "$backup_dir" -maxdepth 1 -type f -name 'backup-*.dump.enc' -print0 2>/dev/null)
 }
 
+# Docker keeps every image it has ever pulled, and this agent pulls a fresh
+# digest-pinned set on EVERY release while removing none of them, so
+# /var/lib/containerd grew without bound until the root disk filled and the box
+# could no longer start a container or finish an update. On 2026-07-20 the
+# development gate died exactly that way: 0 bytes free on a 40GB root, four
+# modules down, `outcome: failed`. Mission Control had raised low_root_disk at
+# 11.4% free; nothing acted on it. Oldest, most-updated box dies first, which
+# means customer boxes, silently, on a delay.
+#
+# Runs ONLY after a release has verified healthy, and keeps every digest still
+# named by the current override, the rollback override, and the last applied
+# release: reclaiming disk by destroying the rollback path would be strictly
+# worse than the full disk it is meant to prevent. `image rm` is deliberately
+# not forced, so Docker independently refuses anything a container still uses.
+#
+# The keep set holds bare digests, never full references. `{{.Repository}}`
+# drops the tag, so an image pinned as `name:tag@sha256:...` -- the form
+# `_CADDY_IMAGE` and `_REDIS_IMAGE` already use in render.py -- lists as
+# `name@sha256:...` and can never equal the reference the compose file spells.
+# Matching whole references therefore fails silently the moment a pinned ref
+# carries a tag, and it fails toward deletion: the live image stops matching
+# its own keep entry. A digest identifies content, so comparing on it alone is
+# both sufficient and immune to how the repository and tag are written.
+#
+# $COMPOSE is deliberately NOT a keep source. It bakes `inp.images[module_id]`
+# at provisioning time, so after the first release its module images are
+# precisely the superseded ones this function exists to reclaim; keeping them
+# would pin several GB on the 40GB root forever, which is the failure being
+# fixed. Its infrastructure images (postgres/redis/caddy) need no keep entry
+# because they always have containers, and `image rm` is not forced.
+prune_superseded_images() {
+  local keep="${WORK}/keep_images" file ref digest
+  [ -n "${WORK:-}" ] || return 0
+  : >"$keep" 2>/dev/null || return 0
+
+  for file in "$OVERRIDE" "$OVERRIDE_PREV"; do
+    if [ -f "$file" ]; then
+      sed -n 's/.*image:[[:space:]]*[^[:space:]]*@\(sha256:[0-9a-f]\{64\}\).*/\1/p' \
+        "$file" >>"$keep" 2>/dev/null || true
+    fi
+  done
+  for file in "$TARGET" "$LAST_APPLIED"; do
+    if [ -f "$file" ]; then
+      new_digest_set "$file" | sed -n 's/.*@\(sha256:[0-9a-f]\{64\}\).*/\1/p' \
+        >>"$keep" 2>/dev/null || true
+    fi
+  done
+  # Fail closed: an unreadable/empty keep set must never authorise deletion.
+  if [ ! -s "$keep" ]; then
+    log "image prune skipped (no protected digests resolved)"
+    return 0
+  fi
+
+  while IFS= read -r ref; do
+    case "$ref" in
+      *"@sha256:"*) ;;
+      *) continue ;;
+    esac
+    digest="${ref##*@}"
+    if grep -Fxq "$digest" "$keep"; then
+      continue
+    fi
+    if "$DOCKER" image rm "$ref" >>"$LOG" 2>&1; then
+      log "pruned superseded image $ref"
+    fi
+  done <<EOF
+$("$DOCKER" image ls --digests --format '{{.Repository}}@{{.Digest}}' 2>/dev/null | sort -u)
+EOF
+  rm -f "$keep" 2>/dev/null || true
+}
+
 quiesce_application_services() {
   local services=(caddy)
   local service
@@ -850,4 +921,7 @@ fi
 cp -f "$TARGET" "$LAST_APPLIED"
 write_state "succeeded" "$MIGRATION_REACHED" "$BACKUP_STATUS" "$BACKUP_TS" "$BACKUP_MANIFEST"
 log "update SUCCEEDED -> $TARGET_VERSION"
+# Best-effort and last: the release is already recorded, so reclaiming disk can
+# never turn a good update into a reported failure.
+prune_superseded_images || log "image prune warned"
 exit 0
