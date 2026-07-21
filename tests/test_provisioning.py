@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from itertools import combinations
 from dataclasses import replace
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -895,13 +894,6 @@ def test_provision_create_rejects_retired_railway_deployment_types():
                 customer_name="x",
                 deployment_type=deployment_type,
             )
-
-
-def test_provisioning_form_offers_only_supported_deployment_types():
-    html = (Path(__file__).resolve().parents[1] / "app" / "static" / "index.html").read_text(encoding="utf-8")
-    assert '<option value="dedicated_server" selected>Dedicated server</option>' in html
-    assert 'value="dedicated_railway"' not in html
-    assert 'value="shared_railway"' not in html
 
 
 def test_provision_create_rejects_injection_in_brand_colors():

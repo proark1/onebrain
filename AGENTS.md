@@ -16,20 +16,21 @@ Railway is retired — it is not part of any environment. Do not re-add it.
 | `app/platform/`, `app/store/` | Account/space data layer (memory + postgres) |
 | `app/config.py` | Every setting. `.env.example` documents the operator-facing subset |
 | `onebrain-web/src/` | Console: `app/` routes, `components/*-panel.tsx`, `lib/` clients |
-| `app/static/` | Frozen. See below — do not port fixes into it |
 | `deploy/box/`, `deploy/broker/` | Host bundles |
 | `docs/` | Current contracts and runbooks. `docs/archive/` is history, not instructions |
 
-`app/static/` is a legacy static UI kept only as a break-glass way into a box if
-the console will not build or deploy — which matters because provisioned boxes
-have no SSH. It is off by default (`legacy_static_ui_enabled`), reachable only
-at `/static/index.html`, and it carries its own duplicate of the API client,
-auth, and operator console.
+`onebrain-web/` is the only browser console. The legacy `app/static/` UI was
+deleted — it carried a second copy of the API client, session auth and operator
+console, and could never be reached on a real box anyway (see below). Do not add
+a `/static` mount back.
 
-**It is frozen: do not port fixes into it, and do not extend it.** Two PRs were
-already spent copying one error-handling fix across, which is the whole cost
-this rule removes. Fix the Next.js console; leave the fallback alone. If it ever
-needs real work, delete it instead.
+**A box's config comes from exactly two places, and both are closed sets.**
+`box.env` is rendered by `app/provisioning/hetzner/render.py` from an explicit
+pair list; `/opt/onebrain/.env` is written by `render_dotenv` in
+`app/fleet/bootstrap_bundle.py`, which emits only `BUNDLE_KEYS` and drops
+everything else. A setting absent from both **cannot be configured on a
+provisioned box** — boxes have no SSH. Adding a setting to `app/config.py` and
+`.env.example` alone ships a knob nobody can turn.
 
 ## Checks — run these before calling work done
 

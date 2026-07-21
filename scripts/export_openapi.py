@@ -35,7 +35,6 @@ def _schema_json(surface: str = "operator") -> str:
         "ONEBRAIN_OPERATOR_CONSOLE": "false",
         "ONEBRAIN_FLEET_REPORTER_ENABLED": "false",
         "ONEBRAIN_PROVISIONER_BACKEND": "disabled",
-        "ONEBRAIN_LEGACY_STATIC_UI_ENABLED": "false",
     }
     previous_environment = {
         name: os.environ.get(name) for name in export_environment
