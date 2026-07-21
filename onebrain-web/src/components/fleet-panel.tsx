@@ -331,6 +331,7 @@ export function FleetPanel() {
             {loaded && rollouts.length === 0 ? (
               <div className="emptyState">No rollout has been started. Use the form above to plan one.</div>
             ) : null}
+            {loaded && rollouts.length > 0 ? (
             <div className="tableScroll">
               <table className="adminTable">
                 <thead>
@@ -385,6 +386,7 @@ export function FleetPanel() {
                 </tbody>
               </table>
             </div>
+            ) : null}
           </Panel>
         </>
       ) : null}
@@ -408,6 +410,7 @@ export function FleetPanel() {
           {loaded && keys.length === 0 ? (
             <div className="emptyState">No enrollment key exists. Mint one to let a deployment report in.</div>
           ) : null}
+          {loaded && keys.length > 0 ? (
           <div className="tableScroll">
             <table className="adminTable">
               <thead>
@@ -438,6 +441,7 @@ export function FleetPanel() {
               </tbody>
             </table>
           </div>
+          ) : null}
         </Panel>
       ) : null}
     </div>
