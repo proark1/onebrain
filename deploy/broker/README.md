@@ -77,6 +77,6 @@ not a broker permission or a deletion request.
 
 Record the certificate serial/expiry, firewall rule identifiers, broker image
 digest, token-rotation owner, and canary evidence in the operational change.
-See the [production activation runbook]
-(../../docs/production-activation-runbook.md) for the complete MC and customer
-activation sequence.
+See the
+[production activation runbook](../../docs/production-activation-runbook.md)
+for the complete MC and customer activation sequence.

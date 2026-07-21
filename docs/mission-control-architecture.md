@@ -99,9 +99,10 @@ authority.
 The MC host and isolated dev-gate boundaries are in place. The remote broker
 transport and host bundle are implemented but not yet activated with a
 dedicated host and secrets; automated MC provisioning remains disabled until
-that verification is complete. See the [broker deployment bundle]
-(../deploy/broker/README.md) and the historical [broker design]
-(archive/specs/2026-07-15-hetzner-broker-isolation-design.md). The active
+that verification is complete. See the
+[broker deployment bundle](../deploy/broker/README.md) and the historical
+[broker design](archive/specs/2026-07-15-hetzner-broker-isolation-design.md).
+The active
 [production activation runbook](production-activation-runbook.md) names the
 external credential, broker, canary, restore, and isolation evidence needed to
 enable it.

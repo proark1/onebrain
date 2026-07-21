@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-17
 
-**Design:** `docs/superpowers/specs/2026-07-17-development-gate-full-stack-bootstrap-ui-design.md`
+**Design:** `docs/archive/specs/2026-07-17-development-gate-full-stack-bootstrap-ui-design.md`
 
 ## Objective
 

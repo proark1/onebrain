@@ -3,6 +3,9 @@
 OneBrain is a general, GDPR-conscious platform for organizations. The current
 production and customer-deployment model is Hetzner-only.
 
+Working in this repository? Start with [AGENTS.md](../AGENTS.md) — the build,
+test, and release rules live there, not in this directory.
+
 ## Start here
 
 - [Platform overview](../README.md) — product scope, local development, and
@@ -19,10 +22,11 @@ production and customer-deployment model is Hetzner-only.
   custody, mutual TLS, and host activation checks.
 - [Release promotion](release-promotion-activation.md) — dev-gate validation
   and explicit customer rollout.
-
 - [Production activation and recovery](production-activation-runbook.md) —
   external credential retirement, broker activation, multi-replica, canary,
   restore, and isolation checks.
+- [Customer box provisioning runbook](customer-box-provisioning-runbook.md) —
+  bootstrap-token and one-time-password expiry windows, and the retry traps.
 
 ## Technical contracts
 
@@ -32,8 +36,11 @@ production and customer-deployment model is Hetzner-only.
 - [Service client](onebrain-service-client.md)
 - [KPI Dashboard](kpi-dashboard.md)
 - [AI Employees](ai-employees.md)
-- [Deletion, retention, and tombstones](deletion-tombstone-contract.md)
-- [Drive malware quarantine operations](drive-malware-operations.md)
+
+## Drive operations
+
+- [Backup and restore](drive-backup-restore.md)
+- [Malware quarantine operations](drive-malware-operations.md)
 
 ## Reference and transition material
 
@@ -41,5 +48,11 @@ production and customer-deployment model is Hetzner-only.
   isolation and rollout constraints.
 - [Hetzner migration status](hetzner-migration-sequence.md) — what was
   migrated and what remains retired or pending.
-- [Historical archive](archive/README.md) — immutable dated specs and plans;
-  not current operational instructions.
+
+## Archive
+
+[`archive/`](archive/README.md) is the single home for dated specs and
+implementation plans. Files there are immutable historical records of what was
+decided on a given date — they are **not** current operational instructions, and
+they are not kept in sync with the code. Write new dated design records there;
+do not create a second dated-document directory.

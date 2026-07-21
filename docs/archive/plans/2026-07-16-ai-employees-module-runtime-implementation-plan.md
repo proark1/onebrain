@@ -4,7 +4,7 @@
 
 **Status:** Approved design; implementation ready
 
-**Design:** `docs/superpowers/specs/2026-07-16-ai-employees-module-runtime-design.md`
+**Design:** `docs/archive/specs/2026-07-16-ai-employees-module-runtime-design.md`
 
 ## Objective
 

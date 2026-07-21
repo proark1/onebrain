@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-19
 
-**Design:** `docs/superpowers/specs/2026-07-19-onebrain-ui-redesign-design.md`
+**Design:** `docs/archive/specs/2026-07-19-onebrain-ui-redesign-design.md`
 
 ## Objective
 

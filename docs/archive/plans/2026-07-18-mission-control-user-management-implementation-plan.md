@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-18
 
-**Design:** `docs/superpowers/specs/2026-07-18-mission-control-user-management-design.md`
+**Design:** `docs/archive/specs/2026-07-18-mission-control-user-management-design.md`
 
 ## Objective
 
