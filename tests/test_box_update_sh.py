@@ -454,6 +454,31 @@ def test_prune_never_removes_the_rollback_or_current_images(box):
     assert f"image rm {GOOD_IMG}" not in log      # so does the release just installed
 
 
+def test_prune_protects_a_kept_image_pinned_with_a_tag_and_a_digest(box):
+    """The keep comparison is on the digest, because references do not survive.
+
+    `docker image ls --format '{{.Repository}}@{{.Digest}}'` drops the tag, so an
+    image pinned `name:tag@sha256:...` -- the form render.py already uses for
+    caddy and redis -- lists as `name@sha256:...`. Comparing whole references
+    fails toward deletion: the live image stops matching its own keep entry, and
+    survives only because `image rm` is unforced and a container holds it.
+    """
+    kept = "ghcr.io/proark1/onebrain-api@sha256:" + "c" * 64
+    (box.root / "images.override.yml").write_text(
+        # Same digest as `kept`, written with a tag as well.
+        "services:\n  onebrain-api:\n    image: "
+        "ghcr.io/proark1/onebrain-api:2026.7.2@sha256:" + "c" * 64 + "\n",
+        encoding="utf-8",
+    )
+    (box.ctrl / "image_list").write_bytes(f"{kept}\n{GOOD_IMG}\n".encode("utf-8"))
+    box.set_serve(signed_serve(migration_from="0020", migration_to="0020"))
+
+    result = box.run()
+
+    assert result.returncode == 0, result.stderr
+    assert f"image rm {kept}" not in box.stub_log()
+
+
 def test_prune_is_skipped_when_no_protected_digests_resolve(box):
     """Fail closed: an empty keep set must authorise no deletion at all."""
     stale = "ghcr.io/proark1/onebrain-api@sha256:" + "9" * 64

@@ -382,20 +382,37 @@ prune_encrypted_backups() {
 # release: reclaiming disk by destroying the rollback path would be strictly
 # worse than the full disk it is meant to prevent. `image rm` is deliberately
 # not forced, so Docker independently refuses anything a container still uses.
+#
+# The keep set holds bare digests, never full references. `{{.Repository}}`
+# drops the tag, so an image pinned as `name:tag@sha256:...` -- the form
+# `_CADDY_IMAGE` and `_REDIS_IMAGE` already use in render.py -- lists as
+# `name@sha256:...` and can never equal the reference the compose file spells.
+# Matching whole references therefore fails silently the moment a pinned ref
+# carries a tag, and it fails toward deletion: the live image stops matching
+# its own keep entry. A digest identifies content, so comparing on it alone is
+# both sufficient and immune to how the repository and tag are written.
+#
+# $COMPOSE is deliberately NOT a keep source. It bakes `inp.images[module_id]`
+# at provisioning time, so after the first release its module images are
+# precisely the superseded ones this function exists to reclaim; keeping them
+# would pin several GB on the 40GB root forever, which is the failure being
+# fixed. Its infrastructure images (postgres/redis/caddy) need no keep entry
+# because they always have containers, and `image rm` is not forced.
 prune_superseded_images() {
-  local keep="${WORK}/keep_images" file ref
+  local keep="${WORK}/keep_images" file ref digest
   [ -n "${WORK:-}" ] || return 0
   : >"$keep" 2>/dev/null || return 0
 
   for file in "$OVERRIDE" "$OVERRIDE_PREV"; do
     if [ -f "$file" ]; then
-      sed -n 's/.*image:[[:space:]]*\([^[:space:]]*@sha256:[0-9a-f]\{64\}\).*/\1/p' \
+      sed -n 's/.*image:[[:space:]]*[^[:space:]]*@\(sha256:[0-9a-f]\{64\}\).*/\1/p' \
         "$file" >>"$keep" 2>/dev/null || true
     fi
   done
   for file in "$TARGET" "$LAST_APPLIED"; do
     if [ -f "$file" ]; then
-      new_digest_set "$file" >>"$keep" 2>/dev/null || true
+      new_digest_set "$file" | sed -n 's/.*@\(sha256:[0-9a-f]\{64\}\).*/\1/p' \
+        >>"$keep" 2>/dev/null || true
     fi
   done
   # Fail closed: an unreadable/empty keep set must never authorise deletion.
@@ -409,7 +426,8 @@ prune_superseded_images() {
       *"@sha256:"*) ;;
       *) continue ;;
     esac
-    if grep -Fxq "$ref" "$keep"; then
+    digest="${ref##*@}"
+    if grep -Fxq "$digest" "$keep"; then
       continue
     fi
     if "$DOCKER" image rm "$ref" >>"$LOG" 2>&1; then
