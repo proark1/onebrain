@@ -238,6 +238,18 @@ def create_app() -> FastAPI:
     except Exception as exc:
         logging.getLogger("onebrain").warning("Fleet reporter not started: %s", exc)
 
+    # Data-retention sweep. OFF by default (retention_sweep_seconds=0): a
+    # configured policy is only enforced once an operator sets a positive
+    # interval, so landing this cannot start deleting customer records on a
+    # deploy. No-op on Mission Control, which stores no customer content.
+    try:
+        from app.retention.scheduler import start_retention_scheduler
+
+        if start_retention_scheduler(settings):
+            logging.getLogger("onebrain").info("Retention sweep scheduler enabled.")
+    except Exception as exc:  # never fatal
+        logging.getLogger("onebrain").warning("Retention sweep scheduler not started: %s", exc)
+
     if settings.legacy_static_ui_enabled:
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

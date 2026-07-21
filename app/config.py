@@ -442,6 +442,14 @@ class Settings(BaseSettings):
                                                  # (OPERATOR SETUP) is the AUTHORITATIVE retention backstop; the box
                                                  # prune is only an optimization. Boxes are PUT/GET/LIST only (no DELETE).
 
+    # Data-retention sweep. 0 = DISABLED (default): a configured retention policy
+    # is enforced only when an operator explicitly turns the sweep on, so no
+    # deploy can start deleting customer records on its own. A positive interval
+    # enqueues one whole-account `retention_run` job per account holding an
+    # active policy, at most once per UTC day per account. Customer-side only —
+    # Mission Control stores no customer content to sweep.
+    retention_sweep_seconds: int = Field(default=0, ge=0)
+
     # Service surface — per-key rate limit (metered LLM/embedding endpoints) and a
     # cap on how many active keys one tenant may hold.
     service_rate_limit: int = 60
