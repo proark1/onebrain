@@ -35,17 +35,30 @@ The Alembic baseline covers the current Postgres-backed app schema:
 - conversations
 - service keys
 - platform accounts/spaces/app installations/audit
+- platform access groups and memberships
 - intake records
 - background jobs and job file payloads
 - service-key lifecycle metadata
 - account and app-level brand themes
 - Mission Control deployments, releases, rollouts, backup/health records,
-  fleet telemetry, promotion state, and provisioning runs
+  fleet telemetry, promotion state, provisioning runs, and deployment-scoped
+  user-management jobs and receipts
 - legal holds, retention/tombstone records, and append-only platform audit
   events
 - AI Employee profiles, conversations, messages, missions, runs, work
   products, connector bindings, and approval records
+- Drive folders, files, file revisions, and upload sessions
+- Drive revision malware scans plus quarantine runtime, activation, and
+  settings state
 - shared hashed login-rate-limit counters
+
+Drive file bytes are not in that list. They live in the attached-volume blob
+store ([`app/drive/blobs.py`](../app/drive/blobs.py)), addressed from
+`drive_file_revisions.storage_key`; Postgres holds only the metadata.
+
+The required head is `REQUIRED_ALEMBIC_REVISION` in
+[`app/db/schema.py`](../app/db/schema.py); that constant is the single source of
+truth, and a store refuses to start against any other stamped revision.
 
 The active control plane is PostgreSQL-backed in production; it is not a
 JSON-only operator state store. The current additive sequence is:
@@ -62,7 +75,19 @@ JSON-only operator state store. The current additive sequence is:
   subjects for all API replicas; and
 - `0030_job_queue_rls_roles`: forced RLS and separate restricted PostgreSQL
   logins for request-side job status/creation versus cross-tenant worker
-  claims.
+  claims;
+- `0031_mc_user_management`: deployment-scoped Mission Control user-management
+  jobs with sealed payloads and sealed results, plus expiring command receipts;
+- `0032_drive_foundations`: account access groups and memberships under forced
+  RLS, plus the delete policies and one-time sweep that stop retaining job file
+  bytes for terminal jobs;
+- `0033_onebrain_drive`: the always-on Drive metadata schema — folders, files,
+  file revisions, and upload sessions — and a durable `jobs.idempotency_key`;
+  and
+- `0034_drive_malware_quarantine`: revision-scoped malware scan records,
+  quarantine byte reservations on upload sessions, and the singleton activation
+  state that must read `active` at this revision and policy epoch before API or
+  worker replicas start.
 
 ## Production Deployments
 
