@@ -404,6 +404,19 @@ export function OperatorPanel() {
       || !hasDeployableProvisionVersion || !provisionCallbackUrl.trim() || busyAction) {
       return;
     }
+    // This submits dry_run: false -- it bills a real Hetzner server into
+    // existence. Name what is about to be created before it is.
+    if (!window.confirm(
+      `Provision a real Hetzner server for "${provisionName.trim()}"?\n\n`
+      + `Region: ${HETZNER_REGION}\n`
+      + `Release: ${provisionVersion} (${provisionRing} ring)\n`
+      + `Owner: ${provisionOwnerEmail.trim()}\n`
+      + `Modules: ${selectedProvisionModuleIds.length ? selectedProvisionModuleIds.join(", ") : "core only"}\n\n`
+      + "This is not a dry run. It creates billable infrastructure and DNS, and "
+      + "teardown is disabled -- removing it later is a manual operation.",
+    )) {
+      return;
+    }
     setBusyAction("provision");
     setError("");
     setNotice("");
@@ -544,6 +557,14 @@ export function OperatorPanel() {
     if (busyAction) {
       return;
     }
+    if (action === "yank" && !window.confirm(
+      `Yank release ${release.version}?\n\n`
+      + "It can no longer be selected for any customer rollout, and this cannot "
+      + "be undone -- recovering means cutting a new release. Deployments already "
+      + "running this version are not rolled back.",
+    )) {
+      return;
+    }
     setBusyAction("promotion");
     setBusyId(release.version);
     setError("");
@@ -587,6 +608,13 @@ export function OperatorPanel() {
 
   async function onRevokeKey(accountId: string, key: ServiceKeyInfo) {
     if (busyAction || key.status !== "active") {
+      return;
+    }
+    if (!window.confirm(
+      `Revoke the ${key.app_id || key.id} service key?\n\n`
+      + "That integration stops working for this customer immediately. The key "
+      + "cannot be restored -- a replacement has to be issued and deployed.",
+    )) {
       return;
     }
     setBusyAction("revoke");
