@@ -168,7 +168,7 @@ function CharacterEditor({ accountId, spaceId, employee, onChanged }: {
         <label className="wide">Role focus<textarea onChange={(event) => field("role_focus", event.target.value)} rows={3} value={form.role_focus} /></label>
         <label className="wide">Character prompt<textarea onChange={(event) => field("character_prompt", event.target.value)} rows={8} value={form.character_prompt} /></label>
       </div>
-      {error ? <p className="inlineError">{error}</p> : null}
+      {error ? <p className="inlineError" role="alert">{error}</p> : null}
       {draft ? <div className="aiDraftReady"><div><strong>Draft version {draft.version} is ready</strong><span>{draft.preview}</span></div><button disabled={busy} onClick={publishDraft} type="button">Publish character</button></div> : null}
       <footer><button disabled={busy} onClick={saveDraft} type="button">{busy ? "Saving…" : "Save as draft"}</button><span>{versions.length} immutable versions · published changes affect new conversations and missions</span></footer>
     </div>

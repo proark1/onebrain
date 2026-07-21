@@ -131,7 +131,7 @@ export function AiEmployeeChat({ accountId, spaceId, agents, conversations, onCo
               ))}
               {streamedAnswer ? <article className="employee streaming"><span>{agentById.get(selected.employee_id)?.name}</span><p>{streamedAnswer}</p></article> : null}
             </div>
-            {error ? <p className="inlineError">{error}</p> : null}
+            {error ? <p className="inlineError" role="alert">{error}</p> : null}
             <form className="aiChatComposer" onSubmit={(event) => { event.preventDefault(); void sendTurn(); }}>
               <textarea aria-label="Message" onChange={(event) => setQuestion(event.target.value)} placeholder={`Ask ${agentById.get(selected.employee_id)?.name || "this employee"} to analyze, plan, or draft…`} rows={3} value={question} />
               <button disabled={busy || !question.trim()} type="submit">{busy ? "Working…" : "Send"}</button>

@@ -280,3 +280,48 @@ def test_encrypted_secret_backend_never_writes_raw_tokens(tmp_path):
     with pytest.raises(KeyError):
         store.get(ref)
     assert store.get(other_ref)["access_token"] == "other"
+
+
+def test_revoke_marks_the_binding_revoked_when_google_accepts_it():
+    connector, _, secrets_store, transport = _connector()
+    _, _, binding = _connect(connector, transport)
+    transport.queue(status=200, payload={})
+
+    revoked = connector.revoke(binding)
+
+    assert revoked.status == "revoked"
+    assert transport.calls[-1]["url"].endswith("/revoke")
+    with pytest.raises(KeyError):
+        secrets_store.get(binding.credential_ref)
+
+
+def test_revoke_does_not_claim_success_when_google_rejects_it():
+    """The audit trail must not record a revocation that did not happen.
+
+    The local credential is erased either way, so the upstream call can never be
+    retried -- the offline grant stays live at Google until the user removes it
+    from their own account. Reporting "revoked" here would tell an offboarding
+    audit the access was withdrawn when it was not.
+    """
+    connector, _, secrets_store, transport = _connector()
+    _, _, binding = _connect(connector, transport)
+    transport.queue(status=503, payload={"error": "backend_error"})
+
+    result = connector.revoke(binding)
+
+    assert result.status == "error"
+    # Still erased locally: OneBrain does not retain a credential it was told to
+    # revoke, even when it could not withdraw it upstream.
+    with pytest.raises(KeyError):
+        secrets_store.get(binding.credential_ref)
+
+
+def test_revoke_of_an_already_erased_credential_is_an_honest_success():
+    connector, _, secrets_store, transport = _connector()
+    _, _, binding = _connect(connector, transport)
+    secrets_store.delete(binding.credential_ref)
+
+    result = connector.revoke(binding)
+
+    # Nothing of ours is left to withdraw, so there is no upstream call to fail.
+    assert result.status == "revoked"

@@ -451,6 +451,30 @@ def test_memory_listing_applies_the_caller_clearance_ceiling(monkeypatch):
     assert {row.id for row in visible_to_front_desk} == {"mem-internal"}
     assert all("restricted board detail" not in row.content for row in visible_to_front_desk)
 
+def test_a_chat_turn_cannot_claim_a_mission_run_idempotency_key():
+    """The mission namespace is reserved, so a member cannot wedge someone's mission.
+
+    Mission runs and direct-chat turns share one UNIQUE
+    (tenant, account, space, idempotency_key) space, and the chat key is entirely
+    client-supplied. Mission ids are readable by any space member from the
+    missions list, so without this guard a member could post one ordinary turn in
+    their own conversation carrying `mission:<id>:scope:chief_of_staff`. The
+    sponsor's next run would then find a row whose input hash does not match,
+    raise MissionTurnError, and pause the mission -- permanently, since nothing
+    deletes that run and cancelling does not clear it.
+    """
+    with pytest.raises(ValidationError, match="reserved for mission runs"):
+        ai_router.AiEmployeeTurnCreate(
+            account_id="acme", space_id="sp_business", question="Plan the week.",
+            idempotency_key="mission:msn_victim:scope:chief_of_staff",
+        )
+
+    # An ordinary key is unaffected.
+    assert ai_router.AiEmployeeTurnCreate(
+        account_id="acme", space_id="sp_business", question="Plan the week.",
+        idempotency_key="api-turn-1",
+    ).idempotency_key == "api-turn-1"
+
 
 def test_work_product_and_action_queue_api_preserve_sources_hash_and_fresh_approval(monkeypatch):
     _, employees = _wire(monkeypatch)
