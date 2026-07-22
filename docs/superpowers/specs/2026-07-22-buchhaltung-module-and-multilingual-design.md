@@ -5,10 +5,15 @@
 > **Sprache des Dokuments:** Deutsch (die Plattform wird zweisprachig, siehe §9).
 
 Dieses Dokument ist der Implementierungsplan für ein modulares Buchhaltungsmodul,
-das Rechnungen (Foto/PDF) automatisch zu strukturierten, privaten
-Buchhaltungsdatensätzen verarbeitet und Fragen dazu beantwortet — plus die dafür
-nötige app-weite Mehrsprachigkeit. Es basiert auf einer Analyse des bestehenden
-Codes (AI-Employees-Runtime, Drive, LLM/Vision, Konsole, MC-Provisioning).
+das Buchhaltungsarbeit **abnimmt und automatisiert**: Rechnungen kommen automatisch
+herein (Upload **oder** E-Mail-Postfach), werden per Vision-Modell erfasst, **auf
+Dubletten/Plausibilität geprüft** und **vor-kontiert** (Buchungsvorschlag mit
+SKR-Konto + Steuerschlüssel); der Mensch **bestätigt nur noch** statt zu tippen
+(Review-by-Exception). Daraus entstehen strukturierte, private Datensätze, eine
+Übersicht inkl. USt-Voranmeldung-Kennzahlen, Antworten auf Fragen und ein Export in
+die Steuerwelt (DATEV/lexoffice/sevDesk) — plus die dafür nötige app-weite
+Mehrsprachigkeit. Es basiert auf einer Analyse des bestehenden Codes
+(AI-Employees-Runtime, Drive, LLM/Vision, Intake/Capture, Konsole, MC-Provisioning).
 
 Legende der Zustände im Text: **[vorhanden]** = existiert und wird wiederverwendet ·
 **[neu]** = neu zu bauen · **[Kompromiss]** = bewusste Abwägung / zu verifizieren.
@@ -31,10 +36,17 @@ ungenutzte JSON-Schema-Extraktionspfad + multimodale Modell-Transport im Backend
 Freigabe-/Work-Product-Maschinerie der KI-Mitarbeiter.
 
 **Wirklich neu [neu]:** ein Speicherort für strukturierte Belegdaten · ein Vision-Extraktor
-(austauschbares Modell) mit §14-UStG-Schema für Ein- und Ausgang · Bild-Anhang im Chat +
-ein governed Abfrage-Tool für die Finance-Managerin · Modul-Oberfläche + Kategorie-Wähler
-im Upload · **Export-Connectoren** zu DATEV/lexoffice/sevDesk (§10) · die app-weite
-i18n-Schicht (§9).
+(austauschbares Modell) mit §14-UStG-Schema für Ein- und Ausgang · ein **E-Mail-Eingang**
+(Rechnungs-Postfach je Space, §4) · **Validierung + Dublettenerkennung** und ein
+**Buchungsvorschlag** (SKR03/04-Konto + Steuerschlüssel), damit der Mensch nur noch bestätigt ·
+**USt-Voranmeldung-Kennzahlen** aus den bestätigten Belegen · Bild-Anhang im Chat + ein governed
+Abfrage-Tool für die Finance-Managerin · Modul-Oberfläche + Kategorie-Wähler im Upload ·
+**Export-Connectoren** zu DATEV/lexoffice/sevDesk (§10) · die app-weite i18n-Schicht (§9).
+
+**Automatisierungs-Fokus.** Die vier Bausteine, die aus reiner Erfassung echte Arbeitsersparnis
+machen, sind fester Bestandteil des Plans: automatischer **E-Mail-Eingang**, **Buchungsvorschlag**,
+**Dubletten-/Plausibilitätsprüfung** (Review-by-Exception) und **USt-Voranmeldung-Kennzahlen**
+(Entscheidungen in §2, Technik in §4/§5, Einordnung im Phasenplan §8).
 
 ---
 
@@ -45,8 +57,12 @@ i18n-Schicht (§9).
 | **Mitarbeiter** | Die bestehende Finance Managerin erhält die Funktion — kein neuer „Buchhalter". DE-Wissen über ihre editierbare Persona + das Modul-Schema. |
 | **Extraktion** | **Reines Vision-Modell, kein OCR.** Default `gemini-2.5-flash` (multimodal). Modell austauschbar **global** oder über ein Setting **nur für die Rechnungs-Bilderkennung**. Anbieter operator-wählbar (Standard oder EU-souverän). |
 | **Belegtypen** | **Eingangs- und Ausgangsrechnungen** von Anfang an (Feld `direction`); Übersicht deckt Vorsteuer (Eingang) + Umsatzsteuer (Ausgang). |
+| **Beleg-Eingang** | Zwei manuelle Wege (Drive-Upload, Chat) **plus automatischer E-Mail-Eingang**: ein Rechnungs-Postfach je Space, Anhang → automatische Erfassung (§4). Der eigentliche „Arbeit-abnehmen"-Hebel, weil Rechnungen überwiegend per Mail kommen. |
 | **Fragen & Antworten** | **Beides:** strukturiertes Read-only-Tool für exakte Zahlen (SQL) **und** Volltext-RAG für Dokumentensuche (mit DPIA-Warnung). |
 | **Verbuchung** | **Immer bestätigen.** Extraktion erzeugt einen `pending`-Entwurf; erst nach menschlicher Bestätigung (mit Korrektur) wird er `confirmed` und zählt in der Übersicht. |
+| **Buchungsvorschlag** | Die Erfassung liefert nicht nur Felder, sondern einen **Kontierungs-Vorschlag** (SKR03/04-Sachkonto + Steuerschlüssel, ggf. Kostenstelle). Der Mensch bestätigt/korrigiert per Klick — aus „erfassen" wird „abnehmen". |
+| **Prüfung** | Automatische **Dubletten-** + **Plausibilitäts-/Pflichtfeldprüfung** (Rechenprobe Netto+USt=Brutto, §14-Vollständigkeit, USt-IdNr, Rechnungsnr.-Eindeutigkeit). **Review-by-Exception = schneller bestätigen, nicht überspringen:** saubere Belege als Stapel per Klick, Auffälliges einzeln — **jeder** Beleg bleibt bis zur menschlichen Bestätigung `pending` (Verbuchung oben). |
+| **USt-Voranmeldung** | Aus den `confirmed`-Belegen werden **UStVA-Kennzahlen** (81/66/…) + prüfbare Zusammenstellung erzeugt. Die **ELSTER-Abgabe bleibt außen vor** (regulierte Aktion). |
 | **DPIA** | **Sperrt nicht** — persistente Warnung + Audit-Eintrag, aber kein harter Block. |
 | **Modularität** | Optionales Produkt, das der Operator pro Kunde in Mission Control an-/abwählt; für Bestandskunden automatisch aus. Gilt auch für Sophies Funktion. |
 | **Sprache** | Deutsch primär, Englisch verfügbar; wählbar bei der Kundenanlage (§9). |
@@ -97,10 +113,11 @@ jemanden ein; kein box.env-/Compose-/Secret-/Release-Eingriff nötig.
 
 ---
 
-## §4 · Zwei Upload-Wege, ein Extraktionspfad
+## §4 · Drei Eingangs-Wege, ein Extraktionspfad
 
-Beide Eingänge münden in dieselbe Regel: **„eine als `buchhaltung` kategorisierte,
-malware-saubere Datei existiert" → Extraktion anstoßen.**
+Alle Eingänge münden in dieselbe Regel: **„eine als `buchhaltung` kategorisierte,
+malware-saubere Datei existiert" → Extraktion anstoßen.** Zwei Wege sind manuell, der
+dritte (E-Mail) macht den Beleg-Eingang **automatisch** — der eigentliche Arbeitsersparnis-Hebel.
 
 - **Weg A — Drive direkt:** Upload mit Kategorie „Buchhaltung" wählen. Eine `category` im
   Drive ist eine `AccessGroup(kind="department")` (`app/platform/base.py`), analog zum
@@ -109,11 +126,29 @@ malware-saubere Datei existiert" → Extraktion anstoßen.**
 - **Weg B — im Chat mit Sophie:** der Chat-Composer lädt den Anhang **über Drive** hoch
   (nutzt Malware-Quarantäne + Speicher), Kategorie automatisch `buchhaltung`, und
   referenziert dann die `drive_file_id` im Turn.
+- **Weg C — E-Mail-Postfach [neu; nur Drive-/Malware-Fundament vorhanden]:** ein Rechnungs-
+  Postfach bzw. eine Weiterleitungsadresse je Space (z. B. `belege@<kunde>…`). Eingehende Mail →
+  Anhänge (PDF/Bild) werden **abgetrennt und in Drive** abgelegt (Malware-Quarantäne + Speicher),
+  Kategorie automatisch `buchhaltung` → dieselbe Extraktionsregel greift. Das ist der Weg, der den
+  Beleg-Eingang **ohne Handgriff** automatisiert. **Wichtig — kein billiger Reuse:** der bestehende
+  Intake/Capture-Endpoint (`app/routers/service.py` `capture`) ist **text-only**
+  (`ServiceCaptureRequest.text`, `app/schemas.py`) und landet in `INTERNAL/captured_input` — er ist
+  **nicht** der Transport für Beleg-Anhänge. Binärbelege brauchen einen **neuen,
+  service-authentifizierten Drive-Ingest**: die heutigen Drive-Routen verlangen einen menschlichen
+  Principal (`_human`, `app/routers/drive.py`) und Service-Principals tragen nur die Kategorie
+  `general` (`app/auth/principal.py`) — der Postfach-Principal braucht daher eine **explizite
+  `buchhaltung`-Kategorie-Berechtigung**, Mitgliedschaft allein reicht nicht. **Neu** sind damit der
+  eingehende **Mail-Kanal** (heutige Kanäle: `communication-widget/-voice/-api` — kein Mail-in), der
+  **binäre Service-Drive-Ingest**, die Absender→Space-Zuordnung und der Spam-/Schleifen-Schutz. Der
+  Mail-Empfangsweg der Box bleibt eine offene Infra-Frage (§11).
 
-**Voraussetzung für beide Wege:** die `buchhaltung`-Zugriffsgruppe muss im Space existieren und
-der hochladende Nutzer Mitglied sein — sonst schlägt die Ablage/Extraktion fehl. Der
-Installations-/Phase-0-Bootstrap muss die Gruppe **und** die Mitgliedschaften der Finanz-Nutzer
-mit anlegen, nicht nur die `AppInstallation`.
+**Voraussetzung für alle Wege:** die `buchhaltung`-Zugriffsgruppe muss im Space existieren und
+der hochladende Nutzer Mitglied sein — sonst schlägt die Ablage/Extraktion fehl. Für den
+**Postfach-Serviceprincipal** genügt Mitgliedschaft **nicht**: er braucht eine explizite
+`buchhaltung`-Kategorie-Berechtigung (Service-Principals sind sonst auf `general` beschränkt —
+§4 Weg C). Der Installations-/Phase-0-Bootstrap muss die Gruppe, die Mitgliedschaften der
+Finanz-Nutzer **und** die Kategorie-Berechtigung des Postfach-Principals anlegen, nicht nur die
+`AppInstallation`.
 
 **Malware-Quarantäne bleibt zwingend** (`app/drive/…`): extrahiert wird erst nach sauberem
 Scan — Downloads und Index sind bis dahin gesperrt (HTTP 423). Der App-Layer kann kein
@@ -127,11 +162,16 @@ Scan — Downloads und Index sind bis dahin gesperrt (HTTP 423). Der App-Layer k
   überall), Extraktor, Contracts. Dazu **zwei neue RLS-Tabellen** nach dem Muster der
   Drive-Migrationen (`migrations/versions/0033_onebrain_drive.py`, gleiche
   tenant/account/space-Scope-Policy):
-  - `accounting_documents` — ein Datensatz je Rechnung: **Richtung Eingang/Ausgang**,
-    Aussteller/Lieferant, Rechnungsnummer, Rechnungs-/Leistungsdatum, Netto/USt/Brutto **je
-    Steuersatz**, Status (`pending`/`confirmed`), Konfidenz, Verweis auf `drive_file_id` +
-    Revision.
-  - `accounting_line_items` — die Positionen.
+  - `accounting_documents` — ein Datensatz je Rechnung (**Kopf-/Aggregatsebene**): **Richtung
+    Eingang/Ausgang**, Aussteller/Lieferant, Rechnungsnummer, Rechnungs-/Leistungsdatum,
+    Netto/USt/Brutto **je Steuersatz** (Summen), **Dubletten-Schlüssel** + **Prüf-Flags**
+    (Rechenprobe, §14-Vollständigkeit, USt-IdNr), **Gesamt-Status** (`pending`/`confirmed`),
+    Konfidenz, Verweis auf `drive_file_id` + Revision. **Die Kontierung liegt bewusst nicht hier.**
+  - `accounting_line_items` — die Positionen **inkl. Kontierung je Buchungsposition**:
+    vorgeschlagenes + bestätigtes SKR03/04-Sachkonto, Steuerschlüssel, optional Kostenstelle,
+    Betrag + Steuersatz. So werden **gemischte Rechnungen** (Positionen auf verschiedene Konten,
+    Kostenstellen oder Steuersätze) als **getrennte Buchungssplits** modelliert statt auf eine
+    Sammelbuchung plattgedrückt — sonst entstehen falsche, für DATEV unbrauchbare Zeilen.
 
   Das ist der heute fehlende Speicherort — Drive-Revisionen halten nur Blob-Zeiger, Chunk-Meta
   sind Zugriffslabels. Die Migration muss außerdem `REQUIRED_ALEMBIC_REVISION` in
@@ -159,10 +199,35 @@ Scan — Downloads und Index sind bis dahin gesperrt (HTTP 423). Der App-Layer k
     Modell muss konfiguriert sein; das gewählte Modell muss in `app/llm/pricing.py` eingetragen
     werden, sonst Kostenwert `None`.
 
+- **Buchungsvorschlag / Kontierung [neu] — die Kern-Automatisierung.** Über die reine
+  Felderfassung hinaus schlägt das Modul die **Buchung** vor: eine regelbasierte Zuordnung (v1)
+  **je Buchungsposition** keyed auf Belegart/Richtung/Steuersatz/Lieferant → **SKR03/04-Sachkonto
+  + Steuerschlüssel** (ggf. Kostenstelle), mit Konfidenz — bei gemischten Rechnungen also mehrere
+  Positionssplits (siehe `accounting_line_items` oben), nicht eine Sammelbuchung. Der Vorschlag ist
+  im Bestätigungsschritt (§2) editierbar; Korrekturen speisen später eine lernende Zuordnung. Ohne
+  diesen Baustein ist das Modul ein Datenerfasser, mit ihm nimmt es das Buchen ab. Liefert zugleich
+  die Sachkonten, die der DATEV-Export (§10) braucht.
+- **Validierung & Dublettenerkennung [neu].** Vor dem Review läuft eine automatische Prüfung:
+  **Dubletten** über Datei-Hash + unscharfen Schlüssel (Aussteller + Rechnungsnummer + Betrag +
+  Datum), **Rechenprobe** (Summe Netto je Satz + USt = Brutto), **§14-Pflichtfelder** vollständig,
+  **USt-IdNr**-Format, **Rechnungsnr.-Eindeutigkeit** je Aussteller. Treffer werden markiert, nicht
+  verworfen. **Review-by-Exception ist ein Effizienz-, kein Autonomie-Feature:** saubere,
+  nicht-doppelte Belege wandern in eine **Stapel-Bestätigung** (ein Klick für viele), Auffälliges in
+  die Einzelprüfung — aber **kein Beleg wird automatisch verbucht**, und solange `pending` zählt er
+  in keiner Summe/Übersicht/UStVA und keinem Export mit (§2 Verbuchung). Das macht den
+  Bestätigungsschritt schnell und verhindert Doppelbuchungen — wichtig, sobald E-Mail-Eingang und
+  ein Foto denselben Beleg liefern.
 - **Übersicht = strukturierte Abfragen [neu].** Die Modul-Übersicht kommt aus SQL auf die
   Belegtabellen — USt je Quartal (Vorsteuer aus Eingang, Umsatzsteuer aus Ausgang),
   Netto/Brutto je Monat, Top-Lieferanten und -Kunden, offene Posten, letzte Belege. Genauer
-  und billiger als RAG für Zahlen. Nur `confirmed`-Datensätze zählen.
+  und billiger als RAG für Zahlen. Nur `confirmed`-Datensätze zählen. **Darauf baut die
+  USt-Voranmeldung auf:** aus denselben Belegen werden die **UStVA-Kennzahlen** (z. B. 81/66) +
+  eine prüfbare Zusammenstellung erzeugt — die wiederkehrende Monats-/Quartalsarbeit gebündelt.
+  **Wichtig — Versteuerungsart:** diese Kennzahlen gelten für **Soll-Versteuerung** (Steuer entsteht
+  mit Rechnungsdatum). **Ist-Versteuerung** (§20/§13 UStG — Steuer nach Zahlungseingang) braucht
+  Zahlungs-/Teilzahlungsdaten + die Versteuerungsart am Konto, die das Schema noch nicht trägt; v1
+  ist daher auf Soll begrenzt, Ist folgt mit der Zahlungs-/OP-Erfassung. Die ELSTER-Abgabe bleibt
+  bewusst außen vor (§7/§11).
 
 ---
 
@@ -222,13 +287,21 @@ weder Bild-Upload noch Abfrage-Tool — sie bleibt die normale Finance-Managerin
 |---|---|---|---|
 | **0** | Modul-Gerüst end-to-end: Katalog + `APP_IDS` + Gate-Router + leere Tabellen + Nav/Panel-Skelett + MC-Checkbox | Beweist Modularität, aus per Default | klein |
 | **i18n** | App-weites Fundament: `default_locale` bei Provisioning + Box-Flow, Frontend-i18n-Schicht (de/en), Shell & Navigation übersetzt — vor der Buchhaltungs-UI | Basis für zweisprachige Oberflächen | mittel |
-| **1** | Drive-Kategorie-Wähler + Extraktionspfad (entkoppelt vom Index-Job) → strukturierte Datensätze + Bestätigungs-Ansicht + Übersichts-Dashboard | Belege rein, verbucht, sichtbar | mittel–groß |
-| **2** | Chat-Anhang (multimodaler Turn) + governed Q&A-Tool + Volltext-RAG (mit DPIA-Warnung) | Sophie erfasst & beantwortet | groß |
-| **3** | **Buchhaltungs-Tool-Schnittstellen** (§10): DATEV-Format-Export → lexoffice/sevDesk-API-Push; dazu weitere Vision-Anbieter | Export in die Steuer-/Buchhaltungswelt | groß |
-| **4** | Bidirektionaler Sync, DATEVconnect/Unternehmen online, weitere Länder/Jurisdiktionen | Ausbau | später |
+| **1** | Drive-Kategorie-Wähler + Extraktionspfad (entkoppelt vom Index-Job) + **Validierung/Dublettenerkennung** + **Buchungsvorschlag je Position** (SKR03/04 + Steuerschlüssel) → strukturierte Datensätze + **Bestätigung (Stapel für saubere, Einzelprüfung für auffällige — jeder Beleg wird bestätigt)** + Übersichts-Dashboard | Belege rein, **geprüft**, **vor-kontiert**, verbucht, sichtbar | groß |
+| **2** | **E-Mail-Eingang**: Rechnungs-Postfach je Space → Anhang über einen **neuen service-authentifizierten Drive-Ingest** (nicht den text-only `capture`) + `buchhaltung`-Berechtigung → Extraktion → `pending` | Belege kommen **automatisch** rein | mittel |
+| **3** | Chat-Anhang (multimodaler Turn) + governed Q&A-Tool + Volltext-RAG (mit DPIA-Warnung) | Sophie erfasst & beantwortet | groß |
+| **4** | **USt-Voranmeldung-Kennzahlen** (81/66/…) + erweiterte Auswertung aus den bestätigten Belegen | wiederkehrende USt-Arbeit gebündelt | mittel |
+| **5** | **Buchhaltungs-Tool-Schnittstellen** (§10): DATEV-Format-Export → lexoffice/sevDesk-API-Push; dazu weitere Vision-Anbieter | Export in die Steuer-/Buchhaltungswelt | groß |
+| **6** | Bidirektionaler Sync, DATEVconnect/Unternehmen online, weitere Länder/Jurisdiktionen | Ausbau | später |
+
+**Phase 1 bündelt bewusst Erfassung + Prüfung + Buchungsvorschlag** — erst das zusammen macht aus
+Datenerfassung echte Arbeitsersparnis (Mensch bestätigt statt tippt). Die Phasen **3–5 ernten alle
+die Phase-1-Daten** und sind nach Priorität umstellbar (z. B. DATEV-Export vor Chat/RAG, wenn der
+Steuerberater-Handoff zuerst zählt).
 
 Ehrlich eingeordnet: Gesamt eher **mehrere Monate solo** (vergleichbar mit dem Drive-Aufbau).
-Phase 0, i18n und 1 liefern aber schon sichtbaren Wert.
+Phase 0, i18n und 1 liefern aber schon sichtbaren Wert; der **E-Mail-Eingang (Phase 2)** ist der
+Punkt, ab dem sich die Zeitersparnis im Alltag bemerkbar macht.
 
 ---
 
@@ -285,9 +358,10 @@ Google Calendar als Referenz-Implementierung). Zwei Ausprägungen:
   vorhandenen **verschlüsselten Connector-Secret-Store** (`connectors/secrets.py`,
   `secret_encryption_key`) — nie in Prompts, Exports oder API-Antworten (bestehende Invariante).
 
-**Kontierung (SKR03/SKR04).** Ein Export braucht Sachkonten. Die extrahierten Rechnungen müssen
-auf Buchungskonten gemappt werden. v1: konfigurierbare Default-Zuordnung je Belegart/Steuersatz
-+ manuelle Korrektur im Bestätigungsschritt (Verbuchung, §2); vollautomatische Kontierung später.
+**Kontierung (SKR03/SKR04).** Ein Export braucht Sachkonten — die liefert bereits der
+**Buchungsvorschlag** aus §5 (regelbasierte Zuordnung je Belegart/Richtung/Steuersatz/Lieferant +
+Korrektur im Bestätigungsschritt, §2; lernende/vollautomatische Kontierung später). Der Export
+konsumiert also die bestätigten Konten, statt eine eigene Zuordnung zu erfinden.
 
 **Freigabe + Purpose + Modularität.** Export/Push bewegt vertrauliche Buchungsdaten **aus
 OneBrain heraus** → dafür ein eigener, separat freigebbarer Purpose **`accounting_export`**
@@ -300,7 +374,7 @@ und -Bindings sind space-scoped** (pro Workspace — konsistent mit `enabled_spa
 
 **Reihenfolge:** DATEV-Format-Export zuerst (höchster Nutzen, kein Fremd-API-Risiko), dann
 lexoffice- + sevDesk-API-Push. Bidirektionaler Sync (Rücklesen/Abgleich) ist bewusst später
-(Phase 4).
+(Phase 6).
 
 ---
 
@@ -321,6 +395,25 @@ und Ausgangsrechnungen von Anfang an.
 - Tool-Set: DATEV + lexoffice + sevDesk *(empfohlen)*; 3. Platz auf ein internationales Tool
   (Xero/QuickBooks) tauschbar, oder ein viertes ergänzen.
 - Tiefe: Export/Push zuerst *(empfohlen)* vs. bidirektionaler Sync (deutlich größer).
+
+**Offene Eingang- & Automatisierungs-Entscheidungen (Standardannahme, revidierbar):**
+
+- **E-Mail-Eingang — Infra:** Die Box hat heute **keinen** eingehenden Mail-Weg (Kanäle:
+  widget/voice/api). Offen: eigener MX/Mailempfang je Box vs. zentrale Relay-/Inbound-Webhook-
+  Adresse *(empfohlen: ein Inbound-Relay je Space)* — plus Postfach-Adressschema,
+  Absender→Space-Zuordnung, Spam-/Schleifen-Schutz.
+- **E-Mail-Eingang — Drive-Ingest:** Anhänge dürfen **nicht** über den text-only `capture`-Endpoint
+  (der in `captured_input` landet); nötig ist ein **neuer, service-authentifizierter binärer
+  Drive-Ingest** + explizite `buchhaltung`-Kategorie-Berechtigung für den Postfach-Principal
+  (Drive-Routen verlangen `_human`, Service-Principals sind auf `general` beschränkt — §4 Weg C).
+- **Buchungsvorschlag:** regelbasiert *(empfohlen für v1)* vs. lernend/ML; Default-Kontenrahmen
+  **SKR03** *(Standard vieler DE-KMU)* vs. SKR04 — je Kunde konfigurierbar; Kontierung **je
+  Position/Split**, nicht je Beleg.
+- **Versteuerungsart (Soll/Ist):** UStVA-Kennzahlen v1 nur für **Soll-Versteuerung**;
+  **Ist-Versteuerung** (§20 UStG) braucht Zahlungsdaten + Versteuerungsart am Konto — zusammen mit
+  der Zahlungs-/OP-Erfassung nachziehen.
+- **USt-Voranmeldung:** nur **Kennzahlen + prüfbarer Report** *(empfohlen)*; die **ELSTER-
+  Direktabgabe bleibt außen vor** (regulierte Aktion) — höchstens ein ELSTER-fähiger Export später.
 
 **Umsetzungs-Notizen:**
 
