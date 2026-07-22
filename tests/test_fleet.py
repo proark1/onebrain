@@ -551,50 +551,36 @@ def test_fleet_overview_exposes_reported_root_and_data_capacity(monkeypatch):
     assert row.storage.data.total_bytes == 2000
 
 
-def test_fleet_overview_attaches_box_login_url(monkeypatch):
-    from app.provisioning.runs import MemoryProvisioningRunStore, ProvisioningRun
+def test_fleet_overview_derives_https_login_url(monkeypatch):
+    from types import SimpleNamespace
 
     control = MemoryControlPlaneStore()
-    for dep in ("dep_fqdn", "dep_ip", "dep_norun"):
+    for dep in ("nft_gym", "development-gate"):
         control.create_deployment(CustomerDeployment(id=dep, customer_name=dep, release_ring="pilot"))
-
-    prov = MemoryProvisioningRunStore()
-    # DNS box: FQDN -> Caddy auto-HTTPS.
-    prov.create_run(ProvisioningRun(
-        id="run_fqdn", account_id="acct", deployment_id="dep_fqdn", requested_by="admin",
-        external_run_url="onebrain-dep-fqdn.onlyonebrain.com", created_at="2026-07-20T00:00:00+00:00"))
-    # A newer, failed re-provision with no address must not mask the working URL.
-    prov.create_run(ProvisioningRun(
-        id="run_fqdn_retry", account_id="acct", deployment_id="dep_fqdn", requested_by="admin",
-        external_run_url="", created_at="2026-07-21T00:00:00+00:00"))
-    # DNS-disabled box: raw IPv4 -> plain HTTP on :80.
-    prov.create_run(ProvisioningRun(
-        id="run_ip", account_id="acct", deployment_id="dep_ip", requested_by="admin",
-        external_run_url="203.0.113.7", created_at="2026-07-20T00:00:00+00:00"))
-
     monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
     monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: MemoryFleetStore())
-    monkeypatch.setattr(fleet_router, "get_provisioning_run_store", lambda: prov)
+    # DNS-enabled fleet: boxes are served over HTTPS at <label>.<base_domain>.
+    monkeypatch.setattr(fleet_router, "get_settings", lambda: SimpleNamespace(
+        fleet_dns_provider="hetzner", fleet_base_domain="onlyonebrain.com", fleet_dns_zone_id="zone1"))
 
     rows = {r.deployment_id: r for r in fleet_router.fleet_overview(principal=_principal("admin")).deployments}
-    assert rows["dep_fqdn"].login_url == "https://onebrain-dep-fqdn.onlyonebrain.com"
-    assert rows["dep_ip"].login_url == "http://203.0.113.7"
-    assert rows["dep_norun"].login_url == ""
+    # Derived from the deployment id (not the mutable external_run_url); underscores
+    # become RFC-1123 dashes to match the box's real TLS hostname.
+    assert rows["nft_gym"].login_url == "https://nft-gym.onlyonebrain.com"
+    assert rows["development-gate"].login_url == "https://development-gate.onlyonebrain.com"
 
 
-def test_fleet_overview_login_url_survives_provisioning_store_failure(monkeypatch):
-    # The link is additive; a missing operator DSN (or any store error) must degrade
-    # to "no link", never break the overview.
-    class _BoomProvStore:
-        def list_runs(self, *args, **kwargs):
-            raise RuntimeError("operator DSN missing")
+def test_fleet_overview_suppresses_login_url_for_ip_only_fleet(monkeypatch):
+    from types import SimpleNamespace
 
+    # No DNS provider/zone -> boxes serve plain HTTP on the raw IP. An http:// link
+    # can't hold a secure-cookie session, so the overview exposes no login link.
     monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: _control_with("dep_a"))
     monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: MemoryFleetStore())
-    monkeypatch.setattr(fleet_router, "get_provisioning_run_store", lambda: _BoomProvStore())
+    monkeypatch.setattr(fleet_router, "get_settings", lambda: SimpleNamespace(
+        fleet_dns_provider="", fleet_base_domain="", fleet_dns_zone_id=""))
 
     out = fleet_router.fleet_overview(principal=_principal("admin"))
-    assert out.total == 1
     assert out.deployments[0].login_url == ""
 
 

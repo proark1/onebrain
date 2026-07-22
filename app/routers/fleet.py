@@ -588,34 +588,35 @@ def _reported_storage(payload: dict | None) -> StorageReport:
         return StorageReport()
 
 
-def _login_url(external_run_url: str) -> str:
-    """Turn a box's stored address into a browser login URL. The provisioning run
-    records an FQDN (Caddy serves auto-HTTPS) or, when DNS is disabled, a raw IPv4
-    (Caddy serves plain HTTP on :80). Returns "" when there is no address."""
-    host = (external_run_url or "").strip()
-    if not host or host.startswith(("http://", "https://")):
-        return host
-    parts = host.split(".")
-    is_ipv4 = len(parts) == 4 and all(part.isdigit() and len(part) <= 3 for part in parts)
-    return f"{'http' if is_ipv4 else 'https'}://{host}"
+def _fleet_login_base_domain(settings) -> str:
+    """The fleet's public base domain when boxes are served over DNS + HTTPS, else "".
+
+    Mirrors the provisioner's dns_enabled gate
+    (app/provisioning/hetzner/provisioner.py): a box gets a real public hostname only
+    when the fleet runs the Hetzner DNS provider with a base domain and a zone id. When
+    this returns "", boxes serve plain HTTP on the raw IP and there is no usable login
+    link (see _box_login_url)."""
+    dns_provider = (getattr(settings, "fleet_dns_provider", "") or "").strip().lower()
+    base_domain = (getattr(settings, "fleet_base_domain", "") or "").strip().rstrip(".").lower()
+    if dns_provider != "hetzner" or not base_domain or not getattr(settings, "fleet_dns_zone_id", ""):
+        return ""
+    return base_domain
 
 
-def _login_urls_by_deployment() -> dict[str, str]:
-    """Best-effort map deployment_id -> login URL from each box's latest provisioning
-    run. The link is additive: a missing operator DSN or any store error must never
-    break the overview, so every failure degrades to "no link"."""
-    try:
-        runs = get_provisioning_run_store().list_runs()
-    except Exception:
-        return {}
-    urls: dict[str, str] = {}
-    for run in runs:  # list_runs() is newest-first; first run with an address per box wins
-        if run.deployment_id in urls:
-            continue
-        url = _login_url(run.external_run_url)
-        if url:
-            urls[run.deployment_id] = url
-    return urls
+def _box_login_url(deployment_id: str, base_domain: str) -> str:
+    """The box's own HTTPS login address, DERIVED from the deployment id and the fleet
+    base domain so it always matches the hostname Caddy holds a certificate for.
+
+    We deliberately do NOT read the provisioning run's external_run_url: the box's
+    success callback overwrites it with the raw public IPv4
+    (deploy/box/onebrain_gate_report.py), and it is a generic run field that may carry an
+    arbitrary provider/workflow URL. An IP-only box (base_domain == "") gets no link -- it
+    serves plain HTTP on :80, and boxes render ONEBRAIN_COOKIE_SECURE=true, so a session
+    cookie cannot survive an http:// origin anyway."""
+    if not base_domain:
+        return ""
+    from app.provisioning.hetzner.provisioner import _provider_hostname_label
+    return f"https://{_provider_hostname_label(deployment_id)}.{base_domain}"
 
 
 @router.get("/overview", response_model=FleetOverviewOut)
@@ -624,7 +625,7 @@ def fleet_overview(principal: Principal = Depends(resolve_principal)):
     control = get_control_plane_store()
     fleet = get_fleet_store()
     latest = fleet.latest_heartbeats()
-    login_urls = _login_urls_by_deployment()
+    login_base = _fleet_login_base_domain(get_settings())
 
     rows: list[DeploymentOverview] = []
     healthy = 0
@@ -661,7 +662,7 @@ def fleet_overview(principal: Principal = Depends(resolve_principal)):
             storage=_reported_storage(hb.payload if hb else None),
             open_alerts=alerts,
             user_management_v1=bool(ob.get("user_management_v1", False)),
-            login_url=login_urls.get(dep.id, ""),
+            login_url=_box_login_url(dep.id, login_base),
         )
         rows.append(row)
         if hb and hb.healthy:
