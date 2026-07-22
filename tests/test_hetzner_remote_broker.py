@@ -54,7 +54,8 @@ def _request_payload(*, location="nbg1", firewall_port="443"):
     return encode_provision_request(
         server=_server(location=location),
         volume=VolumeCreateRequest(
-            name="onebrain-dep-a-data", size_gb=10, location=location, labels={"deployment_id": "dep_a"}
+            name="onebrain-dep-a-data", size_gb=10, location=location,
+            labels={"deployment_id": "dep_a", "managed-by": "onebrain-fleet"},
         ),
         dns=DnsRecordRequest(zone_id="fleet.example", name="dep-a", ipv4="", ttl=300),
         firewall=FirewallCreateRequest(
@@ -63,7 +64,7 @@ def _request_payload(*, location="nbg1", firewall_port="443"):
                 FirewallRule(direction="in", protocol="tcp", port="80"),
                 FirewallRule(direction="in", protocol="tcp", port=firewall_port),
             ),
-            labels={"deployment_id": "dep_a"},
+            labels={"deployment_id": "dep_a", "managed-by": "onebrain-fleet"},
         ),
     )
 
@@ -207,3 +208,88 @@ def test_broker_host_provisions_valid_request_without_exposing_credentials():
     rendered = response.text
     assert "hcloud-secret-not-for-mc" not in rendered
     assert "mc-broker-credential" not in rendered
+
+
+# --- teardown: /v1/destroy transport + host boundary (Phase A) ----------------
+
+def test_remote_broker_destroy_posts_only_the_deployment_id_and_decodes_result():
+    seen = {}
+
+    def opener(request, timeout):
+        seen["url"] = request.full_url
+        seen["authorization"] = request.get_header("Authorization")
+        seen["body"] = json.loads(request.data)
+        return _Response({
+            "deployment_id": "dep_a",
+            "servers_deleted": ["server_1"],
+            "volumes_deleted": ["vol_1"],
+            "firewalls_deleted": ["fw_1"],
+            "dns_deleted": ["dep-a/A"],
+            "nothing_found": False,
+        })
+
+    broker = RemoteHetznerBroker(
+        "https://broker.onlyonebrain.internal",
+        "mc-broker-credential",
+        client_certificate_file="/run/mc-client.crt",
+        client_key_file="/run/mc-client.key",
+        opener=opener,
+    )
+    result = broker.destroy_box("dep_a", confirm=True)
+
+    assert seen["url"] == "https://broker.onlyonebrain.internal/v1/destroy"
+    assert seen["authorization"] == "Bearer mc-broker-credential"
+    assert seen["body"] == {"deployment_id": "dep_a"}      # ONLY the id — MC hands over no raw resource ids
+    assert result.servers_deleted == ("server_1",) and result.volumes_deleted == ("vol_1",)
+    assert result.nothing_found is False
+
+
+def test_remote_broker_destroy_requires_confirm():
+    broker = RemoteHetznerBroker(
+        "https://broker.internal", "cred",
+        client_certificate_file="c.crt", client_key_file="c.key",
+        opener=lambda _r, _t: _Response({}))
+    with pytest.raises(ValueError):
+        broker.destroy_box("dep_a", confirm=False)
+
+
+def test_broker_host_destroys_a_deployment_by_discovery():
+    fake = FakeHetznerClient()
+    app = create_broker_app(settings=_broker_settings(), client=fake)
+    client = TestClient(app)
+    auth = {"Authorization": "Bearer mc-broker-credential"}
+
+    client.post("/v1/provision", json=_request_payload(), headers=auth)
+    assert [s.id for s in fake.list_servers("deployment_id=dep_a")] == ["server_1"]
+
+    response = client.post("/v1/destroy", json={"deployment_id": "dep_a"}, headers=auth)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["servers_deleted"] == ["server_1"]
+    assert body["volumes_deleted"] == ["vol_1"]
+    assert body["firewalls_deleted"] == ["fw_1"]
+    assert body["dns_deleted"] == ["dep-a/A"]
+    assert body["nothing_found"] is False
+    # the box is really gone from every scope read
+    assert fake.list_servers("deployment_id=dep_a") == []
+    assert fake.list_volumes("deployment_id=dep_a") == []
+    assert fake.list_firewalls("deployment_id=dep_a") == []
+
+
+def test_broker_host_rejects_unauthenticated_destroy_before_cloud_calls():
+    fake = FakeHetznerClient()
+    app = create_broker_app(settings=_broker_settings(), client=fake)
+    response = TestClient(app).post("/v1/destroy", json={"deployment_id": "dep_a"})
+    assert response.status_code == 401
+    assert fake.calls == []
+
+
+def test_broker_host_rejects_malformed_destroy_id_before_cloud_calls():
+    fake = FakeHetznerClient()
+    app = create_broker_app(settings=_broker_settings(), client=fake)
+    response = TestClient(app).post(
+        "/v1/destroy",
+        json={"deployment_id": "Dep A!"},          # violates the inert deployment-id grammar
+        headers={"Authorization": "Bearer mc-broker-credential"})
+    assert response.status_code == 400
+    assert fake.calls == []

@@ -6,8 +6,11 @@ import { StatusSummary } from "@/components/operational/status-summary";
 import { Timestamp } from "@/components/operational/timestamp";
 import {
   abortFleetRollout,
+  approveTeardownRequest,
   createFleetRollout,
+  createTeardownRequest,
   enrollDeployment,
+  executeTeardownRequest,
   getFleetOverview,
   listFleetKeys,
   listFleetRollouts,
@@ -18,6 +21,7 @@ import {
 } from "@/lib/onebrain-client";
 import type {
   CreateFleetRolloutInput,
+  CustomerTeardownRequest,
   FleetKeyInfo,
   FleetDeploymentOverview,
   FleetOverview,
@@ -64,8 +68,152 @@ function StorageSummary({ storage }: { storage?: FleetStorageReport }) {
   );
 }
 
-function DeploymentRow({ deployment }: { deployment: FleetDeploymentOverview }) {
+function DecommissionWizard({
+  deployment,
+  onCancel,
+  onDone,
+}: {
+  deployment: FleetDeploymentOverview;
+  onCancel: () => void;
+  onDone: (message: string) => Promise<void> | void;
+}) {
+  const [step, setStep] = useState<"evidence" | "approve" | "confirm">("evidence");
+  const [legalRef, setLegalRef] = useState("");
+  const [backupRef, setBackupRef] = useState("");
+  const [request, setRequest] = useState<CustomerTeardownRequest | null>(null);
+  const [nonce, setNonce] = useState("");
+  const [phrase, setPhrase] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const name = deployment.customer_name || deployment.deployment_id;
+  const expectedPhrase = `decommission ${deployment.deployment_id}`;
+
+  async function openRequest() {
+    setBusy(true);
+    setError("");
+    try {
+      const created = await createTeardownRequest(deployment.deployment_id, {
+        legal_hold_evidence_ref: legalRef.trim(),
+        backup_retention_evidence_ref: backupRef.trim(),
+      });
+      setRequest(created.request);
+      setNonce(created.approval_nonce);
+      setStep("approve");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not open the teardown request.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function approve() {
+    if (!request) return;
+    setBusy(true);
+    setError("");
+    try {
+      const approved = await approveTeardownRequest(deployment.deployment_id, request.id, nonce);
+      setRequest(approved);
+      if (approved.status === "approved") {
+        setStep("confirm");
+      } else {
+        setError(
+          `Recorded one approval (${approved.approver_ids.length}). This request still needs a second distinct operator to approve before it can run.`,
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Approval failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function execute() {
+    if (!request || phrase.trim() !== expectedPhrase) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await executeTeardownRequest(deployment.deployment_id, request.id, phrase.trim());
+      const summary = result.record_only
+        ? `Decommissioned ${name}. ${result.warning}`
+        : `Decommissioned ${name}. Destroyed ${result.servers_deleted.length} server(s), ${result.volumes_deleted.length} volume(s), ${result.firewalls_deleted.length} firewall(s), ${result.dns_deleted.length} DNS record(s); revoked ${result.fleet_keys_revoked} fleet key(s).`;
+      await onDone(summary);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Teardown execution failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="fleetDecommission" aria-label={`Decommission ${name}`}>
+      <p className="eyebrow">Destructive — decommission</p>
+      <h3>Decommission {name}?</h3>
+      <p className="muted">
+        This destroys the box&apos;s Hetzner server, data volume, firewall and DNS record, revokes its fleet
+        keys, and removes it from the fleet. Hetzner backups and the offsite database dump are retained
+        separately — this is not a GDPR erasure.
+      </p>
+
+      {error ? <Notice tone="error">{error}</Notice> : null}
+
+      {step === "evidence" ? (
+        <div className="fleetDecommissionStep">
+          <label>Legal-hold evidence reference
+            <input value={legalRef} onChange={(e) => setLegalRef(e.target.value)} placeholder="e.g. legal-review-2026-07-22" />
+          </label>
+          <label>Backup / retention evidence reference
+            <input value={backupRef} onChange={(e) => setBackupRef(e.target.value)} placeholder="e.g. backup-retention-2026-07-22" />
+          </label>
+          <div className="rowActions">
+            <button className="secondaryButton" type="button" onClick={onCancel}>Cancel</button>
+            <button type="button" disabled={busy || !legalRef.trim() || !backupRef.trim()} onClick={() => void openRequest()}>
+              Open teardown request
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {step === "approve" ? (
+        <div className="fleetDecommissionStep">
+          <p>Teardown request <code>{request?.id}</code> is open. Approve it to authorize execution.</p>
+          <p className="muted">
+            Strict dual control needs a second distinct operator; approving your own request requires
+            single-operator teardown to be enabled.
+          </p>
+          <div className="rowActions">
+            <button className="secondaryButton" type="button" onClick={onCancel}>Cancel</button>
+            <button type="button" disabled={busy} onClick={() => void approve()}>Approve teardown</button>
+          </div>
+        </div>
+      ) : null}
+
+      {step === "confirm" ? (
+        <div className="fleetDecommissionStep">
+          <p>Type <code>{expectedPhrase}</code> to confirm. The box is destroyed only after this.</p>
+          {/* eslint-disable-next-line jsx-a11y/no-autofocus -- renders only after the operator reaches the final step; focus lands on the field that gates the destroy, not on page load. */}
+          <label>Confirmation phrase<input autoFocus value={phrase} onChange={(e) => setPhrase(e.target.value)} placeholder={expectedPhrase} /></label>
+          <div className="rowActions">
+            <button className="secondaryButton" type="button" onClick={onCancel}>Cancel</button>
+            <button className="danger" type="button" disabled={busy || phrase.trim() !== expectedPhrase} onClick={() => void execute()}>
+              Decommission this box
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function DeploymentRow({
+  deployment,
+  onDecommissioned,
+}: {
+  deployment: FleetDeploymentOverview;
+  onDecommissioned: (message: string) => Promise<void> | void;
+}) {
   const [expanded, setExpanded] = useState(false);
+  const [decommissioning, setDecommissioning] = useState(false);
   const detailId = useId();
   const displayedVersion = deployment.reported_version || deployment.current_version || "—";
   const versionMismatch = Boolean(
@@ -93,7 +241,14 @@ function DeploymentRow({ deployment }: { deployment: FleetDeploymentOverview }) 
           </div>
         </td>
         <td data-label="Deployment">
-          <strong>{deployment.customer_name || deployment.deployment_id}</strong>
+          {deployment.login_url
+            ? (
+              <a className="fleetDeploymentLink" href={deployment.login_url} target="_blank" rel="noreferrer">
+                <strong>{deployment.customer_name || deployment.deployment_id}</strong>
+                <span aria-hidden="true"> ↗</span>
+              </a>
+            )
+            : <strong>{deployment.customer_name || deployment.deployment_id}</strong>}
           <small>{deployment.deployment_id}{deployment.is_release_gate ? " · development gate" : ""} · {deployment.release_ring || "no ring"}</small>
         </td>
         <td data-label="Release">
@@ -113,9 +268,23 @@ function DeploymentRow({ deployment }: { deployment: FleetDeploymentOverview }) 
             ? <StatusBadge tone="danger">{deployment.open_alerts.length} open</StatusBadge>
             : <span className="fleetNoAlerts">None</span>}
         </td>
+        <td data-label="Actions" className="rowActions">
+          {deployment.is_release_gate ? (
+            <span className="muted" title="Re-designate the release gate before it can be decommissioned">Release gate</span>
+          ) : (
+            <button
+              className="danger"
+              type="button"
+              aria-expanded={decommissioning}
+              onClick={() => setDecommissioning((current) => !current)}
+            >
+              {decommissioning ? "Cancel" : "Decommission"}
+            </button>
+          )}
+        </td>
       </tr>
       <tr className="fleetDeploymentDetail" hidden={!expanded} id={detailId}>
-        <td colSpan={6}>
+        <td colSpan={7}>
           <div className="fleetDetailGrid">
             <div><span>Added</span><Timestamp value={deployment.created_at} /></div>
             <div><span>Version active since</span><Timestamp value={deployment.current_version_deployed_at} /></div>
@@ -126,6 +295,20 @@ function DeploymentRow({ deployment }: { deployment: FleetDeploymentOverview }) 
           </div>
         </td>
       </tr>
+      {decommissioning ? (
+        <tr className="fleetDecommissionRow">
+          <td colSpan={7}>
+            <DecommissionWizard
+              deployment={deployment}
+              onCancel={() => setDecommissioning(false)}
+              onDone={async (message) => {
+                setDecommissioning(false);
+                await onDecommissioned(message);
+              }}
+            />
+          </td>
+        </tr>
+      ) : null}
     </>
   );
 }
@@ -194,6 +377,12 @@ export function FleetPanel() {
       setError(err instanceof Error ? err.message : "Fleet control plane is unavailable on this deployment.");
     }
   }, []);
+
+  const onDecommissioned = useCallback(async (message: string) => {
+    setError("");
+    setNotice(message);
+    await refresh();
+  }, [refresh]);
 
   useEffect(() => {
     // Initial fetch on mount; state updates land after the request resolves.
@@ -282,11 +471,11 @@ export function FleetPanel() {
             <table className="adminTable fleetTable">
               <thead>
                 <tr>
-                  <th>Health</th><th>Deployment</th><th>Release</th><th>Activity</th><th>Usage</th><th>Alerts</th>
+                  <th>Health</th><th>Deployment</th><th>Release</th><th>Activity</th><th>Usage</th><th>Alerts</th><th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {overview.deployments.map((deployment) => <DeploymentRow deployment={deployment} key={deployment.deployment_id} />)}
+                {overview.deployments.map((deployment) => <DeploymentRow deployment={deployment} onDecommissioned={onDecommissioned} key={deployment.deployment_id} />)}
               </tbody>
             </table>
           </div>

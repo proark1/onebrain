@@ -18,7 +18,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from app.controlplane.base import CustomerDeployment
+from app.controlplane.base import CustomerDeployment, DeploymentModule
+from app.controlplane.development_gate import DEVELOPMENT_GATE_CORE_MODULE_IDS
 from app.fleet.base import FleetKey
 from app.fleet.keys import hash_secret, parse_fleet_key
 
@@ -39,29 +40,59 @@ def seed_operator_self_deployment(settings, control_store, fleet_store) -> bool:
         return False
     deployment_id = (getattr(settings, "deployment_id", "") or "mc").strip()
     try:
-        if control_store.get_deployment(deployment_id) is not None:
-            return False  # idempotent: a second boot with the row present is a no-op
+        # The DB is at REQUIRED_ALEMBIC_REVISION by the time the app serves (boot runs
+        # migrations, then verifies), so recording it as MC's current_migration keeps a
+        # same-schema self-update off the backup gate (needs_fresh_backup only fires when
+        # release.migration_to actually differs). Imported lazily so this never-fatal
+        # startup hook does not couple to the DB module graph at import time.
+        from app import __version__ as app_version
+        from app.db.schema import REQUIRED_ALEMBIC_REVISION
+
         now_iso = datetime.now(timezone.utc).isoformat()
-        control_store.create_deployment(CustomerDeployment(
-            id=deployment_id,
-            customer_name=deployment_id,
-            deployment_type="dedicated_server",   # the MC box is a Hetzner box (WP5 semantics)
-            release_ring="manual",                # MC is never auto-rolled
-            update_policy="manual",
-            current_version=getattr(settings, "build_version", "") or "",
-            created_at=now_iso,
-        ))
-        # Register the baked fleet key (parse the token, store hash of the SECRET part —
-        # the same value _authenticate_fleet_key verifies). No new key is minted: the box
-        # already holds this exact token as ONEBRAIN_FLEET_KEY.
-        parsed = parse_fleet_key(getattr(settings, "fleet_key", "") or "")
-        if parsed is not None:
-            key_id, secret = parsed
-            fleet_store.create_key(FleetKey(
-                id=key_id, key_hash=hash_secret(secret), deployment_id=deployment_id,
-                label=f"operator-self-seed:{deployment_id}", created_at=now_iso))
-        _log.info("Operator self-seed: created %r deployment row + fleet key.", deployment_id)
-        return True
+        # Resolve exactly as the reporter does (build_version or app.__version__), so the
+        # module rows below always carry a NON-EMPTY version — an empty one is rejected by
+        # validate_module and would abort the whole seed.
+        current_version = (getattr(settings, "build_version", "") or "").strip() or app_version
+        seeded = False
+        if control_store.get_deployment(deployment_id) is None:
+            control_store.create_deployment(CustomerDeployment(
+                id=deployment_id,
+                customer_name=deployment_id,
+                deployment_type="dedicated_server",   # the MC box is a Hetzner box (WP5 semantics)
+                release_ring="manual",                # MC is never auto-rolled by the ring sweep
+                update_policy="manual",               # only its own operator-self trigger rolls it
+                current_version=current_version,
+                current_migration=REQUIRED_ALEMBIC_REVISION,
+                created_at=now_iso,
+            ))
+            # Register the baked fleet key (parse the token, store hash of the SECRET part —
+            # the same value _authenticate_fleet_key verifies). No new key is minted: the box
+            # already holds this exact token as ONEBRAIN_FLEET_KEY.
+            parsed = parse_fleet_key(getattr(settings, "fleet_key", "") or "")
+            if parsed is not None:
+                key_id, secret = parsed
+                fleet_store.create_key(FleetKey(
+                    id=key_id, key_hash=hash_secret(secret), deployment_id=deployment_id,
+                    label=f"operator-self-seed:{deployment_id}", created_at=now_iso))
+            seeded = True
+        # Ensure MC's OWN container modules exist — including on an MC UPGRADED from an
+        # earlier self-seed that created the row WITHOUT them: otherwise the shared plan
+        # gate blocks its self-update on `no_modules_installed` and auto-deploy silently
+        # never opens a rollout. Idempotent (upsert), so a steady-state boot is a no-op.
+        # These are exactly the core module ids every release manifest carries, so they
+        # are never reported `release_missing_modules`.
+        if not any(module.status == "active" for module in control_store.list_modules(deployment_id)):
+            for module_id in sorted(DEVELOPMENT_GATE_CORE_MODULE_IDS):
+                control_store.upsert_module(DeploymentModule(
+                    deployment_id=deployment_id,
+                    module_id=module_id,
+                    version=current_version,
+                    status="active",
+                ))
+            seeded = True
+        if seeded:
+            _log.info("Operator self-seed: ensured %r deployment row + modules.", deployment_id)
+        return seeded
     except Exception as exc:  # never fatal — mirror the retention/reporter wiring
         _log.warning("Operator self-seed skipped: %s", exc)
         return False

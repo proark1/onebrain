@@ -26,6 +26,9 @@ import type {
   OperatorModule,
   OperatorObservability,
   OperatorRelease,
+  CustomerTeardownExecuted,
+  CustomerTeardownRequest,
+  CustomerTeardownRequestCreated,
   OperatorRollout,
   OperatorRolloutStatusInput,
   OperatorRunInput,
@@ -714,6 +717,50 @@ export function startOperatorRollout(deploymentId: string, targetVersion: string
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ target_version: targetVersion }),
   });
+}
+
+export function createTeardownRequest(
+  deploymentId: string,
+  input: { legal_hold_evidence_ref: string; backup_retention_evidence_ref: string },
+): Promise<CustomerTeardownRequestCreated> {
+  return requestJson<CustomerTeardownRequestCreated>(
+    `/operator/deployments/${encodeURIComponent(deploymentId)}/teardown-requests`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export function approveTeardownRequest(
+  deploymentId: string,
+  requestId: string,
+  nonce: string,
+): Promise<CustomerTeardownRequest> {
+  return requestJson<CustomerTeardownRequest>(
+    `/operator/deployments/${encodeURIComponent(deploymentId)}/teardown-requests/${encodeURIComponent(requestId)}/approvals`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nonce }),
+    },
+  );
+}
+
+export function executeTeardownRequest(
+  deploymentId: string,
+  requestId: string,
+  confirmationPhrase: string,
+): Promise<CustomerTeardownExecuted> {
+  return requestJson<CustomerTeardownExecuted>(
+    `/operator/deployments/${encodeURIComponent(deploymentId)}/teardown-requests/${encodeURIComponent(requestId)}/execute`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmation_phrase: confirmationPhrase }),
+    },
+  );
 }
 
 export function updateOperatorRollout(

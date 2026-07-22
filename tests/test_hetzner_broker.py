@@ -23,6 +23,7 @@ from app.provisioning.hetzner.client import (
     HetznerApiError,
     ServerCreateRequest,
     VolumeCreateRequest,
+    provider_hostname_label,
 )
 from app.provisioning.hetzner.fake import FakeHetznerClient
 from app.provisioning.hetzner.urllib_client import UrllibHetznerClient
@@ -258,12 +259,167 @@ def test_factory_threads_enable_backups_default_true():
     assert off._enable_backups is False
 
 
-def test_broker_destroy_requires_confirm_and_is_unimplemented_in_p4():
-    broker = InProcessHetznerBroker(FakeHetznerClient())
+# --- teardown: guarded, discovery-based destroy_box (Phase A) ----------------
+# The broker DISCOVERS a deployment's own resources by label and deletes exactly those,
+# so it can neither reach a foreign resource nor leak an idempotent-reuse box's volume.
+
+def _labelled_volume(dep):
+    return VolumeCreateRequest(name=f"onebrain-{dep}-data", size_gb=10, location="nbg1",
+                               labels={"deployment_id": dep, "managed-by": "onebrain-fleet"})
+
+
+def _labelled_firewall(dep):
+    return FirewallCreateRequest(
+        name=f"onebrain-{dep}-fw",
+        rules=(FirewallRule(direction="in", protocol="tcp", port="443"),),
+        labels={"deployment_id": dep, "managed-by": "onebrain-fleet"})
+
+
+def _provision_box(broker, dep):
+    return broker.provision_box(
+        server=_server_req(firewall_ids=(), labels=_fleet_labels(dep)),
+        volume=_labelled_volume(dep),
+        # The provisioner names the A record with the RFC-1123 label, not the raw id.
+        dns=DnsRecordRequest(zone_id="z1", name=provider_hostname_label(dep), ipv4=""),
+        firewall=_labelled_firewall(dep))
+
+
+def test_broker_destroy_requires_confirm_and_deployment_id():
+    broker = InProcessHetznerBroker(FakeHetznerClient(), dns_zone_id="z1")
     with pytest.raises(ValueError):
-        broker.destroy_box(server_id="server_1", volume_ids=(), dns_record_ids=(), confirm=False)
-    with pytest.raises(NotImplementedError):
-        broker.destroy_box(server_id="server_1", volume_ids=(), dns_record_ids=(), confirm=True)
+        broker.destroy_box("dep_a", confirm=False)
+    with pytest.raises(ValueError):
+        broker.destroy_box("", confirm=True)
+
+
+def test_broker_destroy_discovers_and_deletes_in_order():
+    fake = FakeHetznerClient()
+    broker = InProcessHetznerBroker(fake, dns_zone_id="z1")
+    _provision_box(broker, "dep_a")
+    fake.calls.clear()                       # focus on the teardown sequence
+
+    result = broker.destroy_box("dep_a", confirm=True)
+
+    # server -> volume -> firewall -> dns (the volume deletes only AFTER the server detaches it).
+    assert fake.calls == ["delete_server", "delete_volume", "delete_firewall", "delete_dns_record"]
+    assert result.servers_deleted == ("server_1",)
+    assert result.volumes_deleted == ("vol_1",)
+    assert result.firewalls_deleted == ("fw_1",)
+    assert result.dns_deleted == ("dep-a/A",)      # underscore -> RFC-1123 dash, matching the box hostname
+    assert result.nothing_found is False
+    # really gone from every scope read
+    assert fake.list_servers("deployment_id=dep_a") == []
+    assert fake.list_volumes("deployment_id=dep_a") == []
+    assert fake.list_firewalls("deployment_id=dep_a") == []
+
+
+def test_broker_destroy_only_touches_the_named_deployment():
+    fake = FakeHetznerClient()
+    broker = InProcessHetznerBroker(fake, dns_zone_id="z1")
+    _provision_box(broker, "dep_a")
+    _provision_box(broker, "dep_b")
+
+    broker.destroy_box("dep_a", confirm=True)
+
+    # dep_b untouched — scope is the deployment's OWN label, never a handed-in id.
+    assert [s.id for s in fake.list_servers("deployment_id=dep_b")] == ["server_2"]
+    assert [v.id for v in fake.list_volumes("deployment_id=dep_b")] == ["vol_2"]
+    assert [f.id for f in fake.list_firewalls("deployment_id=dep_b")] == ["fw_2"]
+    assert fake.list_servers("deployment_id=dep_a") == []
+
+
+def test_broker_destroy_ignores_a_server_without_the_fleet_label():
+    fake = FakeHetznerClient()
+    broker = InProcessHetznerBroker(fake, dns_zone_id="z1")
+    # Carries the deployment_id but NOT the fleet label -> not a box we created -> never deleted.
+    fake.create_server(_server_req(labels={"deployment_id": "dep_a"}))
+    result = broker.destroy_box("dep_a", confirm=True)
+    assert result.servers_deleted == () and result.nothing_found is True
+    assert [s.id for s in fake.list_servers("deployment_id=dep_a")] == ["server_1"]   # survived
+
+
+def test_broker_destroy_nothing_found_is_record_only_signal():
+    fake = FakeHetznerClient()
+    broker = InProcessHetznerBroker(fake, dns_zone_id="z1")
+    result = broker.destroy_box("ghost", confirm=True)
+    assert result.nothing_found is True
+    assert result.servers_deleted == () and result.volumes_deleted == ()
+    # Nothing discovered -> DNS is NOT touched (the broker is not an unscoped DNS-delete tool).
+    assert fake.calls == []
+    assert result.dns_deleted == ()
+
+
+def test_broker_destroy_ignores_volume_and_firewall_without_the_fleet_label():
+    fake = FakeHetznerClient()
+    broker = InProcessHetznerBroker(fake, dns_zone_id="z1")
+    # A fleet server exists, but a volume/firewall carries only deployment_id (no fleet label):
+    # not ours -> never deleted, even though it shares the id.
+    fake.create_server(_server_req(labels=_fleet_labels("dep_a")))
+    fake.create_volume(VolumeCreateRequest(name="v", size_gb=10, location="nbg1",
+                                           labels={"deployment_id": "dep_a"}))
+    fake.create_firewall(FirewallCreateRequest(
+        name="fw", rules=(FirewallRule(direction="in", protocol="tcp", port="443"),),
+        labels={"deployment_id": "dep_a"}))
+
+    result = broker.destroy_box("dep_a", confirm=True)
+    assert result.servers_deleted == ("server_1",)          # the fleet-owned server is deleted
+    assert result.volumes_deleted == ()                     # the unlabelled volume survives
+    assert result.firewalls_deleted == ()                   # the unlabelled firewall survives
+    assert [v.id for v in fake.list_volumes("deployment_id=dep_a")] == ["vol_1"]
+    assert [f.id for f in fake.list_firewalls("deployment_id=dep_a")] == ["fw_1"]
+
+
+def test_broker_destroy_never_deletes_dns_for_an_empty_or_unowned_label():
+    fake = FakeHetznerClient()
+    broker = InProcessHetznerBroker(fake, dns_zone_id="z1")
+    # A deployment that owns nothing must never delete a derived DNS record; an underscore-only
+    # id (label -> "") must never reach the zone apex.
+    assert broker.destroy_box("___", confirm=True).dns_deleted == ()
+    assert broker.destroy_box("www", confirm=True).dns_deleted == ()
+    assert "delete_dns_record" not in fake.calls
+
+
+def test_broker_destroy_is_idempotent_on_rerun():
+    fake = FakeHetznerClient()
+    broker = InProcessHetznerBroker(fake, dns_zone_id="z1")
+    _provision_box(broker, "dep_a")
+    assert broker.destroy_box("dep_a", confirm=True).nothing_found is False
+    second = broker.destroy_box("dep_a", confirm=True)          # already gone
+    assert second.nothing_found is True
+    assert second.servers_deleted == () and second.volumes_deleted == ()
+
+
+def test_broker_destroy_skips_dns_when_no_zone_configured():
+    fake = FakeHetznerClient()
+    broker = InProcessHetznerBroker(fake, dns_zone_id="")       # IP-only fleet: no DNS record exists
+    _provision_box(broker, "dep_a")
+    fake.calls.clear()
+    result = broker.destroy_box("dep_a", confirm=True)
+    assert "delete_dns_record" not in fake.calls and result.dns_deleted == ()
+
+
+def test_broker_destroy_retries_volume_delete_until_detached():
+    # Model the real detach window: the volume reports attached on the first delete, then
+    # detaches. The broker retries (sleep stubbed) rather than leaking the data volume.
+    class _StickyVolumeClient(FakeHetznerClient):
+        def __init__(self):
+            super().__init__()
+            self._delete_volume_hits = 0
+
+        def delete_volume(self, volume_id):
+            self._delete_volume_hits += 1
+            if self._delete_volume_hits == 1:
+                self.calls.append("delete_volume")
+                raise HetznerApiError(409, "still attached")
+            return super().delete_volume(volume_id)
+
+    fake = _StickyVolumeClient()
+    broker = InProcessHetznerBroker(fake, dns_zone_id="z1")
+    broker._sleep = lambda _s: None                            # no real waiting in the test
+    _provision_box(broker, "dep_a")
+    result = broker.destroy_box("dep_a", confirm=True)
+    assert result.volumes_deleted == ("vol_1",)
+    assert fake.calls.count("delete_volume") == 2              # one 409, one success
 
 
 # --- factory / A6 invariant --------------------------------------------------
@@ -556,3 +712,84 @@ def test_build_broker_threads_fleet_cap_from_settings():
     with pytest.raises(RuntimeError, match="fleet server cap reached"):
         broker.provision_box(server=_server_req(firewall_ids=(), labels=_fleet_labels("dep_new")),
                              volume=None, dns=None, firewall=None)
+
+
+# --- teardown transport shapes (opener-injected; no network) -----------------
+
+def test_urllib_client_delete_primitives_issue_delete_with_bearer():
+    seen = []
+
+    def opener(request, timeout):
+        seen.append((request.get_method(), request.full_url, request.get_header("Authorization")))
+        return _FakeResponse(b"")
+
+    client = UrllibHetznerClient("del-token", opener=opener)
+    client.delete_server("srv9")
+    client.delete_volume("vol9")
+    client.delete_firewall("fw9")
+    client.delete_dns_record("z1", "dep-a")
+
+    assert seen == [
+        ("DELETE", "https://api.hetzner.cloud/v1/servers/srv9", "Bearer del-token"),
+        ("DELETE", "https://api.hetzner.cloud/v1/volumes/vol9", "Bearer del-token"),
+        ("DELETE", "https://api.hetzner.cloud/v1/firewalls/fw9", "Bearer del-token"),
+        ("DELETE", "https://api.hetzner.cloud/v1/zones/z1/rrsets/dep-a/A", "Bearer del-token"),
+    ]
+
+
+def test_urllib_client_delete_treats_404_as_noop_but_raises_others():
+    def opener_404(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 404, "gone", None, io.BytesIO(b"{}"))
+    # 404 -> idempotent no-op (already gone): never raises.
+    UrllibHetznerClient("t", opener=opener_404).delete_volume("vol_missing")
+
+    def opener_409(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 409, "attached", None, io.BytesIO(b"still attached"))
+    # 409 (attached) propagates so the broker's destroy can retry after detach.
+    with pytest.raises(HetznerApiError) as exc:
+        UrllibHetznerClient("t", opener=opener_409).delete_volume("vol_attached")
+    assert exc.value.status == 409
+
+
+def test_urllib_client_delete_dns_apex_uses_encoded_at():
+    seen = {}
+
+    def opener(request, timeout):
+        seen["url"] = request.full_url
+        return _FakeResponse(b"")
+
+    UrllibHetznerClient("t", opener=opener).delete_dns_record("z1", "")
+    assert seen["url"].endswith("/zones/z1/rrsets/%40/A")
+
+
+def test_urllib_client_list_volumes_parses_label_and_attachment():
+    from urllib.parse import parse_qs, urlsplit
+
+    seen = {}
+    body = json.dumps({"volumes": [
+        {"id": 71, "labels": {"deployment_id": "dep_a"}, "server": 55},
+        {"id": 72, "labels": {"deployment_id": "dep_a"}, "server": None},
+    ]}).encode("utf-8")
+
+    def opener(request, timeout):
+        seen["url"] = request.full_url
+        seen["method"] = request.get_method()
+        return _FakeResponse(body)
+
+    result = UrllibHetznerClient("t", opener=opener).list_volumes("deployment_id=dep_a")
+    split = urlsplit(seen["url"])
+    assert split.path == "/v1/volumes" and seen["method"] == "GET"
+    assert parse_qs(split.query)["label_selector"] == ["deployment_id=dep_a"]
+    # server=null parses to "" (detached) — the signal delete_volume ordering relies on.
+    assert [(v.id, v.server_id) for v in result] == [("71", "55"), ("72", "")]
+
+
+def test_urllib_client_list_firewalls_parses_label():
+    body = json.dumps({"firewalls": [{"id": 88, "labels": {"deployment_id": "dep_a"}}]}).encode("utf-8")
+
+    def opener(request, timeout):
+        assert "/v1/firewalls?" in request.full_url
+        return _FakeResponse(body)
+
+    result = UrllibHetznerClient("t", opener=opener).list_firewalls("deployment_id=dep_a")
+    assert [(f.id, f.labels) for f in result] == [("88", {"deployment_id": "dep_a"})]

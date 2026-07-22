@@ -20,6 +20,7 @@ from app.provisioning.hetzner.client import (
     DnsRecordResult,
     FirewallCreateRequest,
     FirewallCreateResult,
+    FirewallInfo,
     HetznerApiError,
     ServerActionResult,
     ServerCreateRequest,
@@ -27,6 +28,7 @@ from app.provisioning.hetzner.client import (
     ServerInfo,
     VolumeCreateRequest,
     VolumeCreateResult,
+    VolumeInfo,
 )
 
 # Hetzner error code (and HTTP statuses) that mean "backups are already on" — an
@@ -98,6 +100,37 @@ class UrllibHetznerClient:
             headers=self._headers(with_content=True),
         )
         return self._open(request)
+
+    def _delete(self, path: str) -> None:
+        """DELETE <path>. A 404 is an idempotent no-op (already gone); every other non-2xx
+        raises HetznerApiError — a 409 propagates so the broker can retry an attached-volume
+        delete. DELETE returns an async Action for some resources; we do not poll it."""
+        request = Request(self._base + path, method="DELETE", headers=self._headers(with_content=False))
+        try:
+            with self._do_open(request) as response:
+                response.read()
+        except HTTPError as exc:
+            if exc.code == 404:
+                return
+            raise HetznerApiError(exc.code, self._error_body(exc)) from exc
+        except URLError as exc:
+            raise HetznerApiError(0, str(getattr(exc, "reason", exc))) from exc
+
+    def _paged_by_label(self, resource: str, label_selector: str):
+        """GET /<resource>?label_selector=<sel>, following pagination; yields each entry dict.
+        The teardown scope-read seam for volumes/firewalls (mirrors list_servers)."""
+        page = 1
+        while True:
+            query = urlencode({"label_selector": label_selector, "page": page, "per_page": 50})
+            request = Request(f"{self._base}/{resource}?{query}", method="GET",
+                              headers=self._headers(with_content=False))
+            data = self._open(request)
+            for entry in data.get(resource, []) or []:
+                yield entry
+            next_page = ((data.get("meta", {}) or {}).get("pagination", {}) or {}).get("next_page")
+            if not next_page:
+                return
+            page = next_page
 
     # --- compute ---------------------------------------------------------------
     def create_volume(self, req: VolumeCreateRequest) -> VolumeCreateResult:
@@ -208,6 +241,34 @@ class UrllibHetznerClient:
         firewall = data.get("firewall", {}) or {}
         return FirewallCreateResult(firewall_id=str(firewall.get("id", "")))
 
+    # --- teardown scope reads + delete primitives (Phase A) --------------------
+    def list_volumes(self, label_selector: str) -> list[VolumeInfo]:
+        return [
+            VolumeInfo(
+                id=str(entry.get("id", "")),
+                labels=dict(entry.get("labels", {}) or {}),
+                server_id=str(entry.get("server") or ""),   # attached server id (null when detached)
+            )
+            for entry in self._paged_by_label("volumes", label_selector)
+        ]
+
+    def list_firewalls(self, label_selector: str) -> list[FirewallInfo]:
+        return [
+            FirewallInfo(id=str(entry.get("id", "")), labels=dict(entry.get("labels", {}) or {}))
+            for entry in self._paged_by_label("firewalls", label_selector)
+        ]
+
+    def delete_server(self, server_id: str) -> None:
+        self._delete(f"/servers/{quote(str(server_id), safe='')}")
+
+    def delete_volume(self, volume_id: str) -> None:
+        # The server delete detaches the volume; Hetzner still 409s until detach lands, which
+        # the broker's destroy retries. A missing volume (404) is an idempotent no-op.
+        self._delete(f"/volumes/{quote(str(volume_id), safe='')}")
+
+    def delete_firewall(self, firewall_id: str) -> None:
+        self._delete(f"/firewalls/{quote(str(firewall_id), safe='')}")
+
     # --- DNS (unified Cloud API, RRSet model; SAME host + Bearer token as compute) ---
     # DNS was folded into the Cloud API (GA 2025-11-10): the legacy dns.hetzner.com +
     # `Auth-API-Token` path is gone, and a Cloud token (Bearer) now authenticates DNS too.
@@ -257,3 +318,10 @@ class UrllibHetznerClient:
         # The RRSet has no per-record id — it is addressed by name+type; that key is the
         # stable identifier recorded for teardown (DELETE /zones/{zone}/rrsets/{name}/A).
         return DnsRecordResult(record_id=f"{req.name or '@'}/A", fqdn=req.name)
+
+    def delete_dns_record(self, zone_id: str, name: str) -> None:
+        # DELETE the zone's `<name>` A RRSet (zone-relative name + type). Empty name is the
+        # apex "@". A missing record (404) is an idempotent no-op.
+        zone = quote(zone_id, safe="")
+        label = quote(name or "@", safe="")
+        self._delete(f"/zones/{zone}/rrsets/{label}/A")

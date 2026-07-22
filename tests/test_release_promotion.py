@@ -306,6 +306,99 @@ def test_successful_dev_rollout_needs_matching_later_heartbeat():
     assert reconcile_heartbeat_promotion(store, heartbeat, received_at=completed) is None
 
 
+def _gate_with_completed_dev_rollout(store):
+    """A designated gate whose dev rollout has already completed successfully."""
+    now = datetime.now(timezone.utc).isoformat()
+    gate = CustomerDeployment(
+        id="dev",
+        customer_name="Development",
+        environment="development",
+        deployment_type="dedicated_server",
+        release_ring="internal",
+        last_heartbeat_at=now,
+        last_heartbeat_healthy=True,
+    )
+    store.create_deployment(gate)
+    store.designate_release_gate(gate.id)
+    for module_id in DEVELOPMENT_GATE_MODULE_IDS:
+        store.upsert_module(DeploymentModule(gate.id, module_id, "old"))
+    dev_private, dev_public = generate_keypair()
+    release = _development_gate_release()
+    register_candidate(
+        store,
+        release,
+        dev_signature=sign_release(release_signature_fields(release), dev_private),
+        dev_signing_key_id="dev-1",
+        development_public_key=dev_public,
+    )
+    rollout = RolloutRun("roll-dev", gate.id, release.version, "pending", "ci")
+    store.transition_release_promotion(
+        release.version,
+        frozenset({"dev_pending"}),
+        "dev_deploying",
+        actor="ci",
+        action="dev_rollout_started",
+        fields={"gate_deployment_id": gate.id, "dev_rollout_id": rollout.id},
+    )
+    store.start_rollout(rollout)
+    store.update_rollout_exec(rollout.id, exec_status="running")
+    completed = datetime.now(timezone.utc).isoformat()
+    store.complete_verified_rollout(
+        rollout.id, verified_modules=release.modules, completed_at=completed,
+    )
+    return gate, release, rollout, completed
+
+
+def _post_completion_heartbeat(gate, release, *, attempt_id, at):
+    return build_heartbeat_v2(
+        deployment_id=gate.id,
+        reported_at=at,
+        version=release.version,
+        modules=_development_gate_reports(release),
+        update=UpdateReport(
+            last_target_version=release.version,
+            outcome="succeeded",
+            attempt_id=attempt_id,
+            ts=at,
+        ),
+    )
+
+
+def test_dev_gate_verifies_when_the_attempt_hint_has_already_expired():
+    """MC serves the attempt_id hint only while the rollout is non-terminal, and
+    this check only evaluates heartbeats received at/after completed_at. Requiring
+    a non-empty match therefore rejected every heartbeat it could ever see, so no
+    release could reach dev_verified and none could be signed for customers."""
+    store = MemoryControlPlaneStore()
+    gate, release, _rollout, completed = _gate_with_completed_dev_rollout(store)
+    later = (datetime.fromisoformat(completed) + timedelta(hours=3)).isoformat()
+
+    verified = reconcile_heartbeat_promotion(
+        store,
+        _post_completion_heartbeat(gate, release, attempt_id="", at=later),
+        received_at=later,
+    )
+
+    assert verified.state == "dev_verified"
+    assert verified.failure_reason == ""
+
+
+def test_dev_gate_still_rejects_a_heartbeat_from_a_different_attempt():
+    """An ABSENT hint is expected after completion; a WRONG one never is."""
+    store = MemoryControlPlaneStore()
+    gate, release, _rollout, completed = _gate_with_completed_dev_rollout(store)
+    later = (datetime.fromisoformat(completed) + timedelta(hours=3)).isoformat()
+
+    result = reconcile_heartbeat_promotion(
+        store,
+        _post_completion_heartbeat(gate, release, attempt_id="roll-someone-else", at=later),
+        received_at=later,
+    )
+
+    assert result.state == "dev_failed"
+    assert result.failure_reason == "dev_attempt_mismatch"
+
+
 def test_dev_success_without_verification_heartbeat_times_out_and_cannot_revive():
     store = MemoryControlPlaneStore()
     now = datetime.now(timezone.utc)
@@ -937,6 +1030,8 @@ def test_development_provision_rejects_existing_normalized_deployment(monkeypatc
         is_operator_surface=True,
         operator_mode=True,
         provisioner_backend="hetzner",
+        vector_store="memory",
+        persist=False,
     )
     principal = SimpleNamespace(role_id="admin", user_id="operator")
     monkeypatch.setattr(operator_router, "get_settings", lambda: settings)
@@ -985,6 +1080,8 @@ def test_development_gate_replacement_requires_module_complete_baseline_and_uses
         release_registry_allowlist="ghcr.io/proark1",
         dev_release_verify_public_key="dev-public",
         fleet_public_url="https://mc.example.com",
+        vector_store="memory",
+        persist=False,
     )
     principal = SimpleNamespace(role_id="admin", user_id="operator")
     captured = {}
@@ -1008,6 +1105,102 @@ def test_development_gate_replacement_requires_module_complete_baseline_and_uses
     assert result.environment == "development"
     assert result.release_ring == "internal"
     assert result.external_provisioning is True
+
+
+def _gate_deployment(suffix, *, status="active"):
+    return CustomerDeployment(
+        id=f"{operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID}-{suffix}",
+        customer_name=f"Gate {suffix}",
+        environment="development",
+        deployment_type="dedicated_server",
+        status=status,
+    )
+
+
+def _designated_gate_store():
+    store = MemoryControlPlaneStore()
+    gate = _gate_deployment("live00000001")
+    store.create_deployment(gate)
+    store.designate_release_gate(gate.id)
+    return store, gate
+
+
+def _provision_run(deployment_id, status):
+    return ProvisioningRun(
+        id=f"run-{deployment_id}",
+        account_id="acct",
+        deployment_id=deployment_id,
+        requested_by="operator",
+        status=status,
+    )
+
+
+def test_development_gate_identity_ignores_stale_bare_base_row():
+    """A superseded bare-base row beside a designated suffixed gate must not wedge
+    provisioning -- there is no API to delete the dead row by hand."""
+    store, gate = _designated_gate_store()
+    runs = MemoryProvisioningRunStore(persist_path=None)
+    store.create_deployment(CustomerDeployment(
+        id=operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID,
+        customer_name="Superseded legacy gate",
+        environment="development",
+        deployment_type="dedicated_server",
+    ))
+
+    deployment_id, account_id = operator_router._development_gate_identity(store, runs)
+
+    assert deployment_id.startswith(operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID + "-")
+    assert deployment_id != gate.id
+    assert account_id.startswith(operator_router.DEVELOPMENT_GATE_ACCOUNT_ID + "-")
+
+
+def test_development_gate_identity_ignores_failed_replacement_row():
+    """A replacement row that left the 'active' state is a dead row."""
+    store, gate = _designated_gate_store()
+    runs = MemoryProvisioningRunStore(persist_path=None)
+    store.create_deployment(_gate_deployment("dead00000001", status="failed"))
+
+    deployment_id, _account_id = operator_router._development_gate_identity(store, runs)
+
+    assert deployment_id.startswith(operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID + "-")
+    assert deployment_id != gate.id
+
+
+def test_development_gate_identity_ignores_dispatch_failed_run_on_active_row():
+    """A dispatch/callback-failed provision leaves its deployment row 'active' and
+    moves only the ProvisioningRun terminal; that dead attempt must not wedge."""
+    store, gate = _designated_gate_store()
+    runs = MemoryProvisioningRunStore(persist_path=None)
+    dead = _gate_deployment("dispatchfail")   # left 'active' by the failure path
+    store.create_deployment(dead)
+    runs.create_run(_provision_run(dead.id, "dispatch_failed"))
+
+    deployment_id, _account_id = operator_router._development_gate_identity(store, runs)
+
+    assert deployment_id.startswith(operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID + "-")
+    assert deployment_id != dead.id
+
+
+def test_development_gate_identity_blocks_active_row_with_inflight_run():
+    """An active suffixed row whose newest run is still in flight blocks a second box."""
+    store, _gate = _designated_gate_store()
+    runs = MemoryProvisioningRunStore(persist_path=None)
+    inflight = _gate_deployment("inflight0001")
+    store.create_deployment(inflight)
+    runs.create_run(_provision_run(inflight.id, "pending"))
+
+    with pytest.raises(ValueError, match="already exists"):
+        operator_router._development_gate_identity(store, runs)
+
+
+def test_development_gate_identity_blocks_active_row_without_run():
+    """A live suffixed row with no terminal-failed evidence still blocks."""
+    store, _gate = _designated_gate_store()
+    runs = MemoryProvisioningRunStore(persist_path=None)
+    store.create_deployment(_gate_deployment("inflight0002"))
+
+    with pytest.raises(ValueError, match="already exists"):
+        operator_router._development_gate_identity(store, runs)
 
 
 def _replacement_bootstrap_records(
@@ -1098,6 +1291,8 @@ def _replacement_bootstrap_settings(production_public, dev_public):
         release_registry_allowlist="ghcr.io/proark1",
         dev_release_verify_public_key=dev_public,
         fleet_public_url="https://mc.example.com",
+        vector_store="memory",
+        persist=False,
     )
 
 

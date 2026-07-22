@@ -410,6 +410,15 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
          getattr(settings, "hetzner_broker_credential", "") or ""),
         ("ONEBRAIN_SECRET_ENCRYPTION_KEY",
          getattr(settings, "secret_encryption_key", "") or ""),
+        # Operator self-deploy ("green main -> MC"). The box.env dev key above lets the
+        # host UPDATER trust a dev-signed release; the APP also needs the dev verify key
+        # (to register + verify dev-signed candidates in the planner / desired-state
+        # path) and the feature flag. Bake both so a fresh MC boots consistent with its
+        # box.env. Both empty/false by default -> the feature stays inert until opt-in.
+        ("ONEBRAIN_DEV_RELEASE_VERIFY_PUBLIC_KEY",
+         getattr(settings, "dev_release_verify_public_key", "") or ""),
+        ("ONEBRAIN_OPERATOR_AUTO_DEPLOY_ENABLED",
+         "true" if getattr(settings, "operator_auto_deploy_enabled", False) else "false"),
     ]
     dotenv += "".join(f"{k}={v}\n" for k, v in overlay)
 
@@ -431,6 +440,14 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
         run_id=f"{deployment_id}-bootstrap",   # synthetic (no provisioning run for the MC box)
         fleet_public_desired_state_key=settings.fleet_desired_state_public_key,
         release_public_key=settings.release_verify_public_key,
+        # MC's OWN box trusts BOTH the offline production key and the CI development key so
+        # its updater can apply a dev-signed self-update (operator auto-deploy) as well as a
+        # manually production-signed release. Deduped, empties dropped; a customer box never
+        # receives the dev key (this field is operator-only).
+        release_public_keys=",".join(dict.fromkeys(
+            key for key in (settings.release_verify_public_key, settings.dev_release_verify_public_key)
+            if (key or "").strip()
+        )),
         registry_allowlist=settings.release_registry_allowlist,
         role="operator",          # A14 overlay + G3-1: no bootstrap token, no /bootstrap exchange step
         bootstrap_token="",       # G3-1: the MC box is NEVER minted a first-boot token

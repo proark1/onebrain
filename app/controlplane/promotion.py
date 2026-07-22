@@ -234,7 +234,16 @@ def _heartbeat_failure_reason(store, release, promotion, body, received_at: str)
     if release.migration_to and body.onebrain.migration_revision != release.migration_to:
         return "dev_migration_mismatch"
     update = getattr(body, "update", None)
-    if not update or update.attempt_id != rollout.id or update.outcome != "succeeded":
+    if not update or update.outcome != "succeeded":
+        return "dev_attempt_mismatch"
+    # attempt_id is an UNSIGNED advisory hint (see active_pull_attempt_id): MC
+    # stops serving it the moment the rollout goes terminal, so a box that keeps
+    # reporting after completion necessarily reports "". Since this function only
+    # evaluates heartbeats received AFTER completion, requiring a non-empty match
+    # rejected every heartbeat it was ever able to see. Accept an absent hint, but
+    # never a DIFFERENT one -- that is a genuinely mismatched attempt.
+    # last_target_version below remains the real anti-misattribution guard.
+    if update.attempt_id and update.attempt_id != rollout.id:
         return "dev_attempt_mismatch"
     if update.last_target_version != release.version:
         return "dev_target_mismatch"
@@ -322,10 +331,23 @@ def reconcile_heartbeat_promotion(store, body, *, received_at: str) -> Optional[
             and rollout.deployment_id == deployment.id
             and rollout.target_version == update.last_target_version
         )
+        # Mission Control's OWN self-update rollout is NOT a customer rollout — its
+        # failure must never pause customer delivery of a customer_approved release
+        # (that state belongs to the dev gate + the operator). MC also self-rolls
+        # customer_approved releases and reports its own update, so exclude the
+        # operator-self rollout (marked by the trigger) from the customer pause path.
+        # Without this, a failed MC self-update heartbeat would flip the release to
+        # customer_paused here, independent of the pull-reconcile path. See the twin
+        # guard in _reconcile_operator_self_pull.
+        operator_self_rollout = bool(
+            rollout
+            and ((rollout.request_payload or {}).get("target_source") == "operator_self"
+                 or str(getattr(rollout, "started_by", "") or "").startswith("operator-self:"))
+        )
         failure_reason = ""
-        if exact_attempt and update.outcome in {"failed", "rolled_back"}:
+        if exact_attempt and not operator_self_rollout and update.outcome in {"failed", "rolled_back"}:
             failure_reason = "customer_update_failed"
-        elif not body.healthy and exact_attempt:
+        elif not body.healthy and exact_attempt and not operator_self_rollout:
             failure_reason = "customer_health_failed"
         if promotion and promotion.state == "customer_approved" and failure_reason:
             return transition(
