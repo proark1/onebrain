@@ -92,9 +92,12 @@ broker → development gate and customer boxes, each a full isolated suite.
   `app/provisioning/hetzner/render.py`. A new control-plane route must be
   covered by both.
 - **The broker** holds the Hetzner API token so no other host does. It enforces
-  approved regions, sizes, images, firewall shape, DNS zone and server cap, and
-  exposes no destructive operation. Do not reintroduce an in-process broker or
-  loosen the production guard to make provisioning easier.
+  approved regions, sizes, images, firewall shape, DNS zone and server cap. Its only
+  destructive operation is a guarded, discovery-scoped teardown (`/v1/destroy`): given a
+  deployment id it deletes exactly that deployment's own labelled resources — it cannot
+  be pointed at a resource id it did not discover, and no primitive both un-protects and
+  deletes (P1-D). Do not reintroduce an in-process broker, loosen the production guard, or
+  add an unscoped delete to make provisioning or teardown easier.
 - **Releases are digest-pinned and signed.** The production signing key stays
   offline; a development key cannot approve a customer release.
 - **`box.env` is `.`-sourced by host scripts**, so every rendered value must be

@@ -5,9 +5,10 @@ the broker, never the token or cloud client directly. The in-process broker is
 for tests and explicit dogfood only. Production uses `RemoteHetznerBroker` on a
 dedicated host, reached through `hetzner_broker_url` over mTLS.
 
-The broker exposes CREATE primitives and a GUARDED destroy (explicit `confirm=True`,
-and Phase-4 teardown execution is unimplemented) — deliberately NO single automated
-un-protect+delete primitive (P1-D).
+The broker exposes CREATE primitives and a GUARDED destroy (`destroy_box`, explicit
+`confirm=True`): given a deployment id it DISCOVERS that deployment's own labelled
+resources and deletes them — deliberately NO single automated un-protect+delete
+primitive (P1-D), and no way to point it at a resource id it did not discover.
 
 A6 invariant (encoded in `build_hetzner_broker`, not prose): a live in-process
 broker holds the tokens inside the same internet-facing process that ingests
@@ -19,6 +20,7 @@ can only run through the out-of-process broker (`hetzner_broker_url`)."""
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, replace
 from typing import Optional, Protocol
 
@@ -31,6 +33,7 @@ from app.provisioning.hetzner.client import (
     HetznerClient,
     ServerCreateRequest,
     VolumeCreateRequest,
+    provider_hostname_label,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,6 +51,20 @@ class BrokerProvisionResult:
     backups_enabled: bool = False   # whether the broker requested Hetzner server Backups (root-disk only) for this box
 
 
+@dataclass(frozen=True)
+class BrokerDestroyResult:
+    """The outcome of a guarded teardown: the ids the broker actually deleted (each
+    DISCOVERED by the deployment's own label), plus `nothing_found` — True when no
+    server/volume/firewall remained, i.e. MC should tombstone the record as
+    "no infrastructure touched" rather than reporting a destroy."""
+    deployment_id: str
+    servers_deleted: tuple[str, ...] = ()
+    volumes_deleted: tuple[str, ...] = ()
+    firewalls_deleted: tuple[str, ...] = ()
+    dns_deleted: tuple[str, ...] = ()
+    nothing_found: bool = False
+
+
 class HetznerBroker(Protocol):
     def provision_box(
         self,
@@ -58,24 +75,23 @@ class HetznerBroker(Protocol):
         firewall: Optional[FirewallCreateRequest] = None,
     ) -> BrokerProvisionResult: ...
 
-    def destroy_box(
-        self,
-        *,
-        server_id: str,
-        volume_ids: tuple[str, ...],
-        dns_record_ids: tuple[str, ...],
-        confirm: bool,
-    ) -> None: ...
-    # GUARDED (P1-D): confirm=True required; P4 raises NotImplementedError —
-    # teardown execution is Phase-4-OUT.
+    def destroy_box(self, deployment_id: str, *, confirm: bool) -> "BrokerDestroyResult": ...
+    # GUARDED (P1-D): confirm=True required. Discovers the deployment's own resources by
+    # label and deletes them — no single un-protect+delete primitive. Idempotent/re-runnable.
 
 
 class InProcessHetznerBroker:
     """Test/dogfood implementation. It holds a client locally, so production
     factory wiring rejects it unless the explicit dogfood escape hatch is set."""
 
-    def __init__(self, client: HetznerClient, *, max_fleet_servers: int = 0, enable_backups: bool = False):
+    def __init__(self, client: HetznerClient, *, max_fleet_servers: int = 0,
+                 enable_backups: bool = False, dns_zone_id: str = ""):
         self._client = client
+        # Fleet DNS zone (Hetzner Cloud zone id or name), threaded from settings so teardown
+        # can delete the box's A RRSet — RRSets carry no labels, so it is re-derived by name.
+        self._dns_zone_id = str(dns_zone_id or "").strip()
+        # Overridable sleeper for the volume detach-retry window (tests inject a no-op).
+        self._sleep = time.sleep
         # The fleet-size COST CIRCUIT BREAKER cap (settings.hetzner_max_fleet_servers,
         # threaded by build_hetzner_broker). <=0 DISABLES the breaker — used only by the
         # direct-construction unit tests that are not exercising the cap; every production
@@ -196,17 +212,77 @@ class InProcessHetznerBroker:
             backups_enabled=backups_enabled,
         )
 
-    def destroy_box(
-        self,
-        *,
-        server_id: str,
-        volume_ids: tuple[str, ...],
-        dns_record_ids: tuple[str, ...],
-        confirm: bool,
-    ) -> None:
+    def destroy_box(self, deployment_id: str, *, confirm: bool) -> BrokerDestroyResult:
+        # GUARDED teardown (P1-D). We NEVER delete an id we were merely handed: the broker
+        # DISCOVERS the deployment's own resources by label and deletes exactly those. That
+        # single rule delivers per-resource scope (a foreign volume/firewall/DNS record can't
+        # be reached) AND completeness for idempotent-reuse boxes (whose later run's manifest
+        # is empty). No step clears delete-protection, so there is no un-protect+delete.
         if not confirm:
             raise ValueError("destroy requires explicit confirm=True")
-        raise NotImplementedError("teardown/erasure execution is Phase 4-OUT (architecture P4 ops)")
+        deployment_id = str(deployment_id or "").strip()
+        if not deployment_id:
+            raise ValueError("destroy requires a deployment_id")
+
+        # A server must carry BOTH the deployment id AND the fleet label (a box this control
+        # plane created). List by deployment_id, then require the fleet label in-code — one
+        # single-label read keeps the seam simple and the fleet-label scope check explicit.
+        candidates = self._client.list_servers(f"deployment_id={deployment_id}")
+        servers = [s for s in candidates
+                   if (s.labels or {}).get(FLEET_LABEL_KEY) == FLEET_LABEL_VALUE]
+        volumes = self._client.list_volumes(f"deployment_id={deployment_id}")
+        firewalls = self._client.list_firewalls(f"deployment_id={deployment_id}")
+
+        # 1. Servers first — deleting a server detaches its volumes.
+        servers_deleted = []
+        for server in servers:
+            self._client.delete_server(server.id)
+            servers_deleted.append(server.id)
+        # 2. Volumes next, tolerating the brief post-delete detach window.
+        volumes_deleted = []
+        for volume in volumes:
+            self._delete_volume_when_detached(volume.id)
+            volumes_deleted.append(volume.id)
+        # 3. Firewalls (no longer applied to a live server).
+        firewalls_deleted = []
+        for firewall in firewalls:
+            self._client.delete_firewall(firewall.id)
+            firewalls_deleted.append(firewall.id)
+        # 4. DNS last. RRSets carry no labels, so re-derive the box's A record by name and
+        #    delete it in the configured zone (idempotent: a missing record is a no-op).
+        dns_deleted = []
+        if self._dns_zone_id:
+            name = provider_hostname_label(deployment_id)
+            self._client.delete_dns_record(self._dns_zone_id, name)
+            dns_deleted.append(f"{name}/A")
+
+        return BrokerDestroyResult(
+            deployment_id=deployment_id,
+            servers_deleted=tuple(servers_deleted),
+            volumes_deleted=tuple(volumes_deleted),
+            firewalls_deleted=tuple(firewalls_deleted),
+            dns_deleted=tuple(dns_deleted),
+            # Record-only signal for MC: no billable/data resource remained for this box.
+            nothing_found=not (servers or volumes or firewalls),
+        )
+
+    def _delete_volume_when_detached(self, volume_id: str, *, attempts: int = 5) -> None:
+        """Delete a volume, tolerating the brief window after a server delete where Hetzner
+        may still report it attached (HTTP 409). The server delete detaches it; retry a few
+        times, then give up (teardown is idempotent — a re-run finishes any straggler)."""
+        last: Optional[HetznerApiError] = None
+        for attempt in range(max(1, attempts)):
+            try:
+                self._client.delete_volume(volume_id)
+                return
+            except HetznerApiError as exc:
+                if exc.status != 409:
+                    raise
+                last = exc
+                if attempt < attempts - 1:
+                    self._sleep(1.0)
+        if last is not None:
+            raise last
 
 
 def build_hetzner_broker(settings, *, client: Optional[HetznerClient] = None) -> HetznerBroker:
@@ -248,4 +324,5 @@ def build_hetzner_broker(settings, *, client: Optional[HetznerClient] = None) ->
         client,
         max_fleet_servers=getattr(settings, "hetzner_max_fleet_servers", 0),
         enable_backups=getattr(settings, "hetzner_enable_backups", True),
+        dns_zone_id=getattr(settings, "fleet_dns_zone_id", ""),
     )

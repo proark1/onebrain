@@ -57,9 +57,11 @@ ONEBRAIN_HETZNER_API_TOKEN=
 
 The final line is intentional: MC must not hold the Hetzner token. The broker
 rejects a request that fails its Caddy mTLS check, its MC credential check, or
-its allowlists. It exposes only `/health` and `/v1/provision`; teardown is not
-implemented. The MC two-person teardown record is an audit/review artifact,
-not a broker permission or a deletion request.
+its allowlists. It exposes `/health`, `/v1/provision`, and `/v1/destroy` — the last a
+guarded, discovery-scoped teardown that, given a deployment id, deletes only that
+deployment's own labelled server/volume/firewall/DNS resources (it cannot be handed a
+foreign resource id). The MC teardown record remains the review/authorization artifact;
+wiring an operator-triggered teardown to `/v1/destroy` is a separate Mission Control change.
 
 ## Verification
 
