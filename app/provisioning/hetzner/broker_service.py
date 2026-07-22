@@ -128,7 +128,7 @@ def validate_provision_request(
     if requested_firewall_ids and not requested_firewall_ids.issubset(allowed_firewall_ids):
         raise ValueError("invalid provision request")
     if firewall is not None:
-        if requested_firewall_ids or firewall.name != f"{server.name}-fw" or firewall.labels != {"deployment_id": deployment_id}:
+        if requested_firewall_ids or firewall.name != f"{server.name}-fw" or firewall.labels != {"deployment_id": deployment_id, FLEET_LABEL_KEY: FLEET_LABEL_VALUE}:
             raise ValueError("invalid provision request")
         _validate_firewall(firewall.rules, settings)
 
@@ -136,7 +136,7 @@ def validate_provision_request(
         if (
             volume.name != f"{server.name}-data"
             or volume.location != server.location
-            or volume.labels != {"deployment_id": deployment_id}
+            or volume.labels != {"deployment_id": deployment_id, FLEET_LABEL_KEY: FLEET_LABEL_VALUE}
             or volume.size_gb < 1
             or volume.size_gb > settings.max_volume_size_gb
         ):

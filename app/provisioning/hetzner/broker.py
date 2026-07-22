@@ -230,8 +230,13 @@ class InProcessHetznerBroker:
         candidates = self._client.list_servers(f"deployment_id={deployment_id}")
         servers = [s for s in candidates
                    if (s.labels or {}).get(FLEET_LABEL_KEY) == FLEET_LABEL_VALUE]
-        volumes = self._client.list_volumes(f"deployment_id={deployment_id}")
-        firewalls = self._client.list_firewalls(f"deployment_id={deployment_id}")
+        # Volumes and firewalls are scoped the SAME way. deployment_id is a generic label, so a
+        # resource is ours only if it ALSO carries the fleet ownership label; one that merely
+        # shares the deployment_id (not stamped by our provisioner) is never touched.
+        volumes = [v for v in self._client.list_volumes(f"deployment_id={deployment_id}")
+                   if (v.labels or {}).get(FLEET_LABEL_KEY) == FLEET_LABEL_VALUE]
+        firewalls = [f for f in self._client.list_firewalls(f"deployment_id={deployment_id}")
+                     if (f.labels or {}).get(FLEET_LABEL_KEY) == FLEET_LABEL_VALUE]
 
         # 1. Servers first — deleting a server detaches its volumes.
         servers_deleted = []
@@ -248,13 +253,17 @@ class InProcessHetznerBroker:
         for firewall in firewalls:
             self._client.delete_firewall(firewall.id)
             firewalls_deleted.append(firewall.id)
-        # 4. DNS last. RRSets carry no labels, so re-derive the box's A record by name and
-        #    delete it in the configured zone (idempotent: a missing record is a no-op).
+        # 4. DNS last. RRSets carry no labels, so the record is re-derived by hostname — which
+        #    means it must be scoped by DISCOVERY, not by the raw id. Delete only when a fleet
+        #    resource was actually found for this deployment AND the derived label is non-empty:
+        #    an underscore-only id ("___" -> "") would otherwise resolve to the zone apex, and any
+        #    name would be deletable for a deployment that owns nothing (an unscoped DNS delete).
         dns_deleted = []
-        if self._dns_zone_id:
+        if self._dns_zone_id and (servers or volumes or firewalls):
             name = provider_hostname_label(deployment_id)
-            self._client.delete_dns_record(self._dns_zone_id, name)
-            dns_deleted.append(f"{name}/A")
+            if name:
+                self._client.delete_dns_record(self._dns_zone_id, name)
+                dns_deleted.append(f"{name}/A")
 
         return BrokerDestroyResult(
             deployment_id=deployment_id,

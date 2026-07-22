@@ -265,14 +265,14 @@ def test_factory_threads_enable_backups_default_true():
 
 def _labelled_volume(dep):
     return VolumeCreateRequest(name=f"onebrain-{dep}-data", size_gb=10, location="nbg1",
-                               labels={"deployment_id": dep})
+                               labels={"deployment_id": dep, "managed-by": "onebrain-fleet"})
 
 
 def _labelled_firewall(dep):
     return FirewallCreateRequest(
         name=f"onebrain-{dep}-fw",
         rules=(FirewallRule(direction="in", protocol="tcp", port="443"),),
-        labels={"deployment_id": dep})
+        labels={"deployment_id": dep, "managed-by": "onebrain-fleet"})
 
 
 def _provision_box(broker, dep):
@@ -344,8 +344,39 @@ def test_broker_destroy_nothing_found_is_record_only_signal():
     result = broker.destroy_box("ghost", confirm=True)
     assert result.nothing_found is True
     assert result.servers_deleted == () and result.volumes_deleted == ()
-    # DNS delete is still attempted (idempotent) so a stray record stays reclaimable.
-    assert fake.calls == ["delete_dns_record"]
+    # Nothing discovered -> DNS is NOT touched (the broker is not an unscoped DNS-delete tool).
+    assert fake.calls == []
+    assert result.dns_deleted == ()
+
+
+def test_broker_destroy_ignores_volume_and_firewall_without_the_fleet_label():
+    fake = FakeHetznerClient()
+    broker = InProcessHetznerBroker(fake, dns_zone_id="z1")
+    # A fleet server exists, but a volume/firewall carries only deployment_id (no fleet label):
+    # not ours -> never deleted, even though it shares the id.
+    fake.create_server(_server_req(labels=_fleet_labels("dep_a")))
+    fake.create_volume(VolumeCreateRequest(name="v", size_gb=10, location="nbg1",
+                                           labels={"deployment_id": "dep_a"}))
+    fake.create_firewall(FirewallCreateRequest(
+        name="fw", rules=(FirewallRule(direction="in", protocol="tcp", port="443"),),
+        labels={"deployment_id": "dep_a"}))
+
+    result = broker.destroy_box("dep_a", confirm=True)
+    assert result.servers_deleted == ("server_1",)          # the fleet-owned server is deleted
+    assert result.volumes_deleted == ()                     # the unlabelled volume survives
+    assert result.firewalls_deleted == ()                   # the unlabelled firewall survives
+    assert [v.id for v in fake.list_volumes("deployment_id=dep_a")] == ["vol_1"]
+    assert [f.id for f in fake.list_firewalls("deployment_id=dep_a")] == ["fw_1"]
+
+
+def test_broker_destroy_never_deletes_dns_for_an_empty_or_unowned_label():
+    fake = FakeHetznerClient()
+    broker = InProcessHetznerBroker(fake, dns_zone_id="z1")
+    # A deployment that owns nothing must never delete a derived DNS record; an underscore-only
+    # id (label -> "") must never reach the zone apex.
+    assert broker.destroy_box("___", confirm=True).dns_deleted == ()
+    assert broker.destroy_box("www", confirm=True).dns_deleted == ()
+    assert "delete_dns_record" not in fake.calls
 
 
 def test_broker_destroy_is_idempotent_on_rerun():

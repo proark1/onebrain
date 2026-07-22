@@ -336,7 +336,9 @@ class HetznerProvisioner:
             firewall = FirewallCreateRequest(
                 name=f"{compose_project}-fw",
                 rules=_default_deny_rules(settings.hetzner_firewall_allow_ssh),
-                labels={"deployment_id": run.deployment_id},
+                # The fleet label goes on EVERY resource, not just the server, so teardown can
+                # prove OneBrain ownership before deleting (never a resource merely sharing the id).
+                labels={"deployment_id": run.deployment_id, FLEET_LABEL_KEY: FLEET_LABEL_VALUE},
             )
         server = ServerCreateRequest(
             name=compose_project,
@@ -359,7 +361,9 @@ class HetznerProvisioner:
                 name=f"{compose_project}-data",
                 size_gb=settings.hetzner_volume_size_gb,
                 location=settings.hetzner_location,
-                labels={"deployment_id": run.deployment_id},
+                # Fleet ownership label (see the firewall above) so teardown scopes volume
+                # deletion to OneBrain-owned volumes.
+                labels={"deployment_id": run.deployment_id, FLEET_LABEL_KEY: FLEET_LABEL_VALUE},
             )
         dns = None
         if dns_enabled:

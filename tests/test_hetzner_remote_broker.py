@@ -54,7 +54,8 @@ def _request_payload(*, location="nbg1", firewall_port="443"):
     return encode_provision_request(
         server=_server(location=location),
         volume=VolumeCreateRequest(
-            name="onebrain-dep-a-data", size_gb=10, location=location, labels={"deployment_id": "dep_a"}
+            name="onebrain-dep-a-data", size_gb=10, location=location,
+            labels={"deployment_id": "dep_a", "managed-by": "onebrain-fleet"},
         ),
         dns=DnsRecordRequest(zone_id="fleet.example", name="dep-a", ipv4="", ttl=300),
         firewall=FirewallCreateRequest(
@@ -63,7 +64,7 @@ def _request_payload(*, location="nbg1", firewall_port="443"):
                 FirewallRule(direction="in", protocol="tcp", port="80"),
                 FirewallRule(direction="in", protocol="tcp", port=firewall_port),
             ),
-            labels={"deployment_id": "dep_a"},
+            labels={"deployment_id": "dep_a", "managed-by": "onebrain-fleet"},
         ),
     )
 
