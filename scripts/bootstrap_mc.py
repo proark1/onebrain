@@ -410,6 +410,15 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
          getattr(settings, "hetzner_broker_credential", "") or ""),
         ("ONEBRAIN_SECRET_ENCRYPTION_KEY",
          getattr(settings, "secret_encryption_key", "") or ""),
+        # Operator self-deploy ("green main -> MC"). The box.env dev key above lets the
+        # host UPDATER trust a dev-signed release; the APP also needs the dev verify key
+        # (to register + verify dev-signed candidates in the planner / desired-state
+        # path) and the feature flag. Bake both so a fresh MC boots consistent with its
+        # box.env. Both empty/false by default -> the feature stays inert until opt-in.
+        ("ONEBRAIN_DEV_RELEASE_VERIFY_PUBLIC_KEY",
+         getattr(settings, "dev_release_verify_public_key", "") or ""),
+        ("ONEBRAIN_OPERATOR_AUTO_DEPLOY_ENABLED",
+         "true" if getattr(settings, "operator_auto_deploy_enabled", False) else "false"),
     ]
     dotenv += "".join(f"{k}={v}\n" for k, v in overlay)
 

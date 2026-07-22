@@ -221,6 +221,16 @@ def operator_self_converged(control_store, child, heartbeat) -> bool:
     expected_migration = release.migration_to or deployment.current_migration
     if expected_migration and body.onebrain.migration_revision != expected_migration:
         return False
+    # If the heartbeat carries per-module health, every release module it reports must be
+    # healthy AND on the release version — so a self-update where the API returns on the
+    # target version but another MC service (e.g. onebrain-admin-ui) is still down does NOT
+    # read as converged (MC's top-level `healthy` is API/data-store only). A box that
+    # reports no module health falls back to version+health — a documented residual.
+    reported = {report.module_id: report for report in (getattr(body, "modules", None) or [])}
+    for module_id, expected_version in release.modules.items():
+        report = reported.get(module_id)
+        if report is not None and (not report.healthy or report.version != expected_version):
+            return False
     return True
 
 

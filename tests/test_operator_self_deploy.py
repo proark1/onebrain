@@ -36,7 +36,7 @@ from app.controlplane.pull_reconcile import (
     reconcile_pull_targets,
     synthesize_operator_self_status,
 )
-from app.fleet.heartbeat import UpdateReport, build_heartbeat_v2
+from app.fleet.heartbeat import ModuleReport, UpdateReport, build_heartbeat_v2
 from app.routers import operator as operator_router
 from app.trust.release import parse_registry_allowlist, release_signature_fields, sign_release
 from app.trust.signing import generate_keypair
@@ -395,6 +395,76 @@ def test_reconcile_failure_of_customer_approved_target_leaves_customer_delivery_
                            dispatch_child=lambda *_a, **_k: None, operator_self_deployment_id=MC)
     assert store.get_rollout(rollout.id).status == "failed"
     assert store.get_release_promotion(release.version).state == "customer_approved"   # NOT paused
+
+
+def test_heartbeat_failure_of_mc_self_rollout_does_not_pause_customer_delivery(monkeypatch):
+    # Twin of the reconcile guard, on the reconcile_heartbeat_promotion path (codex P1):
+    # MC's OWN heartbeat reporting a FAILED self-update of a customer_approved release
+    # must NOT pause customer delivery — that path keys only on attempt_id/deployment/
+    # version and would otherwise fire once MC's `update` block carries a real attempt_id.
+    import app.config as config_module
+    from app.controlplane.promotion import reconcile_heartbeat_promotion
+
+    dev_priv, dev_pub = generate_keypair()
+    ds_priv, ds_pub = generate_keypair()
+    _, prod_pub = generate_keypair()
+    store = MemoryControlPlaneStore()
+    _mc_deployment(store, current_version="2026.07.22.442")
+    release = _release("2026.07.22.500")
+    _seed_promotion(store, release, dev_priv, state="customer_approved")
+    settings = _settings(ds_priv=ds_priv, ds_pub=ds_pub, prod_pub=prod_pub, dev_pub=dev_pub)
+    monkeypatch.setattr(config_module, "get_settings", lambda: settings)
+    rollout = operator_router.dispatch_operator_self_rollout(store, settings, actor="test")
+    assert rollout is not None
+    # MC's own heartbeat: the self-update FAILED and matches the exact attempt.
+    body = build_heartbeat_v2(
+        deployment_id=MC, reported_at=_ts(), version="2026.07.22.442", migration_revision="0034",
+        onebrain_healthy=False, modules=[],
+        update=UpdateReport(attempt_id=rollout.id, last_target_version=release.version, outcome="failed"),
+    )
+    reconcile_heartbeat_promotion(store, body, received_at=_ts())
+    assert store.get_release_promotion(release.version).state == "customer_approved"   # NOT paused
+
+
+def test_self_seed_backfills_modules_on_an_upgraded_mc():
+    # codex P2: an MC whose row predates this change (created without module rows) must
+    # still get its modules backfilled, or auto-deploy is silently blocked on
+    # no_modules_installed.
+    from app.controlplane.self_seed import seed_operator_self_deployment
+    from app.fleet.memory import MemoryFleetStore
+
+    control = MemoryControlPlaneStore()
+    fleet = MemoryFleetStore()
+    control.create_deployment(CustomerDeployment(id=MC, customer_name=MC, current_migration="0034"))
+    assert control.list_modules(MC) == []
+    settings = SimpleNamespace(operator_mode=True, deployment_id=MC,
+                               build_version="2026.07.22.500", fleet_key="")
+    assert seed_operator_self_deployment(settings, control, fleet) is True   # backfilled
+    installed = {m.module_id for m in control.list_modules(MC) if m.status == "active"}
+    assert installed == set(DEVELOPMENT_GATE_CORE_MODULE_IDS)
+    assert seed_operator_self_deployment(settings, control, fleet) is False  # now idempotent
+
+
+def test_operator_self_converged_rejects_an_unhealthy_reported_module():
+    # codex P2: API up on the target version but another local service down must NOT be
+    # read as converged when the heartbeat carries that module's health.
+    store = MemoryControlPlaneStore()
+    _mc_deployment(store, current_migration="0034")
+    release = _release("2026.07.22.500")
+    store.create_release(release)
+    child = SimpleNamespace(target_version=release.version, deployment_id=MC)
+
+    def _hb(module_healthy):
+        body = build_heartbeat_v2(
+            deployment_id=MC, reported_at=_ts(), version=release.version, migration_revision="0034",
+            onebrain_healthy=True,
+            modules=[ModuleReport(module_id="onebrain-admin-ui", version=release.version,
+                                  healthy=module_healthy)],
+            update=UpdateReport())
+        return SimpleNamespace(payload=body.model_dump())
+
+    assert operator_self_converged(store, child, _hb(module_healthy=False)) is False
+    assert operator_self_converged(store, child, _hb(module_healthy=True)) is True
 
 
 def test_trigger_filter_restricts_to_verified_even_without_the_promotion_gate(monkeypatch):
