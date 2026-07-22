@@ -8,6 +8,14 @@ from typing import Iterable
 BASELINE_ALEMBIC_REVISION = "0001_baseline_onebrain_schema"
 REQUIRED_ALEMBIC_REVISION = "0035_fleet_decommission_tombstone"
 DRIVE_MALWARE_POLICY_EPOCH = 1
+# The Alembic revision that OWNS the Drive-malware quarantine schema + policy
+# identity. Deliberately NOT the moving head: migration 0034 stamps
+# drive_malware_activation_state.schema_revision with this fixed revision, so
+# advancing REQUIRED_ALEMBIC_REVISION with an UNRELATED migration (e.g. the fleet
+# tombstone in 0035) must not invalidate a still-correct malware activation. Bump
+# this ONLY when a migration actually changes the malware schema/policy (and
+# re-stamps the activation row).
+DRIVE_MALWARE_SCHEMA_REVISION = "0034_drive_malware_quarantine"
 MIGRATION_GUIDANCE = (
     "Postgres schema is not migrated. Run `alembic upgrade head` with "
     "ONEBRAIN_DATABASE_URL before starting OneBrain."
@@ -73,7 +81,7 @@ def _validate_drive_malware_activation(conn) -> None:
             "Drive malware enforcement activation is unavailable; keep API and workers stopped."
         ) from exc
     if not row or (
-        str(row[0]) != REQUIRED_ALEMBIC_REVISION
+        str(row[0]) != DRIVE_MALWARE_SCHEMA_REVISION
         or int(row[1]) != DRIVE_MALWARE_POLICY_EPOCH
         or str(row[2]) != "active"
     ):
