@@ -32,6 +32,13 @@ type PanelProps = {
   children: ReactNode;
   count?: ReactNode;
   eyebrow?: string;
+  /**
+   * One or two plain sentences: what this panel is, and what the operator is
+   * expected to do with it. These screens show raw control-plane state, and a
+   * title like "Promotion ledger" does not tell a reader whether approving a
+   * release ships anything. Say the consequence, not the noun.
+   */
+  intro?: ReactNode;
   title: string;
 };
 
@@ -94,7 +101,7 @@ export function Tabs<T extends string>({ active, items, label, onChange }: TabsP
   );
 }
 
-export function Panel({ actions, children, count, eyebrow, title }: PanelProps) {
+export function Panel({ actions, children, count, eyebrow, intro, title }: PanelProps) {
   return (
     <section className="adminPanel">
       <div className="panelHead">
@@ -107,6 +114,7 @@ export function Panel({ actions, children, count, eyebrow, title }: PanelProps) 
           {actions}
         </div>
       </div>
+      {intro ? <p className="panelIntro">{intro}</p> : null}
       {children}
     </section>
   );

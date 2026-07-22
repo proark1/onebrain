@@ -1,7 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { describeFleetOverview, fleetHealthLabel, fleetHealthTone } from "../src/lib/fleet-presentation.ts";
+import { absoluteHostUrl, describeFleetOverview, fleetHealthLabel, fleetHealthTone } from "../src/lib/fleet-presentation.ts";
+
+test("a stored host becomes an absolute url instead of a relative path", () => {
+  // The bug this guards: a schemeless href navigates inside Mission Control.
+  assert.equal(absoluteHostUrl("box.example.com"), "https://box.example.com");
+  assert.equal(absoluteHostUrl("https://box.example.com/"), "https://box.example.com");
+  assert.equal(absoluteHostUrl("http://box.example.com"), "http://box.example.com");
+});
+
+test("a dns-less box links over http because no certificate exists for an ip", () => {
+  assert.equal(absoluteHostUrl("203.0.113.9"), "http://203.0.113.9");
+});
+
+test("nothing linkable yields an empty string, not a dead link", () => {
+  assert.equal(absoluteHostUrl(""), "");
+  assert.equal(absoluteHostUrl("   "), "");
+});
 
 test("fleet health presentation makes missing signals explicit", () => {
   assert.equal(fleetHealthLabel(true), "Healthy");
