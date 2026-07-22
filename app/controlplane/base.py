@@ -44,12 +44,29 @@ PROMOTION_STATES = frozenset({
 ROLLBACK_KINDS = frozenset({"", "code_only", "restore_required"})
 UPDATE_POLICIES = frozenset({"", "auto", "manual", "pinned"})
 TEARDOWN_REQUEST_PENDING = "pending"
+# Legacy record-only terminal produced BEFORE the teardown executor existed (two
+# approvals collected, execution deliberately impossible). Kept only so pre-executor
+# rows stay readable; the approval threshold now reaches ``approved`` instead.
 TEARDOWN_REQUEST_EXECUTION_DISABLED = "execution_disabled"
 TEARDOWN_REQUEST_EXPIRED = "expired"
+# Executor lifecycle: the approval threshold reaches ``approved`` (executable), then
+# execution moves it to ``executed`` or ``execution_failed`` (both terminal). A failed
+# teardown is NOT auto-retried — the operator opens a fresh request (the broker's
+# discovery-scoped destroy is idempotent, so finishing a partial teardown is safe).
+TEARDOWN_REQUEST_APPROVED = "approved"
+TEARDOWN_REQUEST_EXECUTED = "executed"
+TEARDOWN_REQUEST_EXECUTION_FAILED = "execution_failed"
+TEARDOWN_REQUEST_EXECUTED_STATUSES = frozenset({
+    TEARDOWN_REQUEST_EXECUTED,
+    TEARDOWN_REQUEST_EXECUTION_FAILED,
+})
 TEARDOWN_REQUEST_STATUSES = frozenset({
     TEARDOWN_REQUEST_PENDING,
     TEARDOWN_REQUEST_EXECUTION_DISABLED,
     TEARDOWN_REQUEST_EXPIRED,
+    TEARDOWN_REQUEST_APPROVED,
+    TEARDOWN_REQUEST_EXECUTED,
+    TEARDOWN_REQUEST_EXECUTION_FAILED,
 })
 TEARDOWN_EXECUTION_DISABLED_RESULT = "execution_disabled: no customer resources were deleted"
 # registry/repo@sha256:<64 hex> — digest-pinned image reference, never a floating tag.
@@ -99,6 +116,10 @@ class CustomerDeployment:
     last_heartbeat_healthy: Optional[bool] = None
     last_reported_version: str = ""
     last_reported_migration: str = ""
+    # Tombstone: an ISO-8601 timestamp set when the box is decommissioned. A
+    # tombstoned deployment is filtered out of list_deployments / fleet_overview
+    # but kept for audit + erasure-manifest history (never hard-deleted).
+    removed_at: str = ""
     # Product choices made at provisioning time.  DeploymentModule records are
     # the resolved container services; this preserves selected product modules
     # such as KPI Dashboard and AI Employees that do not add a container today.
@@ -265,6 +286,8 @@ class ControlPlaneStore(Protocol):
 
     def list_deployments(self) -> List[CustomerDeployment]: ...
 
+    def remove_deployment(self, deployment_id: str, *, removed_at: str) -> CustomerDeployment: ...
+
     def upsert_module(self, module: DeploymentModule) -> DeploymentModule: ...
 
     def list_modules(self, deployment_id: str) -> List[DeploymentModule]: ...
@@ -401,6 +424,15 @@ class ControlPlaneStore(Protocol):
         approved_at: str,
     ) -> CustomerTeardownRequest: ...
 
+    def record_teardown_execution(
+        self,
+        request_id: str,
+        *,
+        succeeded: bool,
+        result: str,
+        executed_at: str,
+    ) -> CustomerTeardownRequest: ...
+
     # --- served floor bumps (P5-01 revocation kill-switch) ---
     def set_served_floor_bump(self, bump: ServedFloorBump) -> ServedFloorBump: ...
 
@@ -437,6 +469,28 @@ def _parse_teardown_timestamp(value: str, field: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _teardown_dual_control_policy() -> tuple[int, bool]:
+    """(min_approvals, allow_self_approval) for the teardown protocol.
+
+    Sole-operator relaxation of the two-distinct-approver rule (§5 of the fleet
+    decommission design), DEFAULTING to strict 2 / no-self-approval. FAIL-CLOSED:
+    an unreadable config (minimal unit-test env) or an out-of-range approval count
+    yields the STRICT rule; it never silently weakens dual control. Config
+    ``Field(ge=1, le=2)`` already bounds the value at load — this re-check is
+    defense in depth against a monkeypatched or stale settings object. Mirrors the
+    lazy-import shape of require_signed_releases()."""
+    try:
+        from app.config import get_settings
+    except ImportError:
+        return 2, False
+    settings = get_settings()
+    min_approvals = int(getattr(settings, "teardown_min_approvals", 2) or 2)
+    allow_self = bool(getattr(settings, "teardown_allow_self_approval", False))
+    if not 1 <= min_approvals <= 2:
+        return 2, False
+    return min_approvals, allow_self
+
+
 def validate_teardown_request(request: CustomerTeardownRequest) -> None:
     required = {
         "request id": request.id,
@@ -454,17 +508,26 @@ def validate_teardown_request(request: CustomerTeardownRequest) -> None:
     _parse_teardown_timestamp(request.nonce_expires_at, "nonce expiry")
     if request.status not in TEARDOWN_REQUEST_STATUSES:
         raise ValueError(f"Unknown teardown request status: {request.status}")
+    min_approvals, allow_self = _teardown_dual_control_policy()
     if len(request.approver_ids) > 2 or len(set(request.approver_ids)) != len(request.approver_ids):
         raise ValueError("teardown request approvers must contain at most two distinct identities.")
-    if request.requested_by in request.approver_ids:
-        raise ValueError("teardown requester cannot approve the request.")
     if any(not approver.strip() for approver in request.approver_ids):
         raise ValueError("teardown approver identity is required.")
+    if not allow_self and request.requested_by in request.approver_ids:
+        raise ValueError("teardown requester cannot approve the request.")
+    # Legacy record-only terminals (pre-executor rows) keep their exact invariant.
     if request.status in {TEARDOWN_REQUEST_EXECUTION_DISABLED, TEARDOWN_REQUEST_EXPIRED}:
         if request.execution_result != TEARDOWN_EXECUTION_DISABLED_RESULT:
             raise ValueError("terminal teardown requests require an execution-disabled result.")
     if request.status == TEARDOWN_REQUEST_EXECUTION_DISABLED and len(request.approver_ids) != 2:
         raise ValueError("execution-disabled teardown requests require two approvals.")
+    # Executor lifecycle: reaching APPROVED (and beyond) requires the configured
+    # threshold; EXECUTED/_FAILED must carry an executor result.
+    if request.status in {TEARDOWN_REQUEST_APPROVED} | TEARDOWN_REQUEST_EXECUTED_STATUSES:
+        if len(request.approver_ids) < min_approvals:
+            raise ValueError("teardown request has not reached the approval threshold.")
+    if request.status in TEARDOWN_REQUEST_EXECUTED_STATUSES and not str(request.execution_result).strip():
+        raise ValueError("executed teardown requests require an execution result.")
 
 
 def apply_teardown_approval(
@@ -497,19 +560,49 @@ def apply_teardown_approval(
         )
     if not nonce_hash or not hmac.compare_digest(request.nonce_hash, nonce_hash):
         raise ValueError("teardown approval nonce is invalid.")
-    if actor == request.requested_by:
+    min_approvals, allow_self = _teardown_dual_control_policy()
+    if not allow_self and actor == request.requested_by:
         raise ValueError("teardown requester cannot approve the request.")
     if actor in request.approver_ids:
         raise ValueError("teardown approver has already approved this request.")
     approvers = (*request.approver_ids, actor)
-    terminal = len(approvers) == 2
+    reached = len(approvers) >= min_approvals
+    # Reaching the threshold now yields APPROVED (executable). Unlike the old
+    # record-only terminal it is NOT completed and carries no result — execution
+    # sets those (apply_teardown_execution).
     return replace(
         request,
         approver_ids=approvers,
-        status=TEARDOWN_REQUEST_EXECUTION_DISABLED if terminal else TEARDOWN_REQUEST_PENDING,
-        execution_result=TEARDOWN_EXECUTION_DISABLED_RESULT if terminal else "",
+        status=TEARDOWN_REQUEST_APPROVED if reached else TEARDOWN_REQUEST_PENDING,
+        execution_result="",
         updated_at=approved_at,
-        completed_at=approved_at if terminal else "",
+        completed_at="",
+    )
+
+
+def apply_teardown_execution(
+    request: CustomerTeardownRequest,
+    *,
+    succeeded: bool,
+    result: str,
+    executed_at: str,
+) -> CustomerTeardownRequest:
+    """Move an APPROVED request to its terminal executor state.
+
+    Both outcomes are terminal. A failed teardown is not silently retried — the
+    operator investigates and, if needed, opens a fresh request (the broker's
+    discovery-scoped destroy is idempotent, so finishing a partial teardown is
+    safe)."""
+    if request.status != TEARDOWN_REQUEST_APPROVED:
+        raise ValueError("teardown request is not approved for execution.")
+    _parse_teardown_timestamp(executed_at, "execution time")
+    summary = str(result).strip() or ("teardown executed" if succeeded else "teardown execution failed")
+    return replace(
+        request,
+        status=TEARDOWN_REQUEST_EXECUTED if succeeded else TEARDOWN_REQUEST_EXECUTION_FAILED,
+        execution_result=summary,
+        updated_at=executed_at,
+        completed_at=executed_at,
     )
 
 
