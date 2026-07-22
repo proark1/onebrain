@@ -8,6 +8,12 @@ supersedes: hetzner-fleet-architecture.md §"Destructive lifecycle" (on landing)
 scope:      Mission Control fleet view (mc.onlyonebrain.com) — operator_mode only
 ```
 
+> **Placement note.** This is an **active, forward-looking spec**, not a historical
+> record. It lives under `docs/archive/specs/` only because `docs/README.md:52-58`
+> designates that directory as the single home for **all** dated design records; the
+> `status: … NOT yet built` line above marks it live, and implementation tracks it via
+> the PRs in §9.
+
 This spec turns two Fleet-view gaps into buildable work:
 
 1. **A per-box login link** — the Fleet overview shows deployments but gives no way
@@ -31,11 +37,13 @@ current-state claim below is grounded in code as of 2026-07-22.
 - The overview response `DeploymentOverview` (`app/routers/fleet.py:550`) carries no
   host / IP / URL, so the console row `DeploymentRow`
   (`onebrain-web/src/components/fleet-panel.tsx:67`) cannot link out.
-- The box's public login address already exists server-side as
-  `external_run_url` (`fqdn or public_ipv4`), set at
-  `app/provisioning/hetzner/provisioner.py:410` and persisted on the provisioning
-  run (`app/provisioning/runs.py:67`). It is authoritative for both DNS boxes
-  (`https://<id>.onlyonebrain.com`) and IP-only / dev-gate boxes.
+- A public address is recorded server-side as `external_run_url` at dispatch
+  (`fqdn or public_ipv4`, `app/provisioning/hetzner/provisioner.py:410`), **but it is
+  not a reliable box URL**: the box's success callback overwrites it with the raw public
+  IPv4 (`deploy/box/onebrain_gate_report.py:327` → `apply_callback`), and it is a
+  generic run field that can hold an arbitrary provider/workflow URL. The box's *stable,
+  cert-matching* hostname is instead derivable from the deployment id + fleet DNS
+  settings — see §6.
 
 **Feature 1 — no delete path exists anywhere; this is greenfield.**
 - `ControlPlaneStore` has `create/get/list` only (`app/controlplane/base.py:261`);
@@ -80,11 +88,17 @@ current-state claim below is grounded in code as of 2026-07-22.
   chained into one combined call. If a resource is ever delete-protected the delete
   fails; un-protecting is a separate, out-of-band, independently-authorized step. The
   Hetzner token stays broker-only.
-- **Broker scope guard.** Before any delete the broker re-lists servers by
-  `deployment_id` and confirms the target `server_id` is present **and** carries
+- **Broker scope guard — every resource, not just the server.** MC hands the broker ids
+  from a manifest, so the broker must independently prove **each** id belongs to this
+  deployment before deleting it — not only the `server_id`. Before any delete the broker
+  re-lists by `deployment_id` and confirms: the `server_id` is present and carries
   `managed-by=onebrain-fleet` (mirrors the provision-side allowlist,
-  `app/provisioning/hetzner/broker_service.py:106`). The broker never deletes an id it
-  was simply handed — that would be the fleet-wide kill switch P1-D exists to prevent.
+  `app/provisioning/hetzner/broker_service.py:106`); each `volume_id` is attached to /
+  labelled for that deployment; and the `firewall_id` and DNS record are the
+  deployment's own (label / zone + name match). Any id that fails its check is refused,
+  not deleted — a bad or stale manifest must never delete a *foreign* volume, firewall,
+  or DNS record. The broker never deletes an id it was simply handed; that unchecked path
+  is the fleet-wide kill switch P1-D exists to prevent.
 - **Legal hold + evidence.** Teardown stays blocked under an active legal hold
   (`app/routers/operator.py:1228`) and still requires `legal_hold_evidence_ref` +
   `backup_retention_evidence_ref` on the record.
@@ -125,12 +139,16 @@ has **no** audit, evidence, or legal-hold gate at all.
 
 **Change.** Two new settings, defaulting to the current strict behavior:
 
-- `teardown_min_approvals: int = 2`
+- `teardown_min_approvals: int = 2` — **bounded `1 ≤ n ≤ 2`, validated at settings
+  load; fail closed.** An out-of-range value (e.g. an env typo
+  `ONEBRAIN_TEARDOWN_MIN_APPROVALS=0`) must raise on load, never silently make a request
+  executable with zero approvals. There is no "no approval" mode.
 - `teardown_allow_self_approval: bool = false`
 
 `validate_teardown_request` / `apply_teardown_approval` consult these instead of the
-hard-coded `2` / distinct / requester-barred rules. **All other validation is
-unchanged** (evidence refs, nonce hash, TTL, legal hold).
+hard-coded `2` / distinct / requester-barred rules, and the execute endpoint gates on
+`len(approver_ids) >= teardown_min_approvals` with that same bounded value. **All other
+validation is unchanged** (evidence refs, nonce hash, TTL, legal hold).
 
 **Residual risk, stated plainly.** With `min_approvals=1` and self-approval enabled, a
 **single identity can authorize destruction of a live customer box.** This is accepted
@@ -146,19 +164,26 @@ explicitly opted-in escape hatch rather than deleted checks.
 
 ---
 
-## 6. Feature 2 — login link
+## 6. Feature 2 — login link (shipped: PR #48)
 
-- Add `login_url: str = ""` to `DeploymentOverview` (`app/routers/fleet.py:550`).
-- In `fleet_overview` (`app/routers/fleet.py:590`) join the provisioning-run store
-  (`get_provisioning_run_store()`), take each deployment's latest run, and set
-  `login_url` from `external_run_url` — `https://` for an FQDN, `http://` for an
-  IP-only box, `""` when there is no run. One extra store read; negligible at fleet
-  size ~5. Do **not** re-derive from `fleet_base_domain` — that silently breaks the
-  DNS-disabled / dev-gate boxes.
-- Add `login_url` to `FleetDeploymentOverview`
-  (`onebrain-web/src/lib/onebrain-types.ts:1002`); render the box name as
-  `<a target="_blank" rel="noopener">` in `DeploymentRow` when present, plain text
-  otherwise.
+- Add `login_url: str = ""` to `DeploymentOverview` (`app/routers/fleet.py`).
+- **Derive** `login_url`; do **not** read `external_run_url`. As established in review,
+  the box's success callback overwrites a DNS box's `external_run_url` with its raw
+  public IPv4 (`deploy/box/onebrain_gate_report.py:327` → `apply_callback`), and it is a
+  generic run field that may carry an arbitrary provider/workflow URL. `fleet_overview`
+  instead derives the address the same way the provisioner does, so it always matches the
+  hostname Caddy holds a certificate for:
+  `https://<_provider_hostname_label(id)>.<base_domain>` when the fleet is DNS-enabled
+  (`fleet_dns_provider==hetzner` **and** `fleet_base_domain` **and** `fleet_dns_zone_id`),
+  else `""`.
+- **IP-only boxes get no link.** They serve plain HTTP on `:80`, and boxes render
+  `ONEBRAIN_COOKIE_SECURE=true`, so a session cookie can't survive an `http://` origin —
+  a link there would open the box but never keep the operator signed in. (This corrects
+  an earlier draft that sourced the link from `external_run_url` and emitted `http://<ip>`
+  for such boxes.)
+- Add `login_url` to `FleetDeploymentOverview` (`onebrain-web/src/lib/onebrain-types.ts`);
+  render the box name as `<a target="_blank" rel="noreferrer">` in `DeploymentRow` when
+  present, plain text otherwise.
 - Regenerate **both** OpenAPI contracts.
 
 ---
@@ -173,9 +198,14 @@ explicitly opted-in escape hatch rather than deleted checks.
 - Implement in the real transport (`urllib_client.py`) and the fake (`fake.py`) so
   every provisioner test exercises teardown offline.
 - **Implement `InProcessHetznerBroker.destroy_box`** (`app/provisioning/hetzner/broker.py:199`):
-  delete order **server → volumes → firewall → DNS**; extend the signature to carry
+  delete order **server → volumes → firewall → DNS**. Deleting the server first detaches
+  its volumes, but Hetzner refuses to delete an *attached* volume, so the broker must
+  **wait for each volume to report detached (or explicitly detach it) before
+  `delete_volume`** — otherwise a live box with `hetzner_volume_size_gb > 0` loses its
+  server yet keeps a billed, data-bearing volume behind. Extend the signature to carry
   `firewall_id` (the manifest has it, the current signature omits it); keep the
-  `confirm=True` guard; apply the §3 scope guard before deleting.
+  `confirm=True` guard; apply the per-resource §3 scope guard before deleting **each**
+  resource.
 - **`POST /v1/destroy`** on the broker service
   (`app/provisioning/hetzner/broker_service.py:175` is the `/v1/provision` template),
   with its own `validate_destroy_request` and the existing `_authorize` bearer+mTLS
@@ -198,18 +228,33 @@ explicitly opted-in escape hatch rather than deleted checks.
   1. requires the request in `APPROVED`; re-checks legal hold (TOCTOU);
   2. requires the typed phrase `decommission <deployment_id>` in the body, re-checked
      server-side (mirrors `confirmDelete`, `onebrain-web/src/components/users-panel.tsx:320`);
-  3. reads the erasure manifest from the provisioning-run store, keyed by deployment;
-  4. **manifest present →** `broker.destroy_box(confirm=True)`;
-     **absent → record-only** tombstone plus a returned warning that no infra was
-     touched (this is the path that clears already-dead deployments and
-     hand-registered dev gates);
+  3. resolves the **complete** erasure manifest for the deployment. A single
+     deployment-keyed lookup of the *latest* run is **not** enough: an idempotent-reuse
+     run (`broker.py:139-148`) returns empty `volume_ids` / `dns_record_id` /
+     `firewall_id`, and the provisioner writes those empties into the later run's
+     manifest — so using the latest run would delete only the server and **leak the data
+     volume, DNS record, and firewall**. Resolve the original *creating* run's manifest
+     (or accumulate the non-empty resource ids across the deployment's runs) so every
+     resource is covered;
+  4. **manifest with resources →** `broker.destroy_box(confirm=True)`;
+     **no resolvable resources →** treat as **record-only**: tombstone plus a returned
+     warning that no infra was touched. Record-only must **not** be inferred from
+     manifest-absence alone — before tombstoning "no infra touched", the broker verifies
+     no `managed-by=onebrain-fleet` server remains for the deployment; a manifest that is
+     present but whose resources the provider reports **not found** takes this same
+     warning path (so an operator can still clear a manually-deleted box's row) rather
+     than failing;
   5. **tombstones** the deployment (new `removed_at` on `CustomerDeployment` + both
      stores; filtered out of `fleet_overview` and `list_deployments`), **revokes the
      box's fleet keys** so a resurrected box cannot heartbeat, writes audit, and
      transitions the request → `EXECUTED`.
 - **Migration:** `removed_at` column + a `REQUIRED_ALEMBIC_REVISION` bump in
-  `app/db/schema.py`. The new statuses are string values on the existing teardown
-  table (migration 0028); no column change there.
+  `app/db/schema.py`. The teardown-status change is **not** free: migration
+  `0028_customer_teardown_protocol` constrains `status` to `pending` /
+  `execution_disabled` / `expired` via a CHECK (plus a terminal-result check tied to the
+  old disabled result). The migration must **drop and recreate those constraints** to
+  admit `APPROVED` / `EXECUTED` / `EXECUTION_FAILED`, or Postgres rejects the new statuses
+  at write time.
 
 ### 7c. Phase C — console UI
 
@@ -227,13 +272,13 @@ contracts.
 | Area | Change |
 |---|---|
 | `CustomerDeployment` + both stores | `removed_at` (tombstone); filter in `list_deployments` / `fleet_overview` |
-| `CustomerTeardownRequest` statuses | add `APPROVED`, `EXECUTED`, `EXECUTION_FAILED`; approval threshold → `APPROVED` |
+| `CustomerTeardownRequest` statuses | add `APPROVED`, `EXECUTED`, `EXECUTION_FAILED`; approval threshold → `APPROVED`; **migrate the 0028 status + terminal-result CHECK constraints** |
 | `HetznerClient` seam | 4 delete primitives (no un-protect) |
 | `InProcessHetznerBroker.destroy_box` | real implementation + scope guard + `firewall_id` |
 | Broker service | `POST /v1/destroy` + `validate_destroy_request` |
 | `RemoteHetznerBroker` | `destroy_box` transport + encode/decode |
-| `app/config.py` | `teardown_min_approvals`, `teardown_allow_self_approval` |
-| `DeploymentOverview` / `FleetDeploymentOverview` | `login_url` |
+| `app/config.py` | `teardown_min_approvals` (bounded 1–2, fail-closed), `teardown_allow_self_approval` |
+| `DeploymentOverview` / `FleetDeploymentOverview` | `login_url` (derived from deployment id + fleet DNS settings) |
 | OpenAPI | regenerate `openapi.json` **and** `openapi.customer.json` |
 
 ---
@@ -270,10 +315,14 @@ contracts.
 
 ## 11. Testing & acceptance criteria
 
-- **Broker:** destroy happy path (server→volume→firewall→DNS order); **rejection of a
-  forged / foreign server id** (not fleet-labelled, or deployment mismatch);
-  `confirm=False` guard; no token/credential in logs
+- **Broker:** destroy happy path (server→volume→firewall→DNS, volumes detached before
+  delete); **rejection of a forged / foreign id for *every* resource** (a volume /
+  firewall / DNS id not belonging to the deployment is refused, not just a bad server
+  id); `confirm=False` guard; no token/credential in logs
   (`tests/test_hetzner_remote_broker.py`, `tests/test_hetzner_broker_assets.py`).
+- **Manifest resolution:** a deployment whose latest run is an idempotent reuse (empty
+  resource ids) still tears down the volume / DNS / firewall from the original creating
+  run — no leak; a `teardown_min_approvals` outside `1..2` fails settings load.
 - **Dual-control policy:** strict default still needs two distinct approvers;
   `min_approvals=1 + self_approval` lets one identity reach `APPROVED`; evidence refs
   and legal hold still enforced under both.
@@ -282,8 +331,8 @@ contracts.
   record-only + warning, keys revoked, request → `EXECUTED`, audit written.
 - **Tombstone:** a retired deployment disappears from `fleet_overview` /
   `list_deployments` and its audit + manifest survive.
-- **F2:** overview returns `login_url` for DNS and IP-only boxes; row links only when
-  present.
+- **F2:** overview **derives** `https://<label>.<base_domain>` for DNS fleets and `""`
+  for IP-only fleets (no plain-HTTP secure-cookie link); it never reads `external_run_url`.
 - Full gate: `pytest -q --basetemp=C:/obt`, `verify_requirements_lock.py`, frontend
   `lint && typecheck && test && build`, both OpenAPI contracts regenerated.
 
