@@ -568,6 +568,7 @@ class DeploymentOverview(BaseModel):
     storage: StorageReport = Field(default_factory=StorageReport)
     open_alerts: list[str] = Field(default_factory=list)
     user_management_v1: bool = False
+    login_url: str = ""  # https://<box> (or http://<ip>) from the latest provisioning run; "" when unknown
 
 
 class FleetOverviewOut(BaseModel):
@@ -587,12 +588,43 @@ def _reported_storage(payload: dict | None) -> StorageReport:
         return StorageReport()
 
 
+def _login_url(external_run_url: str) -> str:
+    """Turn a box's stored address into a browser login URL. The provisioning run
+    records an FQDN (Caddy serves auto-HTTPS) or, when DNS is disabled, a raw IPv4
+    (Caddy serves plain HTTP on :80). Returns "" when there is no address."""
+    host = (external_run_url or "").strip()
+    if not host or host.startswith(("http://", "https://")):
+        return host
+    parts = host.split(".")
+    is_ipv4 = len(parts) == 4 and all(part.isdigit() and len(part) <= 3 for part in parts)
+    return f"{'http' if is_ipv4 else 'https'}://{host}"
+
+
+def _login_urls_by_deployment() -> dict[str, str]:
+    """Best-effort map deployment_id -> login URL from each box's latest provisioning
+    run. The link is additive: a missing operator DSN or any store error must never
+    break the overview, so every failure degrades to "no link"."""
+    try:
+        runs = get_provisioning_run_store().list_runs()
+    except Exception:
+        return {}
+    urls: dict[str, str] = {}
+    for run in runs:  # list_runs() is newest-first; first run with an address per box wins
+        if run.deployment_id in urls:
+            continue
+        url = _login_url(run.external_run_url)
+        if url:
+            urls[run.deployment_id] = url
+    return urls
+
+
 @router.get("/overview", response_model=FleetOverviewOut)
 def fleet_overview(principal: Principal = Depends(resolve_principal)):
     _require_operator_admin(principal)
     control = get_control_plane_store()
     fleet = get_fleet_store()
     latest = fleet.latest_heartbeats()
+    login_urls = _login_urls_by_deployment()
 
     rows: list[DeploymentOverview] = []
     healthy = 0
@@ -629,6 +661,7 @@ def fleet_overview(principal: Principal = Depends(resolve_principal)):
             storage=_reported_storage(hb.payload if hb else None),
             open_alerts=alerts,
             user_management_v1=bool(ob.get("user_management_v1", False)),
+            login_url=login_urls.get(dep.id, ""),
         )
         rows.append(row)
         if hb and hb.healthy:

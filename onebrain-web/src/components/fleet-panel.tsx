@@ -93,7 +93,14 @@ function DeploymentRow({ deployment }: { deployment: FleetDeploymentOverview }) 
           </div>
         </td>
         <td data-label="Deployment">
-          <strong>{deployment.customer_name || deployment.deployment_id}</strong>
+          {deployment.login_url
+            ? (
+              <a className="fleetDeploymentLink" href={deployment.login_url} target="_blank" rel="noreferrer">
+                <strong>{deployment.customer_name || deployment.deployment_id}</strong>
+                <span aria-hidden="true"> ↗</span>
+              </a>
+            )
+            : <strong>{deployment.customer_name || deployment.deployment_id}</strong>}
           <small>{deployment.deployment_id}{deployment.is_release_gate ? " · development gate" : ""} · {deployment.release_ring || "no ring"}</small>
         </td>
         <td data-label="Release">
