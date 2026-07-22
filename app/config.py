@@ -350,11 +350,34 @@ class Settings(BaseSettings):
     release_registry_allowlist: str = "ghcr.io/proark1"  # csv of allowed image-ref PREFIXES host[/org[/repo]]
     release_promotion_required: bool = False  # hard customer gate; report-only warnings while false
     dev_release_verify_public_key: str = ""   # CI development-signing public key; never trusted by customers
+    # Operator self-deploy ("green main -> Mission Control"). When MC (operator_mode)
+    # sets this true it AUTO-ROLLS ITS OWN box to every release the development gate
+    # has VERIFIED (dev_verified), signed with the CI DEVELOPMENT key — not the offline
+    # production key. It NEVER touches customer delivery: customer boxes still require a
+    # production-signed, operator-approved (customer_approved) release. Dormant by
+    # default; only MC's own env opts in, and MC's box must ALSO trust the dev key
+    # (UPDATE_RELEASE_PUBLIC_KEYS) for its updater to apply a dev-signed release. The
+    # ONE predicate that widens this trust is is_operator_self_deployment().
+    operator_auto_deploy_enabled: bool = False
     release_candidate_key_id: str = ""        # narrowly scoped CI candidate credential id
     release_candidate_key_hash: str = ""      # sha256$... hash; raw secret is never stored
     # ^ repo-prefix granular (B2): a bare host like "ghcr.io" would allowlist every GHCR tenant. The default
     #   is the org prefix the Phase-2 GHCR CI publishes under; override via ONEBRAIN_RELEASE_REGISTRY_ALLOWLIST
     #   if the CI org ever differs (a wrong default 400s the first images-carrying release — fail-closed, safe).
+
+    # --- Customer teardown dual-control (fleet Decommission executor) ---
+    # A sanctioned teardown normally needs two DISTINCT approvers plus a
+    # non-approving requester (app/controlplane/base.py). OneBrain is a
+    # sole-operator org today, so that ceremony can never complete; these relax
+    # it while DEFAULTING to the strict behavior. teardown_min_approvals is
+    # bounded 1..2 and validated at LOAD (Field ge/le) — an out-of-range env
+    # value (e.g. =0) raises on settings load rather than ever making a request
+    # executable with zero approvals. Mirrors hetzner_allow_inprocess_broker. See
+    # docs/archive/specs/2026-07-22-fleet-decommission-and-teardown-executor-design.md (§5).
+    # RESIDUAL RISK: min_approvals=1 + self-approval lets ONE identity authorize
+    # destruction of a live customer box; accepted only for the sole operator.
+    teardown_min_approvals: int = Field(default=2, ge=1, le=2)
+    teardown_allow_self_approval: bool = False
 
     # --- Ground-truth reporter ---
     build_version: str = ""                    # CI-stamped running version (ONEBRAIN_BUILD_VERSION); "" -> app.__version__
@@ -664,6 +687,14 @@ class Settings(BaseSettings):
         ):
             if not getattr(self, attribute):
                 errors.append(f"set {name}")
+        # Operator self-deploy needs the CI development key: MC verifies the development
+        # signature app-side (candidate registration + its own desired-state) and its
+        # box.env trusts it via UPDATE_RELEASE_PUBLIC_KEYS. Without the key the feature
+        # can never verify a self-update, so fail startup loudly rather than silently.
+        if self.operator_auto_deploy_enabled and not self.dev_release_verify_public_key.strip():
+            errors.append(
+                "set ONEBRAIN_DEV_RELEASE_VERIFY_PUBLIC_KEY (required by ONEBRAIN_OPERATOR_AUTO_DEPLOY_ENABLED)"
+            )
 
         if self.vector_store != "pgvector":
             errors.append("set ONEBRAIN_VECTOR_STORE=pgvector")

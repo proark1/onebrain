@@ -17,7 +17,7 @@ import secrets
 from datetime import timedelta
 from typing import Optional
 
-from app.controlplane.base import ReleaseManifest
+from app.controlplane.base import ReleaseManifest, is_operator_self_deployment
 from app.trust.envelope import DesiredStateEnvelope, SignedReleaseBlock, sign_desired_state
 from app.trust.release import release_signature_fields
 from app.trust.signing import public_key_from_private
@@ -107,17 +107,31 @@ def sign_desired_state_for(control_store, deployment_id: str, *, settings, now,
     if release is None:
         return None
     promotion = control_store.get_release_promotion(release.version)
+    operator_self = is_operator_self_deployment(deployment, settings)
     if getattr(settings, "release_promotion_required", False):
         if deployment.is_release_gate:
             if not promotion or promotion.state not in {
                 "dev_pending", "dev_deploying", "dev_verified", "customer_approved",
             }:
                 return None
+        elif operator_self:
+            # MC's OWN box tracks the development-VERIFIED tip: accept dev_verified
+            # onward, never dev_pending/dev_deploying (the gate has not verified
+            # those). Reinforces the auto-rollout trigger's own dev_verified gate.
+            if not promotion or promotion.state not in {"dev_verified", "customer_approved"}:
+                return None
         elif not promotion or promotion.state != "customer_approved":
             return None
     release_signature = release.signature
     if deployment.is_release_gate:
         if promotion and promotion.gate_deployment_id in {"", deployment.id}:
+            release_signature = promotion.dev_signature
+    elif operator_self:
+        # Serve the CI DEVELOPMENT signature so MC self-deploys from dev_verified,
+        # before any offline production signature is attached at customer approval.
+        # Every registered candidate carries a dev_signature, and MC's box trusts
+        # the dev key (UPDATE_RELEASE_PUBLIC_KEYS) alongside the production key.
+        if promotion and promotion.dev_signature:
             release_signature = promotion.dev_signature
     if not release_signature:
         return None

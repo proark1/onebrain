@@ -44,12 +44,29 @@ PROMOTION_STATES = frozenset({
 ROLLBACK_KINDS = frozenset({"", "code_only", "restore_required"})
 UPDATE_POLICIES = frozenset({"", "auto", "manual", "pinned"})
 TEARDOWN_REQUEST_PENDING = "pending"
+# Legacy record-only terminal produced BEFORE the teardown executor existed (two
+# approvals collected, execution deliberately impossible). Kept only so pre-executor
+# rows stay readable; the approval threshold now reaches ``approved`` instead.
 TEARDOWN_REQUEST_EXECUTION_DISABLED = "execution_disabled"
 TEARDOWN_REQUEST_EXPIRED = "expired"
+# Executor lifecycle: the approval threshold reaches ``approved`` (executable), then
+# execution moves it to ``executed`` or ``execution_failed`` (both terminal). A failed
+# teardown is NOT auto-retried — the operator opens a fresh request (the broker's
+# discovery-scoped destroy is idempotent, so finishing a partial teardown is safe).
+TEARDOWN_REQUEST_APPROVED = "approved"
+TEARDOWN_REQUEST_EXECUTED = "executed"
+TEARDOWN_REQUEST_EXECUTION_FAILED = "execution_failed"
+TEARDOWN_REQUEST_EXECUTED_STATUSES = frozenset({
+    TEARDOWN_REQUEST_EXECUTED,
+    TEARDOWN_REQUEST_EXECUTION_FAILED,
+})
 TEARDOWN_REQUEST_STATUSES = frozenset({
     TEARDOWN_REQUEST_PENDING,
     TEARDOWN_REQUEST_EXECUTION_DISABLED,
     TEARDOWN_REQUEST_EXPIRED,
+    TEARDOWN_REQUEST_APPROVED,
+    TEARDOWN_REQUEST_EXECUTED,
+    TEARDOWN_REQUEST_EXECUTION_FAILED,
 })
 TEARDOWN_EXECUTION_DISABLED_RESULT = "execution_disabled: no customer resources were deleted"
 # registry/repo@sha256:<64 hex> — digest-pinned image reference, never a floating tag.
@@ -99,6 +116,10 @@ class CustomerDeployment:
     last_heartbeat_healthy: Optional[bool] = None
     last_reported_version: str = ""
     last_reported_migration: str = ""
+    # Tombstone: an ISO-8601 timestamp set when the box is decommissioned. A
+    # tombstoned deployment is filtered out of list_deployments / fleet_overview
+    # but kept for audit + erasure-manifest history (never hard-deleted).
+    removed_at: str = ""
     # Product choices made at provisioning time.  DeploymentModule records are
     # the resolved container services; this preserves selected product modules
     # such as KPI Dashboard and AI Employees that do not add a container today.
@@ -265,6 +286,8 @@ class ControlPlaneStore(Protocol):
 
     def list_deployments(self) -> List[CustomerDeployment]: ...
 
+    def remove_deployment(self, deployment_id: str, *, removed_at: str) -> CustomerDeployment: ...
+
     def upsert_module(self, module: DeploymentModule) -> DeploymentModule: ...
 
     def list_modules(self, deployment_id: str) -> List[DeploymentModule]: ...
@@ -401,6 +424,15 @@ class ControlPlaneStore(Protocol):
         approved_at: str,
     ) -> CustomerTeardownRequest: ...
 
+    def record_teardown_execution(
+        self,
+        request_id: str,
+        *,
+        succeeded: bool,
+        result: str,
+        executed_at: str,
+    ) -> CustomerTeardownRequest: ...
+
     # --- served floor bumps (P5-01 revocation kill-switch) ---
     def set_served_floor_bump(self, bump: ServedFloorBump) -> ServedFloorBump: ...
 
@@ -437,6 +469,28 @@ def _parse_teardown_timestamp(value: str, field: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _teardown_dual_control_policy() -> tuple[int, bool]:
+    """(min_approvals, allow_self_approval) for the teardown protocol.
+
+    Sole-operator relaxation of the two-distinct-approver rule (§5 of the fleet
+    decommission design), DEFAULTING to strict 2 / no-self-approval. FAIL-CLOSED:
+    an unreadable config (minimal unit-test env) or an out-of-range approval count
+    yields the STRICT rule; it never silently weakens dual control. Config
+    ``Field(ge=1, le=2)`` already bounds the value at load — this re-check is
+    defense in depth against a monkeypatched or stale settings object. Mirrors the
+    lazy-import shape of require_signed_releases()."""
+    try:
+        from app.config import get_settings
+    except ImportError:
+        return 2, False
+    settings = get_settings()
+    min_approvals = int(getattr(settings, "teardown_min_approvals", 2) or 2)
+    allow_self = bool(getattr(settings, "teardown_allow_self_approval", False))
+    if not 1 <= min_approvals <= 2:
+        return 2, False
+    return min_approvals, allow_self
+
+
 def validate_teardown_request(request: CustomerTeardownRequest) -> None:
     required = {
         "request id": request.id,
@@ -454,17 +508,26 @@ def validate_teardown_request(request: CustomerTeardownRequest) -> None:
     _parse_teardown_timestamp(request.nonce_expires_at, "nonce expiry")
     if request.status not in TEARDOWN_REQUEST_STATUSES:
         raise ValueError(f"Unknown teardown request status: {request.status}")
+    min_approvals, allow_self = _teardown_dual_control_policy()
     if len(request.approver_ids) > 2 or len(set(request.approver_ids)) != len(request.approver_ids):
         raise ValueError("teardown request approvers must contain at most two distinct identities.")
-    if request.requested_by in request.approver_ids:
-        raise ValueError("teardown requester cannot approve the request.")
     if any(not approver.strip() for approver in request.approver_ids):
         raise ValueError("teardown approver identity is required.")
+    if not allow_self and request.requested_by in request.approver_ids:
+        raise ValueError("teardown requester cannot approve the request.")
+    # Legacy record-only terminals (pre-executor rows) keep their exact invariant.
     if request.status in {TEARDOWN_REQUEST_EXECUTION_DISABLED, TEARDOWN_REQUEST_EXPIRED}:
         if request.execution_result != TEARDOWN_EXECUTION_DISABLED_RESULT:
             raise ValueError("terminal teardown requests require an execution-disabled result.")
     if request.status == TEARDOWN_REQUEST_EXECUTION_DISABLED and len(request.approver_ids) != 2:
         raise ValueError("execution-disabled teardown requests require two approvals.")
+    # Executor lifecycle: reaching APPROVED (and beyond) requires the configured
+    # threshold; EXECUTED/_FAILED must carry an executor result.
+    if request.status in {TEARDOWN_REQUEST_APPROVED} | TEARDOWN_REQUEST_EXECUTED_STATUSES:
+        if len(request.approver_ids) < min_approvals:
+            raise ValueError("teardown request has not reached the approval threshold.")
+    if request.status in TEARDOWN_REQUEST_EXECUTED_STATUSES and not str(request.execution_result).strip():
+        raise ValueError("executed teardown requests require an execution result.")
 
 
 def apply_teardown_approval(
@@ -497,19 +560,49 @@ def apply_teardown_approval(
         )
     if not nonce_hash or not hmac.compare_digest(request.nonce_hash, nonce_hash):
         raise ValueError("teardown approval nonce is invalid.")
-    if actor == request.requested_by:
+    min_approvals, allow_self = _teardown_dual_control_policy()
+    if not allow_self and actor == request.requested_by:
         raise ValueError("teardown requester cannot approve the request.")
     if actor in request.approver_ids:
         raise ValueError("teardown approver has already approved this request.")
     approvers = (*request.approver_ids, actor)
-    terminal = len(approvers) == 2
+    reached = len(approvers) >= min_approvals
+    # Reaching the threshold now yields APPROVED (executable). Unlike the old
+    # record-only terminal it is NOT completed and carries no result — execution
+    # sets those (apply_teardown_execution).
     return replace(
         request,
         approver_ids=approvers,
-        status=TEARDOWN_REQUEST_EXECUTION_DISABLED if terminal else TEARDOWN_REQUEST_PENDING,
-        execution_result=TEARDOWN_EXECUTION_DISABLED_RESULT if terminal else "",
+        status=TEARDOWN_REQUEST_APPROVED if reached else TEARDOWN_REQUEST_PENDING,
+        execution_result="",
         updated_at=approved_at,
-        completed_at=approved_at if terminal else "",
+        completed_at="",
+    )
+
+
+def apply_teardown_execution(
+    request: CustomerTeardownRequest,
+    *,
+    succeeded: bool,
+    result: str,
+    executed_at: str,
+) -> CustomerTeardownRequest:
+    """Move an APPROVED request to its terminal executor state.
+
+    Both outcomes are terminal. A failed teardown is not silently retried — the
+    operator investigates and, if needed, opens a fresh request (the broker's
+    discovery-scoped destroy is idempotent, so finishing a partial teardown is
+    safe)."""
+    if request.status != TEARDOWN_REQUEST_APPROVED:
+        raise ValueError("teardown request is not approved for execution.")
+    _parse_teardown_timestamp(executed_at, "execution time")
+    summary = str(result).strip() or ("teardown executed" if succeeded else "teardown execution failed")
+    return replace(
+        request,
+        status=TEARDOWN_REQUEST_EXECUTED if succeeded else TEARDOWN_REQUEST_EXECUTION_FAILED,
+        execution_result=summary,
+        updated_at=executed_at,
+        completed_at=executed_at,
     )
 
 
@@ -571,6 +664,7 @@ def compute_update_plan(
     heartbeat_max_age_seconds: int = 600,
     now: Optional[datetime] = None,
     active_rollout: bool = False,
+    operator_self: bool = False,   # Mission Control's OWN box auto-tracking the dev-verified tip
 ) -> UpdatePlan:
     """The single shared plan gate: both stores delegate here (never patch a
     store copy separately). Gate order is contract — see the Hetzner P0 spec."""
@@ -591,13 +685,42 @@ def compute_update_plan(
                 return "development_gate_missing"
             if deployment.id != gate_deployment_id:
                 return "development_gate_mismatch"
-            if not promotion or promotion.gate_deployment_id not in {"", deployment.id}:
+            if not promotion:
                 return "development_gate_mismatch"
+            # A candidate whose promotion is still bound to a now-RETIRED gate
+            # (its verification gate was replaced -- e.g. the box was
+            # reprovisioned after a disk failure) must NOT read as a mismatch on
+            # the current LIVE gate: re-dispatch re-verifies from scratch here and
+            # re-binds the promotion to this gate (see
+            # _dispatch_development_candidate / _fail_development_preflight). We
+            # already confirmed above that this deployment IS the designated gate
+            # (deployment.id == gate_deployment_id), so a stale foreign binding is
+            # re-bindable, not grounds for rejection. Checking it here is what
+            # stranded the whole backlog behind a misleading ``release_unsigned``
+            # after the first-ever gate replacement. The development signature is
+            # still verified below, and customer approval keeps its own independent
+            # current-gate check (see approve_release).
+            #
             # ``dev_failed`` is plan-eligible so the development dispatcher can
             # retry it. Desired-state generation still excludes that state; the
             # dispatcher must first persist a new rollout and transition the
             # promotion back to ``dev_deploying`` before a box can receive it.
             if promotion.state not in {"dev_pending", "dev_deploying", "dev_failed"}:
+                return "release_not_dev_verified"
+            if development_signature_valid is not True:
+                return "release_signature_invalid"
+        elif operator_self:
+            # Mission Control's OWN box auto-tracks the development-VERIFIED tip,
+            # trusting the CI development signature (never the customer gate's
+            # offline production approval). Accept dev_verified onward; reject
+            # anything the gate has not yet verified. This is the ONLY non-gate
+            # deployment that may deploy a release before customer_approved, and
+            # only when is_operator_self_deployment() gated it on true.
+            if not promotion:
+                return "release_not_dev_verified"
+            if promotion.state == "yanked":
+                return "release_yanked"
+            if promotion.state not in {"dev_verified", "customer_approved"}:
                 return "release_not_dev_verified"
             if development_signature_valid is not True:
                 return "release_signature_invalid"
@@ -644,15 +767,32 @@ def compute_update_plan(
     # gate verifies the release. Treat that development signature as the
     # signed-release credential only for the designated gate and only while
     # the candidate is in a deployable development state.
+    #
+    # Intentionally does NOT re-check promotion.gate_deployment_id against this
+    # gate: the two conditions above already establish this deployment IS the
+    # current designated release gate, and a candidate still bound to a RETIRED
+    # gate is re-verified and re-bound here (see promotion_denial above).
+    # Re-checking the stale binding is exactly what made a gate replacement fail
+    # as ``release_unsigned`` for the entire backlog.
     gate_development_signature_valid = bool(
         getattr(deployment, "is_release_gate", False)
         and gate_deployment_id == deployment.id
         and promotion
-        and promotion.gate_deployment_id in {"", deployment.id}
         and promotion.state in {"dev_pending", "dev_deploying", "dev_failed"}
         and development_signature_valid is True
     )
-    if require_signed_release and not release.signature and not gate_development_signature_valid:
+    # Mission Control's own box carries the same development signature as its
+    # signed-release credential while it tracks the dev-verified tip — the
+    # production signature is only attached later, at customer approval.
+    operator_development_signature_valid = bool(
+        operator_self
+        and promotion
+        and promotion.state in {"dev_verified", "customer_approved"}
+        and development_signature_valid is True
+    )
+    if require_signed_release and not release.signature and not (
+        gate_development_signature_valid or operator_development_signature_valid
+    ):
         return UpdatePlan(
             deployment_id, target_version, False, "release_unsigned",
             rollback_kind=kind, warnings=warnings,
@@ -674,9 +814,23 @@ def compute_update_plan(
     # B6: restore-required implies restorable. Comm's raw-SQL migrations run inside comm containers and
     # never move onebrain's migration_to, so a comm-only destructive release must ALSO have a fresh backup —
     # the rollback_kind condition covers it. Inert for legacy releases (kind == "").
+    #
+    # The dedicated release gate is EXEMPT: it is a disposable verification box that
+    # holds no customer data, its recovery IS re-provisioning, and update.sh still
+    # takes its own pre-migration pg_dump inline on apply. Requiring a PRE-RECORDED
+    # backup here would permanently strand a freshly-provisioned gate from verifying
+    # ANY migration-bearing release — it has none until it has applied one, and it
+    # cannot apply one until it verifies it (the chicken-and-egg that left the
+    # first-ever migration-crossing candidate unverifiable). A gate a bad migration
+    # breaks simply fails verification (the intended signal) and is re-provisioned.
+    # Customer boxes and Mission Control's own self-update (the deliberate
+    # migration-crossing "safe boundary") are NOT release gates and stay fully gated.
     needs_fresh_backup = bool(
-        (release.migration_to and release.migration_to != deployment.current_migration)
-        or kind == "restore_required"
+        not getattr(deployment, "is_release_gate", False)
+        and (
+            (release.migration_to and release.migration_to != deployment.current_migration)
+            or kind == "restore_required"
+        )
     )
     if needs_fresh_backup:
         backup = latest_backup()   # lazy: the only call site (A3)
@@ -693,7 +847,27 @@ def compute_update_plan(
         modules_to_update=updates, rollback_kind=kind, warnings=warnings)
 
 
-def release_promotion_plan_context(release, promotion) -> Dict:
+def is_operator_self_deployment(deployment, settings) -> bool:
+    """True only for Mission Control's OWN deployment when operator self-deploy is
+    enabled — the single deployment permitted to auto-track the development-VERIFIED
+    release tip (accepted from dev_verified onward, trusting the CI development
+    signature). False for every customer box (operator_mode off) and for every OTHER
+    deployment MC serves (only deployment.id == the operator's own control-plane id
+    qualifies). This is the ONE predicate that widens a trust gate for MC's own
+    self-update; the planner, desired-state serve, the auto-rollout trigger, and the
+    pull reconcile all defer to it so they can never disagree about which box may
+    take a dev-signed release."""
+    if deployment is None:
+        return False
+    if not getattr(settings, "operator_auto_deploy_enabled", False):
+        return False
+    if not getattr(settings, "operator_mode", False):
+        return False
+    self_id = (getattr(settings, "deployment_id", "") or "").strip()
+    return bool(self_id and deployment.id == self_id)
+
+
+def release_promotion_plan_context(release, promotion, deployment=None) -> Dict:
     """Settings and trust inputs for the shared planner, loaded identically by both stores."""
     try:
         from app.config import get_settings
@@ -703,6 +877,7 @@ def release_promotion_plan_context(release, promotion) -> Dict:
             "promotion_required": False,
             "promotion_warning_only": True,
             "heartbeat_max_age_seconds": 600,
+            "operator_self": False,
         }
     settings = get_settings()
     production_valid = None
@@ -726,6 +901,7 @@ def release_promotion_plan_context(release, promotion) -> Dict:
         "production_signature_valid": production_valid,
         "development_signature_valid": development_valid,
         "heartbeat_max_age_seconds": max(600, int(getattr(settings, "fleet_report_seconds", 60)) * 2),
+        "operator_self": is_operator_self_deployment(deployment, settings),
     }
 
 

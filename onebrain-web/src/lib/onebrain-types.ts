@@ -541,6 +541,38 @@ export type OperatorDeployment = {
   selected_module_ids: string[];
 };
 
+export type CustomerTeardownRequest = {
+  id: string;
+  deployment_id: string;
+  account_id: string;
+  legal_hold_evidence_ref: string;
+  backup_retention_evidence_ref: string;
+  requested_by: string;
+  approver_ids: string[];
+  nonce_expires_at: string;
+  status: string;
+  execution_result: string;
+  created_at: string;
+  updated_at: string;
+  completed_at: string;
+};
+
+export type CustomerTeardownRequestCreated = {
+  request: CustomerTeardownRequest;
+  approval_nonce: string;
+};
+
+export type CustomerTeardownExecuted = {
+  request: CustomerTeardownRequest;
+  record_only: boolean;
+  warning: string;
+  servers_deleted: string[];
+  volumes_deleted: string[];
+  firewalls_deleted: string[];
+  dns_deleted: string[];
+  fleet_keys_revoked: number;
+};
+
 export type OperatorModule = {
   deployment_id: string;
   module_id: string;
@@ -1019,8 +1051,7 @@ export interface FleetDeploymentOverview {
   storage?: FleetStorageReport;
   open_alerts: string[];
   user_management_v1: boolean;
-  /** Absolute URL of the box's own console; "" when the control plane cannot place it. */
-  console_url: string;
+  login_url: string;
 }
 
 export interface ManagedUser {

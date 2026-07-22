@@ -10,7 +10,7 @@ import type { OperationalStatus } from "@/lib/operational";
  * within Mission Control instead of out to the box. Returns "" when there is
  * nothing linkable, so callers can render plain text instead of a dead link.
  *
- * The fleet overview's `console_url` already arrives absolute -- the control
+ * The fleet overview's `login_url` already arrives absolute -- the control
  * plane applies the same rule server-side. This is for the raw provisioning
  * fields the operator ledger still renders itself.
  */

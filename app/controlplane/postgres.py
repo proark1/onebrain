@@ -21,6 +21,7 @@ from app.controlplane.base import (
     ServedFloorBump,
     UpdatePlan,
     apply_teardown_approval,
+    apply_teardown_execution,
     compute_update_plan,
     release_promotion_plan_context,
     require_signed_releases,
@@ -91,7 +92,8 @@ class PostgresControlPlaneStore:
         "id, customer_name, environment, deployment_type, region, release_ring, "
         "status, current_version, current_migration, created_at, account_id, update_policy, "
         "is_release_gate, current_version_deployed_at, last_heartbeat_at, "
-        "last_heartbeat_healthy, last_reported_version, last_reported_migration, selected_module_ids"
+        "last_heartbeat_healthy, last_reported_version, last_reported_migration, selected_module_ids, "
+        "removed_at"
     )
 
     def create_deployment(self, deployment: CustomerDeployment) -> CustomerDeployment:
@@ -130,7 +132,8 @@ class PostgresControlPlaneStore:
     def get_deployment(self, deployment_id: str) -> Optional[CustomerDeployment]:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
-                f"SELECT {self._DEPLOYMENT_COLS} FROM control_deployments WHERE id = %s",
+                f"SELECT {self._DEPLOYMENT_COLS} FROM control_deployments "
+                "WHERE id = %s AND removed_at IS NULL",
                 (deployment_id,),
             )
             row = cur.fetchone()
@@ -140,10 +143,24 @@ class PostgresControlPlaneStore:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 f"SELECT {self._DEPLOYMENT_COLS} FROM control_deployments "
-                "ORDER BY lower(customer_name), id"
+                "WHERE removed_at IS NULL ORDER BY lower(customer_name), id"
             )
             rows = cur.fetchall()
         return [self._deployment(row) for row in rows]
+
+    def remove_deployment(self, deployment_id: str, *, removed_at: str) -> CustomerDeployment:
+        # Tombstone: hidden from list_deployments / fleet_overview, kept for audit.
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE control_deployments SET removed_at = COALESCE(%s::timestamptz, now()) "
+                f"WHERE id = %s RETURNING {self._DEPLOYMENT_COLS}",
+                (removed_at or None, deployment_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"unknown deployment: {deployment_id}")
+            conn.commit()
+        return self._deployment(row)
 
     def set_update_policy(self, deployment_id: str, update_policy: str) -> CustomerDeployment:
         if update_policy not in UPDATE_POLICIES or not update_policy:
@@ -511,7 +528,7 @@ class PostgresControlPlaneStore:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 f"SELECT {self._DEPLOYMENT_COLS} FROM control_deployments "
-                "WHERE is_release_gate = true AND status = 'active' LIMIT 1"
+                "WHERE is_release_gate = true AND status = 'active' AND removed_at IS NULL LIMIT 1"
             )
             row = cur.fetchone()
         return self._deployment(row) if row else None
@@ -707,7 +724,7 @@ class PostgresControlPlaneStore:
                 (active := self.list_active_rollout(deployment_id))
                 and active.id != ignore_rollout_id
             ),
-            **release_promotion_plan_context(release, promotion),
+            **release_promotion_plan_context(release, promotion, deployment),
         )
 
     def start_rollout(self, rollout: RolloutRun) -> RolloutRun:
@@ -926,7 +943,7 @@ class PostgresControlPlaneStore:
                 promotion=promotion,
                 gate_deployment_id=gate_deployment_id,
                 active_rollout=active_rollout,
-                **release_promotion_plan_context(release, promotion),
+                **release_promotion_plan_context(release, promotion, deployment),
             )
             if not plan.allowed:
                 raise ValueError(f"rollout completion blocked: {plan.reason}")
@@ -1337,6 +1354,51 @@ class PostgresControlPlaneStore:
             conn.commit()
         return self._teardown_request(stored)
 
+    def record_teardown_execution(
+        self,
+        request_id: str,
+        *,
+        succeeded: bool,
+        result: str,
+        executed_at: str,
+    ) -> CustomerTeardownRequest:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {self._TEARDOWN_REQUEST_COLS} "
+                "FROM control_customer_teardown_requests WHERE id = %s FOR UPDATE",
+                (request_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("teardown request not found.")
+            updated = apply_teardown_execution(
+                self._teardown_request(row),
+                succeeded=succeeded,
+                result=result,
+                executed_at=executed_at,
+            )
+            cur.execute(
+                f"""
+                UPDATE control_customer_teardown_requests
+                SET status = %s,
+                    execution_result = %s,
+                    updated_at = %s::timestamptz,
+                    completed_at = %s::timestamptz
+                WHERE id = %s
+                RETURNING {self._TEARDOWN_REQUEST_COLS}
+                """,
+                (
+                    updated.status,
+                    updated.execution_result,
+                    updated.updated_at or executed_at,
+                    updated.completed_at or None,
+                    request_id,
+                ),
+            )
+            stored = cur.fetchone()
+            conn.commit()
+        return self._teardown_request(stored)
+
     def _served_floor_bump(self, row) -> ServedFloorBump:
         return ServedFloorBump(
             scope=row[0],
@@ -1390,6 +1452,7 @@ class PostgresControlPlaneStore:
             last_reported_version=(row[16] or "") if len(row) > 16 else "",
             last_reported_migration=(row[17] or "") if len(row) > 17 else "",
             selected_module_ids=_json_list(row[18]) if len(row) > 18 else (),
+            removed_at=_iso(row[19]) if len(row) > 19 else "",
         )
 
     def _promotion(self, row) -> ReleasePromotion:

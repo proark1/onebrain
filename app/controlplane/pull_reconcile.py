@@ -202,6 +202,94 @@ def synthesize_pull_status(
     return "failed" if overdue else None   # none | in_progress before deadline -> keep waiting
 
 
+def operator_self_converged(control_store, child, heartbeat) -> bool:
+    """True when Mission Control's OWN box has converged on the offered release: a
+    healthy self-heartbeat reporting the exact target version (and the target migration,
+    when the release carries one). MC self-deploys the whole compose atomically, so
+    box-level version + health IS the convergence signal — this path deliberately does
+    NOT require the host updater's per-module UpdateReport (attempt_id/outcome/modules),
+    because MC's in-app reporter authors version + health, not that host state."""
+    body = _heartbeat_from_stored(heartbeat)
+    release = control_store.get_release(child.target_version)
+    deployment = control_store.get_deployment(child.deployment_id)
+    if not body or not release or not deployment:
+        return False
+    if body.deployment_id != child.deployment_id or not body.healthy:
+        return False
+    if body.onebrain.version != release.version:
+        return False
+    expected_migration = release.migration_to or deployment.current_migration
+    if expected_migration and body.onebrain.migration_revision != expected_migration:
+        return False
+    # If the heartbeat carries per-module health, every release module it reports must be
+    # healthy AND on the release version — so a self-update where the API returns on the
+    # target version but another MC service (e.g. onebrain-admin-ui) is still down does NOT
+    # read as converged (MC's top-level `healthy` is API/data-store only). A box that
+    # reports no module health falls back to version+health — a documented residual.
+    reported = {report.module_id: report for report in (getattr(body, "modules", None) or [])}
+    for module_id, expected_version in release.modules.items():
+        report = reported.get(module_id)
+        if report is not None and (not report.healthy or report.version != expected_version):
+            return False
+    return True
+
+
+def synthesize_operator_self_status(child, *, converged: bool, now: datetime,
+                                    deadline_seconds: int) -> Optional[str]:
+    """Pure. 'success' once MC's box reports the target version healthy; 'failed' only
+    after the convergence deadline; None while still converging. Unlike the gate/fleet
+    pull path this does NOT consult the host updater's UpdateReport — version + health
+    from MC's in-app heartbeat is the whole convergence signal for an atomic self-deploy
+    (a missing/garbled dispatched_at is 'no deadline yet', never an immediate failure)."""
+    if converged:
+        return "success"
+    return "failed" if _past_deadline(child, now, deadline_seconds) else None
+
+
+def _reconcile_operator_self_pull(control_store, latest_heartbeats: dict, *, now: datetime,
+                                  deadline_seconds: int, operator_self_deployment_id: str) -> None:
+    """Converge the standalone pull rollout that moves Mission Control's OWN box to the
+    development-verified tip (opened by dispatch_operator_self_rollout). Mirrors
+    _reconcile_development_pull but keys on MC's deployment id and confirms success from
+    version + health telemetry rather than the host updater's per-module report. Never
+    raises: a self-update completion failure must not abort the fleet reconcile tick nor
+    500 the manual endpoint that also drives it."""
+    if not operator_self_deployment_id:
+        return
+    try:
+        child = control_store.list_active_rollout(operator_self_deployment_id)
+        if (not child or child.status in _TERMINAL_ROLLOUT or child.fleet_rollout_id
+                or not (child.request_payload or {}).get("pull")):
+            return
+        heartbeat = latest_heartbeats.get(child.deployment_id)
+        status = synthesize_operator_self_status(
+            child,
+            converged=operator_self_converged(control_store, child, heartbeat),
+            now=now,
+            deadline_seconds=deadline_seconds,
+        )
+        # Apply the terminal status DIRECTLY — deliberately NOT through _apply_child_status,
+        # because that path calls reconcile_rollout_promotion. MC's self-update must NEVER
+        # advance or pause a promotion: that state belongs to the dev gate (dev_verified)
+        # and the operator (customer_approved). MC also self-rolls customer_approved
+        # releases, and reconcile_rollout_promotion would flip a customer_approved release
+        # to customer_paused on a FAILED rollout (promotion.py) — halting CUSTOMER delivery
+        # because MC's own box hiccuped. Success still applies MC's own convergence
+        # (current_version + module versions) via update_rollout_status.
+        if status == "success":
+            control_store.update_rollout_status(child.id, "success")
+            control_store.update_rollout_exec(
+                child.id, exec_status="succeeded", completed_at=now.isoformat())
+        elif status == "failed":
+            reason = "operator_self_convergence_timeout"
+            control_store.update_rollout_status(child.id, "failed", notes=reason)
+            control_store.update_rollout_exec(
+                child.id, exec_status="failed", completed_at=now.isoformat(),
+                failure_reason=reason)
+    except Exception:  # pragma: no cover - defensive; the outer tick logs and continues
+        return
+
+
 def materialize_backup_from_report(control_store, deployment_id: str, update_report) -> None:
     """C3: a pull box holds only a heartbeat-scoped fleet key and cannot call
     record_backup, yet the plan gate requires a fresh BackupRun before a
@@ -327,7 +415,8 @@ def _reconcile_development_pull(control_store, latest_heartbeats: dict, *, now: 
 
 
 def reconcile_pull_targets(control_store, fleet_store, latest_heartbeats: dict, *, now: datetime,
-                           deadline_seconds: int, dispatch_child) -> List:
+                           deadline_seconds: int, dispatch_child,
+                           operator_self_deployment_id: str = "") -> List:
     """The tick. For each RUNNING fleet rollout, for each of its NON-TERMINAL children
     whose request_payload marks it a hetzner/pull target:
       1. read the deployment's latest heartbeat -> payload['update'] -> UpdateReport.
@@ -336,12 +425,22 @@ def reconcile_pull_targets(control_store, fleet_store, latest_heartbeats: dict, 
       4. drive the child to that terminal status (success applies via the existing gate).
       5. feed the UNCHANGED reconcile_fleet_rollout -> UNCHANGED advance_fleet_rollout.
     Returns the reconciled fleet runs. Workflow-dispatched children are left untouched
-    because their callback owns them. Pure of network; heartbeats + clock injected."""
+    because their callback owns them. Pure of network; heartbeats + clock injected.
+
+    operator_self_deployment_id (Mission Control only, when operator self-deploy is on)
+    also converges MC's OWN standalone self-update rollout — a target that belongs to
+    neither a fleet run nor a dev-gate promotion, so neither loop below would see it."""
     # Development candidates are standalone pull rollouts, not fleet children.
     # Consume their authenticated report before timeout evaluation so a success
     # already received at the deadline cannot be incorrectly failed first.
     _reconcile_development_pull(
         control_store, latest_heartbeats, now=now, deadline_seconds=deadline_seconds,
+    )
+    # Mission Control's own self-update rollout is likewise standalone (no fleet_rollout_id,
+    # its promotion is dev_verified not dev_deploying), so converge it on the same tick.
+    _reconcile_operator_self_pull(
+        control_store, latest_heartbeats, now=now, deadline_seconds=deadline_seconds,
+        operator_self_deployment_id=operator_self_deployment_id,
     )
     reconcile_promotion_timeouts(
         control_store,

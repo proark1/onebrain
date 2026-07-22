@@ -6,13 +6,16 @@ api.hetzner.cloud) and an in-memory `fake.FakeHetznerClient`. Every provisioner
 test runs against the fake — no live call is exercised in Phase 4 (a test may only
 assert the real client's request SHAPE via an injected opener).
 
-All request/result types are frozen dataclasses (house style). Destroy primitives
-are DELIBERATELY absent from this seam: teardown/erasure execution is Phase-4-OUT
-and a guarded delete lives on the broker, never here (P1-D — no single automated
-un-protect+delete primitive)."""
+All request/result types are frozen dataclasses (house style). Delete primitives
+(delete_server / volume / firewall / dns_record) exist for teardown, but there is
+DELIBERATELY no single un-protect+delete primitive (P1-D): none of them clears
+Hetzner delete-protection, and the guarded orchestration — discover the deployment's
+resources by label, then delete — lives on the broker's `destroy_box`, never in a
+caller."""
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -24,6 +27,19 @@ from typing import Protocol
 # exact same key/value the broker's cap check queries.
 FLEET_LABEL_KEY = "managed-by"
 FLEET_LABEL_VALUE = "onebrain-fleet"
+
+
+def provider_hostname_label(value: str) -> str:
+    """Map a normalized deployment id to one stable RFC 1123 label — the box's DNS
+    label under the fleet zone, and the piece teardown re-derives to find the DNS
+    record (RRSets carry no labels, unlike servers/volumes/firewalls). This is the ONE
+    definition shared by the provisioner (create) and the broker (destroy) so the two
+    can never disagree on a box's hostname."""
+    label = value.strip().lower().replace("_", "-").strip("-")
+    if len(label) <= 63:
+        return label
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+    return f"{label[:54].rstrip('-')}-{digest}"
 
 
 class HetznerApiError(RuntimeError):
@@ -77,6 +93,22 @@ class ServerInfo:
     labels: dict
     public_ipv4: str
     status: str
+
+
+@dataclass(frozen=True)
+class VolumeInfo:
+    """A volume as returned by `list_volumes` (the teardown scope-read seam). `server_id`
+    is the server it is attached to ("" when detached); a delete must wait for detach."""
+    id: str
+    labels: dict
+    server_id: str = ""
+
+
+@dataclass(frozen=True)
+class FirewallInfo:
+    """A firewall as returned by `list_firewalls` (the teardown scope-read seam)."""
+    id: str
+    labels: dict
 
 
 @dataclass(frozen=True)
@@ -148,6 +180,22 @@ class HetznerClient(Protocol):
     def upsert_dns_record(self, req: DnsRecordRequest) -> DnsRecordResult: ...
 
     def create_firewall(self, req: FirewallCreateRequest) -> FirewallCreateResult: ...
-    # Destroy primitives are DELIBERATELY not a single un-protect+delete (P1-D);
-    # teardown execution is OUT of Phase 4. A guarded delete stub lives on the
-    # broker, not here.
+
+    # --- teardown scope reads + delete primitives (P1-D) -----------------------
+    # Plain single-resource ops: NONE clears delete-protection, so there is no single
+    # un-protect+delete primitive here. The broker's destroy_box discovers a deployment's
+    # resources by label and orchestrates the guarded delete order.
+    def list_volumes(self, label_selector: str) -> list[VolumeInfo]: ...
+
+    def list_firewalls(self, label_selector: str) -> list[FirewallInfo]: ...
+
+    def delete_server(self, server_id: str) -> None: ...
+
+    def delete_volume(self, volume_id: str) -> None: ...
+    # Real transport MUST detach an attached volume first (Hetzner refuses to delete an
+    # attached volume). Idempotent: a missing volume (404) is a no-op.
+
+    def delete_firewall(self, firewall_id: str) -> None: ...
+
+    def delete_dns_record(self, zone_id: str, name: str) -> None: ...
+    # Delete the zone's `<name>` A RRSet. Idempotent: a missing record (404) is a no-op.

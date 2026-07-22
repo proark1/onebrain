@@ -8,8 +8,6 @@ so no database or network is touched.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -29,9 +27,6 @@ from app.fleet.keys import generate_fleet_key, hash_secret, parse_fleet_key, ver
 from app.fleet.memory import MemoryFleetStore
 from app.fleet.reporter import report_once, send_heartbeat, start_reporter
 from app.fleet.watchdog import desired_alerts, run_watchdog
-from app.provisioning.runs import (
-    STATUS_DISPATCHED, STATUS_FAILED, MemoryProvisioningRunStore, ProvisioningRun,
-)
 
 
 # --- helpers -----------------------------------------------------------------
@@ -556,80 +551,37 @@ def test_fleet_overview_exposes_reported_root_and_data_capacity(monkeypatch):
     assert row.storage.data.total_bytes == 2000
 
 
-# --- router: overview console links ------------------------------------------
+def test_fleet_overview_derives_https_login_url(monkeypatch):
+    from types import SimpleNamespace
 
-def _overview_row(monkeypatch, *, base_domain: str = "", runs: list | None = None,
-                  deployment_id: str = "dep_a"):
-    """One overview row with the provisioning store and base domain injected."""
-    prov = MemoryProvisioningRunStore()
-    for run in runs or []:
-        prov.create_run(run)
+    control = MemoryControlPlaneStore()
+    for dep in ("nft_gym", "development-gate"):
+        control.create_deployment(CustomerDeployment(id=dep, customer_name=dep, release_ring="pilot"))
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
     monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: MemoryFleetStore())
-    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: _control_with(deployment_id))
-    monkeypatch.setattr(fleet_router, "get_provisioning_run_store", lambda: prov)
-    monkeypatch.setattr(fleet_router, "get_settings",
-                        lambda: SimpleNamespace(fleet_base_domain=base_domain))
-    return fleet_router.fleet_overview(principal=_principal("admin")).deployments[0]
+    # DNS-enabled fleet: boxes are served over HTTPS at <label>.<base_domain>.
+    monkeypatch.setattr(fleet_router, "get_settings", lambda: SimpleNamespace(
+        fleet_dns_provider="hetzner", fleet_base_domain="onlyonebrain.com", fleet_dns_zone_id="zone1"))
+
+    rows = {r.deployment_id: r for r in fleet_router.fleet_overview(principal=_principal("admin")).deployments}
+    # Derived from the deployment id (not the mutable external_run_url); underscores
+    # become RFC-1123 dashes to match the box's real TLS hostname.
+    assert rows["nft_gym"].login_url == "https://nft-gym.onlyonebrain.com"
+    assert rows["development-gate"].login_url == "https://development-gate.onlyonebrain.com"
 
 
-def _run(deployment_id: str = "dep_a", **kw) -> ProvisioningRun:
-    return ProvisioningRun(
-        id=kw.pop("id", "run_1"), account_id="acct_a", deployment_id=deployment_id,
-        requested_by="admin@onebrain", **kw,
-    )
+def test_fleet_overview_suppresses_login_url_for_ip_only_fleet(monkeypatch):
+    from types import SimpleNamespace
 
+    # No DNS provider/zone -> boxes serve plain HTTP on the raw IP. An http:// link
+    # can't hold a secure-cookie session, so the overview exposes no login link.
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: _control_with("dep_a"))
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: MemoryFleetStore())
+    monkeypatch.setattr(fleet_router, "get_settings", lambda: SimpleNamespace(
+        fleet_dns_provider="", fleet_base_domain="", fleet_dns_zone_id=""))
 
-def test_overview_derives_a_console_url_for_an_adopted_deployment(monkeypatch):
-    """The development gate was adopted, not provisioned, so it has no run to read."""
-    row = _overview_row(monkeypatch, base_domain="fleet.example")
-    assert row.console_url == "https://dep-a.fleet.example"
-
-
-def test_overview_underscores_become_hyphens_like_the_provisioner_does(monkeypatch):
-    row = _overview_row(monkeypatch, base_domain="fleet.example",
-                        deployment_id="onebrain_development_gate")
-    assert row.console_url == "https://onebrain-development-gate.fleet.example"
-
-
-def test_overview_prefers_the_hostname_the_provisioner_actually_created(monkeypatch):
-    """A recorded host beats the derived one -- it survives a renamed base domain."""
-    row = _overview_row(
-        monkeypatch, base_domain="fleet.example",
-        runs=[_run(status=STATUS_DISPATCHED, external_run_url="box-7.elsewhere.example")],
-    )
-    assert row.console_url == "https://box-7.elsewhere.example"
-
-
-def test_overview_links_a_dns_less_box_over_plain_http(monkeypatch):
-    """No DNS means no certificate: the box serves :80, so https cannot connect."""
-    row = _overview_row(
-        monkeypatch, base_domain="fleet.example",
-        runs=[_run(status=STATUS_DISPATCHED, external_run_url="203.0.113.9")],
-    )
-    assert row.console_url == "http://203.0.113.9"
-
-
-def test_overview_ignores_the_host_from_a_failed_run(monkeypatch):
-    """A failed dispatch may have left no box; fall back to the derived name."""
-    row = _overview_row(
-        monkeypatch, base_domain="fleet.example",
-        runs=[_run(status=STATUS_FAILED, external_run_url="dead-box.example")],
-    )
-    assert row.console_url == "https://dep-a.fleet.example"
-
-
-def test_overview_omits_the_console_url_when_nothing_can_place_the_box(monkeypatch):
-    """No base domain and no run: render no link rather than a guessed one."""
-    assert _overview_row(monkeypatch, base_domain="").console_url == ""
-
-
-def test_overview_console_url_does_not_leak_across_deployments(monkeypatch):
-    """A run belonging to another deployment must not supply this row's host."""
-    row = _overview_row(
-        monkeypatch, base_domain="fleet.example",
-        runs=[_run(deployment_id="dep_other", external_run_url="other-box.example")],
-    )
-    assert row.console_url == "https://dep-a.fleet.example"
+    out = fleet_router.fleet_overview(principal=_principal("admin"))
+    assert out.deployments[0].login_url == ""
 
 
 # --- reporter ----------------------------------------------------------------
