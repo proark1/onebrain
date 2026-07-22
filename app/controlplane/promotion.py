@@ -331,10 +331,23 @@ def reconcile_heartbeat_promotion(store, body, *, received_at: str) -> Optional[
             and rollout.deployment_id == deployment.id
             and rollout.target_version == update.last_target_version
         )
+        # Mission Control's OWN self-update rollout is NOT a customer rollout — its
+        # failure must never pause customer delivery of a customer_approved release
+        # (that state belongs to the dev gate + the operator). MC also self-rolls
+        # customer_approved releases and reports its own update, so exclude the
+        # operator-self rollout (marked by the trigger) from the customer pause path.
+        # Without this, a failed MC self-update heartbeat would flip the release to
+        # customer_paused here, independent of the pull-reconcile path. See the twin
+        # guard in _reconcile_operator_self_pull.
+        operator_self_rollout = bool(
+            rollout
+            and ((rollout.request_payload or {}).get("target_source") == "operator_self"
+                 or str(getattr(rollout, "started_by", "") or "").startswith("operator-self:"))
+        )
         failure_reason = ""
-        if exact_attempt and update.outcome in {"failed", "rolled_back"}:
+        if exact_attempt and not operator_self_rollout and update.outcome in {"failed", "rolled_back"}:
             failure_reason = "customer_update_failed"
-        elif not body.healthy and exact_attempt:
+        elif not body.healthy and exact_attempt and not operator_self_rollout:
             failure_reason = "customer_health_failed"
         if promotion and promotion.state == "customer_approved" and failure_reason:
             return transition(

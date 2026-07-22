@@ -526,7 +526,7 @@ class MemoryControlPlaneStore:
                 (active := self.list_active_rollout(deployment_id))
                 and active.id != ignore_rollout_id
             ),
-            **release_promotion_plan_context(release, promotion),
+            **release_promotion_plan_context(release, promotion, deployment),
         )
 
     def start_rollout(self, rollout: RolloutRun) -> RolloutRun:
