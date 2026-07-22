@@ -283,10 +283,8 @@ class Settings(BaseSettings):
     drive_malware_runtime_stale_seconds: int = 3 * 60
     drive_malware_worker_id: str = "worker_primary"
 
-    # Product UI handoff. FastAPI is API-first; Next.js owns the browser
-    # console. The old static UI is available only when explicitly enabled.
+    # Product UI handoff. FastAPI is API-first; Next.js owns the browser console.
     admin_ui_url: str = ""
-    legacy_static_ui_enabled: bool = False
 
     # Per-tier LLM routing (Schrems II): CONFIDENTIAL/RESTRICTED answers route to an
     # EU-sovereign endpoint; PUBLIC/INTERNAL use the default model. Leave
