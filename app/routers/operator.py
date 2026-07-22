@@ -26,10 +26,11 @@ from app.controlplane.base import (
     ReleasePromotion,
     ReleasePromotionEvent,
     RolloutRun,
-    TEARDOWN_REQUEST_EXECUTION_DISABLED,
+    TEARDOWN_REQUEST_APPROVED,
     TEARDOWN_REQUEST_EXPIRED,
     UpdatePlan,
     is_operator_self_deployment,
+    validate_teardown_request,
 )
 from app.config import get_settings
 from app.deps import (
@@ -374,6 +375,23 @@ class CustomerTeardownRequestCreatedOut(BaseModel):
     request: CustomerTeardownRequestOut
     # Returned exactly once at creation; only its SHA-256 hash is persisted.
     approval_nonce: str
+
+
+class CustomerTeardownExecute(BaseModel):
+    # Typed copy-the-phrase confirmation, re-checked server-side (mirrors the
+    # users-panel delete confirm). Must equal "decommission <deployment_id>".
+    confirmation_phrase: str = Field(default="", max_length=200)
+
+
+class CustomerTeardownExecutedOut(BaseModel):
+    request: CustomerTeardownRequestOut
+    record_only: bool = False        # True when no infrastructure was touched
+    warning: str = ""
+    servers_deleted: list[str] = Field(default_factory=list)
+    volumes_deleted: list[str] = Field(default_factory=list)
+    firewalls_deleted: list[str] = Field(default_factory=list)
+    dns_deleted: list[str] = Field(default_factory=list)
+    fleet_keys_revoked: int = 0
 
 
 class OperatorAccountOut(BaseModel):
@@ -725,6 +743,53 @@ def _teardown_target(deployment_id: str, principal: Principal):
     if not platform.get_account(account_id):
         raise HTTPException(status_code=409, detail="Deployment account is not available for teardown review.")
     return control, deployment, account_id, platform
+
+
+_TEARDOWN_MANIFEST_SCALAR_KEYS = ("server_id", "dns_record_id", "firewall_id")
+
+
+def _resolve_erasure_manifest(deployment_id: str) -> dict:
+    """Accumulate the COMPLETE Hetzner erasure manifest across ALL of a deployment's
+    provisioning runs. An idempotent-reuse run carries the reused server_id but EMPTY
+    volume/DNS/firewall ids; only the original creating run holds those, so the latest
+    run alone under-reports. First-non-empty wins for the scalar ids (the broker
+    guarantees one server per deployment); volume ids are unioned. This drives the
+    real-teardown-vs-record-only decision and enriches the audit — the broker itself
+    discovers what to delete by label, never from these ids."""
+    runs = get_provisioning_run_store().list_runs(deployment_id=deployment_id)
+    merged: dict = {"server_id": "", "volume_ids": [], "dns_record_id": "", "firewall_id": ""}
+    seen_volumes: set[str] = set()
+    for run in sorted(runs, key=lambda r: (r.created_at, r.id)):  # oldest first
+        manifest = (run.result_payload or {}).get("erasure_manifest", {}) or {}
+        for key in _TEARDOWN_MANIFEST_SCALAR_KEYS:
+            if not merged[key] and manifest.get(key):
+                merged[key] = manifest[key]
+        for volume_id in (manifest.get("volume_ids") or []):
+            if volume_id and volume_id not in seen_volumes:
+                seen_volumes.add(volume_id)
+                merged["volume_ids"].append(volume_id)
+    return merged
+
+
+def _manifest_has_resources(manifest: dict) -> bool:
+    return bool(
+        manifest.get("server_id") or manifest.get("volume_ids")
+        or manifest.get("dns_record_id") or manifest.get("firewall_id")
+    )
+
+
+def _revoke_deployment_fleet_keys(deployment_id: str) -> int:
+    """Revoke every active fleet key for a deployment so a resurrected box cannot
+    heartbeat, pull desired state, or re-fetch its secret bundle. Mirrors the
+    re-enrollment rotation loop in app/routers/fleet.py. Bootstrap tokens auto-expire
+    and the sealed bundle is served only to a valid ACTIVE key, so scrubbing those is
+    a documented Phase-B hygiene follow-up, not required for correctness."""
+    fleet_store = get_fleet_store()
+    revoked = 0
+    for key in fleet_store.list_keys(deployment_id):
+        if key.status == "active" and fleet_store.revoke_key(key.id):
+            revoked += 1
+    return revoked
 
 
 def _account_out(account) -> OperatorAccountOut:
@@ -1384,11 +1449,11 @@ def approve_customer_teardown_request(
         deployment_id=deployment.id,
         request_id=updated.id,
         action=(
-            "customer_teardown.approved_execution_disabled"
-            if updated.status == TEARDOWN_REQUEST_EXECUTION_DISABLED
+            "customer_teardown.approved"
+            if updated.status == TEARDOWN_REQUEST_APPROVED
             else "customer_teardown.approval_recorded"
         ),
-        decision=("execution_disabled" if updated.status == TEARDOWN_REQUEST_EXECUTION_DISABLED else "recorded"),
+        decision=("approved" if updated.status == TEARDOWN_REQUEST_APPROVED else "recorded"),
         meta={
             "approver_count": len(updated.approver_ids),
             "status": updated.status,
@@ -1396,6 +1461,168 @@ def approve_customer_teardown_request(
         },
     )
     return _teardown_request_out(updated)
+
+
+@router.post(
+    "/deployments/{deployment_id}/teardown-requests/{request_id}/execute",
+    response_model=CustomerTeardownExecutedOut,
+)
+def execute_customer_teardown_request(
+    deployment_id: str,
+    request_id: str,
+    body: CustomerTeardownExecute,
+    principal: Principal = Depends(resolve_principal),
+):
+    """Execute an APPROVED teardown: destroy the box's Hetzner infrastructure through
+    the broker (or record-only tombstone when nothing remains), revoke the box's fleet
+    keys, and tombstone the deployment. operator_mode-only — it reaches the broker, so
+    it mirrors the fleet router's Mission-Control mount gate (a customer console gets
+    a 404, never a hint that the endpoint exists)."""
+    _require_admin(principal)
+    settings = get_settings()
+    if not settings.operator_mode:
+        raise HTTPException(status_code=404, detail="Teardown execution is not available on this deployment.")
+    control, deployment, account_id, platform = _teardown_target(deployment_id, principal)
+    request = control.get_teardown_request(request_id)
+    if not request or request.deployment_id != deployment.id:
+        raise HTTPException(status_code=404, detail="Teardown request not found.")
+
+    def _deny(decision: str, detail: str, status_code: int, meta: dict | None = None) -> HTTPException:
+        _record_teardown_audit(
+            principal, account_id=account_id, deployment_id=deployment.id,
+            request_id=request.id, action="customer_teardown.execution_denied",
+            decision=decision, meta=meta,
+        )
+        return HTTPException(status_code=status_code, detail=detail)
+
+    if request.account_id != account_id:
+        raise _deny("denied_binding_mismatch",
+                    "Teardown request account binding does not match the deployment.", 409,
+                    {"reason": "deployment_account_binding_mismatch"})
+    if request.status != TEARDOWN_REQUEST_APPROVED:
+        raise _deny("denied_not_approved",
+                    "Teardown request is not approved for execution.", 409,
+                    {"status": request.status})
+    # Dual-control TOCTOU: an APPROVED row may have reached the threshold under a
+    # temporarily relaxed policy (min_approvals=1 / self-approval). Re-validate the
+    # approvals against the CURRENT settings, so reverting to the strict defaults still
+    # blocks a single-approval (or self-approved) teardown from executing.
+    try:
+        validate_teardown_request(request)
+    except ValueError as exc:
+        raise _deny("denied_policy_regressed",
+                    f"Teardown approvals no longer satisfy the dual-control policy: {exc}", 409,
+                    {"reason": str(exc)})
+    # The development release gate must not be decommissioned out from under release
+    # promotion — get_release_gate would otherwise be left pointing at a destroyed box.
+    if deployment.is_release_gate:
+        raise _deny("denied_release_gate",
+                    "Cannot decommission the active release gate; re-designate the gate first.", 409,
+                    {"reason": "active_release_gate"})
+    # TOCTOU: re-check the legal hold at execute time, not just at request/approve.
+    if scope_is_held(platform.list_legal_holds(account_id)):
+        raise _deny("denied_legal_hold",
+                    "This account is under an active legal hold and cannot be decommissioned.", 409,
+                    {"reason": "active_legal_hold"})
+    # Typed copy-the-phrase confirmation, re-checked server-side.
+    expected_phrase = f"decommission {deployment.id}"
+    if body.confirmation_phrase.strip() != expected_phrase:
+        raise _deny("denied_phrase_mismatch",
+                    f"Type '{expected_phrase}' exactly to confirm decommission.", 400,
+                    {"reason": "confirmation_phrase_mismatch"})
+
+    # Broker-only token boundary (P4-01): teardown reaches Hetzner ONLY through the
+    # out-of-process broker. Refuse to fall back to an in-process broker (which would
+    # use a local Hetzner token inside the API process) unless the explicit dogfood
+    # escape hatch is set — mirror build_hetzner_broker's production guard.
+    if not (getattr(settings, "hetzner_broker_url", "")
+            or getattr(settings, "hetzner_allow_inprocess_broker", False)):
+        raise HTTPException(
+            status_code=502,
+            detail="Teardown requires the out-of-process Hetzner broker (set ONEBRAIN_HETZNER_BROKER_URL).")
+
+    # Audit enrichment only — the broker discovers what to delete by label, never from
+    # these ids, and the record-only decision comes from the broker's own response.
+    manifest = _resolve_erasure_manifest(deployment.id)
+
+    from app.provisioning.hetzner.broker import build_hetzner_broker
+
+    destroy_result = None
+    broker_error = ""
+    try:
+        destroy_result = build_hetzner_broker(settings).destroy_box(deployment.id, confirm=True)
+    except (RuntimeError, OSError, ValueError) as exc:
+        broker_error = str(exc)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if destroy_result is None:
+        # FAIL CLOSED on ANY broker error, regardless of the manifest. A missing/empty
+        # erasure manifest does NOT prove no infrastructure exists (a legacy/imported
+        # box may hold unrecorded resources), and a transient broker outage must never
+        # let us tombstone + revoke keys while a live server may remain billed and
+        # reachable. Record-only is taken ONLY on a SUCCESSFUL broker response reporting
+        # nothing_found. The request becomes terminal; retry via a fresh request (the
+        # discovery-scoped destroy is idempotent, so a re-run finishes any partial).
+        control.record_teardown_execution(
+            request.id, succeeded=False,
+            result=f"broker unavailable: {broker_error}", executed_at=now_iso)
+        _record_teardown_audit(
+            principal, account_id=account_id, deployment_id=deployment.id,
+            request_id=request.id, action="customer_teardown.execution_failed",
+            decision="broker_unavailable",
+            meta={"error": broker_error, "has_recorded_infra": _manifest_has_resources(manifest)})
+        raise HTTPException(
+            status_code=502,
+            detail=f"Teardown could not reach the infrastructure broker: {broker_error}")
+
+    record_only = bool(destroy_result.nothing_found)
+    warning = ("No infrastructure was touched — nothing remained for this deployment."
+               if record_only else "")
+
+    keys_revoked = _revoke_deployment_fleet_keys(deployment.id)
+    control.remove_deployment(deployment.id, removed_at=now_iso)
+
+    deleted = {
+        "servers": list(destroy_result.servers_deleted) if destroy_result else [],
+        "volumes": list(destroy_result.volumes_deleted) if destroy_result else [],
+        "firewalls": list(destroy_result.firewalls_deleted) if destroy_result else [],
+        "dns": list(destroy_result.dns_deleted) if destroy_result else [],
+    }
+    if record_only:
+        summary = f"record-only: no infrastructure deleted; fleet keys revoked ({keys_revoked})"
+    else:
+        summary = (
+            "infrastructure destroyed — "
+            f"servers={len(deleted['servers'])} volumes={len(deleted['volumes'])} "
+            f"firewalls={len(deleted['firewalls'])} dns={len(deleted['dns'])}; "
+            f"fleet keys revoked ({keys_revoked})"
+        )
+    executed = control.record_teardown_execution(
+        request.id, succeeded=True, result=summary, executed_at=now_iso)
+
+    _record_teardown_audit(
+        principal, account_id=account_id, deployment_id=deployment.id, request_id=executed.id,
+        action="customer_teardown.executed",
+        decision="record_only" if record_only else "infrastructure_destroyed",
+        meta={
+            "record_only": record_only,
+            "deleted": deleted,
+            "fleet_keys_revoked": keys_revoked,
+            "expected_manifest": manifest,
+            "warning": warning,
+        },
+    )
+    return CustomerTeardownExecutedOut(
+        request=_teardown_request_out(executed),
+        record_only=record_only,
+        warning=warning,
+        servers_deleted=deleted["servers"],
+        volumes_deleted=deleted["volumes"],
+        firewalls_deleted=deleted["firewalls"],
+        dns_deleted=deleted["dns"],
+        fleet_keys_revoked=keys_revoked,
+    )
 
 
 @router.get("/releases", response_model=list[ReleaseOut])

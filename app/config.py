@@ -365,6 +365,20 @@ class Settings(BaseSettings):
     #   is the org prefix the Phase-2 GHCR CI publishes under; override via ONEBRAIN_RELEASE_REGISTRY_ALLOWLIST
     #   if the CI org ever differs (a wrong default 400s the first images-carrying release — fail-closed, safe).
 
+    # --- Customer teardown dual-control (fleet Decommission executor) ---
+    # A sanctioned teardown normally needs two DISTINCT approvers plus a
+    # non-approving requester (app/controlplane/base.py). OneBrain is a
+    # sole-operator org today, so that ceremony can never complete; these relax
+    # it while DEFAULTING to the strict behavior. teardown_min_approvals is
+    # bounded 1..2 and validated at LOAD (Field ge/le) — an out-of-range env
+    # value (e.g. =0) raises on settings load rather than ever making a request
+    # executable with zero approvals. Mirrors hetzner_allow_inprocess_broker. See
+    # docs/archive/specs/2026-07-22-fleet-decommission-and-teardown-executor-design.md (§5).
+    # RESIDUAL RISK: min_approvals=1 + self-approval lets ONE identity authorize
+    # destruction of a live customer box; accepted only for the sole operator.
+    teardown_min_approvals: int = Field(default=2, ge=1, le=2)
+    teardown_allow_self_approval: bool = False
+
     # --- Ground-truth reporter ---
     build_version: str = ""                    # CI-stamped running version (ONEBRAIN_BUILD_VERSION); "" -> app.__version__
     module_probes_enabled: bool = False        # probe co-located module /health endpoints for the heartbeat
