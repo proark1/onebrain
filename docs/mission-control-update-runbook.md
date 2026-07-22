@@ -148,7 +148,11 @@ not by the update state file, so it is accurate on MC.
 - **API:** `GET /api/fleet/overview`, the MC row's `reported_version`.
 - **On the host:** the update log written by `update.sh` under
   `${ONEBRAIN_MAINTENANCE_DIR}/onebrain_update/`. Mission Control is the one box
-  reachable over SSH — broker-provisioned customer boxes are not.
+  reachable over SSH — it is stood up with operator root/SSH access, whereas
+  broker-provisioned customer boxes ship with port 22 closed
+  (`hetzner_firewall_allow_ssh` defaults false, `app/config.py`). Treat it as the
+  break-glass path it is: prefer the console/API checks above, which need no host
+  access.
 
 Fixing the reporting gap properly means either installing the gate reporter on
 the operator role, or pointing the in-app reporter at the maintenance path. Until
