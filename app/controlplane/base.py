@@ -814,9 +814,23 @@ def compute_update_plan(
     # B6: restore-required implies restorable. Comm's raw-SQL migrations run inside comm containers and
     # never move onebrain's migration_to, so a comm-only destructive release must ALSO have a fresh backup —
     # the rollback_kind condition covers it. Inert for legacy releases (kind == "").
+    #
+    # The dedicated release gate is EXEMPT: it is a disposable verification box that
+    # holds no customer data, its recovery IS re-provisioning, and update.sh still
+    # takes its own pre-migration pg_dump inline on apply. Requiring a PRE-RECORDED
+    # backup here would permanently strand a freshly-provisioned gate from verifying
+    # ANY migration-bearing release — it has none until it has applied one, and it
+    # cannot apply one until it verifies it (the chicken-and-egg that left the
+    # first-ever migration-crossing candidate unverifiable). A gate a bad migration
+    # breaks simply fails verification (the intended signal) and is re-provisioned.
+    # Customer boxes and Mission Control's own self-update (the deliberate
+    # migration-crossing "safe boundary") are NOT release gates and stay fully gated.
     needs_fresh_backup = bool(
-        (release.migration_to and release.migration_to != deployment.current_migration)
-        or kind == "restore_required"
+        not getattr(deployment, "is_release_gate", False)
+        and (
+            (release.migration_to and release.migration_to != deployment.current_migration)
+            or kind == "restore_required"
+        )
     )
     if needs_fresh_backup:
         backup = latest_backup()   # lazy: the only call site (A3)
