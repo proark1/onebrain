@@ -568,6 +568,7 @@ class DeploymentOverview(BaseModel):
     storage: StorageReport = Field(default_factory=StorageReport)
     open_alerts: list[str] = Field(default_factory=list)
     user_management_v1: bool = False
+    login_url: str = ""  # https://<box> (or http://<ip>) from the latest provisioning run; "" when unknown
 
 
 class FleetOverviewOut(BaseModel):
@@ -587,12 +588,44 @@ def _reported_storage(payload: dict | None) -> StorageReport:
         return StorageReport()
 
 
+def _fleet_login_base_domain(settings) -> str:
+    """The fleet's public base domain when boxes are served over DNS + HTTPS, else "".
+
+    Mirrors the provisioner's dns_enabled gate
+    (app/provisioning/hetzner/provisioner.py): a box gets a real public hostname only
+    when the fleet runs the Hetzner DNS provider with a base domain and a zone id. When
+    this returns "", boxes serve plain HTTP on the raw IP and there is no usable login
+    link (see _box_login_url)."""
+    dns_provider = (getattr(settings, "fleet_dns_provider", "") or "").strip().lower()
+    base_domain = (getattr(settings, "fleet_base_domain", "") or "").strip().rstrip(".").lower()
+    if dns_provider != "hetzner" or not base_domain or not getattr(settings, "fleet_dns_zone_id", ""):
+        return ""
+    return base_domain
+
+
+def _box_login_url(deployment_id: str, base_domain: str) -> str:
+    """The box's own HTTPS login address, DERIVED from the deployment id and the fleet
+    base domain so it always matches the hostname Caddy holds a certificate for.
+
+    We deliberately do NOT read the provisioning run's external_run_url: the box's
+    success callback overwrites it with the raw public IPv4
+    (deploy/box/onebrain_gate_report.py), and it is a generic run field that may carry an
+    arbitrary provider/workflow URL. An IP-only box (base_domain == "") gets no link -- it
+    serves plain HTTP on :80, and boxes render ONEBRAIN_COOKIE_SECURE=true, so a session
+    cookie cannot survive an http:// origin anyway."""
+    if not base_domain:
+        return ""
+    from app.provisioning.hetzner.provisioner import _provider_hostname_label
+    return f"https://{_provider_hostname_label(deployment_id)}.{base_domain}"
+
+
 @router.get("/overview", response_model=FleetOverviewOut)
 def fleet_overview(principal: Principal = Depends(resolve_principal)):
     _require_operator_admin(principal)
     control = get_control_plane_store()
     fleet = get_fleet_store()
     latest = fleet.latest_heartbeats()
+    login_base = _fleet_login_base_domain(get_settings())
 
     rows: list[DeploymentOverview] = []
     healthy = 0
@@ -629,6 +662,7 @@ def fleet_overview(principal: Principal = Depends(resolve_principal)):
             storage=_reported_storage(hb.payload if hb else None),
             open_alerts=alerts,
             user_management_v1=bool(ob.get("user_management_v1", False)),
+            login_url=_box_login_url(dep.id, login_base),
         )
         rows.append(row)
         if hb and hb.healthy:

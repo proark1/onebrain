@@ -4442,6 +4442,11 @@
             "title": "Last Reported At",
             "type": "string"
           },
+          "login_url": {
+            "default": "",
+            "title": "Login Url",
+            "type": "string"
+          },
           "migration_revision": {
             "default": "",
             "title": "Migration Revision",

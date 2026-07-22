@@ -1019,6 +1019,7 @@ export interface FleetDeploymentOverview {
   storage?: FleetStorageReport;
   open_alerts: string[];
   user_management_v1: boolean;
+  login_url: string;
 }
 
 export interface ManagedUser {
