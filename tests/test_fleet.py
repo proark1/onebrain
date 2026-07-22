@@ -551,6 +551,39 @@ def test_fleet_overview_exposes_reported_root_and_data_capacity(monkeypatch):
     assert row.storage.data.total_bytes == 2000
 
 
+def test_fleet_overview_derives_https_login_url(monkeypatch):
+    from types import SimpleNamespace
+
+    control = MemoryControlPlaneStore()
+    for dep in ("nft_gym", "development-gate"):
+        control.create_deployment(CustomerDeployment(id=dep, customer_name=dep, release_ring="pilot"))
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: control)
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: MemoryFleetStore())
+    # DNS-enabled fleet: boxes are served over HTTPS at <label>.<base_domain>.
+    monkeypatch.setattr(fleet_router, "get_settings", lambda: SimpleNamespace(
+        fleet_dns_provider="hetzner", fleet_base_domain="onlyonebrain.com", fleet_dns_zone_id="zone1"))
+
+    rows = {r.deployment_id: r for r in fleet_router.fleet_overview(principal=_principal("admin")).deployments}
+    # Derived from the deployment id (not the mutable external_run_url); underscores
+    # become RFC-1123 dashes to match the box's real TLS hostname.
+    assert rows["nft_gym"].login_url == "https://nft-gym.onlyonebrain.com"
+    assert rows["development-gate"].login_url == "https://development-gate.onlyonebrain.com"
+
+
+def test_fleet_overview_suppresses_login_url_for_ip_only_fleet(monkeypatch):
+    from types import SimpleNamespace
+
+    # No DNS provider/zone -> boxes serve plain HTTP on the raw IP. An http:// link
+    # can't hold a secure-cookie session, so the overview exposes no login link.
+    monkeypatch.setattr(fleet_router, "get_control_plane_store", lambda: _control_with("dep_a"))
+    monkeypatch.setattr(fleet_router, "get_fleet_store", lambda: MemoryFleetStore())
+    monkeypatch.setattr(fleet_router, "get_settings", lambda: SimpleNamespace(
+        fleet_dns_provider="", fleet_base_domain="", fleet_dns_zone_id=""))
+
+    out = fleet_router.fleet_overview(principal=_principal("admin"))
+    assert out.deployments[0].login_url == ""
+
+
 # --- reporter ----------------------------------------------------------------
 
 def test_collect_storage_report_keeps_data_volume_distinct_from_root(monkeypatch):

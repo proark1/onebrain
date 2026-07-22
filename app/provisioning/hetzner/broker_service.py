@@ -17,7 +17,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.provisioning.hetzner.broker import InProcessHetznerBroker
 from app.provisioning.hetzner.client import FLEET_LABEL_KEY, FLEET_LABEL_VALUE, FirewallRule
 from app.provisioning.hetzner.remote import (
+    decode_destroy_request,
     decode_provision_request,
+    encode_destroy_result,
     encode_provision_result,
 )
 from app.provisioning.hetzner.urllib_client import UrllibHetznerClient
@@ -126,7 +128,7 @@ def validate_provision_request(
     if requested_firewall_ids and not requested_firewall_ids.issubset(allowed_firewall_ids):
         raise ValueError("invalid provision request")
     if firewall is not None:
-        if requested_firewall_ids or firewall.name != f"{server.name}-fw" or firewall.labels != {"deployment_id": deployment_id}:
+        if requested_firewall_ids or firewall.name != f"{server.name}-fw" or firewall.labels != {"deployment_id": deployment_id, FLEET_LABEL_KEY: FLEET_LABEL_VALUE}:
             raise ValueError("invalid provision request")
         _validate_firewall(firewall.rules, settings)
 
@@ -134,7 +136,7 @@ def validate_provision_request(
         if (
             volume.name != f"{server.name}-data"
             or volume.location != server.location
-            or volume.labels != {"deployment_id": deployment_id}
+            or volume.labels != {"deployment_id": deployment_id, FLEET_LABEL_KEY: FLEET_LABEL_VALUE}
             or volume.size_gb < 1
             or volume.size_gb > settings.max_volume_size_gb
         ):
@@ -152,6 +154,14 @@ def validate_provision_request(
             raise ValueError("invalid provision request")
 
 
+def validate_destroy_request(deployment_id: str, settings: BrokerSettings) -> None:
+    """Validate a teardown request against the same inert deployment-id grammar the provision
+    path enforces. The broker owns WHAT gets deleted (it discovers the deployment's resources
+    by label); this only bounds the id it will act on."""
+    if not _DEPLOYMENT_ID.fullmatch(deployment_id or ""):
+        raise ValueError("invalid destroy request")
+
+
 def create_broker_app(*, settings: BrokerSettings | None = None, client=None) -> FastAPI:
     """Build the minimal broker application. Tests inject a fake cloud client."""
 
@@ -165,6 +175,7 @@ def create_broker_app(*, settings: BrokerSettings | None = None, client=None) ->
         cloud_client,
         max_fleet_servers=settings.max_fleet_servers,
         enable_backups=settings.enable_backups,
+        dns_zone_id=settings.dns_zone_id,
     )
     app = FastAPI(title="onebrain-hetzner-broker", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -196,5 +207,24 @@ def create_broker_app(*, settings: BrokerSettings | None = None, client=None) ->
             logger.warning("Hetzner broker provisioning failed: %s", type(exc).__name__)
             raise HTTPException(status_code=502, detail="Provisioning failed")
         return encode_provision_result(result)
+
+    @app.post("/v1/destroy")
+    async def destroy(request: Request, authorization: str | None = Header(default=None)):
+        _authorize(authorization, settings)
+        raw = await request.body()
+        if len(raw) > 4096:                          # a teardown body is a single deployment id
+            raise HTTPException(status_code=413, detail="Payload too large")
+        try:
+            deployment_id = decode_destroy_request(json.loads(raw.decode("utf-8")))
+            validate_destroy_request(deployment_id, settings)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid destroy request")
+        try:
+            result = broker.destroy_box(deployment_id, confirm=True)
+        except Exception as exc:
+            # No request body, provider body, or credential is ever written to a log.
+            logger.warning("Hetzner broker teardown failed: %s", type(exc).__name__)
+            raise HTTPException(status_code=502, detail="Teardown failed")
+        return encode_destroy_result(result)
 
     return app

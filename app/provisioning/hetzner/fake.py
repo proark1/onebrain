@@ -13,6 +13,7 @@ from app.provisioning.hetzner.client import (
     DnsRecordResult,
     FirewallCreateRequest,
     FirewallCreateResult,
+    FirewallInfo,
     HetznerApiError,
     ServerActionResult,
     ServerCreateRequest,
@@ -20,6 +21,7 @@ from app.provisioning.hetzner.client import (
     ServerInfo,
     VolumeCreateRequest,
     VolumeCreateResult,
+    VolumeInfo,
 )
 
 
@@ -49,6 +51,12 @@ class FakeHetznerClient:
         self._dns_by_name: dict = {}
         # Ordered log of server ids passed to enable_backup (easy assertions).
         self.backup_enabled_calls: List[str] = []
+        # Teardown state (Phase A): volumes/firewalls carry their deployment_id label + a
+        # deleted flag so list_* can scope a destroy; a volume tracks its attached server so
+        # delete_volume can model Hetzner's refusal to delete an attached volume.
+        self._volume_records: List[dict] = []     # {id, labels, server_id, deleted}
+        self._firewall_records: List[dict] = []    # {id, labels, deleted}
+        self._dns_deleted: set = set()             # {(zone_id, name)} deleted A RRSets
 
     def _maybe_fail(self, method: str) -> None:
         if method in self.fail_on:
@@ -59,7 +67,10 @@ class FakeHetznerClient:
         self._maybe_fail("create_volume")
         self.volumes.append(req)
         self._volume_n += 1
-        return VolumeCreateResult(volume_id=f"vol_{self._volume_n}")
+        vol_id = f"vol_{self._volume_n}"
+        self._volume_records.append(
+            {"id": vol_id, "labels": dict(req.labels or {}), "server_id": "", "deleted": False})
+        return VolumeCreateResult(volume_id=vol_id)
 
     def create_server(self, req: ServerCreateRequest) -> ServerCreateResult:
         self.calls.append("create_server")
@@ -75,6 +86,11 @@ class FakeHetznerClient:
             "public_ipv4": ipv4, "status": "initializing", "deleted": False,
             "backups_enabled": False,
         })
+        # Volumes named in the create are attached to this server (teardown detach model).
+        for vid in (req.volume_ids or ()):
+            for vr in self._volume_records:
+                if vr["id"] == str(vid):
+                    vr["server_id"] = server_id
         return ServerCreateResult(server_id=server_id, public_ipv4=ipv4, status="initializing")
 
     def enable_backup(self, server_id: str) -> ServerActionResult:
@@ -117,7 +133,9 @@ class FakeHetznerClient:
         self._maybe_fail("create_firewall")
         self.firewalls.append(req)
         self._firewall_n += 1
-        return FirewallCreateResult(firewall_id=f"fw_{self._firewall_n}")
+        fw_id = f"fw_{self._firewall_n}"
+        self._firewall_records.append({"id": fw_id, "labels": dict(req.labels or {}), "deleted": False})
+        return FirewallCreateResult(firewall_id=fw_id)
 
     def upsert_dns_record(self, req: DnsRecordRequest) -> DnsRecordResult:
         self.calls.append("upsert_dns_record")
@@ -130,4 +148,66 @@ class FakeHetznerClient:
             self._dns_n += 1
             record_id = f"dns_{self._dns_n}"
             self._dns_by_name[key] = record_id
+        self._dns_deleted.discard(key)      # a re-upsert un-deletes the RRSet
         return DnsRecordResult(record_id=record_id, fqdn=req.name)
+
+    # --- teardown scope reads + delete primitives (Phase A) --------------------
+    def list_volumes(self, label_selector: str) -> List[VolumeInfo]:
+        self._maybe_fail("list_volumes")
+        key, sep, value = label_selector.partition("=")
+        if not sep:
+            return []
+        key, value = key.strip(), value.strip()
+        return [
+            VolumeInfo(id=r["id"], labels=dict(r["labels"]), server_id=r["server_id"])
+            for r in self._volume_records
+            if not r["deleted"] and r["labels"].get(key) == value
+        ]
+
+    def list_firewalls(self, label_selector: str) -> List[FirewallInfo]:
+        self._maybe_fail("list_firewalls")
+        key, sep, value = label_selector.partition("=")
+        if not sep:
+            return []
+        key, value = key.strip(), value.strip()
+        return [
+            FirewallInfo(id=r["id"], labels=dict(r["labels"]))
+            for r in self._firewall_records
+            if not r["deleted"] and r["labels"].get(key) == value
+        ]
+
+    def delete_server(self, server_id: str) -> None:
+        self.calls.append("delete_server")
+        self._maybe_fail("delete_server")
+        for r in self._server_records:
+            if r["id"] == server_id and not r["deleted"]:
+                r["deleted"] = True
+                # Deleting a server detaches its volumes (models Hetzner).
+                for vr in self._volume_records:
+                    if vr["server_id"] == server_id:
+                        vr["server_id"] = ""
+                return
+        # Idempotent: deleting an unknown/already-deleted server is a no-op (real client swallows 404).
+
+    def delete_volume(self, volume_id: str) -> None:
+        self.calls.append("delete_volume")
+        self._maybe_fail("delete_volume")
+        for r in self._volume_records:
+            if r["id"] == volume_id and not r["deleted"]:
+                if r["server_id"]:
+                    raise HetznerApiError(409, "volume is still attached to a server")
+                r["deleted"] = True
+                return
+
+    def delete_firewall(self, firewall_id: str) -> None:
+        self.calls.append("delete_firewall")
+        self._maybe_fail("delete_firewall")
+        for r in self._firewall_records:
+            if r["id"] == firewall_id and not r["deleted"]:
+                r["deleted"] = True
+                return
+
+    def delete_dns_record(self, zone_id: str, name: str) -> None:
+        self.calls.append("delete_dns_record")
+        self._maybe_fail("delete_dns_record")
+        self._dns_deleted.add((zone_id, name))

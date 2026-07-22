@@ -3908,6 +3908,73 @@
         "title": "CustomerTeardownApproval",
         "type": "object"
       },
+      "CustomerTeardownExecute": {
+        "properties": {
+          "confirmation_phrase": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Confirmation Phrase",
+            "type": "string"
+          }
+        },
+        "title": "CustomerTeardownExecute",
+        "type": "object"
+      },
+      "CustomerTeardownExecutedOut": {
+        "properties": {
+          "dns_deleted": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dns Deleted",
+            "type": "array"
+          },
+          "firewalls_deleted": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Firewalls Deleted",
+            "type": "array"
+          },
+          "fleet_keys_revoked": {
+            "default": 0,
+            "title": "Fleet Keys Revoked",
+            "type": "integer"
+          },
+          "record_only": {
+            "default": false,
+            "title": "Record Only",
+            "type": "boolean"
+          },
+          "request": {
+            "$ref": "#/components/schemas/CustomerTeardownRequestOut"
+          },
+          "servers_deleted": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Servers Deleted",
+            "type": "array"
+          },
+          "volumes_deleted": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Volumes Deleted",
+            "type": "array"
+          },
+          "warning": {
+            "default": "",
+            "title": "Warning",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "title": "CustomerTeardownExecutedOut",
+        "type": "object"
+      },
       "CustomerTeardownRequestCreate": {
         "description": "Evidence required to open a record-only teardown approval request.",
         "properties": {
@@ -4440,6 +4507,11 @@
           "last_reported_at": {
             "default": "",
             "title": "Last Reported At",
+            "type": "string"
+          },
+          "login_url": {
+            "default": "",
+            "title": "Login Url",
             "type": "string"
           },
           "migration_revision": {
@@ -16458,6 +16530,78 @@
           }
         },
         "summary": "Approve Customer Teardown Request",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/deployments/{deployment_id}/teardown-requests/{request_id}/execute": {
+      "post": {
+        "description": "Execute an APPROVED teardown: destroy the box's Hetzner infrastructure through\nthe broker (or record-only tombstone when nothing remains), revoke the box's fleet\nkeys, and tombstone the deployment. operator_mode-only \u2014 it reaches the broker, so\nit mirrors the fleet router's Mission-Control mount gate (a customer console gets\na 404, never a hint that the endpoint exists).",
+        "operationId": "execute_customer_teardown_request_api_operator_deployments__deployment_id__teardown_requests__request_id__execute_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerTeardownExecute"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerTeardownExecutedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Execute Customer Teardown Request",
         "tags": [
           "operator"
         ]

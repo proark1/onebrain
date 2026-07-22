@@ -179,26 +179,36 @@ def verify_desired_state(
 
 
 def verify_desired_state_multi(
-    envelope: DesiredStateEnvelope, *, desired_state_public_keys: list[str], **kw
+    envelope: DesiredStateEnvelope, *, desired_state_public_keys: list[str],
+    release_public_keys: list[str] | None = None, **kw
 ) -> list[str]:
-    """Rotation-tolerant wrapper (P5-02): try each candidate wrapper public key and
-    return [] on the FIRST acceptance, else the error list from the LAST attempt (so
-    an all-reject still yields an ordered code). An empty/whitespace key list falls
-    back to a single '' key (which fails envelope_signature_invalid — fail-closed).
+    """Rotation-tolerant wrapper (P5-02, extended): try each candidate WRAPPER public
+    key AND each candidate RELEASE public key, returning [] on the FIRST fully-accepted
+    combination, else the ordered error list from the LAST attempt (an all-reject still
+    yields an ordered code). An empty wrapper set falls back to a single '' key (which
+    fails envelope_signature_invalid — fail-closed); an empty release set falls back to
+    the single release_public_key_b64 in **kw, so a box carrying only the legacy singular
+    UPDATE_RELEASE_PUBLIC_KEY behaves EXACTLY as before (one release key, wrapper loop).
 
-    This is a PURE ADDITIVE wrapper: verify_desired_state is unchanged (single-key,
-    frozen), so every existing trust test passes byte-for-byte. The overlap set lives
-    on the box (delivered via the bundle), never inside the envelope — MC still signs
-    with exactly one private key; the box accepts any key in its configured set, so a
-    key rotation can never strand the fleet at envelope_signature_invalid."""
-    keys = [k for k in (desired_state_public_keys or []) if k and k.strip()]
-    if not keys:
-        keys = [""]
+    PURE ADDITIVE: verify_desired_state is unchanged (single wrapper key, single release
+    key, frozen), so every existing trust test passes byte-for-byte. Two overlap sets now
+    live on the box (delivered via the bundle / baked in box.env), never inside the
+    envelope — MC still signs with exactly one private wrapper key. The release set is
+    what lets Mission Control's OWN box trust BOTH the offline production key and the CI
+    development key at once; customer boxes keep the singular production key untouched."""
+    wrapper_keys = [k for k in (desired_state_public_keys or []) if k and k.strip()]
+    if not wrapper_keys:
+        wrapper_keys = [""]
+    release_keys = [k for k in (release_public_keys or []) if k and k.strip()]
+    if not release_keys:
+        release_keys = [kw.get("release_public_key_b64", "")]
     errors: list[str] = ["envelope_signature_invalid"]
-    for key in keys:
-        errors = verify_desired_state(envelope, desired_state_public_key_b64=key, **kw)
-        if not errors:
-            return []
+    for release_key in release_keys:
+        attempt_kw = {**kw, "release_public_key_b64": release_key}
+        for wrapper_key in wrapper_keys:
+            errors = verify_desired_state(envelope, desired_state_public_key_b64=wrapper_key, **attempt_kw)
+            if not errors:
+                return []
     return errors
 
 

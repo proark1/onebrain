@@ -181,6 +181,10 @@ class BoxRenderInputs:
     callback_url: str = ""               # validated per-run HTTPS template, with a literal {run_id}
     fleet_public_desired_state_key: str = ""   # baked so the box verifies the wrapper (H-7)
     release_public_key: str = ""               # baked so the box verifies the offline release sig
+    release_public_keys: str = ""              # csv of ACCEPTED release keys (UPDATE_RELEASE_PUBLIC_KEYS).
+                                               # Mission Control's own box lists production + CI development
+                                               # so it can apply a dev-signed self-update; "" for a customer
+                                               # box, which keeps only the singular production key above.
     release_version: str = ""                  # provision-time metadata for the root-only reporter
     release_migration: str = ""                # expected initial migration (metadata only)
     module_versions: dict = field(default_factory=dict)
@@ -1427,6 +1431,12 @@ def _box_env(inp: BoxRenderInputs) -> str:
     # its .env directly and is never minted a token, so no exchange runs for it.
     if inp.role != "operator":
         pairs.append(("ONEBRAIN_BOOTSTRAP_TOKEN", inp.bootstrap_token))
+    # The accepted RELEASE-key SET (multi-key verification). Emitted only when populated —
+    # Mission Control's own box lists production + CI development so it can apply a
+    # dev-signed self-update; a customer box leaves it unset and keeps the singular
+    # UPDATE_RELEASE_PUBLIC_KEY above, so customer trust is byte-for-byte unchanged.
+    if inp.release_public_keys:
+        pairs.append(("UPDATE_RELEASE_PUBLIC_KEYS", inp.release_public_keys))
     return _shell_kv(pairs)
 
 

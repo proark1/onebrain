@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,7 @@ from app.controlplane.base import (
     DeploymentModule,
     HealthCheckRun,
     ReleaseManifest,
+    ReleasePromotion,
     RolloutRun,
     compute_update_plan,
     effective_update_policy,
@@ -1201,6 +1203,129 @@ def test_plan_blocks_unsigned_release_when_required(monkeypatch):
     plan = store.plan_update("dep_a", "2026.07.15")
     assert plan.allowed is False
     assert plan.reason == "release_unsigned"
+
+
+def _live_gate_deployment(**overrides):
+    fields = dict(
+        id="gate_new",
+        customer_name="Live gate",
+        environment="development",
+        deployment_type="dedicated_server",
+        release_ring="internal",
+        is_release_gate=True,
+        current_version="1.0",
+        current_migration="0001",
+        last_heartbeat_at=datetime.now(timezone.utc).isoformat(),
+        last_heartbeat_healthy=True,
+    )
+    fields.update(overrides)
+    return CustomerDeployment(**fields)
+
+
+def test_live_gate_replans_a_candidate_bound_to_a_retired_gate():
+    """After the gate box is replaced, a backlog candidate's promotion is still
+    bound to the RETIRED gate id. Re-planning on the new LIVE gate must not fail
+    as release_unsigned/development_gate_mismatch -- the candidate is re-verified
+    and re-bound here. Regression for the first-ever gate replacement, which
+    stranded the whole backlog behind a misleading release_unsigned."""
+    gate = _live_gate_deployment()
+    release = ReleaseManifest(
+        version="1.1", git_sha="a", modules={"onebrain-api": "1.1"}, migration_to="0001")
+    modules = [DeploymentModule("gate_new", "onebrain-api", "1.0")]
+    promotion = ReleasePromotion(
+        release_version="1.1",
+        state="dev_failed",
+        gate_deployment_id="gate_retired",   # still bound to the replaced box
+        dev_signature="ZGV2",
+    )
+
+    plan = compute_update_plan(
+        "gate_new", "1.1",
+        deployment=gate, release=release, modules=modules,
+        latest_backup=lambda: None, require_signed_release=True,
+        promotion=promotion, gate_deployment_id="gate_new",
+        development_signature_valid=True,
+    )
+
+    assert plan.reason not in {"release_unsigned", "development_gate_mismatch"}
+    assert plan.allowed is True
+
+
+def test_live_gate_still_rejects_a_candidate_whose_dev_signature_is_invalid():
+    """The re-binding relaxation must not weaken the signature gate: a candidate
+    whose development signature does not verify is still release_unsigned even
+    when it is (re)bound to the live gate."""
+    gate = _live_gate_deployment()
+    release = ReleaseManifest(
+        version="1.1", git_sha="a", modules={"onebrain-api": "1.1"}, migration_to="0001")
+    modules = [DeploymentModule("gate_new", "onebrain-api", "1.0")]
+    promotion = ReleasePromotion(
+        release_version="1.1",
+        state="dev_failed",
+        gate_deployment_id="gate_retired",
+        dev_signature="ZGV2",
+    )
+
+    plan = compute_update_plan(
+        "gate_new", "1.1",
+        deployment=gate, release=release, modules=modules,
+        latest_backup=lambda: None, require_signed_release=True,
+        promotion=promotion, gate_deployment_id="gate_new",
+        development_signature_valid=False,   # signature does not verify
+    )
+
+    assert plan.allowed is False
+    assert plan.reason == "release_unsigned"
+
+
+def test_release_gate_may_cross_a_migration_without_a_prerecorded_backup():
+    """A freshly-provisioned release gate has no backup yet (backups are only
+    produced by update.sh on apply, then materialized from the box's report). It
+    must still be allowed to verify a migration-crossing release -- otherwise the
+    gate can never verify ANY release that carries a schema migration, since it
+    cannot apply one until it verifies it. update.sh takes its own inline
+    pre-migration backup, and a gate a bad migration breaks is re-provisioned.
+    Regression for the first-ever migration-crossing candidate."""
+    gate = _live_gate_deployment(current_migration="0034")
+    release = ReleaseManifest(
+        version="1.1", git_sha="a", modules={"onebrain-api": "1.1"},
+        migration_from="0034", migration_to="0035")   # crosses the schema
+    modules = [DeploymentModule("gate_new", "onebrain-api", "1.0")]
+    promotion = ReleasePromotion(
+        release_version="1.1", state="dev_failed",
+        gate_deployment_id="gate_new", dev_signature="ZGV2")
+
+    plan = compute_update_plan(
+        "gate_new", "1.1",
+        deployment=gate, release=release, modules=modules,
+        latest_backup=lambda: None,          # NO backup has ever been recorded
+        require_signed_release=True,
+        promotion=promotion, gate_deployment_id="gate_new",
+        development_signature_valid=True,
+    )
+
+    assert plan.reason != "backup_required_for_schema_update"
+    assert plan.allowed is True
+
+
+def test_migration_backup_gate_still_applies_to_non_gate_deployments():
+    """The gate exemption must NOT leak: a non-gate box crossing a migration with
+    no successful backup stays blocked (customer boxes + MC's own self-update)."""
+    dep = _live_gate_deployment(
+        id="dep_cust", is_release_gate=False, current_migration="0034")
+    release = ReleaseManifest(
+        version="1.1", git_sha="a", modules={"onebrain-api": "1.1"},
+        migration_from="0034", migration_to="0035")
+    modules = [DeploymentModule("dep_cust", "onebrain-api", "1.0")]
+
+    plan = compute_update_plan(
+        "dep_cust", "1.1",
+        deployment=dep, release=release, modules=modules,
+        latest_backup=lambda: None,
+    )
+
+    assert plan.allowed is False
+    assert plan.reason == "backup_required_for_schema_update"
 
 
 def test_success_apply_recheck_blocks_midflight_yank():

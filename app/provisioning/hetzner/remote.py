@@ -14,7 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from app.provisioning.hetzner.broker import BrokerProvisionResult
+from app.provisioning.hetzner.broker import BrokerDestroyResult, BrokerProvisionResult
 from app.provisioning.hetzner.client import (
     DnsRecordRequest,
     FirewallCreateRequest,
@@ -217,6 +217,53 @@ def decode_provision_result(value: Any) -> BrokerProvisionResult:
     )
 
 
+def encode_destroy_request(*, deployment_id: str) -> dict[str, Any]:
+    """Serialize a teardown request. Deliberately JUST the deployment id: the broker
+    DISCOVERS the resources to delete by that label — MC never hands it raw resource ids,
+    so a bad manifest can't point the broker at a foreign volume/firewall/DNS record."""
+    return {"deployment_id": deployment_id}
+
+
+def decode_destroy_request(value: Any) -> str:
+    """Decode a complete, exact teardown request. Unknown fields fail closed."""
+    body = _strict_dict(value, keys={"deployment_id"})
+    return _string(body["deployment_id"])
+
+
+def encode_destroy_result(result: BrokerDestroyResult) -> dict[str, Any]:
+    return {
+        "deployment_id": result.deployment_id,
+        "servers_deleted": list(result.servers_deleted),
+        "volumes_deleted": list(result.volumes_deleted),
+        "firewalls_deleted": list(result.firewalls_deleted),
+        "dns_deleted": list(result.dns_deleted),
+        "nothing_found": result.nothing_found,
+    }
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    items = _list(value)
+    if not all(isinstance(item, str) for item in items):
+        raise ValueError("invalid broker response")
+    return tuple(items)
+
+
+def decode_destroy_result(value: Any) -> BrokerDestroyResult:
+    body = _strict_dict(
+        value,
+        keys={"deployment_id", "servers_deleted", "volumes_deleted", "firewalls_deleted",
+              "dns_deleted", "nothing_found"},
+    )
+    return BrokerDestroyResult(
+        deployment_id=_string(body["deployment_id"]),
+        servers_deleted=_string_tuple(body["servers_deleted"]),
+        volumes_deleted=_string_tuple(body["volumes_deleted"]),
+        firewalls_deleted=_string_tuple(body["firewalls_deleted"]),
+        dns_deleted=_string_tuple(body["dns_deleted"]),
+        nothing_found=_bool(body["nothing_found"]),
+    )
+
+
 class RemoteHetznerBroker:
     """Mission Control client for a dedicated mTLS-protected broker host."""
 
@@ -299,14 +346,34 @@ class RemoteHetznerBroker:
         except (UnicodeDecodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
             raise RuntimeError("remote Hetzner broker returned an invalid response") from exc
 
-    def destroy_box(
-        self,
-        *,
-        server_id: str,
-        volume_ids: tuple[str, ...],
-        dns_record_ids: tuple[str, ...],
-        confirm: bool,
-    ) -> None:
+    def destroy_box(self, deployment_id: str, *, confirm: bool) -> BrokerDestroyResult:
         if not confirm:
             raise ValueError("destroy requires explicit confirm=True")
-        raise NotImplementedError("remote Hetzner broker does not implement teardown")
+        payload = json.dumps(
+            encode_destroy_request(deployment_id=deployment_id), separators=(",", ":"),
+        ).encode("utf-8")
+        request = Request(
+            f"{self._url}/v1/destroy",
+            data=payload,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self._credential}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with self._open(request) as response:
+                raw = response.read(_MAX_RESPONSE_BYTES + 1)
+        except HTTPError as exc:
+            raise RuntimeError(f"remote Hetzner broker rejected teardown (HTTP {exc.code})") from exc
+        except URLError as exc:
+            raise RuntimeError("remote Hetzner broker is unavailable") from exc
+        except OSError as exc:
+            raise RuntimeError("remote Hetzner broker transport failed") from exc
+        if len(raw) > _MAX_RESPONSE_BYTES:
+            raise RuntimeError("remote Hetzner broker returned an oversized response")
+        try:
+            return decode_destroy_result(json.loads(raw.decode("utf-8")))
+        except (UnicodeDecodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("remote Hetzner broker returned an invalid response") from exc
