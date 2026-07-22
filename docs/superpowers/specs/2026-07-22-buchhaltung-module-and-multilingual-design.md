@@ -33,7 +33,8 @@ Freigabe-/Work-Product-Maschinerie der KI-Mitarbeiter.
 **Wirklich neu [neu]:** ein Speicherort für strukturierte Belegdaten · ein Vision-Extraktor
 (austauschbares Modell) mit §14-UStG-Schema für Ein- und Ausgang · Bild-Anhang im Chat +
 ein governed Abfrage-Tool für die Finance-Managerin · Modul-Oberfläche + Kategorie-Wähler
-im Upload · die app-weite i18n-Schicht (§9).
+im Upload · **Export-Connectoren** zu DATEV/lexoffice/sevDesk (§10) · die app-weite
+i18n-Schicht (§9).
 
 ---
 
@@ -49,8 +50,9 @@ im Upload · die app-weite i18n-Schicht (§9).
 | **DPIA** | **Sperrt nicht** — persistente Warnung + Audit-Eintrag, aber kein harter Block. |
 | **Modularität** | Optionales Produkt, das der Operator pro Kunde in Mission Control an-/abwählt; für Bestandskunden automatisch aus. Gilt auch für Sophies Funktion. |
 | **Sprache** | Deutsch primär, Englisch verfügbar; wählbar bei der Kundenanlage (§9). |
+| **Schnittstellen** | **Top 3 (DE-first):** DATEV (Format-Export für den Steuerberater), lexoffice/Lexware Office und sevDesk (API-Push). Pluggable Connector, Export/Push zuerst, bidirektionaler Sync später (§10). |
 
-Standardannahme für die noch offenen i18n-Detailfragen (revidierbar, siehe §10): leichte
+Standardannahme für die noch offenen i18n-Detailfragen (revidierbar, siehe §11): leichte
 Eigenlösung, UI-first, Kunden-Default + Nutzer-Umschaltung.
 
 ---
@@ -222,7 +224,8 @@ weder Bild-Upload noch Abfrage-Tool — sie bleibt die normale Finance-Managerin
 | **i18n** | App-weites Fundament: `default_locale` bei Provisioning + Box-Flow, Frontend-i18n-Schicht (de/en), Shell & Navigation übersetzt — vor der Buchhaltungs-UI | Basis für zweisprachige Oberflächen | mittel |
 | **1** | Drive-Kategorie-Wähler + Extraktionspfad (entkoppelt vom Index-Job) → strukturierte Datensätze + Bestätigungs-Ansicht + Übersichts-Dashboard | Belege rein, verbucht, sichtbar | mittel–groß |
 | **2** | Chat-Anhang (multimodaler Turn) + governed Q&A-Tool + Volltext-RAG (mit DPIA-Warnung) | Sophie erfasst & beantwortet | groß |
-| **3** | DATEV-/Steuerberater-Export, weitere Vision-Anbieter, weitere Länder/Jurisdiktionen | Ausbau | später |
+| **3** | **Buchhaltungs-Tool-Schnittstellen** (§10): DATEV-Format-Export → lexoffice/sevDesk-API-Push; dazu weitere Vision-Anbieter | Export in die Steuer-/Buchhaltungswelt | groß |
+| **4** | Bidirektionaler Sync, DATEVconnect/Unternehmen online, weitere Länder/Jurisdiktionen | Ausbau | später |
 
 Ehrlich eingeordnet: Gesamt eher **mehrere Monate solo** (vergleichbar mit dem Drive-Aufbau).
 Phase 0, i18n und 1 liefern aber schon sichtbaren Wert.
@@ -256,7 +259,49 @@ Deutsch anspricht. Offen ist vor allem die **Oberfläche** und optional Backend-
 
 ---
 
-## §10 · Offen / zu verifizieren
+## §10 · Buchhaltungs-Tool-Schnittstellen (Top 3)
+
+Das Modul erzeugt strukturierte Buchungen — die müssen in das System, mit dem der Kunde bzw.
+sein Steuerberater tatsächlich arbeitet. Für den DE-Markt (erster Experte = Deutschland) sind
+die drei wichtigsten Ziele (Standardannahme, siehe §11):
+
+1. **DATEV [Pflicht] — export-first.** Der Standard der Steuerberater. Primär ein
+   **DATEV-Format-Export** (ASCII/EXTF-„Buchungsstapel"-CSV mit Header-Zeile, Konten nach
+   **SKR03/SKR04**, Berater-/Mandanten-/Wirtschaftsjahr-Angaben), den der Mandant seinem
+   Steuerberater übergibt. Später optional tiefer: **DATEVconnect** (lokale REST-API) bzw.
+   **DATEV Unternehmen online** (Beleg- + Buchungsdaten in die Cloud).
+2. **lexoffice / Lexware Office — API-Push.** Großes Cloud-Buchhaltungstool für dt. KMU,
+   offene **REST-API**; Belege/Ausgaben (Vouchers) aus den extrahierten Rechnungen anlegen.
+3. **sevDesk — API-Push.** Weit verbreitetes Cloud-Tool für KMU/Selbstständige, **REST-API**
+   für Belege/Ausgaben.
+
+**Architektur — ein pluggable Connector, kein Sonderweg.** Ein `AccountingExportConnector`-
+Interface nach dem Muster des bestehenden Connector-Frameworks (`app/ai_employees/connectors/`,
+Google Calendar als Referenz-Implementierung). Zwei Ausprägungen:
+
+- **Datei-Export** (DATEV-Format): erzeugt eine valide DATEV-CSV zum Download — kein
+  Fremdsystem-Zugriff nötig.
+- **API-Push** (lexoffice/sevDesk): legt Belege per REST an; Zugangsdaten (API-Key/OAuth) im
+  vorhandenen **verschlüsselten Connector-Secret-Store** (`connectors/secrets.py`,
+  `secret_encryption_key`) — nie in Prompts, Exports oder API-Antworten (bestehende Invariante).
+
+**Kontierung (SKR03/SKR04).** Ein Export braucht Sachkonten. Die extrahierten Rechnungen müssen
+auf Buchungskonten gemappt werden. v1: konfigurierbare Default-Zuordnung je Belegart/Steuersatz
++ manuelle Korrektur im Bestätigungsschritt (Verbuchung, §2); vollautomatische Kontierung später.
+
+**Freigabe + Modularität.** Ein Push in ein externes Buchhaltungssystem ist eine **externe
+Aktion** → läuft über die vorhandene Freigabe-/Action-Pipeline (nicht autonom, vgl.
+`AI_EMPLOYEE_EXTERNAL_ACTION_TYPES`). Der DATEV-Datei-Export ist ein nutzerausgelöster Download.
+Die Connectoren gehören zum Buchhaltungsmodul → automatisch modular; **welcher Connector aktiv
+ist, ist eine Modul-Einstellung pro Kunde** (die meisten nutzen genau eines).
+
+**Reihenfolge:** DATEV-Format-Export zuerst (höchster Nutzen, kein Fremd-API-Risiko), dann
+lexoffice- + sevDesk-API-Push. Bidirektionaler Sync (Rücklesen/Abgleich) ist bewusst später
+(Phase 4).
+
+---
+
+## §11 · Offen / zu verifizieren
 
 **Entschieden (Runde 2):** kein OCR — reines Vision-Modell, Default Gemini, austauschbar
 global oder speziell für die Rechnungs-Bilderkennung, Anbieter operator-wählbar · Eingangs-
@@ -267,6 +312,12 @@ und Ausgangsrechnungen von Anfang an.
 - Technik: leichte Eigenlösung *(empfohlen)* vs. Bibliothek (next-intl).
 - Umfang: nur Oberfläche zuerst *(empfohlen)* vs. auch Backend-Meldungen/E-Mails/Exporte.
 - Sprachwahl: Kunden-Default + Nutzer-Umschaltung *(empfohlen)* vs. nur Kunden-Default.
+
+**Offene Schnittstellen-Entscheidungen (Standardannahme, revidierbar):**
+
+- Tool-Set: DATEV + lexoffice + sevDesk *(empfohlen)*; 3. Platz auf ein internationales Tool
+  (Xero/QuickBooks) tauschbar, oder ein viertes ergänzen.
+- Tiefe: Export/Push zuerst *(empfohlen)* vs. bidirektionaler Sync (deutlich größer).
 
 **Umsetzungs-Notizen:**
 
