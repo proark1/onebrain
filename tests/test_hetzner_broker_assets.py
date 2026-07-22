@@ -20,7 +20,7 @@ def test_broker_caddy_requires_mtls_and_proxies_only_local_broker():
     assert "strict_sni_host on" in caddy
     assert "mode require_and_verify" in caddy
     assert "trust_pool file /etc/caddy/broker-tls/mc-client-ca.crt" in caddy
-    assert "@broker_routes path /health /v1/provision" in caddy
+    assert "@broker_routes path /health /v1/provision /v1/destroy" in caddy
     assert "reverse_proxy 127.0.0.1:8181" in caddy
 
 

@@ -26,12 +26,16 @@ authentication. It exposes no customer UI and no general-purpose Hetzner proxy.
 
 ## Destructive lifecycle
 
-The active broker does not expose a destroy operation. Customer teardown review
-is a record-only MC workflow: it binds a request to the customer/account,
-requires legal-hold and backup/retention evidence, and records two independent
-approvals. Its terminal result is `execution_disabled`; it does not call the
-broker or Hetzner. A future deletion executor requires an independently
-reviewed design and external legal/retention authorization.
+The broker exposes a guarded teardown (`/v1/destroy`): given a deployment id it
+DISCOVERS and deletes only that deployment's own labelled resources
+(server/volume/firewall/DNS) — it cannot be pointed at a foreign resource id, and no
+primitive both un-protects and deletes (P1-D). It does not free Hetzner Backups, the
+offsite pg_dump, or the box secret bundle — those follow the retention / deletion
+contract, so a teardown is not a GDPR erasure. Mission Control's operator-triggered
+executor (the approval record, the tombstone, and the execute endpoint that calls
+`/v1/destroy`) is specified in
+`docs/archive/specs/2026-07-22-fleet-decommission-and-teardown-executor-design.md` and
+is not yet wired.
 
 ## Host responsibilities
 

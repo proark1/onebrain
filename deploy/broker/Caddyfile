@@ -14,7 +14,7 @@
         }
     }
 
-    @broker_routes path /health /v1/provision
+    @broker_routes path /health /v1/provision /v1/destroy
     handle @broker_routes {
         reverse_proxy 127.0.0.1:8181
     }
