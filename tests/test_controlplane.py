@@ -1278,6 +1278,56 @@ def test_live_gate_still_rejects_a_candidate_whose_dev_signature_is_invalid():
     assert plan.reason == "release_unsigned"
 
 
+def test_release_gate_may_cross_a_migration_without_a_prerecorded_backup():
+    """A freshly-provisioned release gate has no backup yet (backups are only
+    produced by update.sh on apply, then materialized from the box's report). It
+    must still be allowed to verify a migration-crossing release -- otherwise the
+    gate can never verify ANY release that carries a schema migration, since it
+    cannot apply one until it verifies it. update.sh takes its own inline
+    pre-migration backup, and a gate a bad migration breaks is re-provisioned.
+    Regression for the first-ever migration-crossing candidate."""
+    gate = _live_gate_deployment(current_migration="0034")
+    release = ReleaseManifest(
+        version="1.1", git_sha="a", modules={"onebrain-api": "1.1"},
+        migration_from="0034", migration_to="0035")   # crosses the schema
+    modules = [DeploymentModule("gate_new", "onebrain-api", "1.0")]
+    promotion = ReleasePromotion(
+        release_version="1.1", state="dev_failed",
+        gate_deployment_id="gate_new", dev_signature="ZGV2")
+
+    plan = compute_update_plan(
+        "gate_new", "1.1",
+        deployment=gate, release=release, modules=modules,
+        latest_backup=lambda: None,          # NO backup has ever been recorded
+        require_signed_release=True,
+        promotion=promotion, gate_deployment_id="gate_new",
+        development_signature_valid=True,
+    )
+
+    assert plan.reason != "backup_required_for_schema_update"
+    assert plan.allowed is True
+
+
+def test_migration_backup_gate_still_applies_to_non_gate_deployments():
+    """The gate exemption must NOT leak: a non-gate box crossing a migration with
+    no successful backup stays blocked (customer boxes + MC's own self-update)."""
+    dep = _live_gate_deployment(
+        id="dep_cust", is_release_gate=False, current_migration="0034")
+    release = ReleaseManifest(
+        version="1.1", git_sha="a", modules={"onebrain-api": "1.1"},
+        migration_from="0034", migration_to="0035")
+    modules = [DeploymentModule("dep_cust", "onebrain-api", "1.0")]
+
+    plan = compute_update_plan(
+        "dep_cust", "1.1",
+        deployment=dep, release=release, modules=modules,
+        latest_backup=lambda: None,
+    )
+
+    assert plan.allowed is False
+    assert plan.reason == "backup_required_for_schema_update"
+
+
 def test_success_apply_recheck_blocks_midflight_yank():
     store = _store()
     store.create_release(ReleaseManifest(version="2026.07.16", git_sha="a", modules=dict(_MODULES)))
