@@ -118,6 +118,44 @@ migration, never a rolling-startup adjustment.
   finish in `execution_disabled`; no MC route or broker action deletes a
   customer deployment.
 
+## Host image reclaim
+
+MC is deployed by hand — `docker compose … --force-recreate` against an edited
+`/opt/onebrain/images.override.yml` — because it only accepts production-signed
+releases on the auto path. That manual path never runs `update.sh`'s immediate
+post-update prune, so every deploy leaves a superseded api+admin-ui+workers image
+trio (~3.6 GB) behind, and the daily `onebrain-host-maintenance` sweep only reclaims
+images older than 168 h — too lax for MC's cadence. Left unattended the root disk
+fills and the next `--force-recreate` wedges on "no space left on device".
+
+A dedicated MC-only unit, `onebrain-mc-image-prune.timer`, reruns the **same**
+vetted, rollback-safe `onebrain-host-maintenance.sh` prune every 6 h with a short
+48 h retention. It protects every image named by the compose file, both image
+overrides, the last applied release, and every running/stopped container, and never
+force-removes — so it can only reclaim genuinely superseded images. Newly rendered
+MC boxes enable it at first boot. Tune the retention/cadence in the unit files under
+`deploy/box/` if MC's deploy rate changes.
+
+**Install on an already-running MC** (the units bake into cloud-init, so an existing
+box needs them written once over its SSH/root access; the prune script itself is
+pulled from the running API image, so only the two unit files are needed). Substitute
+MC's real compose project (e.g. `onebrain-mc`) for `{{COMPOSE_PROJECT}}` in the
+`.service`:
+
+```bash
+# write /etc/systemd/system/onebrain-mc-image-prune.{service,timer} from deploy/box/
+systemctl daemon-reload
+systemctl enable --now onebrain-mc-image-prune.timer
+# verify it actually reclaims (the log must end in "complete", never "holding"):
+systemctl start onebrain-mc-image-prune.service
+journalctl -u onebrain-mc-image-prune.service -n 20 --no-pager
+df -h /
+```
+
+A `holding` line means the script's data-volume gate did not pass; investigate the
+`/mnt/onebrain-data` mount before relying on the timer. Always `df -h /` before a
+manual MC deploy regardless.
+
 See [Mission Control architecture](mission-control-architecture.md) and the
 [deployment guide](deployment.md) for the full boundaries, then complete the
 [production activation runbook](production-activation-runbook.md) before

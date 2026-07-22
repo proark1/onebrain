@@ -826,6 +826,70 @@ def test_operator_receives_no_drive_mount_or_backup_surface():
     assert "scsi-0HC_Volume_*" in assets["/opt/onebrain/onebrain-data-volume.sh"][1]
 
 
+def test_operator_box_gets_frequent_rollback_safe_image_prune():
+    """Mission Control's manual deploy path skips update.sh's immediate prune, so the
+    operator box (and only it) installs a frequent timer that reruns the SAME vetted
+    host-maintenance prune with a short retention."""
+    op_assets = _asset_entries(render_cloud_init(_inputs(_ONEBRAIN, role="operator")))
+    op_first_boot = _first_boot_section(render_cloud_init(_inputs(_ONEBRAIN, role="operator")))
+
+    for path in (
+        "/etc/systemd/system/onebrain-mc-image-prune.service",
+        "/etc/systemd/system/onebrain-mc-image-prune.timer",
+    ):
+        assert op_assets[path][0] == "0644"
+
+    service = op_assets["/etc/systemd/system/onebrain-mc-image-prune.service"][1]
+    assert "Type=oneshot" in service
+    assert "User=root" in service
+    assert "{{COMPOSE_PROJECT}}" not in service
+    assert "--project-name onebrain-dep_a" in service
+    # Reuses the daily maintenance script (never a second copy of the prune logic),
+    # copied fresh from the running API image to a private /run path.
+    assert (
+        "onebrain-api:/app/deploy/box/onebrain-host-maintenance.sh "
+        "/run/onebrain-mc-image-prune.sh"
+    ) in service
+    # Shorter retention + more frequent cadence than the 168h daily sweep.
+    assert "MAINTENANCE_IMAGE_MIN_AGE_HOURS=48" in service
+    assert "MAINTENANCE_BUILD_CACHE_MIN_AGE_HOURS=48" in service
+    # The verifier must be found at its real path, not resolved as a sibling of the
+    # /run copy (which would make the script hold and silently skip all cleanup).
+    assert "ONEBRAIN_DATA_VOLUME_VERIFY_SCRIPT=/opt/onebrain/onebrain-data-volume.sh" in service
+
+    timer = op_assets["/etc/systemd/system/onebrain-mc-image-prune.timer"][1]
+    assert "OnUnitActiveSec=6h" in timer
+    assert "WantedBy=timers.target" in timer
+
+    assert "systemctl enable --now onebrain-mc-image-prune.timer" in op_first_boot
+
+
+def test_customer_box_never_gets_the_mc_image_prune_units():
+    """The frequent prune is operator-only; customer/gate boxes prune via update.sh."""
+    assets = _asset_entries(render_cloud_init(_inputs(_ONEBRAIN, role="customer")))
+    first_boot = _first_boot_section(render_cloud_init(_inputs(_ONEBRAIN, role="customer")))
+    assert "/etc/systemd/system/onebrain-mc-image-prune.service" not in assets
+    assert "/etc/systemd/system/onebrain-mc-image-prune.timer" not in assets
+    assert "onebrain-mc-image-prune" not in first_boot
+
+
+def test_operator_image_prune_units_compact_round_trip():
+    """The size compactor cannot alter the operator-only prune units' behavior."""
+    from app.provisioning.hetzner import render as R
+
+    assets = _asset_entries(render_cloud_init(_inputs(_ALL, role="operator")))
+    assert assets["/etc/systemd/system/onebrain-mc-image-prune.timer"][1] == R._compact_host_asset(
+        "/etc/systemd/system/onebrain-mc-image-prune.timer",
+        R._read_box_file("onebrain-mc-image-prune.timer"),
+    )
+    service_source = R._read_box_file("onebrain-mc-image-prune.service").replace(
+        "{{COMPOSE_PROJECT}}", "onebrain-dep_a"
+    )
+    assert assets["/etc/systemd/system/onebrain-mc-image-prune.service"][1] == R._compact_host_asset(
+        "/etc/systemd/system/onebrain-mc-image-prune.service", service_source
+    )
+
+
 def test_cloud_init_uses_the_preflighted_callback_url_template():
     ci = render_cloud_init(_inputs(
         _ONEBRAIN,
