@@ -18,6 +18,9 @@ test, and release rules live there, not in this directory.
   operational safety.
 - [Mission Control standup](mission-control-standup.md) — configuration and
   access rules for the MC host.
+- [Updating Mission Control](mission-control-update-runbook.md) — what merging
+  to `main` does automatically, where a person is required, and why an MC
+  rollout reports a timeout after succeeding.
 - [Broker host bundle](../deploy/broker/README.md) — private Hetzner token
   custody, mutual TLS, and host activation checks.
 - [Release promotion](release-promotion-activation.md) — dev-gate validation
