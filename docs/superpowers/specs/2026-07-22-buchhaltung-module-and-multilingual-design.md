@@ -74,16 +74,20 @@ nur über eine `AppInstallation` freigeschaltet. Genau diese Vorlage nutzt Buchh
 1. **Katalog** — `app/provisioning/bundles.py`: `"buchhaltung"` in `OPTIONAL_MODULE_IDS`,
    ein `ProvisioningModule(… modules=())`, ein `BUCHHALTUNG_APP` + Purposes (Vorlage:
    `KPI_APP`/`KPI_PURPOSES`).
-2. **App-Registry** — `"buchhaltung"` in `app/platform/base.py` `APP_IDS` + Purposes
-   (`accounting_read`/`accounting_ingest`/`accounting_configure`); dazu die Frontend-Liste in
-   `onebrain-web/src/components/spaces-panel.tsx`.
+2. **App-Registry + Install-Validierung** — `"buchhaltung"` in `app/platform/base.py` `APP_IDS`
+   + Purposes (`accounting_read`/`accounting_ingest`/`accounting_configure`).
+   `validate_installation` prüft `APP_IDS`+`PURPOSES`, also müssen die Platform-Install-API und
+   die Frontend-Liste (`onebrain-web/src/components/spaces-panel.tsx`) die neue app_id + Purposes
+   ebenfalls kennen — sonst schlägt das manuelle Aktivieren über das Spaces-Panel fehl.
 3. **Gate-Router** — neuer `app/routers/accounting.py`, gemountet neben `kpis`/`ai_employees`
    in `app/main.py`, 403 ohne Installation.
 4. **MC-Auswahl** — schon verdrahtet: die Provisioning-Anfrage trägt `module_ids`, es gibt
    einen Katalog-Endpoint (`GET /api/provisioning/modules`) und die Auswahl-UI im Next.js
    `operator-panel.tsx` (Provisioning-Tab, datengetrieben aus dem Katalog → Haken erscheint
-   automatisch). **Einzige Pflichtänderung:** `CustomerProvisionCreate.module_ids`
-   `max_length` 4 → 5 (`app/routers/provisioning.py`).
+   automatisch). **Pflichtänderungen:** (a) `CustomerProvisionCreate.module_ids` `max_length`
+   4 → 5 (`app/routers/provisioning.py`); (b) die neue app_id auch im **Dev-Gate-Modulset**
+   aufnehmen, damit die Buchhaltung am Development-Gate ebenso verfügbar und testbar ist wie bei
+   Kunden — ein bloßer `max_length`-Bump lässt das Dev-Gate sonst außen vor.
 
 **Aus für Bestandskunden = automatisch:** Wer `buchhaltung` nicht in `selected_module_ids`
 hat, bekommt keine `AppInstallation` → das Gate liefert 403. Keine Migration schaltet
@@ -104,6 +108,11 @@ malware-saubere Datei existiert" → Extraktion anstoßen.**
   (nutzt Malware-Quarantäne + Speicher), Kategorie automatisch `buchhaltung`, und
   referenziert dann die `drive_file_id` im Turn.
 
+**Voraussetzung für beide Wege:** die `buchhaltung`-Zugriffsgruppe muss im Space existieren und
+der hochladende Nutzer Mitglied sein — sonst schlägt die Ablage/Extraktion fehl. Der
+Installations-/Phase-0-Bootstrap muss die Gruppe **und** die Mitgliedschaften der Finanz-Nutzer
+mit anlegen, nicht nur die `AppInstallation`.
+
 **Malware-Quarantäne bleibt zwingend** (`app/drive/…`): extrahiert wird erst nach sauberem
 Scan — Downloads und Index sind bis dahin gesperrt (HTTP 423). Der App-Layer kann kein
 „sauber"-Urteil fälschen (fenced DB-Funktion).
@@ -123,7 +132,8 @@ Scan — Downloads und Index sind bis dahin gesperrt (HTTP 423). Der App-Layer k
   - `accounting_line_items` — die Positionen.
 
   Das ist der heute fehlende Speicherort — Drive-Revisionen halten nur Blob-Zeiger, Chunk-Meta
-  sind Zugriffslabels.
+  sind Zugriffslabels. Die Migration muss außerdem `REQUIRED_ALEMBIC_REVISION` in
+  `app/db/schema.py` auf die neue Revision bumpen, sonst schlägt der CI-Migrations-Gate fehl.
 
 - **Pluggable `InvoiceExtractor` — reines Vision-Modell [neu, Backend-Pfad vorhanden].**
   Schema nach **§14 UStG-Pflichtangaben**, für Ein- & Ausgang: Aussteller/Lieferant &
@@ -135,12 +145,17 @@ Scan — Downloads und Index sind bis dahin gesperrt (HTTP 423). Der App-Layer k
     (`app/ai_employees/backends/litellm.py`) schon verdrahtet, nur ungenutzt — wir aktivieren
     ihn zusammen mit einem **multimodalen Message-Builder** (Bild → Bildblock; heute sind alle
     Message-Builder text-only, `dict[str, str]`).
+  - **PDF-Belege:** werden vor dem Modell **seitenweise zu Bildern gerastert** (PyMuPDF ist
+    bereits als Abhängigkeit vorhanden) und dann als Bildblöcke übergeben — so deckt der
+    reine-Vision-Pfad auch das versprochene PDF-Hochladen ab.
   - **Kein OCR — das Bild geht direkt ans Modell.** Default `gemini-2.5-flash`. Modell
-    austauschbar global oder über ein Setting nur für die Rechnungs-Bilderkennung. Der
-    Operator wählt den Anbieter (Standard oder EU-souverän, vgl. `app/llm/tiered.py`
-    Sovereign-Routing) — so bleibt bei „confidential"-Belegen die **Datenresidenz steuerbar**.
-    Konsequenz: ein bilderkennungsfähiges Modell muss konfiguriert sein; das gewählte Modell
-    muss in `app/llm/pricing.py` eingetragen werden, sonst Kostenwert `None`.
+    austauschbar global oder über ein Setting nur für die Rechnungs-Bilderkennung.
+    **Wichtig:** Der Extraktor ist ein neuer Aufrufpfad und muss die Sovereign-Routing-Regel
+    (`app/llm/tiered.py`, `sovereign_min_tier`) für „confidential"-Belege **selbst erzwingen**
+    bzw. fail-closed sein, wenn kein zugelassenes Modell verfügbar ist — ein bloßer Verweis auf
+    tiered.py steuert die Datenresidenz nicht automatisch. Konsequenz: ein bilderkennungsfähiges
+    Modell muss konfiguriert sein; das gewählte Modell muss in `app/llm/pricing.py` eingetragen
+    werden, sonst Kostenwert `None`.
 
 - **Übersicht = strukturierte Abfragen [neu].** Die Modul-Übersicht kommt aus SQL auf die
   Belegtabellen — USt je Quartal (Vorsteuer aus Eingang, Umsatzsteuer aus Ausgang),
@@ -156,7 +171,9 @@ Beide sind im Code „vorverdrahtet" — die Bausteine liegen bereit und sind nu
 1. **Bild-Anhang im Chat [neu, Transport vorhanden].** Der Turn-Contract
    (`AiEmployeeTurnCreate`) ist heute reiner Text (`additionalProperties: false`). Wir
    erweitern ihn um eine `drive_file_id`-Referenz und bauen den multimodalen Message-Builder.
-   Der LiteLLM-Transport trägt Bildblöcke bereits; das Standardmodell ist multimodal.
+   Der LiteLLM-Transport trägt Bildblöcke bereits; das Standardmodell ist multimodal. Der neue
+   `drive_file_id`-Anhang muss in den **Idempotency-Key-Hash** des Turns einfließen, sonst gibt
+   ein Retry mit anderem Anhang (aber gleichem Key) das alte Ergebnis zurück.
 
 2. **Governed Abfrage-Tool [neu, Tool-Pfad vorhanden].** Die Runtime
    (`app/ai_employees/runtime.py`) deaktiviert Tools ausdrücklich nur „until a governed
@@ -183,12 +200,17 @@ weder Bild-Upload noch Abfrage-Tool — sie bleibt die normale Finance-Managerin
   Beleg-Bild die Box Richtung Modell. Der Compliance-Hebel ist damit die **Modellwahl**
   (EU-souverän) + „confidential"-Klassifizierung + DPIA-Warnung.
 - **DPIA warnt, sperrt nicht.** Persistentes Banner „DPIA für Buchhaltung noch offen" +
-  Audit-Eintrag, aber kein harter Block. Reversibel und nachvollziehbar. (Weicht bewusst vom
-  harten `drive_policy_mode`-Gate ab, das Indexierung sonst bis zur unterschriebenen DPIA
-  sperrt.)
-- **GoBD ↔ DSGVO-Spannung [Kompromiss, kein Blocker].** Steuerbelege verlangen 10 Jahre
-  unveränderbare Aufbewahrung (§147 AO), die DSGVO das Löschen. Lösung: Buchhaltungsdatensätze
-  an das vorhandene Legal-Hold-Gate hängen, damit eine Löschung Steuerbelege nicht bricht.
+  Audit-Eintrag, aber kein harter Block. **Achtung — eine reine UI-Warnung reicht nicht:** die
+  Drive-Publikation indexiert heute nur bei `drive_policy_mode=storage_and_indexing`. Für die
+  „warnen statt sperren"-Zusage muss der Accounting-Indexpfad diesen Gate **modul-scoped für die
+  `buchhaltung`-Kategorie überschreiben** (mit Audit-Eintrag) — sonst passiert trotz Warnung
+  keine Indexierung. Reversibel und nachvollziehbar.
+- **GoBD ↔ DSGVO-Spannung [Kompromiss, kein Blocker].** Rechnungen/Buchungsbelege verlangen
+  unveränderbare Aufbewahrung — **seit 2025 8 Jahre** (durch das Vierte Bürokratieentlastungs-
+  gesetz von 10 auf 8 gesenkt, §147 AO; andere Unterlagen wie Bücher/Jahresabschlüsse bleiben
+  10 Jahre), die DSGVO das Löschen. Lösung: die Aufbewahrungsfrist als konfigurierbaren Wert je
+  Belegart modellieren und Buchhaltungsdatensätze an das vorhandene Legal-Hold-Gate hängen,
+  damit eine Löschung Steuerbelege nicht vorzeitig bricht.
 
 ---
 
@@ -218,8 +240,10 @@ Fundament-Baustein, der vor der Buchhaltungs-UI kommt, damit die gleich zweispra
 - **Sprache als Provisioning-Einstellung [neu, klein].** Ein `default_locale`-Feld
   (`de`/`en`, Default `de`) an der Provisioning-Anfrage — fließt denselben Weg wie
   `module_ids`: Bootstrap-Deskriptor (`app/provisioning/customer_bootstrap.py`) → Box-Config →
-  Box setzt die Standardsprache des Kontos. In der MC-Konsole ein kleines Sprach-Dropdown
-  neben den Modul-Haken (`operator-panel.tsx`).
+  Reconcile **persistiert `default_locale` am Konto im Platform-Datenmodell** (neue Spalte;
+  dauerhafte, abfragbare Quelle für die Konsole — nicht nur ein Box-Env-Wert, der beim nächsten
+  Render verloren ginge). In der MC-Konsole ein kleines Sprach-Dropdown neben den Modul-Haken
+  (`operator-panel.tsx`).
 - **Leichte i18n-Schicht im Frontend [neu, Aufwand].** Kataloge `de.ts`/`en.ts`, ein
   `LocaleProvider` + `t()`-Hook, `<html lang>` dynamisch, locale-bewusstes `Intl` (Datum,
   Zahlen, EUR — heute meist `undefined`/hartes `"en"`). Der Löwenanteil ist das mechanische
