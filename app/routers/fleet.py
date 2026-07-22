@@ -149,6 +149,19 @@ def ingest_heartbeat(body: AnyFleetHeartbeat, authorization: str = Header(defaul
         from app.routers.operator import dispatch_waiting_development_candidate
 
         dispatch_waiting_development_candidate(control, actor=f"fleet:{body.deployment_id}")
+    # Green main -> Mission Control: when operator self-deploy is enabled, drive MC's OWN
+    # box toward the newest development-verified release. Fired ONLY on the GATE's heartbeat
+    # (where a candidate reaches dev_verified) or MC's OWN heartbeat (liveness / retry) —
+    # never on a customer heartbeat — which keeps it cheap and narrows the check-then-create
+    # window. Idempotent, and a no-op while dormant (the default).
+    settings = get_settings()
+    if getattr(settings, "operator_auto_deploy_enabled", False) and (
+        (deployment and deployment.is_release_gate)
+        or body.deployment_id == (getattr(settings, "deployment_id", "") or "")
+    ):
+        from app.routers.operator import dispatch_operator_self_rollout
+
+        dispatch_operator_self_rollout(control, settings, actor=f"fleet:{body.deployment_id}")
     # ADVISORY fast-path only (B8): the AUTHORITATIVE channel is the box's own GET
     # /desired-state below. Behaviour-inert while emission is off — env is None when
     # fleet_desired_state_private_key is unset, so config stays {} byte-for-byte with

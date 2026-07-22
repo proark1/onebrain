@@ -707,7 +707,7 @@ class PostgresControlPlaneStore:
                 (active := self.list_active_rollout(deployment_id))
                 and active.id != ignore_rollout_id
             ),
-            **release_promotion_plan_context(release, promotion),
+            **release_promotion_plan_context(release, promotion, deployment),
         )
 
     def start_rollout(self, rollout: RolloutRun) -> RolloutRun:
@@ -926,7 +926,7 @@ class PostgresControlPlaneStore:
                 promotion=promotion,
                 gate_deployment_id=gate_deployment_id,
                 active_rollout=active_rollout,
-                **release_promotion_plan_context(release, promotion),
+                **release_promotion_plan_context(release, promotion, deployment),
             )
             if not plan.allowed:
                 raise ValueError(f"rollout completion blocked: {plan.reason}")

@@ -244,20 +244,30 @@ def verify_bytes(envelope_bytes, **kwargs) -> list:
     return verify_desired_state(envelope, **kwargs)
 
 
-def verify_desired_state_multi(envelope: dict, *, desired_state_public_keys: list, **kwargs) -> list:
+def verify_desired_state_multi(envelope: dict, *, desired_state_public_keys: list,
+                               release_public_keys: list = None, **kwargs) -> list:
     """P5-02 rotation-tolerant wrapper (parity with app.trust.envelope): try each
-    candidate wrapper public key, return [] on the FIRST acceptance, else the error
-    list from the LAST attempt. An empty key list falls back to a single '' key
-    (fails envelope_signature_invalid — fail-closed). The single-key
-    verify_desired_state above is unchanged."""
-    keys = [k for k in (desired_state_public_keys or []) if k and k.strip()]
-    if not keys:
-        keys = [""]
+    candidate WRAPPER public key AND each candidate RELEASE public key, return [] on the
+    FIRST fully-accepted combination, else the error list from the LAST attempt. An empty
+    wrapper set falls back to a single '' key (fails envelope_signature_invalid —
+    fail-closed); an empty release set falls back to the single release_public_key_b64 in
+    kwargs, so a box carrying only the legacy singular UPDATE_RELEASE_PUBLIC_KEY behaves
+    EXACTLY as before. The single-key verify_desired_state above is unchanged. The release
+    set lets Mission Control's OWN box trust BOTH the production and CI development keys;
+    customer boxes keep the singular production key untouched."""
+    wrapper_keys = [k for k in (desired_state_public_keys or []) if k and k.strip()]
+    if not wrapper_keys:
+        wrapper_keys = [""]
+    release_keys = [k for k in (release_public_keys or []) if k and k.strip()]
+    if not release_keys:
+        release_keys = [kwargs.get("release_public_key_b64", "")]
     errors = ["envelope_signature_invalid"]
-    for key in keys:
-        errors = verify_desired_state(envelope, desired_state_public_key_b64=key, **kwargs)
-        if not errors:
-            return []
+    for release_key in release_keys:
+        attempt_kwargs = {**kwargs, "release_public_key_b64": release_key}
+        for wrapper_key in wrapper_keys:
+            errors = verify_desired_state(envelope, desired_state_public_key_b64=wrapper_key, **attempt_kwargs)
+            if not errors:
+                return []
     return errors
 
 
@@ -374,9 +384,23 @@ def _desired_state_public_keys() -> list:
     return [k.strip() for k in csv.split(",") if k.strip()]
 
 
+def _release_public_keys() -> list:
+    """The accepted RELEASE-key SET: the csv UPDATE_RELEASE_PUBLIC_KEYS, falling back to
+    the singular UPDATE_RELEASE_PUBLIC_KEY (every existing box). Mission Control's own box
+    lists BOTH the production and CI development keys here so it can apply a dev-signed
+    self-update; a customer box lists only the production key. Empty entries dropped."""
+    csv = os.environ.get("UPDATE_RELEASE_PUBLIC_KEYS", "").strip()
+    if not csv:
+        csv = os.environ.get("UPDATE_RELEASE_PUBLIC_KEY", "").strip()
+    return [k.strip() for k in csv.split(",") if k.strip()]
+
+
 def _anchors() -> dict:
     return {
         "desired_state_public_keys": _desired_state_public_keys(),
+        "release_public_keys": _release_public_keys(),
+        # Retained for the single-key floor-bump path (revocation stays production-only)
+        # and as the multi wrapper's fallback when no release SET is configured.
         "release_public_key_b64": os.environ.get("UPDATE_RELEASE_PUBLIC_KEY", ""),
         "expected_deployment_id": os.environ.get("ONEBRAIN_DEPLOYMENT_ID", ""),
         "registry_allowlist": parse_registry_allowlist(os.environ.get("UPDATE_REGISTRY_ALLOWLIST", "")),

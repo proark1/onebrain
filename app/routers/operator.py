@@ -29,6 +29,7 @@ from app.controlplane.base import (
     TEARDOWN_REQUEST_EXECUTION_DISABLED,
     TEARDOWN_REQUEST_EXPIRED,
     UpdatePlan,
+    is_operator_self_deployment,
 )
 from app.config import get_settings
 from app.deps import (
@@ -64,6 +65,7 @@ from app.controlplane.promotion import (
 )
 from app.controlplane.reconcile_scheduler import reconcile_once
 from app.controlplane.migration_lint import classify_release
+from app.trust.envelope import compare_versions
 from app.trust.release import (
     parse_registry_allowlist,
     release_signature_fields,
@@ -1879,6 +1881,78 @@ def dispatch_waiting_development_candidate(store, *, actor: str = "mission-contr
     ]
     pending.sort(key=lambda promotion: (promotion.created_at, promotion.release_version))
     return _dispatch_development_candidate(store, pending[0].release_version, actor=actor) if pending else None
+
+
+def _newest_operator_self_target(store) -> ReleaseManifest | None:
+    """The highest-version release the development gate has VERIFIED (dev_verified or
+    later, never yanked) — the release Mission Control's own box should be running."""
+    best: ReleaseManifest | None = None
+    for promotion in store.list_release_promotions():
+        if promotion.state not in {"dev_verified", "customer_approved"}:
+            continue
+        release = store.get_release(promotion.release_version)
+        if release is None or release.status == "yanked":
+            continue
+        if best is None:
+            best = release
+            continue
+        comparison = compare_versions(release.version, best.version)
+        if comparison is not None and comparison > 0:
+            best = release
+    return best
+
+
+def dispatch_operator_self_rollout(store, settings, *, actor: str = "mission-control") -> RolloutRun | None:
+    """Green main -> Mission Control. When operator self-deploy is enabled, open ONE
+    pull rollout that moves MC's OWN box to the newest development-VERIFIED release, so a
+    merged, gate-verified change reaches the control plane without an operator hand-
+    signing and hand-deploying it. Deliberately conservative and idempotent:
+      * no-op unless is_operator_self_deployment() holds for MC's own deployment row;
+      * one self-update at a time (skips while any rollout is active);
+      * only rolls FORWARD (target strictly newer than current_version);
+      * never re-attempts a target that already failed — a newer release supersedes it,
+        so a genuinely bad build cannot hot-loop the control plane;
+      * defers to the shared plan gate (operator_self path): a migration-crossing
+        release, for instance, still needs a fresh backup before it can proceed.
+    Customer delivery is untouched: this only ever targets MC's own deployment id, and
+    only with the CI development signature it already trusts for its own box."""
+    if not getattr(settings, "operator_auto_deploy_enabled", False):
+        return None
+    deployment_id = (getattr(settings, "deployment_id", "") or "").strip()
+    if not deployment_id:
+        return None
+    deployment = store.get_deployment(deployment_id)
+    if deployment is None or not is_operator_self_deployment(deployment, settings):
+        return None
+    if store.list_active_rollout(deployment_id):
+        return None
+    candidate = _newest_operator_self_target(store)
+    if candidate is None:
+        return None
+    if deployment.current_version:
+        comparison = compare_versions(candidate.version, deployment.current_version)
+        if comparison is None or comparison <= 0:
+            return None  # already on the tip, or an incomparable version — never roll
+    if any(
+        rollout.target_version == candidate.version and rollout.status == "failed"
+        for rollout in store.list_rollouts(deployment_id)
+    ):
+        return None  # a prior attempt at this exact target failed; wait for a newer release
+    if not store.plan_update(deployment_id, candidate.version).allowed:
+        return None
+    rollout = store.start_rollout(RolloutRun(
+        id=f"roll_mc_{uuid4().hex[:12]}",
+        deployment_id=deployment_id,
+        target_version=candidate.version,
+        status="pending",
+        started_by=f"operator-self:{actor}",
+        notes="operator self-deploy: development-verified tip",
+    ))
+    # Offer it through the SAME signed desired-state pull path every Hetzner box uses.
+    # MC converges on its own envelope; the reconcile tick resolves the terminal state
+    # from MC's self-heartbeat (version + migration + health).
+    offer_pull_target(store, rollout, target_source="operator_self")
+    return rollout
 
 
 @router.post("/release-candidates", response_model=ReleaseCandidateOut)
