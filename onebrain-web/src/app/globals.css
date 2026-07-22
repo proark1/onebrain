@@ -184,9 +184,19 @@ pre {
   padding: 0 7px 19px;
 }
 
+/*
+ * Flex column, not grid: the bottom-anchored Account group below relies on
+ * `margin-top: auto` absorbing the free space, and an auto margin only does
+ * that in a flex container. As a grid with `align-content: start` the row
+ * tracks were content-sized, so the auto margin had no free space to take and
+ * the rule was dead -- every nav group packed to the top and the rest of the
+ * column was left empty. That reads as "we ran out of items" on the operator
+ * surface especially, which carries 5 entries where a customer box carries 8.
+ */
 .consoleNavGroups {
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
   gap: 14px;
   min-height: 0;
 }
@@ -1059,6 +1069,24 @@ button:disabled,
 
 .panelHead h2 {
   font-size: 16px;
+}
+
+/*
+ * Sits directly under the panel title, so it pulls up out of the panel's 16px
+ * grid gap to read as part of the heading block rather than as body content.
+ * Capped at a comfortable measure -- these run wide otherwise on a 1440 screen.
+ */
+.panelIntro {
+  max-width: 78ch;
+  margin: -8px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.panelIntro strong {
+  color: var(--ink);
+  font-weight: 680;
 }
 
 .panelActions {
