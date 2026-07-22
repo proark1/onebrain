@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.deps import (
@@ -28,8 +26,6 @@ from app.provisioning.customer_bootstrap import (
 from app.routers import ai_employees, assistant, auth, chat, conversations, documents, drive, fleet, jobs, kpis, operator, platform, privacy, provisioning, rollouts, service, session, user_management
 from app.seed import seed_if_empty
 from app.users.seed import seed_admin_from_env, seed_users_if_empty
-
-STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _route_template(request) -> str:
@@ -249,9 +245,6 @@ def create_app() -> FastAPI:
             logging.getLogger("onebrain").info("Retention sweep scheduler enabled.")
     except Exception as exc:  # never fatal
         logging.getLogger("onebrain").warning("Retention sweep scheduler not started: %s", exc)
-
-    if settings.legacy_static_ui_enabled:
-        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.get("/", include_in_schema=False)
     def index():

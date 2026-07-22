@@ -380,6 +380,7 @@ export function UsersPanel() {
         <>
           <Panel
             eyebrow="Directory"
+            intro="People who can sign in to this one customer's box. Mission Control acts on that box remotely, so a change here reaches real users of that deployment — it is not a list of Mission Control operators."
             title={selectedDeployment.customer_name || selectedDeployment.deployment_id}
             count={directory?.users.length ?? 0}
             actions={
