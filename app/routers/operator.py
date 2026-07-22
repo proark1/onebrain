@@ -2319,7 +2319,15 @@ def _development_gate_blockers(store, gate: CustomerDeployment) -> list[str]:
     return list(dict.fromkeys(blockers))
 
 
-def _is_live_gate_replacement(deployment, current) -> bool:
+# Provisioning-run states that mark a gate attempt dead. A dispatch/callback
+# failure (including a broker fleet-cap rejection) leaves the CustomerDeployment
+# row "active" and moves only its ProvisioningRun terminal, so the newest run --
+# not deployment.status -- is the authoritative liveness signal. This is
+# app.provisioning.runs.TERMINAL_STATUSES minus the success state.
+_DEAD_PROVISION_RUN_STATUSES = frozenset({"failed", "dispatch_failed", "cancelled"})
+
+
+def _is_live_gate_replacement(deployment, current, newest_run_status: str) -> bool:
     """Whether a gate-identity row is a live replacement competing for the slot.
 
     The provisioning guard exists to stop a second billed box being created while
@@ -2328,41 +2336,50 @@ def _is_live_gate_replacement(deployment, current) -> bool:
     otherwise wedge gate provisioning permanently. A row is NOT live when it is:
 
     - the current designated gate itself;
-    - past the 'active' state -- a provision attempt is created 'active'
-      (CustomerDeployment default) and only leaves it once it has failed, so any
-      other status is a dead attempt;
-    - the bare, unsuffixed base id while a suffixed gate is already designated.
-      Replacements always take a '<base>-<suffix>' id, so a lingering bare-base
+    - the bare, unsuffixed base id while a suffixed gate is already designated --
+      replacements always take a '<base>-<suffix>' id, so a lingering bare-base
       row beside a designated gate is a pre-replacement legacy artifact, not an
-      in-flight provision.
+      in-flight provision;
+    - a dead provision attempt. The row is created "active" and its outcome lands
+      on the ProvisioningRun, not the deployment status -- a dispatch/callback
+      failure leaves the row "active" -- so a terminally failed newest run marks
+      it dead. A row that left "active" by any other path is dead too.
     """
     if current is not None and deployment.id == current.id:
         return False
+    if current is not None and deployment.id == DEVELOPMENT_GATE_DEPLOYMENT_ID:
+        return False
     if deployment.status != "active":
         return False
-    if current is not None and deployment.id == DEVELOPMENT_GATE_DEPLOYMENT_ID:
+    if newest_run_status in _DEAD_PROVISION_RUN_STATUSES:
         return False
     return True
 
 
-def _development_gate_identity(store) -> tuple[str, str]:
+def _development_gate_identity(store, run_store) -> tuple[str, str]:
     """Return a fixed first gate identity or a server-generated replacement one.
 
     A second *live* undesignated gate is refused rather than creating another
     billed server on retries. Replacements use a unique deployment ID, which
     gives the Hetzner renderer a distinct compose project and DNS label beside
-    the old gate. Dead rows -- a failed attempt, or a superseded legacy gate the
-    release-gate marker has since moved off of -- are ignored so they cannot
-    wedge provisioning: there is no delete API to clear them by hand.
+    the old gate. Dead rows -- a failed attempt (its newest provisioning run is
+    terminally failed), or a superseded legacy gate the release-gate marker has
+    since moved off of -- are ignored so they cannot wedge provisioning: there is
+    no delete API to clear them by hand.
     """
     current = store.get_release_gate()
+
+    def _newest_run_status(deployment_id: str) -> str:
+        runs = run_store.list_runs(deployment_id=deployment_id)
+        return runs[0].status if runs else ""
+
     live = [
         deployment for deployment in store.list_deployments()
         if (
             deployment.id == DEVELOPMENT_GATE_DEPLOYMENT_ID
             or deployment.id.startswith(DEVELOPMENT_GATE_DEPLOYMENT_ID + "-")
         )
-        and _is_live_gate_replacement(deployment, current)
+        and _is_live_gate_replacement(deployment, current, _newest_run_status(deployment.id))
     ]
     if live:
         raise ValueError("A development gate replacement already exists.")
@@ -2526,7 +2543,7 @@ def provision_development_gate(
         raise HTTPException(status_code=409, detail="Development gate provisioning requires the Hetzner backend.")
     store = get_control_plane_store()
     try:
-        deployment_id, account_id = _development_gate_identity(store)
+        deployment_id, account_id = _development_gate_identity(store, get_provisioning_run_store())
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     from app.provisioning.bundles import resolve_module_composition
