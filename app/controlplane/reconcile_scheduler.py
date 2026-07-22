@@ -97,6 +97,17 @@ def _reconcile_leadership(settings):
                 conn.close()
 
 
+def _operator_self_deployment_id(settings) -> str:
+    """MC's own deployment id when operator self-deploy is enabled, else "" — the pull
+    reconcile then also converges MC's own self-update rollout. Dormant (returns "")
+    unless BOTH operator_mode and operator_auto_deploy_enabled are set, so a customer
+    box or an MC with the feature off drives the tick exactly as before."""
+    if not (getattr(settings, "operator_mode", False)
+            and getattr(settings, "operator_auto_deploy_enabled", False)):
+        return ""
+    return (getattr(settings, "deployment_id", "") or "").strip()
+
+
 def reconcile_once(settings, control_store, fleet_store) -> list:
     """One tick. A pure-ish, NEVER-RAISING wrapper over `reconcile_pull_targets` with
     the live clock + the latest heartbeats. Returns the reconciled fleet runs (``[]`` on
@@ -117,7 +128,8 @@ def reconcile_once(settings, control_store, fleet_store) -> list:
                 control_store, control_store, fleet_store.latest_heartbeats(),
                 now=datetime.now(timezone.utc),
                 deadline_seconds=settings.fleet_pull_convergence_deadline_seconds,
-                dispatch_child=fleet_dispatch_child)
+                dispatch_child=fleet_dispatch_child,
+                operator_self_deployment_id=_operator_self_deployment_id(settings))
     except Exception as exc:  # a reconcile failure must never kill the daemon
         _log.warning("Pull reconcile tick failed: %s", exc)
         return []

@@ -954,10 +954,11 @@ def test_postgres_verified_gate_completion_is_one_transaction_and_fail_closed(mo
     monkeypatch.setattr(
         postgres_module,
         "release_promotion_plan_context",
-        lambda _release, _promotion: {
+        lambda _release, _promotion, _deployment=None: {
             "promotion_required": False,
             "promotion_warning_only": True,
             "heartbeat_max_age_seconds": 600,
+            "operator_self": False,
         },
     )
 

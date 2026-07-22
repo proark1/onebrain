@@ -350,6 +350,15 @@ class Settings(BaseSettings):
     release_registry_allowlist: str = "ghcr.io/proark1"  # csv of allowed image-ref PREFIXES host[/org[/repo]]
     release_promotion_required: bool = False  # hard customer gate; report-only warnings while false
     dev_release_verify_public_key: str = ""   # CI development-signing public key; never trusted by customers
+    # Operator self-deploy ("green main -> Mission Control"). When MC (operator_mode)
+    # sets this true it AUTO-ROLLS ITS OWN box to every release the development gate
+    # has VERIFIED (dev_verified), signed with the CI DEVELOPMENT key — not the offline
+    # production key. It NEVER touches customer delivery: customer boxes still require a
+    # production-signed, operator-approved (customer_approved) release. Dormant by
+    # default; only MC's own env opts in, and MC's box must ALSO trust the dev key
+    # (UPDATE_RELEASE_PUBLIC_KEYS) for its updater to apply a dev-signed release. The
+    # ONE predicate that widens this trust is is_operator_self_deployment().
+    operator_auto_deploy_enabled: bool = False
     release_candidate_key_id: str = ""        # narrowly scoped CI candidate credential id
     release_candidate_key_hash: str = ""      # sha256$... hash; raw secret is never stored
     # ^ repo-prefix granular (B2): a bare host like "ghcr.io" would allowlist every GHCR tenant. The default
@@ -664,6 +673,14 @@ class Settings(BaseSettings):
         ):
             if not getattr(self, attribute):
                 errors.append(f"set {name}")
+        # Operator self-deploy needs the CI development key: MC verifies the development
+        # signature app-side (candidate registration + its own desired-state) and its
+        # box.env trusts it via UPDATE_RELEASE_PUBLIC_KEYS. Without the key the feature
+        # can never verify a self-update, so fail startup loudly rather than silently.
+        if self.operator_auto_deploy_enabled and not self.dev_release_verify_public_key.strip():
+            errors.append(
+                "set ONEBRAIN_DEV_RELEASE_VERIFY_PUBLIC_KEY (required by ONEBRAIN_OPERATOR_AUTO_DEPLOY_ENABLED)"
+            )
 
         if self.vector_store != "pgvector":
             errors.append("set ONEBRAIN_VECTOR_STORE=pgvector")

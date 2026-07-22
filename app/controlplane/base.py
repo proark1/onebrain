@@ -571,6 +571,7 @@ def compute_update_plan(
     heartbeat_max_age_seconds: int = 600,
     now: Optional[datetime] = None,
     active_rollout: bool = False,
+    operator_self: bool = False,   # Mission Control's OWN box auto-tracking the dev-verified tip
 ) -> UpdatePlan:
     """The single shared plan gate: both stores delegate here (never patch a
     store copy separately). Gate order is contract — see the Hetzner P0 spec."""
@@ -598,6 +599,21 @@ def compute_update_plan(
             # dispatcher must first persist a new rollout and transition the
             # promotion back to ``dev_deploying`` before a box can receive it.
             if promotion.state not in {"dev_pending", "dev_deploying", "dev_failed"}:
+                return "release_not_dev_verified"
+            if development_signature_valid is not True:
+                return "release_signature_invalid"
+        elif operator_self:
+            # Mission Control's OWN box auto-tracks the development-VERIFIED tip,
+            # trusting the CI development signature (never the customer gate's
+            # offline production approval). Accept dev_verified onward; reject
+            # anything the gate has not yet verified. This is the ONLY non-gate
+            # deployment that may deploy a release before customer_approved, and
+            # only when is_operator_self_deployment() gated it on true.
+            if not promotion:
+                return "release_not_dev_verified"
+            if promotion.state == "yanked":
+                return "release_yanked"
+            if promotion.state not in {"dev_verified", "customer_approved"}:
                 return "release_not_dev_verified"
             if development_signature_valid is not True:
                 return "release_signature_invalid"
@@ -652,7 +668,18 @@ def compute_update_plan(
         and promotion.state in {"dev_pending", "dev_deploying", "dev_failed"}
         and development_signature_valid is True
     )
-    if require_signed_release and not release.signature and not gate_development_signature_valid:
+    # Mission Control's own box carries the same development signature as its
+    # signed-release credential while it tracks the dev-verified tip — the
+    # production signature is only attached later, at customer approval.
+    operator_development_signature_valid = bool(
+        operator_self
+        and promotion
+        and promotion.state in {"dev_verified", "customer_approved"}
+        and development_signature_valid is True
+    )
+    if require_signed_release and not release.signature and not (
+        gate_development_signature_valid or operator_development_signature_valid
+    ):
         return UpdatePlan(
             deployment_id, target_version, False, "release_unsigned",
             rollback_kind=kind, warnings=warnings,
@@ -693,7 +720,27 @@ def compute_update_plan(
         modules_to_update=updates, rollback_kind=kind, warnings=warnings)
 
 
-def release_promotion_plan_context(release, promotion) -> Dict:
+def is_operator_self_deployment(deployment, settings) -> bool:
+    """True only for Mission Control's OWN deployment when operator self-deploy is
+    enabled — the single deployment permitted to auto-track the development-VERIFIED
+    release tip (accepted from dev_verified onward, trusting the CI development
+    signature). False for every customer box (operator_mode off) and for every OTHER
+    deployment MC serves (only deployment.id == the operator's own control-plane id
+    qualifies). This is the ONE predicate that widens a trust gate for MC's own
+    self-update; the planner, desired-state serve, the auto-rollout trigger, and the
+    pull reconcile all defer to it so they can never disagree about which box may
+    take a dev-signed release."""
+    if deployment is None:
+        return False
+    if not getattr(settings, "operator_auto_deploy_enabled", False):
+        return False
+    if not getattr(settings, "operator_mode", False):
+        return False
+    self_id = (getattr(settings, "deployment_id", "") or "").strip()
+    return bool(self_id and deployment.id == self_id)
+
+
+def release_promotion_plan_context(release, promotion, deployment=None) -> Dict:
     """Settings and trust inputs for the shared planner, loaded identically by both stores."""
     try:
         from app.config import get_settings
@@ -703,6 +750,7 @@ def release_promotion_plan_context(release, promotion) -> Dict:
             "promotion_required": False,
             "promotion_warning_only": True,
             "heartbeat_max_age_seconds": 600,
+            "operator_self": False,
         }
     settings = get_settings()
     production_valid = None
@@ -726,6 +774,7 @@ def release_promotion_plan_context(release, promotion) -> Dict:
         "production_signature_valid": production_valid,
         "development_signature_valid": development_valid,
         "heartbeat_max_age_seconds": max(600, int(getattr(settings, "fleet_report_seconds", 60)) * 2),
+        "operator_self": is_operator_self_deployment(deployment, settings),
     }
 
 
