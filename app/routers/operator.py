@@ -2092,20 +2092,52 @@ def _development_gate_blockers(store, gate: CustomerDeployment) -> list[str]:
     return list(dict.fromkeys(blockers))
 
 
+def _is_live_gate_replacement(deployment, current) -> bool:
+    """Whether a gate-identity row is a live replacement competing for the slot.
+
+    The provisioning guard exists to stop a second billed box being created while
+    a replacement is genuinely in flight. It must not count rows that can never
+    become the gate: there is no API to delete a deployment, so a dead row would
+    otherwise wedge gate provisioning permanently. A row is NOT live when it is:
+
+    - the current designated gate itself;
+    - past the 'active' state -- a provision attempt is created 'active'
+      (CustomerDeployment default) and only leaves it once it has failed, so any
+      other status is a dead attempt;
+    - the bare, unsuffixed base id while a suffixed gate is already designated.
+      Replacements always take a '<base>-<suffix>' id, so a lingering bare-base
+      row beside a designated gate is a pre-replacement legacy artifact, not an
+      in-flight provision.
+    """
+    if current is not None and deployment.id == current.id:
+        return False
+    if deployment.status != "active":
+        return False
+    if current is not None and deployment.id == DEVELOPMENT_GATE_DEPLOYMENT_ID:
+        return False
+    return True
+
+
 def _development_gate_identity(store) -> tuple[str, str]:
     """Return a fixed first gate identity or a server-generated replacement one.
 
-    A second undesignated gate is refused rather than creating another billed
-    server on retries. Replacements use a unique deployment ID, which gives the
-    Hetzner renderer a distinct compose project and DNS label beside the old gate.
+    A second *live* undesignated gate is refused rather than creating another
+    billed server on retries. Replacements use a unique deployment ID, which
+    gives the Hetzner renderer a distinct compose project and DNS label beside
+    the old gate. Dead rows -- a failed attempt, or a superseded legacy gate the
+    release-gate marker has since moved off of -- are ignored so they cannot
+    wedge provisioning: there is no delete API to clear them by hand.
     """
     current = store.get_release_gate()
-    existing = [
+    live = [
         deployment for deployment in store.list_deployments()
-        if deployment.id == DEVELOPMENT_GATE_DEPLOYMENT_ID
-        or deployment.id.startswith(DEVELOPMENT_GATE_DEPLOYMENT_ID + "-")
+        if (
+            deployment.id == DEVELOPMENT_GATE_DEPLOYMENT_ID
+            or deployment.id.startswith(DEVELOPMENT_GATE_DEPLOYMENT_ID + "-")
+        )
+        and _is_live_gate_replacement(deployment, current)
     ]
-    if any(not current or deployment.id != current.id for deployment in existing):
+    if live:
         raise ValueError("A development gate replacement already exists.")
     if not current:
         return DEVELOPMENT_GATE_DEPLOYMENT_ID, DEVELOPMENT_GATE_ACCOUNT_ID

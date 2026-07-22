@@ -1103,6 +1103,79 @@ def test_development_gate_replacement_requires_module_complete_baseline_and_uses
     assert result.external_provisioning is True
 
 
+def test_development_gate_identity_ignores_stale_bare_base_row():
+    """A superseded bare-base row beside a designated suffixed gate must not wedge
+    provisioning -- there is no API to delete the dead row by hand."""
+    store = MemoryControlPlaneStore()
+    gate = CustomerDeployment(
+        id=f"{operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID}-a09ed5049390",
+        customer_name="Live gate",
+        environment="development",
+        deployment_type="dedicated_server",
+    )
+    store.create_deployment(gate)
+    store.designate_release_gate(gate.id)
+    store.create_deployment(CustomerDeployment(
+        id=operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID,
+        customer_name="Superseded legacy gate",
+        environment="development",
+        deployment_type="dedicated_server",
+    ))
+
+    deployment_id, account_id = operator_router._development_gate_identity(store)
+
+    assert deployment_id.startswith(operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID + "-")
+    assert deployment_id != gate.id
+    assert account_id.startswith(operator_router.DEVELOPMENT_GATE_ACCOUNT_ID + "-")
+
+
+def test_development_gate_identity_ignores_failed_replacement_row():
+    """A failed prior replacement attempt is a dead row, not an in-flight one."""
+    store = MemoryControlPlaneStore()
+    gate = CustomerDeployment(
+        id=f"{operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID}-live00000001",
+        customer_name="Live gate",
+        environment="development",
+        deployment_type="dedicated_server",
+    )
+    store.create_deployment(gate)
+    store.designate_release_gate(gate.id)
+    store.create_deployment(CustomerDeployment(
+        id=f"{operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID}-dead00000001",
+        customer_name="Failed attempt",
+        environment="development",
+        deployment_type="dedicated_server",
+        status="failed",
+    ))
+
+    deployment_id, _account_id = operator_router._development_gate_identity(store)
+
+    assert deployment_id.startswith(operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID + "-")
+    assert deployment_id != gate.id
+
+
+def test_development_gate_identity_blocks_live_inflight_replacement():
+    """An active, undesignated suffixed replacement still blocks a second box."""
+    store = MemoryControlPlaneStore()
+    gate = CustomerDeployment(
+        id=f"{operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID}-live00000001",
+        customer_name="Live gate",
+        environment="development",
+        deployment_type="dedicated_server",
+    )
+    store.create_deployment(gate)
+    store.designate_release_gate(gate.id)
+    store.create_deployment(CustomerDeployment(
+        id=f"{operator_router.DEVELOPMENT_GATE_DEPLOYMENT_ID}-inflight0001",
+        customer_name="Replacement in flight",
+        environment="development",
+        deployment_type="dedicated_server",
+    ))
+
+    with pytest.raises(ValueError, match="already exists"):
+        operator_router._development_gate_identity(store)
+
+
 def _replacement_bootstrap_records(
     *,
     candidate_transform=lambda release: release,
