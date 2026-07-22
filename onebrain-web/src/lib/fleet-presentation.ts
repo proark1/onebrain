@@ -1,6 +1,28 @@
 import type { FleetOverview } from "@/lib/onebrain-types";
 import type { OperationalStatus } from "@/lib/operational";
 
+/**
+ * Make a stored host safe to use as an href.
+ *
+ * `ProvisioningRun.external_run_url` is a bare hostname with no scheme, and it
+ * degrades to a raw IP when the box was created with DNS disabled. A schemeless
+ * value in an href is read as a *relative path*, so it silently navigates
+ * within Mission Control instead of out to the box. Returns "" when there is
+ * nothing linkable, so callers can render plain text instead of a dead link.
+ *
+ * The fleet overview's `login_url` already arrives absolute -- the control
+ * plane applies the same rule server-side. This is for the raw provisioning
+ * fields the operator ledger still renders itself.
+ */
+export function absoluteHostUrl(host: string): string {
+  const value = (host || "").trim().replace(/\/+$/, "");
+  if (!value) return "";
+  if (value.startsWith("https://") || value.startsWith("http://")) return value;
+  // An IPv4 literal means no DNS and therefore no certificate: the box serves
+  // plain HTTP on :80, so https would only fail to connect.
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(value) ? `http://${value}` : `https://${value}`;
+}
+
 export function fleetHealthTone(healthy: boolean | null): "success" | "danger" | "neutral" {
   if (healthy === null) return "neutral";
   return healthy ? "success" : "danger";

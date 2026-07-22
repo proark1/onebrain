@@ -50,6 +50,7 @@ import type {
   ProvisioningRun,
   ServiceKeyInfo,
 } from "@/lib/onebrain-types";
+import { absoluteHostUrl } from "@/lib/fleet-presentation";
 import { describeOperationalStatus, formatOperationalTimestamp } from "@/lib/operational";
 import {
   canRetryDevelopmentRelease,
@@ -744,7 +745,12 @@ export function OperatorPanel() {
       <Tabs active={activeTab} items={operatorTabs} label="Operator sections" onChange={(tab) => setActiveTab(tab)} />
 
       {activeTab === "customers" ? (
-        <Panel eyebrow="Readiness" title="Customers" count={customers.length}>
+        <Panel
+          count={customers.length}
+          eyebrow="Readiness"
+          intro="One entry per customer account, with the deployment behind it and whether that box is ready to serve. Start here to answer 'is this customer up?'; use Fleet for live health across the whole estate."
+          title="Customers"
+        >
           <div className="operatorList">
             {customers.length === 0 ? <p className="mutedLine">No customers provisioned yet.</p> : null}
             {customers.map((customer) => (
@@ -812,7 +818,12 @@ export function OperatorPanel() {
             <CredentialPanel credentials={credentials} onCopy={copyCredential} />
           </Panel>
 
-          <Panel eyebrow="Runs" title="Provisioning ledger" count={provisioningRuns.length}>
+          <Panel
+            count={provisioningRuns.length}
+            eyebrow="Runs"
+            intro="Every attempt to build a customer a box, succeeded or failed, newest first. Open a run to see which products were requested, where the box landed, and — if it failed — why, so you can retry it."
+            title="Provisioning ledger"
+          >
             <ProvisioningRunList
               bootstrapSecrets={bootstrapSecrets}
               busyAction={busyAction}
@@ -827,7 +838,18 @@ export function OperatorPanel() {
 
       {activeTab === "releases" ? (
         <div className="operatorGrid wide">
-          <Panel eyebrow="Development" title="Release gate">
+          <Panel
+            eyebrow="Development"
+            intro={(
+              <>
+                Every release is proved on one internal deployment before any customer can be offered it.
+                Designate that deployment as the gate, then prepare a candidate on it. <strong>Nothing here
+                touches a customer</strong> — customers stay on their current version until you promote the
+                release below and then start a rollout.
+              </>
+            )}
+            title="Release gate"
+          >
             <DevelopmentGateCard
               busyAction={busyAction}
               busyId={busyId}
@@ -839,7 +861,19 @@ export function OperatorPanel() {
               onPrepare={onPrepareDevelopmentGate}
             />
           </Panel>
-          <Panel eyebrow="Promotion ledger" title="Releases" count={releases.length}>
+          <Panel
+            count={releases.length}
+            eyebrow="Promotion ledger"
+            intro={(
+              <>
+                The history of every build and how far it has been cleared to travel — proved on the gate,
+                then approved for customers, each step signed and recorded with who approved it.
+                <strong> Approving a release still deploys nothing;</strong> it only makes the release
+                selectable on the Rollouts tab.
+              </>
+            )}
+            title="Releases"
+          >
             <ReleasePromotionLedger
               busyAction={busyAction}
               busyId={busyId}
@@ -859,7 +893,19 @@ export function OperatorPanel() {
       ) : null}
 
       {activeTab === "rollouts" ? (
-        <Panel eyebrow="Rollouts" title="Customer rollouts" count={rolloutCount}>
+        <Panel
+          count={rolloutCount}
+          eyebrow="Rollouts"
+          intro={(
+            <>
+              Moving <strong>one named customer</strong> onto an approved release. Pick the target release for
+              a deployment and press Plan to see exactly what would change — the plan is a preview and changes
+              nothing — then start the rollout to apply it. For moving several customers in ordered waves,
+              use Fleet → Rollouts instead.
+            </>
+          )}
+          title="Customer rollouts"
+        >
           <div className="operatorList">
             {deployments.length === 0 ? <p className="mutedLine">No deployments tracked yet.</p> : null}
             {deployments.map((row) => (
@@ -888,7 +934,18 @@ export function OperatorPanel() {
       ) : null}
 
       {activeTab === "credentials" ? (
-        <Panel eyebrow="Service keys" title="Provisioned credentials" count={credentials.length}>
+        <Panel
+          count={credentials.length}
+          eyebrow="Service keys"
+          intro={(
+            <>
+              Service keys issued by the provisioning run you just started. <strong>They appear only in the
+              session that created them</strong> — this list is empty after a reload, and Mission Control
+              cannot show them again. Copy anything you need before you leave the page.
+            </>
+          )}
+          title="Provisioned credentials"
+        >
           {credentials.length ? (
             <CredentialPanel credentials={credentials} onCopy={copyCredential} />
           ) : (
@@ -1046,7 +1103,9 @@ function ProvisioningRunList({
               <div className="operatorMeta">
                 <span>Selected: {run.module_ids.length ? run.module_ids.map(labelFor).join(", ") : "OneBrain Core only"}</span>
                 {run.target_id ? <span>{[run.target_id, run.target_environment].filter(Boolean).join(" / ")}</span> : null}
-                {run.external_run_url ? <a href={run.external_run_url} rel="noreferrer" target="_blank">Open deployment</a> : null}
+                {absoluteHostUrl(run.external_run_url) ? (
+                  <a href={absoluteHostUrl(run.external_run_url)} rel="noreferrer" target="_blank">Open deployment</a>
+                ) : null}
                 {run.smoke_status ? <span>Smoke check: {labelFor(run.smoke_status)}</span> : null}
               </div>
               <Timestamp label="Created" value={run.created_at} />

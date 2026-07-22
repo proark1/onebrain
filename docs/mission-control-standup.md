@@ -122,3 +122,7 @@ See [Mission Control architecture](mission-control-architecture.md) and the
 [deployment guide](deployment.md) for the full boundaries, then complete the
 [production activation runbook](production-activation-runbook.md) before
 enabling customer creation.
+
+Once MC is up, [Updating Mission Control](mission-control-update-runbook.md)
+covers moving it to a later release — MC is seeded `manual`, so it never follows
+a fleet rollout, and its own rollout reports a timeout even when it succeeds.
