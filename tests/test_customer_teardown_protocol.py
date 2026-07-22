@@ -46,7 +46,14 @@ def _admin(user_id: str) -> Principal:
 
 
 def _settings():
-    return SimpleNamespace(is_operator_surface=True, operator_mode=True)
+    # hetzner_allow_inprocess_broker=True: the execute endpoint requires the remote
+    # broker OR this explicit escape hatch before it will build a broker at all.
+    return SimpleNamespace(
+        is_operator_surface=True,
+        operator_mode=True,
+        hetzner_broker_url="",
+        hetzner_allow_inprocess_broker=True,
+    )
 
 
 def _protocol_stores(monkeypatch, *, runs=None, fleet_keys=()):
@@ -420,9 +427,10 @@ def test_execute_destroys_infrastructure_revokes_keys_and_tombstones(monkeypatch
     stored = control.get_teardown_request(created.request.id)
     assert stored.status == "executed"
     assert stored.completed_at
-    # Tombstoned: gone from the fleet listing, still retrievable for audit.
+    # Tombstoned: gone from the fleet listing AND rejected by every target lookup
+    # (get_deployment returns None, so keys can't be re-minted for a decommissioned box).
     assert control.list_deployments() == []
-    assert control.get_deployment("dep_acme").removed_at
+    assert control.get_deployment("dep_acme") is None
     assert operator_router.get_fleet_store().get_key("key1").status == "revoked"
     assert _audit_actions(platform)[-1] == (
         "customer_teardown.executed",
@@ -537,4 +545,94 @@ def test_execute_fails_closed_when_broker_unavailable_with_recorded_infra(monkey
     assert _audit_actions(platform)[-1] == (
         "customer_teardown.execution_failed",
         "broker_unavailable",
+    )
+
+
+def test_execute_fails_closed_when_broker_unavailable_even_without_manifest(monkeypatch):
+    # An empty erasure manifest does NOT prove no infrastructure exists, so a broker
+    # outage must fail closed rather than record-only tombstone.
+    control, platform, created = _open_request(monkeypatch)  # no runs -> empty manifest
+    _reach_approved(created)
+    _patch_broker(monkeypatch, _FakeBroker(error=RuntimeError("remote Hetzner broker is unavailable")))
+
+    with pytest.raises(HTTPException) as exc:
+        _execute(created)
+
+    assert exc.value.status_code == 502
+    assert control.get_teardown_request(created.request.id).status == "execution_failed"
+    assert control.list_deployments() != []   # never tombstoned on a broker error
+    assert _audit_actions(platform)[-1] == (
+        "customer_teardown.execution_failed",
+        "broker_unavailable",
+    )
+
+
+def test_execute_requires_the_out_of_process_broker(monkeypatch):
+    control, platform, created = _open_request(monkeypatch)
+    _reach_approved(created)
+    # No remote broker URL and the in-process escape hatch OFF: refuse rather than
+    # build an in-process broker that would use a local Hetzner token in the API.
+    monkeypatch.setattr(
+        operator_router,
+        "get_settings",
+        lambda: SimpleNamespace(
+            is_operator_surface=True, operator_mode=True,
+            hetzner_broker_url="", hetzner_allow_inprocess_broker=False,
+        ),
+    )
+    broker = _FakeBroker(result=BrokerDestroyResult(deployment_id="dep_acme", nothing_found=True))
+    _patch_broker(monkeypatch, broker)
+
+    with pytest.raises(HTTPException) as exc:
+        _execute(created)
+
+    assert exc.value.status_code == 502
+    assert broker.calls == []                 # never reached the broker
+    assert control.list_deployments() != []
+
+
+def test_execute_refuses_the_active_release_gate(monkeypatch):
+    control, platform, created = _open_request(monkeypatch)
+    _reach_approved(created)
+    control._deployments["dep_acme"] = replace(control._deployments["dep_acme"], is_release_gate=True)
+    broker = _FakeBroker(result=BrokerDestroyResult(deployment_id="dep_acme", nothing_found=True))
+    _patch_broker(monkeypatch, broker)
+
+    with pytest.raises(HTTPException) as exc:
+        _execute(created)
+
+    assert exc.value.status_code == 409
+    assert broker.calls == []
+    assert control.list_deployments() != []   # the gate is not tombstoned
+    assert _audit_actions(platform)[-1] == (
+        "customer_teardown.execution_denied",
+        "denied_release_gate",
+    )
+
+
+def test_execute_reblocks_when_dual_control_reverts_to_strict(monkeypatch):
+    control, platform, created = _open_request(monkeypatch)
+    # Approve under a RELAXED policy: a single self-approval reaches APPROVED.
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(teardown_min_approvals=1, teardown_allow_self_approval=True),
+    )
+    assert _approve(created, principal=_admin("requester@example.test")).status == TEARDOWN_REQUEST_APPROVED
+    # Revert to the STRICT defaults before executing -- the one-approval row must not run.
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(teardown_min_approvals=2, teardown_allow_self_approval=False),
+    )
+    broker = _FakeBroker(result=BrokerDestroyResult(deployment_id="dep_acme", nothing_found=True))
+    _patch_broker(monkeypatch, broker)
+
+    with pytest.raises(HTTPException) as exc:
+        _execute(created)
+
+    assert exc.value.status_code == 409
+    assert broker.calls == []
+    assert control.list_deployments() != []
+    assert _audit_actions(platform)[-1] == (
+        "customer_teardown.execution_denied",
+        "denied_policy_regressed",
     )

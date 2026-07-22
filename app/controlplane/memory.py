@@ -141,7 +141,10 @@ class MemoryControlPlaneStore:
             return deployment
 
     def get_deployment(self, deployment_id: str) -> Optional[CustomerDeployment]:
-        return self._deployments.get(deployment_id)
+        deployment = self._deployments.get(deployment_id)
+        # A tombstoned deployment is not a valid target for any operation
+        # (authorization, key minting, desired state); hide it like list_deployments.
+        return None if (deployment and deployment.removed_at) else deployment
 
     def list_deployments(self) -> List[CustomerDeployment]:
         # Tombstoned (decommissioned) deployments are hidden fleet-wide.
@@ -382,7 +385,8 @@ class MemoryControlPlaneStore:
     def get_release_gate(self) -> Optional[CustomerDeployment]:
         return next(
             (deployment for deployment in self._deployments.values()
-             if deployment.is_release_gate and deployment.status == "active"),
+             if deployment.is_release_gate and deployment.status == "active"
+             and not deployment.removed_at),
             None,
         )
 

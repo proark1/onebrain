@@ -29,6 +29,7 @@ from app.controlplane.base import (
     TEARDOWN_REQUEST_APPROVED,
     TEARDOWN_REQUEST_EXPIRED,
     UpdatePlan,
+    validate_teardown_request,
 )
 from app.config import get_settings
 from app.deps import (
@@ -1500,6 +1501,22 @@ def execute_customer_teardown_request(
         raise _deny("denied_not_approved",
                     "Teardown request is not approved for execution.", 409,
                     {"status": request.status})
+    # Dual-control TOCTOU: an APPROVED row may have reached the threshold under a
+    # temporarily relaxed policy (min_approvals=1 / self-approval). Re-validate the
+    # approvals against the CURRENT settings, so reverting to the strict defaults still
+    # blocks a single-approval (or self-approved) teardown from executing.
+    try:
+        validate_teardown_request(request)
+    except ValueError as exc:
+        raise _deny("denied_policy_regressed",
+                    f"Teardown approvals no longer satisfy the dual-control policy: {exc}", 409,
+                    {"reason": str(exc)})
+    # The development release gate must not be decommissioned out from under release
+    # promotion — get_release_gate would otherwise be left pointing at a destroyed box.
+    if deployment.is_release_gate:
+        raise _deny("denied_release_gate",
+                    "Cannot decommission the active release gate; re-designate the gate first.", 409,
+                    {"reason": "active_release_gate"})
     # TOCTOU: re-check the legal hold at execute time, not just at request/approve.
     if scope_is_held(platform.list_legal_holds(account_id)):
         raise _deny("denied_legal_hold",
@@ -1512,8 +1529,19 @@ def execute_customer_teardown_request(
                     f"Type '{expected_phrase}' exactly to confirm decommission.", 400,
                     {"reason": "confirmation_phrase_mismatch"})
 
+    # Broker-only token boundary (P4-01): teardown reaches Hetzner ONLY through the
+    # out-of-process broker. Refuse to fall back to an in-process broker (which would
+    # use a local Hetzner token inside the API process) unless the explicit dogfood
+    # escape hatch is set — mirror build_hetzner_broker's production guard.
+    if not (getattr(settings, "hetzner_broker_url", "")
+            or getattr(settings, "hetzner_allow_inprocess_broker", False)):
+        raise HTTPException(
+            status_code=502,
+            detail="Teardown requires the out-of-process Hetzner broker (set ONEBRAIN_HETZNER_BROKER_URL).")
+
+    # Audit enrichment only — the broker discovers what to delete by label, never from
+    # these ids, and the record-only decision comes from the broker's own response.
     manifest = _resolve_erasure_manifest(deployment.id)
-    has_recorded_infra = _manifest_has_resources(manifest)
 
     from app.provisioning.hetzner.broker import build_hetzner_broker
 
@@ -1527,28 +1555,28 @@ def execute_customer_teardown_request(
     now_iso = datetime.now(timezone.utc).isoformat()
 
     if destroy_result is None:
-        # Broker unreachable (e.g. the broker host is not yet redeployed with the
-        # /v1/destroy capability). Recorded infrastructure must NEVER be tombstoned
-        # without being destroyed; a deployment that never had infra can still be
-        # cleared. The failed request becomes terminal — retry = a fresh request (the
+        # FAIL CLOSED on ANY broker error, regardless of the manifest. A missing/empty
+        # erasure manifest does NOT prove no infrastructure exists (a legacy/imported
+        # box may hold unrecorded resources), and a transient broker outage must never
+        # let us tombstone + revoke keys while a live server may remain billed and
+        # reachable. Record-only is taken ONLY on a SUCCESSFUL broker response reporting
+        # nothing_found. The request becomes terminal; retry via a fresh request (the
         # discovery-scoped destroy is idempotent, so a re-run finishes any partial).
-        if has_recorded_infra:
-            control.record_teardown_execution(
-                request.id, succeeded=False,
-                result=f"broker unavailable: {broker_error}", executed_at=now_iso)
-            _record_teardown_audit(
-                principal, account_id=account_id, deployment_id=deployment.id,
-                request_id=request.id, action="customer_teardown.execution_failed",
-                decision="broker_unavailable", meta={"error": broker_error})
-            raise HTTPException(
-                status_code=502,
-                detail=f"Teardown could not reach the infrastructure broker: {broker_error}")
-        record_only = True
-        warning = f"Broker not consulted ({broker_error}); no infrastructure was recorded for this deployment."
-    else:
-        record_only = bool(destroy_result.nothing_found)
-        warning = ("No infrastructure was touched — nothing remained for this deployment."
-                   if record_only else "")
+        control.record_teardown_execution(
+            request.id, succeeded=False,
+            result=f"broker unavailable: {broker_error}", executed_at=now_iso)
+        _record_teardown_audit(
+            principal, account_id=account_id, deployment_id=deployment.id,
+            request_id=request.id, action="customer_teardown.execution_failed",
+            decision="broker_unavailable",
+            meta={"error": broker_error, "has_recorded_infra": _manifest_has_resources(manifest)})
+        raise HTTPException(
+            status_code=502,
+            detail=f"Teardown could not reach the infrastructure broker: {broker_error}")
+
+    record_only = bool(destroy_result.nothing_found)
+    warning = ("No infrastructure was touched — nothing remained for this deployment."
+               if record_only else "")
 
     keys_revoked = _revoke_deployment_fleet_keys(deployment.id)
     control.remove_deployment(deployment.id, removed_at=now_iso)

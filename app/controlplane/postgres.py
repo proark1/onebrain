@@ -132,7 +132,8 @@ class PostgresControlPlaneStore:
     def get_deployment(self, deployment_id: str) -> Optional[CustomerDeployment]:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
-                f"SELECT {self._DEPLOYMENT_COLS} FROM control_deployments WHERE id = %s",
+                f"SELECT {self._DEPLOYMENT_COLS} FROM control_deployments "
+                "WHERE id = %s AND removed_at IS NULL",
                 (deployment_id,),
             )
             row = cur.fetchone()
@@ -527,7 +528,7 @@ class PostgresControlPlaneStore:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 f"SELECT {self._DEPLOYMENT_COLS} FROM control_deployments "
-                "WHERE is_release_gate = true AND status = 'active' LIMIT 1"
+                "WHERE is_release_gate = true AND status = 'active' AND removed_at IS NULL LIMIT 1"
             )
             row = cur.fetchone()
         return self._deployment(row) if row else None

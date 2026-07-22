@@ -269,14 +269,18 @@ function DeploymentRow({
             : <span className="fleetNoAlerts">None</span>}
         </td>
         <td data-label="Actions" className="rowActions">
-          <button
-            className="danger"
-            type="button"
-            aria-expanded={decommissioning}
-            onClick={() => setDecommissioning((current) => !current)}
-          >
-            {decommissioning ? "Cancel" : "Decommission"}
-          </button>
+          {deployment.is_release_gate ? (
+            <span className="muted" title="Re-designate the release gate before it can be decommissioned">Release gate</span>
+          ) : (
+            <button
+              className="danger"
+              type="button"
+              aria-expanded={decommissioning}
+              onClick={() => setDecommissioning((current) => !current)}
+            >
+              {decommissioning ? "Cancel" : "Decommission"}
+            </button>
+          )}
         </td>
       </tr>
       <tr className="fleetDeploymentDetail" hidden={!expanded} id={detailId}>
