@@ -1,0 +1,10 @@
+[Unit]
+Description=Reclaim Mission Control Docker images every 6 hours
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
