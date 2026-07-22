@@ -77,7 +77,7 @@ nur über eine `AppInstallation` freigeschaltet. Genau diese Vorlage nutzt Buchh
    ein `ProvisioningModule(… modules=())`, ein `BUCHHALTUNG_APP` + Purposes (Vorlage:
    `KPI_APP`/`KPI_PURPOSES`).
 2. **App-Registry + Install-Validierung** — `"buchhaltung"` in `app/platform/base.py` `APP_IDS`
-   + Purposes (`accounting_read`/`accounting_ingest`/`accounting_configure`).
+   + Purposes (`accounting_read`/`accounting_ingest`/`accounting_configure`/`accounting_export`).
    `validate_installation` prüft `APP_IDS`+`PURPOSES`, also müssen die Platform-Install-API und
    die Frontend-Liste (`onebrain-web/src/components/spaces-panel.tsx`) die neue app_id + Purposes
    ebenfalls kennen — sonst schlägt das manuelle Aktivieren über das Spaces-Panel fehl.
@@ -289,11 +289,14 @@ Google Calendar als Referenz-Implementierung). Zwei Ausprägungen:
 auf Buchungskonten gemappt werden. v1: konfigurierbare Default-Zuordnung je Belegart/Steuersatz
 + manuelle Korrektur im Bestätigungsschritt (Verbuchung, §2); vollautomatische Kontierung später.
 
-**Freigabe + Modularität.** Ein Push in ein externes Buchhaltungssystem ist eine **externe
-Aktion** → läuft über die vorhandene Freigabe-/Action-Pipeline (nicht autonom, vgl.
-`AI_EMPLOYEE_EXTERNAL_ACTION_TYPES`). Der DATEV-Datei-Export ist ein nutzerausgelöster Download.
-Die Connectoren gehören zum Buchhaltungsmodul → automatisch modular; **welcher Connector aktiv
-ist, ist eine Modul-Einstellung pro Kunde** (die meisten nutzen genau eines).
+**Freigabe + Purpose + Modularität.** Export/Push bewegt vertrauliche Buchungsdaten **aus
+OneBrain heraus** → dafür ein eigener, separat freigebbarer Purpose **`accounting_export`**
+(nicht in `…_read`/`…_ingest`/`…_configure` gebündelt). Ein Push in ein externes System ist eine
+**externe Aktion** und läuft über die vorhandene Freigabe-/Action-Pipeline (nicht autonom, vgl.
+`AI_EMPLOYEE_EXTERNAL_ACTION_TYPES`); der DATEV-Datei-Export ist ein nutzerausgelöster Download.
+Die Connectoren gehören zum Buchhaltungsmodul → automatisch modular, und **Connector-Konfiguration
+und -Bindings sind space-scoped** (pro Workspace — konsistent mit `enabled_space_ids` der
+`AppInstallation` und den bestehenden Connector-Bindings), nicht pauschal pro Kunde.
 
 **Reihenfolge:** DATEV-Format-Export zuerst (höchster Nutzen, kein Fremd-API-Risiko), dann
 lexoffice- + sevDesk-API-Push. Bidirektionaler Sync (Rücklesen/Abgleich) ist bewusst später
