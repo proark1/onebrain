@@ -685,8 +685,22 @@ def compute_update_plan(
                 return "development_gate_missing"
             if deployment.id != gate_deployment_id:
                 return "development_gate_mismatch"
-            if not promotion or promotion.gate_deployment_id not in {"", deployment.id}:
+            if not promotion:
                 return "development_gate_mismatch"
+            # A candidate whose promotion is still bound to a now-RETIRED gate
+            # (its verification gate was replaced -- e.g. the box was
+            # reprovisioned after a disk failure) must NOT read as a mismatch on
+            # the current LIVE gate: re-dispatch re-verifies from scratch here and
+            # re-binds the promotion to this gate (see
+            # _dispatch_development_candidate / _fail_development_preflight). We
+            # already confirmed above that this deployment IS the designated gate
+            # (deployment.id == gate_deployment_id), so a stale foreign binding is
+            # re-bindable, not grounds for rejection. Checking it here is what
+            # stranded the whole backlog behind a misleading ``release_unsigned``
+            # after the first-ever gate replacement. The development signature is
+            # still verified below, and customer approval keeps its own independent
+            # current-gate check (see approve_release).
+            #
             # ``dev_failed`` is plan-eligible so the development dispatcher can
             # retry it. Desired-state generation still excludes that state; the
             # dispatcher must first persist a new rollout and transition the
@@ -753,11 +767,17 @@ def compute_update_plan(
     # gate verifies the release. Treat that development signature as the
     # signed-release credential only for the designated gate and only while
     # the candidate is in a deployable development state.
+    #
+    # Intentionally does NOT re-check promotion.gate_deployment_id against this
+    # gate: the two conditions above already establish this deployment IS the
+    # current designated release gate, and a candidate still bound to a RETIRED
+    # gate is re-verified and re-bound here (see promotion_denial above).
+    # Re-checking the stale binding is exactly what made a gate replacement fail
+    # as ``release_unsigned`` for the entire backlog.
     gate_development_signature_valid = bool(
         getattr(deployment, "is_release_gate", False)
         and gate_deployment_id == deployment.id
         and promotion
-        and promotion.gate_deployment_id in {"", deployment.id}
         and promotion.state in {"dev_pending", "dev_deploying", "dev_failed"}
         and development_signature_valid is True
     )
