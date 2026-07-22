@@ -136,6 +136,17 @@ force-removes — so it can only reclaim genuinely superseded images. Newly rend
 MC boxes enable it at first boot. Tune the retention/cadence in the unit files under
 `deploy/box/` if MC's deploy rate changes.
 
+**Keep the manual deploy rollback-safe.** The prune protects the previous image set
+only through `images.override.prev.yml`, so a hand deploy must rotate that file the
+way `update.sh` does automatically — copy the current override to
+`images.override.prev.yml` *before* writing the new digests (`deploy/box/update.sh`
+does `cp "$OVERRIDE" "$OVERRIDE_PREV"` at apply time for exactly this reason). Edit
+`images.override.yml` in place without that rotation and `--force-recreate` swaps the
+containers to the new images, leaving the superseded trio referenced by nothing
+protected — the 6 h prune then reclaims the very image set you would roll back to.
+Each manual deploy is therefore: **rotate `prev` → edit `images.override.yml` →
+`--force-recreate`.**
+
 **Install on an already-running MC** (the units bake into cloud-init, so an existing
 box needs them written once over its SSH/root access; the prune script itself is
 pulled from the running API image, so only the two unit files are needed). Substitute
