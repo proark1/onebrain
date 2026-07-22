@@ -5010,6 +5010,15 @@ button.danger, .aiApprovalControls button.danger, .aiConnectorEditor button.dang
 .userDeleteConfirm label { display: grid; gap: 5px; color: #76504e; font-size: 9px; font-weight: 760; }
 .userDeleteConfirm > div:last-child { display: flex; gap: 6px; }
 
+.fleetDecommissionRow > td { padding: 0; }
+.fleetDecommission { display: grid; gap: 12px; border: 1px solid rgb(var(--brand-danger-rgb) / 30%); border-radius: 11px; background: rgb(var(--brand-danger-rgb) / 5%); padding: 18px; margin: 6px 0; }
+.fleetDecommission h3 { color: var(--red); font-size: 18px; }
+.fleetDecommission p:not(.eyebrow) { max-width: 640px; color: var(--muted); font-size: 10px; font-weight: 620; line-height: 1.45; }
+.fleetDecommission code { font-size: 11px; }
+.fleetDecommissionStep { display: grid; gap: 10px; }
+.fleetDecommissionStep label { display: grid; gap: 5px; color: #76504e; font-size: 9px; font-weight: 760; }
+.fleetDecommissionStep .rowActions { justify-content: flex-end; }
+
 @media (max-width: 900px) {
   .userServerRail { grid-template-columns: 52px minmax(0, 1fr); }
   .userServerFacts, .userServerRail > p { grid-column: 2; justify-content: flex-start; }

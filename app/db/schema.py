@@ -6,7 +6,7 @@ from typing import Iterable
 
 
 BASELINE_ALEMBIC_REVISION = "0001_baseline_onebrain_schema"
-REQUIRED_ALEMBIC_REVISION = "0034_drive_malware_quarantine"
+REQUIRED_ALEMBIC_REVISION = "0035_fleet_decommission_tombstone"
 DRIVE_MALWARE_POLICY_EPOCH = 1
 MIGRATION_GUIDANCE = (
     "Postgres schema is not migrated. Run `alembic upgrade head` with "

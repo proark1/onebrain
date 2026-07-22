@@ -32,10 +32,13 @@ DISCOVERS and deletes only that deployment's own labelled resources
 primitive both un-protects and deletes (P1-D). It does not free Hetzner Backups, the
 offsite pg_dump, or the box secret bundle — those follow the retention / deletion
 contract, so a teardown is not a GDPR erasure. Mission Control's operator-triggered
-executor (the approval record, the tombstone, and the execute endpoint that calls
-`/v1/destroy`) is specified in
-`docs/archive/specs/2026-07-22-fleet-decommission-and-teardown-executor-design.md` and
-is not yet wired.
+executor — the two-approval `CustomerTeardownRequest`, the deployment tombstone
+(`removed_at`, filtered out of the fleet views), and the operator_mode-only execute
+endpoint that calls `/v1/destroy`, revokes the box's fleet keys, and retires the row —
+is implemented per
+`docs/archive/specs/2026-07-22-fleet-decommission-and-teardown-executor-design.md`.
+Dual control is relaxable for a sole operator via `ONEBRAIN_TEARDOWN_MIN_APPROVALS`
+(bounded 1..2) and `ONEBRAIN_TEARDOWN_ALLOW_SELF_APPROVAL`, both defaulting to strict.
 
 ## Host responsibilities
 

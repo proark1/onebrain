@@ -537,6 +537,12 @@ def _drive_malware_module():
     )
 
 
+def _fleet_decommission_module():
+    return _load_migration_module(
+        "0035_fleet_decommission_tombstone.py", "fleet_decommission_migration"
+    )
+
+
 def test_trust_primitives_migration_structure_and_chain():
     migration = _trust_primitives_module()
 
@@ -605,7 +611,9 @@ def test_required_revision_matches_single_alembic_head():
     heads = ScriptDirectory.from_config(config).get_heads()
 
     assert heads == [REQUIRED_ALEMBIC_REVISION]
-    assert REQUIRED_ALEMBIC_REVISION == _drive_malware_module().revision
+    assert REQUIRED_ALEMBIC_REVISION == _fleet_decommission_module().revision
+    # 0034 (drive malware) is no longer head — 0035 supersedes it.
+    assert _drive_malware_module().revision != REQUIRED_ALEMBIC_REVISION
 
 
 def test_job_leases_migration_precedes_the_current_head():
@@ -650,8 +658,12 @@ def test_recovery_auth_job_queue_and_drive_migrations_form_one_chain():
     assert drive_foundations.down_revision == user_management.revision
     assert onebrain_drive.revision == "0033_onebrain_drive"
     assert onebrain_drive.down_revision == drive_foundations.revision
-    assert drive_malware.revision == REQUIRED_ALEMBIC_REVISION
+    assert drive_malware.revision == "0034_drive_malware_quarantine"
     assert drive_malware.down_revision == onebrain_drive.revision
+    fleet_decommission = _fleet_decommission_module()
+    assert fleet_decommission.revision == REQUIRED_ALEMBIC_REVISION
+    assert fleet_decommission.revision == "0035_fleet_decommission_tombstone"
+    assert fleet_decommission.down_revision == drive_malware.revision
     source = Path(auth_limits.__file__).read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS auth_rate_limits" in source
     assert "subject_hash" in source and "auth_rate_limits_expiry_idx" in source

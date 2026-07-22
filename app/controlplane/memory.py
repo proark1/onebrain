@@ -23,6 +23,7 @@ from app.controlplane.base import (
     ServedFloorBump,
     UpdatePlan,
     apply_teardown_approval,
+    apply_teardown_execution,
     compute_update_plan,
     release_promotion_plan_context,
     require_signed_releases,
@@ -143,7 +144,24 @@ class MemoryControlPlaneStore:
         return self._deployments.get(deployment_id)
 
     def list_deployments(self) -> List[CustomerDeployment]:
-        return sorted(self._deployments.values(), key=lambda d: d.customer_name.lower())
+        # Tombstoned (decommissioned) deployments are hidden fleet-wide.
+        return sorted(
+            (d for d in self._deployments.values() if not d.removed_at),
+            key=lambda d: d.customer_name.lower(),
+        )
+
+    def remove_deployment(self, deployment_id: str, *, removed_at: str) -> CustomerDeployment:
+        with self._lock:
+            deployment = self._deployments.get(deployment_id)
+            if not deployment:
+                raise ValueError(f"unknown deployment: {deployment_id}")
+            updated = replace(
+                deployment,
+                removed_at=removed_at or datetime.now(timezone.utc).isoformat(),
+            )
+            self._deployments[deployment_id] = updated
+            self._save()
+            return updated
 
     def set_update_policy(self, deployment_id: str, update_policy: str) -> CustomerDeployment:
         if update_policy not in UPDATE_POLICIES or not update_policy:
@@ -800,6 +818,28 @@ class MemoryControlPlaneStore:
                 approver_id=approver_id,
                 nonce_hash=nonce_hash,
                 approved_at=approved_at,
+            )
+            self._teardown_requests[request_id] = updated
+            self._save()
+            return updated
+
+    def record_teardown_execution(
+        self,
+        request_id: str,
+        *,
+        succeeded: bool,
+        result: str,
+        executed_at: str,
+    ) -> CustomerTeardownRequest:
+        with self._lock:
+            request = self._teardown_requests.get(request_id)
+            if not request:
+                raise ValueError("teardown request not found.")
+            updated = apply_teardown_execution(
+                request,
+                succeeded=succeeded,
+                result=result,
+                executed_at=executed_at,
             )
             self._teardown_requests[request_id] = updated
             self._save()
