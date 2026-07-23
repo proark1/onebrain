@@ -27,7 +27,7 @@ COMMUNICATION_MODULES = (
 )
 
 CORE_MODULE_ID = "onebrain_core"
-OPTIONAL_MODULE_IDS = ("assistant", "kpi_dashboard", "ai_employees", "communication")
+OPTIONAL_MODULE_IDS = ("assistant", "kpi_dashboard", "ai_employees", "communication", "buchhaltung")
 
 
 @dataclass(frozen=True)
@@ -75,6 +75,12 @@ CORE_PURPOSES = ("knowledge_management", "admin_management", "gdpr_export", "gdp
 ASSISTANT_PURPOSES = tuple(sorted(ASSISTANT_CONTRACT_PURPOSES))
 COMMUNICATION_PURPOSES = ("customer_service_answer", "customer_service_inbox")
 KPI_PURPOSES = ("kpi_read", "kpi_configure", "kpi_snapshot_write")
+BUCHHALTUNG_PURPOSES = (
+    "accounting_read",
+    "accounting_ingest",
+    "accounting_configure",
+    "accounting_export",
+)
 AI_EMPLOYEE_PURPOSES = tuple(sorted(AI_EMPLOYEE_CONTRACT_PURPOSES))
 
 
@@ -121,6 +127,12 @@ AI_EMPLOYEES_APP = AppTemplate(
     AI_EMPLOYEE_PURPOSES,
     "AI Employees",
 )
+BUCHHALTUNG_APP = AppTemplate(
+    "buchhaltung",
+    ("business", "shared"),
+    BUCHHALTUNG_PURPOSES,
+    "Accounting",
+)
 
 
 # The Core app's enabled spaces are derived from the composition.  The catalogue
@@ -166,6 +178,14 @@ OPTIONAL_MODULES = (
         spaces=COMMUNICATION_SPACES,
         apps=(COMMUNICATION_APP,),
         modules=COMMUNICATION_MODULES,
+    ),
+    ProvisioningModule(
+        id="buchhaltung",
+        label="Accounting",
+        description="German-first accounting: invoice capture, booking proposals, and VAT figures.",
+        spaces=BUSINESS_SPACES,
+        apps=(BUCHHALTUNG_APP,),
+        modules=(),
     ),
 )
 

@@ -300,6 +300,74 @@
         "title": "AccountOut",
         "type": "object"
       },
+      "AccountingOverviewOut": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "confirmed_documents": {
+            "title": "Confirmed Documents",
+            "type": "integer"
+          },
+          "pending_documents": {
+            "title": "Pending Documents",
+            "type": "integer"
+          },
+          "space_id": {
+            "title": "Space Id",
+            "type": "string"
+          },
+          "total_documents": {
+            "title": "Total Documents",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id",
+          "total_documents",
+          "pending_documents",
+          "confirmed_documents"
+        ],
+        "title": "AccountingOverviewOut",
+        "type": "object"
+      },
+      "AccountingWorkspaceOut": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "account_name": {
+            "title": "Account Name",
+            "type": "string"
+          },
+          "space_id": {
+            "title": "Space Id",
+            "type": "string"
+          },
+          "space_kind": {
+            "title": "Space Kind",
+            "type": "string"
+          },
+          "space_name": {
+            "title": "Space Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "account_name",
+          "space_id",
+          "space_name",
+          "space_kind"
+        ],
+        "title": "AccountingWorkspaceOut",
+        "type": "object"
+      },
       "AiConnectorBindingOut": {
         "additionalProperties": false,
         "properties": {
@@ -5932,6 +6000,11 @@
             "title": "Account Id",
             "type": "string"
           },
+          "accounting": {
+            "additionalProperties": true,
+            "title": "Accounting",
+            "type": "object"
+          },
           "ai_employees": {
             "additionalProperties": true,
             "title": "Ai Employees",
@@ -7660,6 +7733,120 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/accounting": {
+      "get": {
+        "description": "Aggregate document counts for one workspace (403 unless Accounting is enabled).",
+        "operationId": "get_accounting_overview_api_accounting_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountingOverviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Accounting Overview",
+        "tags": [
+          "accounting"
+        ]
+      }
+    },
+    "/api/accounting/workspaces": {
+      "get": {
+        "description": "List the spaces where Accounting is installed and readable for this caller.",
+        "operationId": "list_accounting_workspaces_api_accounting_workspaces_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AccountingWorkspaceOut"
+                  },
+                  "title": "Response List Accounting Workspaces Api Accounting Workspaces Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Accounting Workspaces",
+        "tags": [
+          "accounting"
+        ]
+      }
+    },
     "/api/ai-employees/actions": {
       "get": {
         "operationId": "list_ai_employee_actions_api_ai_employees_actions_get",

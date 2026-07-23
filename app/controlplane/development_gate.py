@@ -10,6 +10,7 @@ DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS = (
     "kpi_dashboard",
     "ai_employees",
     "communication",
+    "buchhaltung",
 )
 
 DEVELOPMENT_GATE_CORE_MODULE_IDS = frozenset({

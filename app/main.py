@@ -23,7 +23,7 @@ from app.provisioning.customer_bootstrap import (
     decode_customer_bootstrap,
     reconcile_customer_bootstrap,
 )
-from app.routers import ai_employees, assistant, auth, chat, conversations, documents, drive, fleet, jobs, kpis, operator, platform, privacy, provisioning, rollouts, service, session, user_management
+from app.routers import accounting, ai_employees, assistant, auth, chat, conversations, documents, drive, fleet, jobs, kpis, operator, platform, privacy, provisioning, rollouts, service, session, user_management
 from app.seed import seed_if_empty
 from app.users.seed import seed_admin_from_env, seed_users_if_empty
 
@@ -95,6 +95,10 @@ def create_app() -> FastAPI:
     app.include_router(platform.router)
     app.include_router(kpis.router)
     app.include_router(ai_employees.router)
+    # Accounting (Buchhaltung) is an optional per-workspace product on the same
+    # template as KPI Dashboard / AI Employees: no separate container, mounted
+    # unconditionally, and gated to 403 by its AppInstallation when not enabled.
+    app.include_router(accounting.router)
     # The operator + provisioning control plane exposes cross-account state and can
     # spend money / create infrastructure. A pure customer-serving deployment sets
     # operator_console=false (and operator_mode=false) so neither surface is even

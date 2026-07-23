@@ -172,6 +172,13 @@ def get_kpi_store():
 
 
 @lru_cache
+def get_accounting_store():
+    from app.accounting.factory import build_accounting_store
+
+    return build_accounting_store(get_settings())
+
+
+@lru_cache
 def get_drive_store() -> DriveStore:
     from app.drive.factory import build_drive_store
 
