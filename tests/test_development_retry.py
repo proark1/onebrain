@@ -11,7 +11,9 @@ Two layers:
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from app.controlplane.base import ReleasePromotion, ReleasePromotionEvent
 from app.controlplane.memory import MemoryControlPlaneStore
@@ -193,13 +195,17 @@ def test_operator_retries_do_not_burn_the_auto_retry_budget():
 # --- Orchestrator -------------------------------------------------------------
 
 class _FakeStore:
-    def __init__(self, promotions, events):
+    def __init__(self, promotions, events, releases=None):
         self._promotions = list(promotions)
         self._events = {v: list(evs) for v, evs in events.items()}
+        self._releases = dict(releases or {})
         self.recorded: list[ReleasePromotionEvent] = []
 
     def list_release_promotions(self):
         return list(self._promotions)
+
+    def get_release(self, version):
+        return self._releases.get(version)
 
     def list_release_promotion_events(self, version):
         return list(self._events.get(version, []))
@@ -322,6 +328,47 @@ def test_orchestrator_does_not_raise_give_up_noise_on_a_superseded_exhausted_bui
     # Exhausted, but superseded → no give-up marker (the pipeline already moved past it).
     assert store.recorded == []
     assert spy.calls == []
+
+
+def test_orchestrator_skips_a_restore_required_release():
+    # Auto-retry cannot supply the human ack a restore_required release needs; re-dispatching
+    # it would overwrite the transient failure with a permanent ack-needed one. Leave it.
+    version = "2026.07.22.501"
+    promo = _promo(version, failure_reason="dev_rollout_failed")
+    events = {version: [_event(version, action="dev_rollout_failed", created_at=_ago(minutes=30))]}
+    store = _FakeStore([promo], events,
+                       releases={version: SimpleNamespace(rollback_kind="restore_required")})
+    spy = _DispatchSpy()
+    decisions = _reclaim(store, spy)
+    assert spy.calls == []   # never auto-dispatched
+    assert decisions[0].action == "skip" and decisions[0].reason == "restore_required"
+
+
+def test_orchestrator_stays_quiet_when_the_dispatch_is_a_noop(caplog):
+    # When the gate is not ready, _dispatch_development_candidate no-ops and records no event.
+    # Auto-retry must not log a misleading "re-dispatched" every tick until the gate returns.
+    version = "2026.07.22.486"
+    store = _FakeStore([_promo(version, failure_reason="dev_rollout_failed")],
+                       {version: [_event(version, action="dev_rollout_failed", created_at=_ago(minutes=30))]})
+    spy = _DispatchSpy()   # records the call but adds NO event (a no-op)
+    with caplog.at_level(logging.INFO, logger="onebrain.fleet"):
+        _reclaim(store, spy)
+    assert spy.calls == [(version, AUTO_RETRY_ACTOR)]   # it DID attempt
+    assert "re-dispatched" not in caplog.text           # ...but stayed quiet
+
+
+def test_orchestrator_logs_when_the_dispatch_records_an_attempt(caplog):
+    version = "2026.07.22.486"
+    store = _FakeStore([_promo(version, failure_reason="dev_rollout_failed")],
+                       {version: [_event(version, action="dev_rollout_failed", created_at=_ago(minutes=30))]})
+
+    def _dispatch_records_event(store, v, *, actor):
+        store._events[v].append(_event(v, action="dev_rollout_retried", actor=actor,
+                                       created_at=_ago(minutes=1)))
+
+    with caplog.at_level(logging.INFO, logger="onebrain.fleet"):
+        _reclaim(store, _dispatch_records_event)
+    assert "re-dispatched" in caplog.text
 
 
 # --- Real memory store: non-transition event append --------------------------

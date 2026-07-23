@@ -239,7 +239,9 @@ def reclaim_retryable_development_candidates(
     Candidates already SUPERSEDED by a newer verified release are skipped entirely — not
     retried and not alerted — so auto-retry never burns gate cycles or raises give-up
     noise on a build the pipeline has already moved past (roadmap fork #2: newest wins).
-    An operator can still hand-run retry-dev on any candidate.
+    A ``restore_required`` release is also skipped: auto-retry cannot supply the human ack
+    it needs, and a blind re-dispatch would overwrite the transient failure with a permanent
+    ack-needed one. An operator can still hand-run retry-dev on any candidate.
     """
     logger = log or _log
     promotions = store.list_release_promotions()
@@ -252,6 +254,13 @@ def reclaim_retryable_development_candidates(
         if _is_superseded(version, newest_verified):
             decisions.append(AutoRetryDecision("skip", version, reason="superseded"))
             continue
+        release = store.get_release(version)
+        if release is not None and getattr(release, "rollback_kind", "") == "restore_required":
+            # Auto-retry cannot supply the human ack a restore_required release needs; a blind
+            # re-dispatch fails preflight with restore_required_ack_needed and OVERWRITES the
+            # original transient failure. Leave it for an operator (who re-acks via retry-dev).
+            decisions.append(AutoRetryDecision("skip", version, reason="restore_required"))
+            continue
         events = store.list_release_promotion_events(version)
         decision = plan_development_auto_retry(
             promotion, events, now=now,
@@ -263,10 +272,15 @@ def reclaim_retryable_development_candidates(
         if decision.action == "retry":
             try:
                 dispatch(store, version, actor=AUTO_RETRY_ACTOR)
-                logger.info(
-                    "development auto-retry re-dispatched %s (reason=%s, attempt=%d/%d)",
-                    version, decision.reason, decision.attempts + 1, max(1, int(max_attempts)),
-                )
+                # Only a dispatch that recorded a new attempt event actually advanced the
+                # pipeline. When the gate is missing / busy / unhealthy the dispatcher no-ops
+                # silently and returns the unchanged dev_failed promotion, so stay quiet rather
+                # than logging a misleading "re-dispatched" every tick until the gate is ready.
+                if len(store.list_release_promotion_events(version)) > len(events):
+                    logger.info(
+                        "development auto-retry re-dispatched %s (reason=%s, attempt=%d/%d)",
+                        version, decision.reason, decision.attempts + 1, max(1, int(max_attempts)),
+                    )
             except Exception as exc:  # one bad candidate must never break the tick
                 logger.warning("development auto-retry could not dispatch %s: %s", version, exc)
         elif decision.action == "give_up" and not decision.already_alerted:
