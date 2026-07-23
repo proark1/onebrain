@@ -13,6 +13,7 @@ JOB_SERVICE_INTAKE = "service_intake"
 JOB_RETENTION_RUN = "retention_run"
 JOB_DRIVE_FILE_INGEST = "drive_file_ingest"
 JOB_DRIVE_REVISION_MALWARE_SCAN = "drive_revision_malware_scan"
+JOB_ACCOUNTING_EXTRACT = "accounting_extract"
 
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
