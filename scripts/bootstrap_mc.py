@@ -196,6 +196,18 @@ def _single_line(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip()) and not any(char in value for char in "\x00\r\n")
 
 
+def _compose_env_safe(value: str) -> bool:
+    """True when a value is safe to bake into the MC box's /opt/onebrain/.env.
+
+    The operator (role=operator) box runs ``docker compose up`` DIRECTLY against that file
+    on first boot (onebrain_bootstrap.sh is customer-only, render.py), and compose treats an
+    unescaped ``$`` in a .env value as a variable reference — silently rewriting it, with no
+    way to fix an SSH-less box in place. Every other MC .env value is ``$``-free by
+    construction (tokens/keys/base64); a free-form operator string such as a webhook URL is
+    the one that can carry a ``$``. Also reject CR/LF/NUL that would corrupt the dotenv line."""
+    return "$" not in value and not any(char in value for char in "\x00\r\n")
+
+
 def _is_rfc1123_fqdn(value: str) -> bool:
     """Strict DNS name for the public HTTPS/TLS MC endpoint."""
     labels = value.split(".")
@@ -329,6 +341,14 @@ def _validate_production_bootstrap(args, settings) -> _McBrokerTls:
     ):
         if not getattr(settings, attr, False):
             errors.append(f"set {name}")
+    # Mirror assert_production_mission_control_ready (app/config.py): operator self-deploy
+    # needs the CI development verify key. Now that the flag is actually threaded into the
+    # MC app env, an auto-deploy-on / no-dev-key box would boot-loop create_app() — a dead,
+    # SSH-less box. Fail the bootstrap preflight here, before any server is created.
+    if getattr(settings, "operator_auto_deploy_enabled", False) and not (
+            getattr(settings, "dev_release_verify_public_key", "") or "").strip():
+        errors.append(
+            "set ONEBRAIN_DEV_RELEASE_VERIFY_PUBLIC_KEY (required by ONEBRAIN_OPERATOR_AUTO_DEPLOY_ENABLED)")
 
     if errors:
         raise ValueError("Production Mission Control bootstrap configuration is incomplete: " + "; ".join(errors))
@@ -389,6 +409,16 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
     # PRIVATE key — MC's own signing key from escrow — and the callback allowed-hosts).
     dotenv = render_dotenv(bundle)
     private_key = getattr(settings, "fleet_desired_state_private_key", "") or ""
+    # Compose interpolates the MC box's baked .env on first boot (the operator role runs
+    # `compose up` directly against it), so a free-form operator value containing '$' — e.g. a
+    # webhook signed-token query — would be silently rewritten. Fail closed at render time with
+    # an actionable fix rather than ship an SSH-less box that delivers alerts to a corrupted URL.
+    alert_webhook_url = getattr(settings, "fleet_alert_webhook_url", "") or ""
+    if alert_webhook_url and not _compose_env_safe(alert_webhook_url):
+        raise ValueError(
+            "ONEBRAIN_FLEET_ALERT_WEBHOOK_URL must not contain '$' or newlines: docker-compose "
+            "interpolates the MC box's baked .env on first boot and would silently rewrite it. "
+            "Percent-encode a literal '$' as %24.")
     overlay = [
         # Arm Mission Control: is_operator_surface is a read-only @property, so the render's
         # ONEBRAIN_IS_OPERATOR_SURFACE=true does NOT set operator_mode. Bake the settable
@@ -439,8 +469,7 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
          str(int(getattr(settings, "development_auto_retry_backup_backoff_seconds", 21600)))),
         ("ONEBRAIN_PIPELINE_STALL_ALERT_SECONDS",
          str(int(getattr(settings, "pipeline_stall_alert_seconds", 10800)))),
-        ("ONEBRAIN_FLEET_ALERT_WEBHOOK_URL",
-         getattr(settings, "fleet_alert_webhook_url", "") or ""),
+        ("ONEBRAIN_FLEET_ALERT_WEBHOOK_URL", alert_webhook_url),   # validated compose-safe above
     ]
     dotenv += "".join(f"{k}={v}\n" for k, v in overlay)
 
