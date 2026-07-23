@@ -359,6 +359,15 @@ class Settings(BaseSettings):
     # (UPDATE_RELEASE_PUBLIC_KEYS) for its updater to apply a dev-signed release. The
     # ONE predicate that widens this trust is is_operator_self_deployment().
     operator_auto_deploy_enabled: bool = False
+    # Bounded retry of MC's OWN self-deploy (roadmap Gap B). A self-update failure is only a
+    # convergence TIMEOUT — indistinguishable from a transient apply failure like disk-full —
+    # so the old "never re-attempt a failed target" guard permanently stranded an otherwise
+    # good release on one blip. Re-attempt up to N times with a backoff instead; the cap keeps
+    # a genuinely bad build from hot-looping the control plane. Only ever affects MC's own box
+    # (operator_auto_deploy_enabled must be on). Set max_attempts=1 to restore the old
+    # single-attempt behavior.
+    operator_self_max_attempts: int = 3
+    operator_self_retry_backoff_seconds: int = 900   # min spacing between self-deploy attempts (15 min)
     release_candidate_key_id: str = ""        # narrowly scoped CI candidate credential id
     release_candidate_key_hash: str = ""      # sha256$... hash; raw secret is never stored
     # ^ repo-prefix granular (B2): a bare host like "ghcr.io" would allowlist every GHCR tenant. The default

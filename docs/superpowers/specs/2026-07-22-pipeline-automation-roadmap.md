@@ -74,18 +74,30 @@ other manual step below is a gap, not a feature.
   a box provisioned by hand / before those existed**, not missing product code. The live MC
   is a hand-run `docker compose` at `/opt/onebrain` (project `onebrain-mc`) whose deploys
   bypass `update.sh` entirely, so the rollout is opened and never consumed. Compounding it,
-  the self-deploy **"never re-attempts a failed target"**
+  the self-deploy **used to "never re-attempt a failed target"**
   ([operator.py:2163-2167](../../../app/routers/operator.py)), so a *transient* apply
   failure (e.g. tonight's disk-full) would permanently skip that release.
-- **Fix:** **backfill and reuse the existing box-agent path** rather than build a parallel
-  applier — get MC actually running the rendered `update.sh` against its own served
-  desired-state (*prune → pull digests → compose recreate → health-check → report → roll back
-  on failure*). Two prerequisites before relaxing the never-retry guard:
-  - **Plumb a real failure reason.** `_reconcile_operator_self_pull` records every failure as
-    the single constant `operator_self_convergence_timeout`
+- **DONE (this PR) — bounded self-deploy retry.** The never-re-attempt guard is now a
+  *bounded* retry with backoff (`operator_self_max_attempts`, default 3;
+  `operator_self_retry_backoff_seconds`, default 15 min). This deliberately sidesteps the
+  "plumb a real failure reason" prerequisite below: since the only failure signal is a
+  timeout that can't tell transient from permanent, we retry *every* failure a bounded number
+  of times rather than trying to classify — the cap + backoff + `update.sh`'s own health-
+  check/rollback keep a genuinely bad build from hot-looping the control plane, and a
+  transient blip now self-heals instead of stranding the release. `max_attempts=1` restores
+  the old single-attempt behavior. Only touches MC's own box; customer delivery untouched.
+- **Remaining (the applier + backup source):** **backfill and reuse the existing box-agent
+  path** rather than build a parallel applier — get the live MC actually running the rendered
+  `update.sh` against its own served desired-state (*prune → pull digests → compose recreate →
+  health-check → report → roll back on failure*). This is **operational** (align the hand-built
+  `onebrain-mc` box to the rendered agent path — project name + enabling `onebrain-update.timer`
+  against the served envelope), not missing product code. Two follow-ons:
+  - **(Optional) plumb a real failure reason.** `_reconcile_operator_self_pull` records every
+    failure as the single constant `operator_self_convergence_timeout`
     ([pull_reconcile.py:283-288](../../../app/controlplane/pull_reconcile.py)) — disk-full,
-    verifier rejection and a genuinely bad release are indistinguishable. Persist the
-    updater's actionable reason first, or "retry only transient" has nothing to switch on.
+    verifier rejection and a genuinely bad release are indistinguishable. Not needed for the
+    bounded retry above, but it would enable *smarter* retry (transient-only) and a precise
+    give-up alert (Gap D) instead of a blind cap.
   - **Give MC a backup source.** A *migration-crossing* self-update trips `plan_update`'s
     backup gate (`backup_required_for_schema_update` for non-gate deployments,
     [base.py:828-840](../../../app/controlplane/base.py)), yet operator-role boxes get no
@@ -136,12 +148,16 @@ other manual step below is a gap, not a feature.
 
 ## Recommended sequence
 
-1. **Phase 1 — Self-healing dev pipeline. — LANDED (this PR).** Gap A + a give-up alert
+1. **Phase 1 — Self-healing dev pipeline. — LANDED (#61).** Gap A + a give-up alert
    (Gap D-lite): [`development_retry.py`](../../../app/controlplane/development_retry.py)
    on the reconcile tick, opt-in via `development_auto_retry_enabled`. Biggest toil
    reduction per unit effort; directly prevents the "notice days later, hand-retry" loop.
-2. **Phase 2 — MC runs itself.** Gap B + Gap C together (applier + prune). Ends the
-   hand-deploy that dominated tonight.
+2. **Phase 2 — MC runs itself.** Gap C (prune) shipped as **#60**; the Gap B **bounded
+   self-deploy retry** landed **this PR** (a transient MC apply failure self-heals instead
+   of permanently stranding the release). What remains is **operational**: align the
+   hand-built `onebrain-mc` box to the rendered `update.sh`/`onebrain-update.timer` agent
+   path so it actually consumes its served desired-state — that is what finally ends the
+   hand-deploy.
 3. **Phase 3 — Observability.** Gap D in full.
 4. **Phase 4 — Infra self-healing.** Gap E2 (gate auto-replacement). E1 already landed (#57).
 
