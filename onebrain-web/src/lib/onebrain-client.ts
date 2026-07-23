@@ -13,6 +13,8 @@ import type {
   DevelopmentRetryInput,
   DocumentSummary,
   InstallPlatformAppInput,
+  AccountingConfirmInput,
+  AccountingDocument,
   AccountingOverview,
   AccountingWorkspace,
   CreateKpiDefinitionInput,
@@ -551,6 +553,7 @@ export function provisionCustomer(input: ProvisionCustomerInput): Promise<Provis
       account_id: input.account_id?.trim() || null,
       account_kind: input.account_kind || "organization",
       module_ids: input.module_ids,
+      default_locale: input.default_locale || "de",
       current_migration: input.current_migration?.trim() || "",
       customer_name: input.customer_name.trim(),
       deployment_id: input.deployment_id?.trim() || null,
@@ -861,6 +864,35 @@ export function listAccountingWorkspaces(): Promise<AccountingWorkspace[]> {
 export function getAccountingOverview(accountId: string, spaceId: string): Promise<AccountingOverview> {
   const params = new URLSearchParams({ account_id: accountId, space_id: spaceId });
   return requestJson<AccountingOverview>(`/accounting?${params.toString()}`);
+}
+
+export function listAccountingDocuments(
+  accountId: string,
+  spaceId: string,
+  status = "",
+): Promise<AccountingDocument[]> {
+  const params = new URLSearchParams({ account_id: accountId, space_id: spaceId });
+  if (status) params.set("status", status);
+  return requestJson<AccountingDocument[]>(`/accounting/documents?${params.toString()}`);
+}
+
+export function getAccountingDocument(
+  accountId: string,
+  spaceId: string,
+  documentId: string,
+): Promise<AccountingDocument> {
+  const params = new URLSearchParams({ account_id: accountId, space_id: spaceId });
+  return requestJson<AccountingDocument>(
+    `/accounting/documents/${encodeURIComponent(documentId)}?${params.toString()}`,
+  );
+}
+
+export function confirmAccountingDocuments(input: AccountingConfirmInput): Promise<AccountingDocument[]> {
+  return requestJson<AccountingDocument[]>("/accounting/documents/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
 }
 
 export function exportPrivacyData(accountId: string, spaceId = ""): Promise<PrivacyExport> {

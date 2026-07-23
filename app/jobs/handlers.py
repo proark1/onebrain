@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.intake.pipeline import IntakeInput
 from app.jobs.base import (
+    JOB_ACCOUNTING_EXTRACT,
     JOB_DOCUMENT_INGEST,
     JOB_DRIVE_FILE_INGEST,
     JOB_DRIVE_REVISION_MALWARE_SCAN,
@@ -60,6 +61,10 @@ def handle_job(job: Job, store: JobStore) -> dict:
         from app.deps import get_drive_malware_scanning_service
 
         return get_drive_malware_scanning_service().handle(job)
+    if job.type == JOB_ACCOUNTING_EXTRACT:
+        from app.deps import get_accounting_service
+
+        return get_accounting_service().handle_extraction_job(job)
     if job.type == JOB_SERVICE_CAPTURE:
         return _handle_service_capture(job)
     if job.type == JOB_SERVICE_INTAKE:

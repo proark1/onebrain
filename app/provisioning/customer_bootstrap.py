@@ -15,13 +15,18 @@ import re
 from dataclasses import dataclass, replace
 from typing import Mapping
 
+from app.accounting.base import ACCOUNTING_APP_ID, accounting_category_id
 from app.platform.base import (
     ACCOUNT_KINDS,
+    DEFAULT_LOCALE,
+    AccessGroup,
+    AccessGroupMembership,
     Account,
     AppInstallation,
     AuditEvent,
     Space,
     default_brand_theme,
+    normalize_locale,
 )
 from app.provisioning.bundles import resolve_module_composition
 from app.provisioning.service import PURPOSE_SCOPES
@@ -31,6 +36,13 @@ from app.servicekeys.base import ServiceKey, hash_secret, parse_key
 BOOTSTRAP_SCHEMA_VERSION = 2
 MAX_BOOTSTRAP_ENCODED_BYTES = 4096
 _ACCOUNT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,119}$")
+# The bootstrap descriptor is a STRICT, versioned closed set: already-released box
+# images validate this field set exactly and reject any extra key before they can
+# reconcile. It must therefore never gain a field — a box provisioned onto an
+# older, still-approved release would fail bootstrap on the new key. Additive
+# per-account settings like the UI locale ride a SEPARATE box.env value instead
+# (ONEBRAIN_CUSTOMER_DEFAULT_LOCALE), which older images simply ignore; see the
+# default_locale parameter of reconcile_customer_bootstrap.
 _FIELDS = frozenset({"schema_version", "account_id", "account_kind", "customer_name", "module_ids"})
 _LOCAL_INTEGRATION_APPS = ("assistant", "communication")
 
@@ -177,6 +189,47 @@ def _record_bootstrap_audit_once(platform_store, event: AuditEvent) -> None:
             raise
 
 
+def _seed_accounting_category(
+    platform_store,
+    *,
+    account_id: str,
+    template,
+    spaces_by_key: Mapping[str, Space],
+    owner_user_id: str,
+    seed_membership: bool,
+) -> None:
+    """Create the ``buchhaltung`` Drive AccessGroup (+ owner) where installed.
+
+    The accounting file trigger recognises invoices by this deterministic
+    per-space AccessGroup id, so it must exist from install (plan §3/§4) — a bare
+    AppInstallation is not enough. Idempotent: re-reconcile upserts by the same id.
+    Admins already see the category regardless, so a membership is only seeded when
+    a real owner user exists (a non-admin finance user still needs it).
+    """
+    if template is None:
+        return
+    for key in template.space_keys:
+        space = spaces_by_key.get(key)
+        if not space:
+            continue
+        group_id = accounting_category_id(space.id)
+        platform_store.upsert_access_group(AccessGroup(
+            id=group_id,
+            account_id=account_id,
+            name="Buchhaltung",
+            kind="department",
+            space_id=space.id,
+        ))
+        if seed_membership and owner_user_id:
+            platform_store.upsert_access_group_membership(AccessGroupMembership(
+                id=f"agm_{space.id}_buchhaltung_owner",
+                account_id=account_id,
+                group_id=group_id,
+                user_id=owner_user_id,
+                space_id=space.id,
+            ))
+
+
 def reconcile_customer_bootstrap(
     descriptor: CustomerBootstrapDescriptor,
     *,
@@ -186,9 +239,17 @@ def reconcile_customer_bootstrap(
     session_store,
     administrator_email: str,
     integration_keys: Mapping[str, str],
+    default_locale: str = DEFAULT_LOCALE,
 ) -> CustomerBootstrapResult:
-    """Converge a customer database to its explicit product-module selection."""
+    """Converge a customer database to its explicit product-module selection.
+
+    ``default_locale`` is the account's UI language. It is passed alongside the
+    descriptor (not inside it) so it can travel as a plain box.env value that older
+    box images ignore — see the note on ``_FIELDS``. Coerced to a supported locale
+    so a stray value can never crash the box at bootstrap.
+    """
     descriptor = _validated_descriptor(descriptor)
+    resolved_locale = normalize_locale(default_locale)
     composition = resolve_module_composition(descriptor.module_ids)
     expected_integrations = [
         app_id
@@ -226,6 +287,7 @@ def reconcile_customer_bootstrap(
         kind=descriptor.account_kind,
         name=descriptor.customer_name,
         owner_user_id=owner_user_id,
+        default_locale=resolved_locale,
     ))
 
     spaces_by_key: dict[str, Space] = {}
@@ -248,6 +310,15 @@ def reconcile_customer_bootstrap(
             allowed_purposes=template.purposes,
             display_name=template.display_name,
         ))
+
+    _seed_accounting_category(
+        platform_store,
+        account_id=descriptor.account_id,
+        template=app_templates.get(ACCOUNTING_APP_ID),
+        spaces_by_key=spaces_by_key,
+        owner_user_id=owner_user_id,
+        seed_membership=administrator is not None,
+    )
 
     platform_store.upsert_brand_theme(replace(
         default_brand_theme(descriptor.account_id),
@@ -284,7 +355,11 @@ def reconcile_customer_bootstrap(
         target_type="account",
         target_id=descriptor.account_id,
         decision="allowed",
-        meta={"module_ids": list(descriptor.module_ids), "schema_version": descriptor.schema_version},
+        meta={
+            "module_ids": list(descriptor.module_ids),
+            "default_locale": resolved_locale,
+            "schema_version": descriptor.schema_version,
+        },
     ))
 
     return CustomerBootstrapResult(

@@ -82,7 +82,7 @@ def test_foundation_migration_scopes_groups_and_purges_only_terminal_job_bytes(m
 
 
 def test_schema_and_runtime_rls_registries_include_every_drive_table():
-    assert REQUIRED_ALEMBIC_REVISION == "0036_accounting_foundations"
+    assert REQUIRED_ALEMBIC_REVISION == "0037_account_default_locale"
     assert DRIVE_TABLES <= set(RLS_REQUIRED_TABLES)
     assert ACCESS_GROUP_TABLES <= set(RLS_REQUIRED_TABLES)
 

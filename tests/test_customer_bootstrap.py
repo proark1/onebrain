@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
+import json
 from dataclasses import replace
 
 import pytest
 
+from app.accounting.base import accounting_category_id
 from app.auth.passwords import hash_password
 from app.platform.memory import MemoryPlatformStore
 from app.provisioning.bundles import OPTIONAL_MODULE_IDS
@@ -45,6 +48,49 @@ def test_customer_bootstrap_descriptor_round_trips_and_is_deterministic():
     assert encoded == encode_customer_bootstrap(descriptor)
     assert decode_customer_bootstrap(encoded) == descriptor
     assert decode_customer_bootstrap("") is None
+
+
+def test_customer_bootstrap_descriptor_stays_a_strict_five_field_set():
+    # Already-released box images validate the descriptor field-for-field and reject
+    # any extra key before they can reconcile. Adding a field would fail bootstrap on
+    # a box provisioned onto an older, still-approved release, so the encoded shape
+    # must stay exactly these five keys — per-account extras (e.g. the UI locale)
+    # travel outside the descriptor (ONEBRAIN_CUSTOMER_DEFAULT_LOCALE).
+    encoded = encode_customer_bootstrap(_descriptor())
+    payload = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+
+    assert set(payload) == {
+        "schema_version",
+        "account_id",
+        "account_kind",
+        "customer_name",
+        "module_ids",
+    }
+
+
+def test_reconcile_applies_the_default_locale_passed_alongside_the_descriptor():
+    # default_locale is a reconcile parameter (not a descriptor field): it lands on
+    # the account, and an unsupported value is coerced to the German default rather
+    # than crashing the box at bootstrap.
+    def _reconcile(platform, locale):
+        return reconcile_customer_bootstrap(
+            replace(_descriptor(), module_ids=()),
+            platform_store=platform,
+            service_key_store=MemoryServiceKeyStore(),
+            user_store=MemoryUserStore(),
+            session_store=MemorySessionStore(),
+            administrator_email="",
+            integration_keys={},
+            default_locale=locale,
+        )
+
+    english = MemoryPlatformStore()
+    _reconcile(english, "en")
+    assert english.get_account("onebrain-development").default_locale == "en"
+
+    coerced = MemoryPlatformStore()
+    _reconcile(coerced, "fr")
+    assert coerced.get_account("onebrain-development").default_locale == "de"
 
 
 @pytest.mark.parametrize(
@@ -130,6 +176,16 @@ def test_full_stack_bootstrap_creates_local_topology_credentials_and_audit_once(
     assert {installation.app_id for installation in installations} == {
         "onebrain_core", "assistant", "communication", "kpi_dashboard", "ai_employees", "buchhaltung",
     }
+
+    # Buchhaltung seeds a deterministic Drive category group (+ owner membership)
+    # wherever the module is enabled, so the malware-clean extraction trigger has a
+    # category to recognise. Idempotent across both reconciles above.
+    business = next(space for space in platform.list_spaces(first.account_id) if space.kind == "business")
+    group_id = accounting_category_id(business.id)
+    assert group_id in {group.id for group in platform.list_access_groups(first.account_id, business.id)}
+    memberships = platform.list_access_group_memberships(first.account_id, admin.id)
+    assert any(membership.group_id == group_id for membership in memberships)
+
     assert len(platform.list_audit(first.account_id)) == 1
     assert platform.list_audit(first.account_id)[0].action == "customer.bootstrap_reconciled"
     assert platform.get_brand_theme(first.account_id) is not None
@@ -289,7 +345,7 @@ def test_upsert_bootstrap_account_asks_for_its_own_account_scope():
             return None
 
         def fetchone(self):
-            return ("acct_x", "organization", "Name", "usr_1", "active", None)
+            return ("acct_x", "organization", "Name", "usr_1", "active", None, "de")
 
         def __enter__(self):
             return self

@@ -230,6 +230,9 @@ export function OperatorPanel() {
   const [provisionName, setProvisionName] = useState("");
   const [provisionOwnerEmail, setProvisionOwnerEmail] = useState("");
   const [selectedProvisionModuleIds, setSelectedProvisionModuleIds] = useState<string[]>([]);
+  // Platform UI language for the customer, chosen alongside the modules (German
+  // primary). Flows to the account via the provisioning request → bootstrap.
+  const [provisionLanguage, setProvisionLanguage] = useState("de");
   const [selectedProvisionVersion, setSelectedProvisionVersion] = useState("");
   const [provisionRing, setProvisionRing] = useState("manual");
   const [provisionAccountId, setProvisionAccountId] = useState("");
@@ -429,6 +432,7 @@ export function OperatorPanel() {
           name: provisionBrandTheme.name?.trim() || provisionName.trim(),
         },
         module_ids: selectedProvisionModuleIds,
+        default_locale: provisionLanguage,
         customer_name: provisionName,
         deployment_type: HETZNER_DEPLOYMENT_TYPE,
         initial_version: provisionVersion,
@@ -447,6 +451,7 @@ export function OperatorPanel() {
       setProvisionName("");
       setProvisionOwnerEmail("");
       setProvisionAccountId("");
+      setProvisionLanguage("de");
       setShowProvisionForm(false);
       if (!dispatchFailed) {
         setNotice(result.provisioning_run
@@ -785,6 +790,15 @@ export function OperatorPanel() {
                   selectedIds={selectedProvisionModuleIds}
                 />
                 <div className="operatorFormGrid">
+                  <SelectField
+                    label="Console language"
+                    options={[
+                      { label: "Deutsch", value: "de" },
+                      { label: "English", value: "en" },
+                    ]}
+                    value={provisionLanguage}
+                    onChange={setProvisionLanguage}
+                  />
                   <SelectField
                     label="Initial version"
                     options={eligibleProvisionReleases.map((release) => ({

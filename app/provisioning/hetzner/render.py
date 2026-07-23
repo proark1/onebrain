@@ -204,6 +204,10 @@ class BoxRenderInputs:
                                                 # values). Empty for a CUSTOMER box, which FETCHES /opt/onebrain/.env
                                                 # via the exchange (onebrain_bootstrap.sh) instead.
     customer_bootstrap: str = ""                 # Non-secret, versioned customer topology descriptor.
+    customer_default_locale: str = "de"          # Account UI language (de/en). A plain box.env value,
+                                                 # deliberately NOT inside customer_bootstrap: the descriptor
+                                                 # is a strict closed set older box images reject on any extra
+                                                 # key, whereas an unknown env var is harmless to them.
     postgres_app_role: str = _DEFAULT_APP_ROLE
     postgres_worker_role: str = _DEFAULT_WORKER_ROLE
     postgres_assistant_role: str = _DEFAULT_ASSISTANT_ROLE
@@ -242,6 +246,8 @@ def _validate(inp: BoxRenderInputs) -> None:
         raise ValueError("invalid Drive policy mode")
     if inp.pii_phase not in {"synthetic", "dpia_signed"}:
         raise ValueError("invalid PII phase")
+    if inp.customer_default_locale not in {"de", "en"}:
+        raise ValueError("invalid customer default locale (expected de or en)")
     if inp.drive_policy_mode == "storage_and_indexing" and inp.pii_phase != "dpia_signed":
         raise ValueError("Drive indexing requires a signed DPIA")
     if inp.fqdn and not _ID_RE.match(inp.fqdn):
@@ -795,6 +801,10 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             # reports the release-gate heartbeat.
             pairs += [
                 ("ONEBRAIN_CUSTOMER_BOOTSTRAP", inp.customer_bootstrap),
+                # Account UI language, applied by the box's reconcile. A newer box reads it;
+                # an older one ignores the unknown var — the forward-compatible channel for
+                # a per-account setting the strict bootstrap descriptor must not carry.
+                ("ONEBRAIN_CUSTOMER_DEFAULT_LOCALE", inp.customer_default_locale),
                 (refs.assistant_service_key_env, "${" + refs.assistant_service_key_env + "}"),
                 (refs.communication_service_key_env, "${" + refs.communication_service_key_env + "}"),
                 ("ONEBRAIN_OPERATOR_MODE", "false"),

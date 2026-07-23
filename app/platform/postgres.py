@@ -10,6 +10,7 @@ from app.db.rls import set_rls_scope
 from app.db.schema import validate_postgres_schema
 from app.platform.base import (
     CUSTOMER_SERVICE_PURPOSES,
+    DEFAULT_LOCALE,
     PRIVATE_SPACE_KINDS,
     AccessDecision,
     AccessGroup,
@@ -135,7 +136,8 @@ class PostgresPlatformStore:
 
     def _account_row(self, r) -> Account:
         return Account(id=r[0], kind=r[1], name=r[2], owner_user_id=r[3], status=r[4],
-                       created_at=r[5].isoformat() if r[5] else "")
+                       created_at=r[5].isoformat() if r[5] else "",
+                       default_locale=(r[6] if len(r) > 6 else None) or DEFAULT_LOCALE)
 
     def _space_row(self, r) -> Space:
         return Space(id=r[0], account_id=r[1], kind=r[2], name=r[3], status=r[4],
@@ -183,8 +185,10 @@ class PostgresPlatformStore:
         validate_account(account)
         with self._conn(admin=True) as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO platform_accounts (id, kind, name, owner_user_id, status) VALUES (%s, %s, %s, %s, %s)",
-                (account.id, account.kind, account.name, account.owner_user_id, account.status),
+                "INSERT INTO platform_accounts (id, kind, name, owner_user_id, status, default_locale) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (account.id, account.kind, account.name, account.owner_user_id, account.status,
+                 account.default_locale),
             )
             conn.commit()
         return account
@@ -197,16 +201,18 @@ class PostgresPlatformStore:
         with self._conn(admin=True, account_id=account.id) as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO platform_accounts (id, kind, name, owner_user_id, status)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO platform_accounts (id, kind, name, owner_user_id, status, default_locale)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (id) DO UPDATE SET
                     kind = EXCLUDED.kind,
                     name = EXCLUDED.name,
                     owner_user_id = EXCLUDED.owner_user_id,
-                    status = EXCLUDED.status
-                RETURNING id, kind, name, owner_user_id, status, created_at
+                    status = EXCLUDED.status,
+                    default_locale = EXCLUDED.default_locale
+                RETURNING id, kind, name, owner_user_id, status, created_at, default_locale
                 """,
-                (account.id, account.kind, account.name, account.owner_user_id, account.status),
+                (account.id, account.kind, account.name, account.owner_user_id, account.status,
+                 account.default_locale),
             )
             row = cur.fetchone()
             conn.commit()
@@ -214,14 +220,18 @@ class PostgresPlatformStore:
 
     def get_account(self, account_id: str) -> Optional[Account]:
         with self._conn(account_id=account_id) as conn, conn.cursor() as cur:
-            cur.execute("SELECT id, kind, name, owner_user_id, status, created_at FROM platform_accounts WHERE id = %s",
-                        (account_id,))
+            cur.execute(
+                "SELECT id, kind, name, owner_user_id, status, created_at, default_locale "
+                "FROM platform_accounts WHERE id = %s",
+                (account_id,))
             row = cur.fetchone()
         return self._account_row(row) if row else None
 
     def list_accounts(self) -> List[Account]:
         with self._conn(admin=True) as conn, conn.cursor() as cur:
-            cur.execute("SELECT id, kind, name, owner_user_id, status, created_at FROM platform_accounts ORDER BY name")
+            cur.execute(
+                "SELECT id, kind, name, owner_user_id, status, created_at, default_locale "
+                "FROM platform_accounts ORDER BY name")
             rows = cur.fetchall()
         return [self._account_row(r) for r in rows]
 
