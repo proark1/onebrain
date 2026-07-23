@@ -1531,6 +1531,21 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
             # volume verifier. Operator boxes never receive it or a Drive directory.
             ("/etc/onebrain-drive-enabled", "enabled\n", "0644"),
         ])
+    if inp.role == "operator":
+        # Mission Control is deployed by hand (docker compose --force-recreate against a
+        # hand-edited images.override.yml), so update.sh's immediate post-update prune
+        # never runs for it and the daily 168h host-maintenance sweep is too lax for its
+        # deploy cadence -- stale image trios accumulate until the root disk fills. This
+        # MC-only timer reruns the SAME vetted, rollback-safe host-maintenance prune
+        # every few hours with a short retention. Customer/gate boxes never receive it:
+        # they auto-update via update.sh, which already prunes superseded images.
+        assets.extend([
+            ("/etc/systemd/system/onebrain-mc-image-prune.service",
+             _read_box_file("onebrain-mc-image-prune.service").replace(
+                 "{{COMPOSE_PROJECT}}", inp.compose_project), "0644"),
+            ("/etc/systemd/system/onebrain-mc-image-prune.timer",
+             _read_box_file("onebrain-mc-image-prune.timer"), "0644"),
+        ])
     # Rendered env files contain `${VAR}` references rather than secret values;
     # package them with the other non-secret assets. The real exchanged/baked
     # operator dotenv is in the separate MC-only secret archive below.
@@ -1646,6 +1661,10 @@ def render_cloud_init(inp: BoxRenderInputs) -> str:
           if inp.role != "operator" else []),
         "systemctl enable --now onebrain-update.timer",
         "systemctl enable --now onebrain-host-maintenance.timer",
+        # Mission Control only: frequent rollback-safe image reclaim for its manual
+        # deploy path (customer/gate boxes prune via update.sh instead).
+        *(["systemctl enable --now onebrain-mc-image-prune.timer"]
+          if inp.role == "operator" else []),
         *(["systemctl enable --now onebrain-u.service",
            "systemctl start onebrain-drive-erasure-ledger.service",
            "systemctl enable --now onebrain-drive-erasure-ledger.timer",

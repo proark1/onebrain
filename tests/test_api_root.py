@@ -54,23 +54,21 @@ def test_api_root_redirects_to_nextjs_when_configured(monkeypatch):
     assert response.headers["location"] == "https://onebrain.example.com"
 
 
-def test_legacy_static_ui_is_disabled_unless_explicitly_enabled(monkeypatch):
-    main = _load_main(monkeypatch)
-    client = TestClient(main.create_app())
+def test_no_static_surface_is_served(monkeypatch):
+    """The legacy static UI is deleted; nothing may serve /static again.
 
-    response = client.get("/static/index.html")
-
-    assert response.status_code == 404
-
-
-def test_legacy_static_ui_can_be_enabled_for_local_debugging(monkeypatch):
+    It carried a second copy of the API client, session auth and operator console,
+    and could never be reached anyway: neither `render.py` (box.env) nor
+    `render_dotenv` (the MC bundle, a closed BUNDLE_KEYS set) ever emitted the flag
+    that mounted it, and provisioned boxes have no SSH. Re-adding a static mount
+    would restore the duplicate auth surface, so assert it stays absent even when
+    the old flag is set.
+    """
     main = _load_main(monkeypatch, ONEBRAIN_LEGACY_STATIC_UI_ENABLED="true")
     client = TestClient(main.create_app())
 
-    response = client.get("/static/index.html")
-
-    assert response.status_code == 200
-    assert "/static/js/main.js" in response.text
+    assert client.get("/static/index.html").status_code == 404
+    assert client.get("/static/js/api.js").status_code == 404
 
 
 # --- P5-02: G1-1 startup interlock (operator_mode) ---------------------------

@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.deps import (
@@ -25,11 +23,9 @@ from app.provisioning.customer_bootstrap import (
     decode_customer_bootstrap,
     reconcile_customer_bootstrap,
 )
-from app.routers import ai_employees, assistant, auth, chat, conversations, documents, drive, fleet, jobs, kpis, operator, platform, privacy, provisioning, rollouts, service, session, user_management
+from app.routers import accounting, ai_employees, assistant, auth, chat, conversations, documents, drive, fleet, jobs, kpis, operator, platform, privacy, provisioning, rollouts, service, session, user_management
 from app.seed import seed_if_empty
 from app.users.seed import seed_admin_from_env, seed_users_if_empty
-
-STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _route_template(request) -> str:
@@ -99,6 +95,10 @@ def create_app() -> FastAPI:
     app.include_router(platform.router)
     app.include_router(kpis.router)
     app.include_router(ai_employees.router)
+    # Accounting (Buchhaltung) is an optional per-workspace product on the same
+    # template as KPI Dashboard / AI Employees: no separate container, mounted
+    # unconditionally, and gated to 403 by its AppInstallation when not enabled.
+    app.include_router(accounting.router)
     # The operator + provisioning control plane exposes cross-account state and can
     # spend money / create infrastructure. A pure customer-serving deployment sets
     # operator_console=false (and operator_mode=false) so neither surface is even
@@ -249,9 +249,6 @@ def create_app() -> FastAPI:
             logging.getLogger("onebrain").info("Retention sweep scheduler enabled.")
     except Exception as exc:  # never fatal
         logging.getLogger("onebrain").warning("Retention sweep scheduler not started: %s", exc)
-
-    if settings.legacy_static_ui_enabled:
-        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.get("/", include_in_schema=False)
     def index():

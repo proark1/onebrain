@@ -128,7 +128,7 @@ def test_full_stack_bootstrap_creates_local_topology_credentials_and_audit_once(
     }
     installations = platform.list_app_installations(first.account_id)
     assert {installation.app_id for installation in installations} == {
-        "onebrain_core", "assistant", "communication", "kpi_dashboard", "ai_employees",
+        "onebrain_core", "assistant", "communication", "kpi_dashboard", "ai_employees", "buchhaltung",
     }
     assert len(platform.list_audit(first.account_id)) == 1
     assert platform.list_audit(first.account_id)[0].action == "customer.bootstrap_reconciled"

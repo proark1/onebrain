@@ -12,6 +12,7 @@ type ConsoleNavigationProps = {
 
 const ICON_PATHS: Record<ConsoleSection, ReactNode> = {
   "ai-employees": <><circle cx="12" cy="8" r="3" /><path d="M6.5 19c.8-3.2 2.6-5 5.5-5s4.7 1.8 5.5 5" /><path d="M18 5.5v5M15.5 8h5" /></>,
+  buchhaltung: <><path d="M6.5 3.5h11v17l-1.8-1.2-1.8 1.2-1.9-1.2-1.9 1.2-1.8-1.2-1.9 1.2V3.5Z" /><path d="M9.5 8h5M9.5 11.5h5" /></>,
   chat: <><path d="M5 6.5h14v9H9l-4 3v-12Z" /><path d="M8.5 10h7" /></>,
   cockpit: <><path d="M4.5 17.5V11l3-3 3 2 4.5-5 4.5 3.5v9" /><path d="M4 19h16" /></>,
   drive: <><path d="M4 8h6l2-2h8v12H4V8Z" /><path d="M4 10h16" /></>,
