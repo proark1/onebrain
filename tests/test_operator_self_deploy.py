@@ -312,14 +312,69 @@ def test_trigger_only_rolls_forward(monkeypatch):
     assert operator_router.dispatch_operator_self_rollout(store, settings, actor="test") is None
 
 
-def test_trigger_does_not_retry_a_failed_target(monkeypatch):
+def _failed_self_attempt(store, version, *, rollout_id, completed_at=""):
+    store.start_rollout(RolloutRun(
+        id=rollout_id, deployment_id=MC, target_version=version, status="failed",
+        started_by="operator-self:test", completed_at=completed_at))
+
+
+def test_trigger_retries_a_failed_target_within_budget(monkeypatch):
+    # Roadmap Gap B: a single self-deploy failure is only a convergence TIMEOUT
+    # (indistinguishable from a transient disk-full), so it must NOT permanently strand
+    # the release. With the default budget (3) a fresh attempt is dispatched.
     import app.config as config_module
 
     store, settings, release = _trigger_store()
     monkeypatch.setattr(config_module, "get_settings", lambda: settings)
-    store.start_rollout(RolloutRun(
-        id="roll_mc_prev", deployment_id=MC, target_version=release.version,
-        status="failed", started_by="operator-self:test"))
+    _failed_self_attempt(store, release.version, rollout_id="roll_mc_prev")
+    rollout = operator_router.dispatch_operator_self_rollout(store, settings, actor="test")
+    assert rollout is not None and rollout.target_version == release.version
+    assert rollout.id != "roll_mc_prev"
+
+
+def test_trigger_stops_after_the_attempt_budget_is_exhausted(monkeypatch):
+    # The cap preserves the old invariant: a genuinely bad build cannot hot-loop the
+    # control plane — it exhausts the budget and then stops.
+    import app.config as config_module
+
+    store, settings, release = _trigger_store()
+    settings.operator_self_max_attempts = 2
+    monkeypatch.setattr(config_module, "get_settings", lambda: settings)
+    _failed_self_attempt(store, release.version, rollout_id="roll_mc_a")
+    _failed_self_attempt(store, release.version, rollout_id="roll_mc_b")
+    assert operator_router.dispatch_operator_self_rollout(store, settings, actor="test") is None
+
+
+def test_trigger_backs_off_between_self_deploy_attempts(monkeypatch):
+    import app.config as config_module
+
+    store, settings, release = _trigger_store()
+    settings.operator_self_max_attempts = 3
+    settings.operator_self_retry_backoff_seconds = 900
+    monkeypatch.setattr(config_module, "get_settings", lambda: settings)
+    failed_at = datetime(2026, 7, 23, 12, 0, 0, tzinfo=timezone.utc)
+    _failed_self_attempt(store, release.version, rollout_id="roll_mc_prev",
+                         completed_at=failed_at.isoformat())
+    # 10 min after the failure: inside the 15-min backoff → wait, no new rollout.
+    within = failed_at + timedelta(minutes=10)
+    assert operator_router.dispatch_operator_self_rollout(
+        store, settings, actor="test", now=within) is None
+    # 20 min after: backoff elapsed → re-attempt.
+    elapsed = failed_at + timedelta(minutes=20)
+    rollout = operator_router.dispatch_operator_self_rollout(
+        store, settings, actor="test", now=elapsed)
+    assert rollout is not None and rollout.target_version == release.version
+
+
+def test_trigger_max_attempts_one_preserves_the_old_single_attempt_behavior(monkeypatch):
+    # Escape hatch: operators who want the pre-Gap-B "one attempt then never" behavior set
+    # the cap to 1.
+    import app.config as config_module
+
+    store, settings, release = _trigger_store()
+    settings.operator_self_max_attempts = 1
+    monkeypatch.setattr(config_module, "get_settings", lambda: settings)
+    _failed_self_attempt(store, release.version, rollout_id="roll_mc_prev")
     assert operator_router.dispatch_operator_self_rollout(store, settings, actor="test") is None
 
 

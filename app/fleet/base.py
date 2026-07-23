@@ -13,9 +13,17 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Protocol
 
 
+# Pipeline-health alert kinds (roadmap Gap D). Opened by the pipeline watchdog from
+# CONTROL-PLANE state (a stuck dev candidate, MC's own self-deploy giving up), scoped to
+# Mission Control's deployment row so they surface in the fleet overview next to infra
+# alerts. Kept distinct from the infra kinds the heartbeat watchdog manages.
+DEV_PIPELINE_STALLED_ALERT = "dev_pipeline_stalled"
+OPERATOR_SELF_DEPLOY_STALLED_ALERT = "operator_self_deploy_stalled"
+
 ALERT_KINDS = frozenset({
     "missed_heartbeat", "version_drift", "unhealthy", "migration_failed",
     "low_root_disk", "low_data_disk",
+    DEV_PIPELINE_STALLED_ALERT, OPERATOR_SELF_DEPLOY_STALLED_ALERT,
 })
 
 
