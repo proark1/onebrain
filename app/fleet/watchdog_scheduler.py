@@ -65,7 +65,12 @@ def _run_pipeline_watchdog(settings, control_store, fleet_store, now_iso: str) -
             now_iso=now_iso, mc_deployment_id=mc_deployment_id,
             stall_seconds=int(getattr(settings, "pipeline_stall_alert_seconds", 0) or 0),
             self_deploy_enabled=bool(getattr(settings, "operator_auto_deploy_enabled", False)),
-            self_max_attempts=int(getattr(settings, "operator_self_max_attempts", 3) or 3),
+            # Default 1 = MC's give-up budget BEFORE the bounded self-deploy retry (#63) lands:
+            # today dispatch_operator_self_rollout stops after the first failed rollout, so the
+            # "gave up" signal is 1 failure. Once #63 sets operator_self_max_attempts (default 3),
+            # this getattr picks it up and the alert threshold tracks the real budget. Defaulting
+            # to 3 here would leave the alert silent on the current single-attempt behavior.
+            self_max_attempts=int(getattr(settings, "operator_self_max_attempts", 1) or 1),
             next_id=lambda: f"fa_{uuid4().hex}",
         )
     except Exception as exc:  # never let pipeline detection break the watchdog daemon

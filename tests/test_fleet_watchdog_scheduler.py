@@ -72,6 +72,37 @@ def test_watchdog_once_also_opens_pipeline_stall_alerts_on_mission_control():
     assert fleet.has_open_alert("mc", DEV_PIPELINE_STALLED_ALERT)
 
 
+def test_self_deploy_alert_fires_at_the_pre_63_single_attempt_budget():
+    # Regression (Codex #65): before the bounded self-deploy retry (#63) lands, MC gives up
+    # after ONE failed self-deploy, so the stall alert must fire at 1 failure. The scheduler
+    # defaults operator_self_max_attempts to 1 so it is not silent on that behavior.
+    from app.controlplane.base import (
+        ReleaseManifest, ReleasePromotion, ReleasePromotionEvent, RolloutRun,
+    )
+    from app.fleet.base import OPERATOR_SELF_DEPLOY_STALLED_ALERT
+
+    control = MemoryControlPlaneStore()
+    control.create_deployment(CustomerDeployment(
+        id="mc", customer_name="mc", deployment_type="dedicated_server",
+        current_version="2026.07.22.400"))
+    control.create_release_candidate(
+        ReleaseManifest(version="2026.07.22.500", git_sha="a" * 40, modules={"onebrain-api": "1"}),
+        ReleasePromotion(release_version="2026.07.22.500", state="dev_verified"),
+        ReleasePromotionEvent(id="", release_version="2026.07.22.500", action="seed",
+                              to_state="dev_verified"),
+    )
+    control._rollouts["roll_mc_1"] = RolloutRun(
+        id="roll_mc_1", deployment_id="mc", target_version="2026.07.22.500",
+        status="failed", started_by="operator-self:test")
+    fleet = MemoryFleetStore()
+    # auto-deploy on, and operator_self_max_attempts NOT set -> scheduler default of 1.
+    settings = _settings(deployment_id="mc", operator_auto_deploy_enabled=True)
+
+    opened = watchdog_once(settings, control, fleet)
+
+    assert OPERATOR_SELF_DEPLOY_STALLED_ALERT in {alert.kind for alert in opened}
+
+
 def test_watchdog_once_pushes_opened_alerts_to_the_webhook(monkeypatch):
     import app.fleet.alert_notify as alert_notify
 
