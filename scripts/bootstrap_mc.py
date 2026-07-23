@@ -504,6 +504,13 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
          str(int(getattr(settings, "gate_auto_replace_min_interval_seconds", 21600)))),
         ("ONEBRAIN_GATE_AUTO_REPLACE_TIMEOUT_SECONDS",
          str(int(getattr(settings, "gate_auto_replace_timeout_seconds", 3600)))),
+        # Customer-teardown dual-control (sole-operator escape hatch, config.py). Baked so a
+        # provisioned MC can relax it; strict defaults (2 / false) keep a stock MC on full dual
+        # control. int()/bool -> $-free, so the first-boot .env interpolation cannot rewrite them.
+        ("ONEBRAIN_TEARDOWN_MIN_APPROVALS",
+         str(int(getattr(settings, "teardown_min_approvals", 2)))),
+        ("ONEBRAIN_TEARDOWN_ALLOW_SELF_APPROVAL",
+         "true" if getattr(settings, "teardown_allow_self_approval", False) else "false"),
     ]
     dotenv += "".join(f"{k}={v}\n" for k, v in overlay)
 
