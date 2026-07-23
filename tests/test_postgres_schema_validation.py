@@ -543,6 +543,12 @@ def _fleet_decommission_module():
     )
 
 
+def _accounting_foundations_module():
+    return _load_migration_module(
+        "0036_accounting_foundations.py", "accounting_foundations_migration"
+    )
+
+
 def test_trust_primitives_migration_structure_and_chain():
     migration = _trust_primitives_module()
 
@@ -611,9 +617,29 @@ def test_required_revision_matches_single_alembic_head():
     heads = ScriptDirectory.from_config(config).get_heads()
 
     assert heads == [REQUIRED_ALEMBIC_REVISION]
-    assert REQUIRED_ALEMBIC_REVISION == _fleet_decommission_module().revision
-    # 0034 (drive malware) is no longer head — 0035 supersedes it.
-    assert _drive_malware_module().revision != REQUIRED_ALEMBIC_REVISION
+    assert REQUIRED_ALEMBIC_REVISION == _accounting_foundations_module().revision
+    # 0035 (fleet decommission) is no longer head — 0036 supersedes it.
+    assert _fleet_decommission_module().revision != REQUIRED_ALEMBIC_REVISION
+
+
+def test_accounting_foundations_migration_is_scoped_and_forced_rls():
+    migration = _accounting_foundations_module()
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "migrations" / "versions" / "0036_accounting_foundations.py"
+    ).read_text()
+
+    assert migration.revision == "0036_accounting_foundations"
+    assert migration.revision == REQUIRED_ALEMBIC_REVISION
+    assert migration.down_revision == "0035_fleet_decommission_tombstone"
+    assert set(migration.ACCOUNTING_TABLES) == {"accounting_documents", "accounting_line_items"}
+    # Per-posting Kontierung lives on the line items, never on the document head.
+    assert "accounting_line_items_document_scope_fk" in source
+    assert "proposed_account" in source and "confirmed_account" in source
+    assert source.count("ENABLE ROW LEVEL SECURITY") >= 1
+    assert source.count("FORCE ROW LEVEL SECURITY") >= 1
+    assert "current_setting('app.account_id', true)" in source
+    assert "current_setting('app.space_id', true)" in source
 
 
 def test_job_leases_migration_precedes_the_current_head():
@@ -661,9 +687,12 @@ def test_recovery_auth_job_queue_and_drive_migrations_form_one_chain():
     assert drive_malware.revision == "0034_drive_malware_quarantine"
     assert drive_malware.down_revision == onebrain_drive.revision
     fleet_decommission = _fleet_decommission_module()
-    assert fleet_decommission.revision == REQUIRED_ALEMBIC_REVISION
     assert fleet_decommission.revision == "0035_fleet_decommission_tombstone"
     assert fleet_decommission.down_revision == drive_malware.revision
+    accounting = _accounting_foundations_module()
+    assert accounting.revision == REQUIRED_ALEMBIC_REVISION
+    assert accounting.revision == "0036_accounting_foundations"
+    assert accounting.down_revision == fleet_decommission.revision
     source = Path(auth_limits.__file__).read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS auth_rate_limits" in source
     assert "subject_hash" in source and "auth_rate_limits_expiry_idx" in source

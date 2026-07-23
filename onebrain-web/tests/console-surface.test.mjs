@@ -7,7 +7,7 @@ import { summaryValue } from "../src/lib/platform-summary.ts";
 test("customer boxes expose the complete customer surface without control-plane links", () => {
   assert.deepEqual(
     consoleNavigation(false).map((item) => item.label),
-    ["Status", "Ask", "Drive", "KPIs", "AI Employees", "Apps", "Privacy", "Settings"],
+    ["Status", "Ask", "Drive", "KPIs", "AI Employees", "Accounting", "Apps", "Privacy", "Settings"],
   );
 });
 
@@ -23,7 +23,7 @@ test("navigation groups preserve the authorized destination order", () => {
     consoleNavigationGroups(false).map((group) => [group.label, group.items.map((item) => item.label)]),
     [
       ["Monitor", ["Status"]],
-      ["Work", ["Ask", "Drive", "KPIs", "AI Employees"]],
+      ["Work", ["Ask", "Drive", "KPIs", "AI Employees", "Accounting"]],
       ["Manage", ["Apps", "Privacy"]],
       ["Account", ["Settings"]],
     ],

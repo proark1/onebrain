@@ -1,5 +1,6 @@
 export type ConsoleSection =
   | "ai-employees"
+  | "buchhaltung"
   | "chat"
   | "cockpit"
   | "drive"
@@ -20,6 +21,7 @@ export const CUSTOMER_NAV: ConsoleNavItem[] = [
   { id: "drive", href: "/drive", label: "Drive" },
   { id: "kpis", href: "/kpis", label: "KPIs" },
   { id: "ai-employees", href: "/ai-employees", label: "AI Employees" },
+  { id: "buchhaltung", href: "/buchhaltung", label: "Accounting" },
   { id: "spaces", href: "/spaces", label: "Apps" },
   { id: "privacy", href: "/privacy", label: "Privacy" },
   { id: "settings", href: "/settings", label: "Settings" },
@@ -40,7 +42,7 @@ export function consoleNavigation(operatorMode: boolean): ConsoleNavItem[] {
 
 const CUSTOMER_GROUPS: Array<{ id: string; label: string; sections: ConsoleSection[] }> = [
   { id: "monitor", label: "Monitor", sections: ["cockpit"] },
-  { id: "work", label: "Work", sections: ["chat", "drive", "kpis", "ai-employees"] },
+  { id: "work", label: "Work", sections: ["chat", "drive", "kpis", "ai-employees", "buchhaltung"] },
   { id: "manage", label: "Manage", sections: ["spaces", "privacy"] },
   { id: "account", label: "Account", sections: ["settings"] },
 ];

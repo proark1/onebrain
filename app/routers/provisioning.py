@@ -99,7 +99,7 @@ class CustomerProvisionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     customer_name: str = Field(min_length=1, max_length=200)
-    module_ids: list[str] = Field(default_factory=list, max_length=4)
+    module_ids: list[str] = Field(default_factory=list, max_length=5)
     account_kind: str = Field(default="organization", pattern="^(person|organization|family|project)$")
     account_id: str | None = Field(default=None, max_length=120)
     deployment_id: str | None = Field(default=None, max_length=120)

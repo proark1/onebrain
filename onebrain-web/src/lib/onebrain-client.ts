@@ -13,6 +13,8 @@ import type {
   DevelopmentRetryInput,
   DocumentSummary,
   InstallPlatformAppInput,
+  AccountingOverview,
+  AccountingWorkspace,
   CreateKpiDefinitionInput,
   CreateKpiSnapshotInput,
   KpiDashboard,
@@ -850,6 +852,15 @@ export function createManualKpiSnapshot(id: string, input: CreateKpiSnapshotInpu
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
+}
+
+export function listAccountingWorkspaces(): Promise<AccountingWorkspace[]> {
+  return requestJson<AccountingWorkspace[]>("/accounting/workspaces");
+}
+
+export function getAccountingOverview(accountId: string, spaceId: string): Promise<AccountingOverview> {
+  const params = new URLSearchParams({ account_id: accountId, space_id: spaceId });
+  return requestJson<AccountingOverview>(`/accounting?${params.toString()}`);
 }
 
 export function exportPrivacyData(accountId: string, spaceId = ""): Promise<PrivacyExport> {
