@@ -1713,6 +1713,46 @@ class PostgresDriveStore:
             rows = cursor.fetchall()
         return [self._file_row(row) for row in rows]
 
+    def list_clean_category_files(
+        self, *, account_id: str, space_id: str, category: str, limit: int = 100,
+    ) -> list[DriveFile]:
+        """Non-trashed files in ``category`` whose current revision scanned clean.
+
+        Tenant-scoped (the RLS GUCs bound this to one account+space, and the
+        predicates re-assert it) and read-only — it reads malware evidence to
+        confirm the authoritative attempt is ``clean`` but mutates nothing, so it
+        needs no fenced worker function. Downstream per-category maintenance (the
+        accounting extraction reconcile) uses it to re-derive stranded work from
+        the durable clean verdict. The extraction handler re-validates the full
+        clean attestation + blob before it reads bytes, so ``status='clean'`` on
+        the authoritative attempt is a sufficient candidate filter here.
+        """
+        bounded = max(1, min(int(limit), 1_000))
+        with self._conn(account_id=account_id, space_id=space_id) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT {_FILE_COLUMNS} FROM drive_files "
+                "WHERE account_id=%s AND space_id=%s AND category=%s "
+                "AND trashed_at IS NULL AND COALESCE(current_revision_id,'')<>'' "
+                "AND EXISTS ("
+                "  SELECT 1 FROM drive_revision_malware_scans s "
+                "  WHERE s.revision_id=drive_files.current_revision_id "
+                "    AND s.account_id=drive_files.account_id AND s.space_id=drive_files.space_id "
+                "    AND s.policy_epoch=%s AND s.status='clean' "
+                "    AND s.attempt_sequence=("
+                "      SELECT MAX(s2.attempt_sequence) FROM drive_revision_malware_scans s2 "
+                "      WHERE s2.revision_id=drive_files.current_revision_id "
+                "        AND s2.account_id=drive_files.account_id "
+                "        AND s2.space_id=drive_files.space_id AND s2.policy_epoch=%s"
+                "    )"
+                ") ORDER BY updated_at DESC, id DESC LIMIT %s",
+                (
+                    account_id, space_id, category,
+                    DRIVE_MALWARE_POLICY_EPOCH, DRIVE_MALWARE_POLICY_EPOCH, bounded,
+                ),
+            )
+            rows = cursor.fetchall()
+        return [self._file_row(row) for row in rows]
+
     def delete_file(self, *, file_id: str, account_id: str, space_id: str) -> dict[str, int]:
         with self._conn(account_id=account_id, space_id=space_id) as connection:
             with connection.cursor() as cursor:

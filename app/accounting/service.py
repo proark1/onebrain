@@ -19,6 +19,7 @@ from app.accounting.base import (
     ACCOUNTING_APP_ID,
     ACCOUNTING_INGEST_PURPOSE,
     accounting_category_id,
+    accounting_extract_enqueue_kwargs,
 )
 from app.accounting.booking import propose
 from app.accounting.extraction import (
@@ -161,6 +162,45 @@ def build_line_item_rows(
             "updated_at": now,
         })
     return rows
+
+
+def reconcile_pending_extractions(
+    *, drive_store, accounting_store, job_store, settings,
+    account_id: str, space_id: str, limit: int = 100,
+) -> int:
+    """Re-enqueue extraction for malware-clean accounting files that have no document.
+
+    The durability companion to the clean-scan trigger
+    (``DriveMalwareScanningService._enqueue_accounting_extraction_if_needed``). If
+    the worker crashes between committing the clean verdict and enqueuing
+    extraction, the terminal-scan replay returns early and never re-enqueues, so
+    the invoice is stranded: clean + in the accounting category, but no document.
+    This re-derives that work from durable state, exactly as ``_reconcile_index_jobs``
+    re-derives a lost Drive ingest from the persisted ``index_status='queued'``
+    marker.
+
+    Idempotent on two independent guards: it skips any file that already has a
+    document for the current revision (survives job garbage-collection, unlike the
+    enqueue key alone), and the shared idempotency key dedupes a racing retry — so
+    at most one extraction job exists per (file, revision, generation) no matter
+    how often this runs. Tenant-scoped (one account+space) so it stays within RLS.
+    Candidates come newest-first, so a freshly-stranded file is covered even when
+    more than ``limit`` clean files exist. Returns the count of clean accounting
+    files that lacked a document and were (re-)enqueued this pass.
+    """
+    category = accounting_category_id(space_id)
+    max_attempts = getattr(settings, "job_max_attempts", 3)
+    enqueued = 0
+    for file in drive_store.list_clean_category_files(
+        account_id=account_id, space_id=space_id, category=category, limit=limit,
+    ):
+        if accounting_store.document_for_revision(
+            account_id, space_id, file.id, file.current_revision_id,
+        ):
+            continue
+        job_store.enqueue(**accounting_extract_enqueue_kwargs(file, max_attempts=max_attempts))
+        enqueued += 1
+    return enqueued
 
 
 class AccountingService:

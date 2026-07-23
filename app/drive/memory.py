@@ -1390,6 +1390,36 @@ class MemoryDriveStore:
         ]
         return sorted(rows, key=lambda row: (row.updated_at, row.id))
 
+    def list_clean_category_files(
+        self, *, account_id: str, space_id: str, category: str, limit: int = 100,
+    ) -> list[DriveFile]:
+        """Non-trashed files in ``category`` whose current revision scanned clean.
+
+        A tenant-scoped maintenance read (the in-memory analogue of the RLS scope
+        the Postgres store enforces): downstream per-category workers — today the
+        accounting extraction reconcile — re-derive stranded work from the durable
+        clean verdict. Read-only; it never touches malware evidence.
+        """
+        bounded = max(1, min(int(limit), 1_000))
+        rows: list[DriveFile] = []
+        for file in self._files.values():
+            if file.account_id != account_id or file.space_id != space_id:
+                continue
+            if file.category != category or file.trashed_at or not file.current_revision_id:
+                continue
+            revision = self._revisions.get(file.current_revision_id)
+            if not revision or revision.file_id != file.id:
+                continue
+            scan = self.get_authoritative_malware_scan(
+                revision.id, account_id=account_id, space_id=space_id,
+            )
+            if is_clean_attestation(revision, scan):
+                rows.append(file)
+        # Newest first: a freshly-stranded file (just scanned) is the newest, so a
+        # bounded pass always covers the crash window even past ``limit``.
+        rows.sort(key=lambda row: (row.updated_at, row.id), reverse=True)
+        return rows[:bounded]
+
     def delete_file(self, *, file_id: str, account_id: str, space_id: str) -> dict[str, int]:
         with self._lock:
             file = self.get_file(file_id, account_id=account_id, space_id=space_id)
