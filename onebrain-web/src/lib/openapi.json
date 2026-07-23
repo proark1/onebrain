@@ -796,6 +796,11 @@
             "title": "Account Name",
             "type": "string"
           },
+          "can_configure": {
+            "default": false,
+            "title": "Can Configure",
+            "type": "boolean"
+          },
           "space_id": {
             "title": "Space Id",
             "type": "string"

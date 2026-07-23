@@ -36,17 +36,22 @@ def authorize_accounting_writer(principal, account_id: str, space_id: str, platf
     return account, space
 
 
+def is_accounting_category_member(principal, account, space_id: str, platform_store) -> bool:
+    """Whether the caller may see the confidential ``buchhaltung`` category (plan §7):
+    an account admin, or a member of the space's accounting AccessGroup."""
+    if is_account_admin(principal, account, platform_store):
+        return True
+    group_id = accounting_category_id(space_id)
+    memberships = platform_store.list_access_group_memberships(account.id, principal.user_id)
+    return any(m.group_id == group_id and m.status == "active" for m in memberships)
+
+
 def _require_category_member(principal, account, space_id: str, platform_store) -> None:
     """Invoices live in the confidential ``buchhaltung`` Drive category (plan §7): only
     its members — plus account admins — may see the structured content. The app purpose
     alone is not enough, or any workspace member could read invoice bodies."""
-    if is_account_admin(principal, account, platform_store):
-        return
-    group_id = accounting_category_id(space_id)
-    memberships = platform_store.list_access_group_memberships(account.id, principal.user_id)
-    if any(m.group_id == group_id and m.status == "active" for m in memberships):
-        return
-    raise HTTPException(status_code=403, detail="Accounting is restricted to Buchhaltung members.")
+    if not is_accounting_category_member(principal, account, space_id, platform_store):
+        raise HTTPException(status_code=403, detail="Accounting is restricted to Buchhaltung members.")
 
 
 def _require_space(account_id: str, space_id: str, platform_store):

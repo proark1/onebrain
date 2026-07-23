@@ -280,6 +280,21 @@ def test_reader_must_be_a_category_member_or_admin(monkeypatch):
     assert overview.total_documents == 0
 
 
+def test_workspace_reports_configure_capability(monkeypatch):
+    platform = MemoryPlatformStore()
+    platform.create_account(Account(id="acme", kind="organization", name="Acme", owner_user_id="admin@acme"))
+    platform.create_space(Space(id="sp_business", account_id="acme", kind="business", name="Business"))
+    platform.install_app(AppInstallation(
+        id="appi_buchhaltung", account_id="acme", app_id="buchhaltung",
+        enabled_space_ids=("sp_business",), allowed_purposes=("accounting_read",),  # read-only
+    ))
+    monkeypatch.setattr(accounting_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(accounting_router, "get_accounting_store", lambda: MemoryAccountingStore())
+    workspaces = accounting_router.list_accounting_workspaces(principal=_human())  # admin sees it
+    assert len(workspaces) == 1
+    assert workspaces[0].can_configure is False  # no accounting_configure purpose → read-only
+
+
 def test_confirm_can_clear_the_tax_key(monkeypatch):
     _, accounting = _wire(monkeypatch, install=True)
     document = _seed(accounting, doc_id="acctdoc_1")

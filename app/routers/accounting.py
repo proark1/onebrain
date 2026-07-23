@@ -17,7 +17,11 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.accounting.access import authorize_accounting_reader, authorize_accounting_writer
+from app.accounting.access import (
+    authorize_accounting_reader,
+    authorize_accounting_writer,
+    is_accounting_category_member,
+)
 from app.accounting.base import (
     ACCOUNTING_APP_ID,
     ACCOUNTING_CONFIGURE_PURPOSE,
@@ -47,6 +51,7 @@ class AccountingWorkspaceOut(StrictModel):
     space_id: str
     space_name: str
     space_kind: str
+    can_configure: bool = False
 
 
 class AccountingSideOut(StrictModel):
@@ -211,12 +216,20 @@ def list_accounting_workspaces(principal: Principal = Depends(resolve_principal)
         )
         if not read.allowed:
             continue
+        # Only list workspaces the caller can actually read — consistent with the
+        # confidential-category gate the overview/document endpoints enforce.
+        if not is_accounting_category_member(principal, account, space.id, platform):
+            continue
+        configure = platform.check_app_access(
+            account.id, ACCOUNTING_APP_ID, space.id, ACCOUNTING_CONFIGURE_PURPOSE,
+        )
         workspaces.append(AccountingWorkspaceOut(
             account_id=account.id,
             account_name=account.name,
             space_id=space.id,
             space_name=space.name,
             space_kind=space.kind,
+            can_configure=configure.allowed,
         ))
     return workspaces
 
