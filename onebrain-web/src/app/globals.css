@@ -335,7 +335,25 @@ pre {
 
 .commandIdentity {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 12px;
+}
+
+/* Compact language picker in the command bar (the shared .select is full-width). */
+.localeSwitcher {
+  width: auto;
+  min-width: 0;
+  min-height: 30px;
+  flex: 0 0 auto;
+  border: 1px solid rgb(var(--brand-text-rgb) / 14%);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--ink);
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .commandIdentity a {

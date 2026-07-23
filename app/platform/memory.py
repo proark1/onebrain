@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 
 from app.platform.base import (
     CUSTOMER_SERVICE_PURPOSES,
+    DEFAULT_LOCALE,
     PRIVATE_SPACE_KINDS,
     AccessDecision,
     AccessGroup,
@@ -51,12 +52,13 @@ def _now() -> str:
 
 def _account_to_dict(a: Account) -> dict:
     return {"id": a.id, "kind": a.kind, "name": a.name, "owner_user_id": a.owner_user_id,
-            "status": a.status, "created_at": a.created_at}
+            "status": a.status, "created_at": a.created_at, "default_locale": a.default_locale}
 
 
 def _account_from_dict(d: dict) -> Account:
     return Account(id=d["id"], kind=d["kind"], name=d["name"], owner_user_id=d.get("owner_user_id", ""),
-                   status=d.get("status", "active"), created_at=d.get("created_at", ""))
+                   status=d.get("status", "active"), created_at=d.get("created_at", ""),
+                   default_locale=d.get("default_locale", DEFAULT_LOCALE))
 
 
 def _space_to_dict(s: Space) -> dict:

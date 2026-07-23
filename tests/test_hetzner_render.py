@@ -511,6 +511,25 @@ def test_operator_render_rejects_customer_bootstrap_descriptor():
         render_env_files(_inputs(_ALL, role="operator", customer_bootstrap=descriptor))
 
 
+def test_customer_default_locale_rides_box_env_not_the_strict_descriptor():
+    # The UI language is a plain box.env value on the customer API. A newer image
+    # reads it; an older one ignores the unknown var — which is exactly why it is NOT
+    # a field in the strict bootstrap descriptor (older images reject extra keys).
+    cust = render_env_files(_inputs(_ALL, role="customer", customer_default_locale="en"))["env/onebrain-api.env"]
+    assert "ONEBRAIN_CUSTOMER_DEFAULT_LOCALE=en" in cust
+
+    default = render_env_files(_inputs(_ALL, role="customer"))["env/onebrain-api.env"]
+    assert "ONEBRAIN_CUSTOMER_DEFAULT_LOCALE=de" in default
+
+    # Operator boxes never get the customer block, hence no locale var.
+    op = render_env_files(_inputs(_ALL, role="operator"))["env/onebrain-api.env"]
+    assert "ONEBRAIN_CUSTOMER_DEFAULT_LOCALE" not in op
+
+    # Fail closed on an unexpected locale rather than baking a bad value into box.env.
+    with pytest.raises(ValueError, match="customer default locale"):
+        render_env_files(_inputs(_ALL, role="customer", customer_default_locale="fr"))
+
+
 def test_box_env_is_shell_sourceable_for_a_multi_product_box():
     """box.env is `.`-sourced by the host scripts, so a space MUST be quoted.
 

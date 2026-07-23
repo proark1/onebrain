@@ -7,9 +7,25 @@ from fastapi import APIRouter, Depends
 from app.auth.principal import Principal, resolve_principal
 from app.auth.roles import LOCATIONS, ROLES
 from app.config import get_settings
+from app.deps import get_platform_store
+from app.platform.base import normalize_locale
 from app.schemas import RoleInfo, SessionInfo
 
 router = APIRouter(prefix="/api/session", tags=["session"])
+
+
+def _account_default_locale(tenant_id: str) -> str:
+    """The caller account's provisioned UI language, defaulting to German.
+
+    Best-effort enrichment of the identity response: a platform-store hiccup must
+    never make /me fail, so any lookup error falls back to the platform default."""
+    if not tenant_id:
+        return normalize_locale("")
+    try:
+        account = get_platform_store().get_account(tenant_id)
+    except Exception:
+        account = None
+    return normalize_locale(account.default_locale if account else "")
 
 
 @router.get("/roles", response_model=list[RoleInfo])
@@ -39,4 +55,5 @@ def me(principal: Principal = Depends(resolve_principal)):
         must_change_password=principal.must_change_password,
         operator_mode=settings.operator_mode,
         is_operator_surface=settings.is_operator_surface,
+        default_locale=_account_default_locale(principal.tenant_id),
     )

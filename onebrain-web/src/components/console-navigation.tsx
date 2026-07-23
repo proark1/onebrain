@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useTranslations } from "@/components/locale-provider";
 import type { ConsoleNavGroup, ConsoleSection } from "@/lib/console-navigation";
 
 type ConsoleNavigationProps = {
@@ -34,6 +35,7 @@ function NavIcon({ section }: { section: ConsoleSection }) {
 }
 
 export function ConsoleNavigation({ active, groups, homeHref }: ConsoleNavigationProps) {
+  const { t } = useTranslations();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
@@ -83,7 +85,7 @@ export function ConsoleNavigation({ active, groups, homeHref }: ConsoleNavigatio
       <button
         aria-controls="console-navigation"
         aria-expanded={open}
-        aria-label={open ? "Close navigation" : "Open navigation"}
+        aria-label={open ? t("nav.close") : t("nav.open")}
         className={`mobileNavButton ${open ? "open" : ""}`}
         onClick={() => setOpen((current) => !current)}
         ref={triggerRef}
@@ -92,14 +94,14 @@ export function ConsoleNavigation({ active, groups, homeHref }: ConsoleNavigatio
         <span /><span /><span />
       </button>
       <button
-        aria-label="Close navigation"
+        aria-label={t("nav.close")}
         className={`consoleNavBackdrop ${open ? "open" : ""}`}
         onClick={() => closeNavigation({ restoreFocus: true })}
         tabIndex={open ? 0 : -1}
         type="button"
       />
       <aside
-        aria-label="OneBrain console"
+        aria-label={t("nav.consoleLabel")}
         className={`consoleSidebar ${open ? "open" : ""}`}
         id="console-navigation"
         ref={sidebarRef}
@@ -111,27 +113,33 @@ export function ConsoleNavigation({ active, groups, homeHref }: ConsoleNavigatio
           </Link>
         </div>
         <div className="consoleNavGroups">
-          {groups.map((group) => (
-            <div className="consoleNavGroup" key={group.id}>
-              <p className="consoleNavLabel">{group.label}</p>
-              <nav className="consoleNav" aria-label={`${group.label} sections`}>
-                {group.items.map((item) => (
-                  <Link
-                    aria-current={active === item.id ? "page" : undefined}
-                    aria-label={item.label}
-                    className={active === item.id ? "active" : ""}
-                    href={item.href}
-                    key={item.id}
-                    onClick={() => closeNavigation()}
-                    title={item.label}
-                  >
-                    <NavIcon section={item.id} />
-                    <span>{item.label}</span>
-                  </Link>
-                ))}
-              </nav>
-            </div>
-          ))}
+          {groups.map((group) => {
+            const groupLabel = t(group.labelKey);
+            return (
+              <div className="consoleNavGroup" key={group.id}>
+                <p className="consoleNavLabel">{groupLabel}</p>
+                <nav className="consoleNav" aria-label={t("nav.groupSections", { group: groupLabel })}>
+                  {group.items.map((item) => {
+                    const itemLabel = t(item.labelKey);
+                    return (
+                      <Link
+                        aria-current={active === item.id ? "page" : undefined}
+                        aria-label={itemLabel}
+                        className={active === item.id ? "active" : ""}
+                        href={item.href}
+                        key={item.id}
+                        onClick={() => closeNavigation()}
+                        title={itemLabel}
+                      >
+                        <NavIcon section={item.id} />
+                        <span>{itemLabel}</span>
+                      </Link>
+                    );
+                  })}
+                </nav>
+              </div>
+            );
+          })}
         </div>
       </aside>
     </>
