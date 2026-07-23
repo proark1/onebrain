@@ -32,12 +32,11 @@ import { DriveEntryList } from "./drive-entry-list";
 import { DriveIcon } from "./drive-icons";
 import { shouldPollDriveSecurity } from "./drive-presentation";
 import {
-  DEFAULT_DRIVE_AUDIENCE,
   defaultDrivePolicy,
   entryDrivePolicy,
 } from "./drive-policy-fields";
 import { DriveSidebar } from "./drive-sidebar";
-import { createDriveBrowserState, driveBrowserReducer } from "./drive-state";
+import { createDriveBrowserState, DEFAULT_DRIVE_AUDIENCE, driveBrowserReducer } from "./drive-state";
 import { DriveToolbar } from "./drive-toolbar";
 import { DriveUploadTray, useDriveUploads } from "./drive-upload";
 import {
@@ -86,8 +85,10 @@ export function DriveApp({
 }) {
   const bootstrap = initialBootstrap ?? EMPTY_BOOTSTRAP;
   const capabilities = bootstrap.capabilities;
-  const audience = bootstrap.audience ?? DEFAULT_DRIVE_AUDIENCE;
   const [state, dispatch] = useReducer(driveBrowserReducer, bootstrap, createDriveBrowserState);
+  // Audience is space-scoped and refreshed by every listing, so it must follow the
+  // selected root rather than stay pinned to the bootstrap payload.
+  const audience = state.audience;
   const [counts, setCounts] = useState(bootstrap.counts);
   const [reloadToken, setReloadToken] = useState(0);
   const [actionId, setActionId] = useState("");

@@ -332,6 +332,15 @@ def list_items(
             "entries": _entries_out(page),
             "breadcrumbs": [_folder_out(row) for row in breadcrumbs],
             "next_cursor": page.next_cursor or None,
+            # The audience (classifications, locations, departments) is space-scoped.
+            # It rides the default listing — the branch every root switch lands on, since
+            # select_root resets the view to "browse" — so the console can refresh the
+            # filing controls without a full bootstrap reload. A stale audience otherwise
+            # offers another space's departments and the backend rejects them with a 422
+            # (see _effective_policy). The review/legacy branches deliberately stay minimal;
+            # they are only reached by switching views *within* a space, where the console
+            # keeps the audience it already holds.
+            "audience": _audience_options(principal, service, account_id, space_id),
         }
 
 

@@ -59,6 +59,7 @@ export async function listDriveItems(input: DriveListInput): Promise<DriveItemsR
   return {
     breadcrumbs: response.breadcrumbs ?? [],
     entries: response.entries ?? [],
+    audience: response.audience,
     next_cursor: response.next_cursor ?? null,
   };
 }

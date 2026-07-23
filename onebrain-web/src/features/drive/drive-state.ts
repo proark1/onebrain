@@ -1,4 +1,5 @@
 import type {
+  DriveAudience,
   DriveBootstrap,
   DriveBreadcrumb,
   DriveEntry,
@@ -8,6 +9,16 @@ import type {
   DriveView,
 } from "./types";
 
+// Fallback filing audience used until a real listing arrives. Defined here — the
+// pure reducer module — rather than imported, so this file keeps only type-only
+// sibling imports and stays loadable by the plain `node --test` runner (which does
+// not resolve extensionless value imports). The React filing controls reuse it.
+export const DEFAULT_DRIVE_AUDIENCE: DriveAudience = {
+  classifications: ["internal"],
+  locations: ["global"],
+  departments: [{ id: "general", name: "Everyone" }],
+};
+
 export type DriveBrowserState = {
   roots: DriveRoot[];
   selectedRoot: DriveRoot | null;
@@ -16,6 +27,7 @@ export type DriveBrowserState = {
   query: string;
   breadcrumbs: DriveBreadcrumb[];
   entries: DriveEntry[];
+  audience: DriveAudience;
   nextCursor: string | null;
   loading: boolean;
   error: string;
@@ -45,6 +57,7 @@ export function createDriveBrowserState(bootstrap: DriveBootstrap): DriveBrowser
     query: "",
     breadcrumbs: bootstrap.breadcrumbs,
     entries: bootstrap.entries,
+    audience: bootstrap.audience ?? DEFAULT_DRIVE_AUDIENCE,
     nextCursor: bootstrap.next_cursor,
     loading: false,
     error: "",
@@ -102,6 +115,9 @@ export function driveBrowserReducer(
         ...state,
         breadcrumbs: action.response.breadcrumbs,
         entries: action.append ? [...state.entries, ...action.response.entries] : action.response.entries,
+        // Adopt the space's current filing options; keep the last known audience if a
+        // response omits it so filing controls never flash to bare defaults.
+        audience: action.response.audience ?? state.audience,
         nextCursor: action.response.next_cursor,
         loading: false,
         error: "",
