@@ -30,6 +30,18 @@ from app.platform.base import (
 from app.platform.memory import MemoryPlatformStore
 
 
+@pytest.fixture(autouse=True)
+def _neutralise_extraction_reconcile(monkeypatch):
+    """Keep these gate/confirm reads hermetic.
+
+    The read endpoints opportunistically re-enqueue stranded extractions through
+    a Drive + job store reconcile these tests don't wire. They assert on read
+    results, not the reconcile — which has its own coverage in
+    test_accounting_extraction_durability — so neutralise it here.
+    """
+    monkeypatch.setattr(accounting_router, "_reconcile_extractions", lambda *a, **k: None)
+
+
 def _seed(accounting, *, doc_id="acctdoc_1", issuer="ACME GmbH", number="R-1",
           direction="incoming", net="1000.00", tax="190.00", gross="1190.00",
           rate="19", file_id="f1", rev="r1"):

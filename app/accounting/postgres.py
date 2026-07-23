@@ -270,6 +270,16 @@ class PostgresAccountingStore:
             row = cursor.fetchone()
         return self.get_document(account_id, space_id, row[0]) if row else None
 
+    def documented_revision_ids(self, account_id: str, space_id: str) -> set[str]:
+        """Revisions in this workspace that already have a document (extraction done)."""
+        with self._conn(account_id=account_id, space_id=space_id) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT DISTINCT drive_revision_id FROM accounting_documents "
+                "WHERE account_id = %s AND space_id = %s AND COALESCE(drive_revision_id,'') <> ''",
+                (account_id, space_id),
+            )
+            return {row[0] for row in cursor.fetchall()}
+
     def invoice_number_seen(
         self, account_id: str, space_id: str, issuer_name: str, invoice_number: str,
         *, exclude_id: str = "",
