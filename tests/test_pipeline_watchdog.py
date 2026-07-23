@@ -19,6 +19,7 @@ from app.controlplane.base import (
 from app.controlplane.memory import MemoryControlPlaneStore
 from app.fleet.base import (
     DEV_PIPELINE_STALLED_ALERT,
+    GATE_REPLACEMENT_RECOMMENDED_ALERT,
     OPERATOR_SELF_DEPLOY_STALLED_ALERT,
     FleetAlert,
     Heartbeat,
@@ -160,6 +161,83 @@ def test_self_deploy_not_stalled_below_budget_or_when_on_target():
         on_target, self_deploy_enabled=True, self_max_attempts=3)
 
 
+# --- gate-replacement-recommended signal (Phase 4 Tier 1) --------------------
+
+def _gate(store, gate_id="gate"):
+    """Create and designate an active development gate; return its id."""
+    store.create_deployment(CustomerDeployment(
+        id=gate_id, customer_name=gate_id, deployment_type="dedicated_server",
+        environment="development",
+    ))
+    store.designate_release_gate(gate_id)
+    return gate_id
+
+
+def _gate_alert(fleet, gate_id, kind, created_at):
+    fleet.open_alert(FleetAlert(id=f"fa_{gate_id}_{kind}", deployment_id=gate_id, kind=kind,
+                                detail=kind, status="open", created_at=created_at))
+
+
+def _desired_gate(store, fleet, *, gate_replace_seconds=1800):
+    return desired_pipeline_alerts(
+        store, now=NOW, mc_deployment_id=MC, stall_seconds=0,
+        self_deploy_enabled=False, self_max_attempts=3,
+        fleet_store=fleet, gate_replace_seconds=gate_replace_seconds,
+    )
+
+
+def test_gate_replacement_alert_opens_on_sustained_gate_failure():
+    store = _control()
+    gate = _gate(store)
+    fleet = MemoryFleetStore()
+    _gate_alert(fleet, gate, "missed_heartbeat", _ago(hours=1))   # older than the 30m threshold
+    alerts = _desired_gate(store, fleet)
+    assert GATE_REPLACEMENT_RECOMMENDED_ALERT in alerts
+    detail = alerts[GATE_REPLACEMENT_RECOMMENDED_ALERT]
+    assert gate in detail and "missed_heartbeat" in detail
+
+
+def test_gate_replacement_alert_fires_on_data_volume_unavailable():
+    store = _control()
+    gate = _gate(store)
+    fleet = MemoryFleetStore()
+    _gate_alert(fleet, gate, "data_volume_unavailable", _ago(hours=1))   # disk death, 2026-07-22 case
+    assert GATE_REPLACEMENT_RECOMMENDED_ALERT in _desired_gate(store, fleet)
+
+
+def test_gate_replacement_alert_respects_threshold():
+    store = _control()
+    gate = _gate(store)
+    fleet = MemoryFleetStore()
+    _gate_alert(fleet, gate, "missed_heartbeat", _ago(minutes=10))   # younger than 30m — a blip
+    assert GATE_REPLACEMENT_RECOMMENDED_ALERT not in _desired_gate(store, fleet)
+
+
+def test_gate_replacement_alert_ignores_soft_unhealthy():
+    store = _control()
+    gate = _gate(store)
+    fleet = MemoryFleetStore()
+    # `unhealthy` alone is soft (an app restart self-recovers) — must NOT recommend a replace.
+    _gate_alert(fleet, gate, "unhealthy", _ago(hours=4))
+    assert GATE_REPLACEMENT_RECOMMENDED_ALERT not in _desired_gate(store, fleet)
+
+
+def test_gate_replacement_alert_disabled_when_seconds_zero():
+    store = _control()
+    gate = _gate(store)
+    fleet = MemoryFleetStore()
+    _gate_alert(fleet, gate, "missed_heartbeat", _ago(hours=9))
+    assert GATE_REPLACEMENT_RECOMMENDED_ALERT not in _desired_gate(store, fleet, gate_replace_seconds=0)
+
+
+def test_gate_replacement_alert_none_without_a_designated_gate():
+    store = _control()   # no gate designated
+    fleet = MemoryFleetStore()
+    # A stray failure on a non-gate box must not trigger the recommendation.
+    _gate_alert(fleet, "some-box", "missed_heartbeat", _ago(hours=9))
+    assert GATE_REPLACEMENT_RECOMMENDED_ALERT not in _desired_gate(store, fleet)
+
+
 # --- reconcile (open / resolve) ----------------------------------------------
 
 def _run(control, fleet, **kwargs):
@@ -168,8 +246,28 @@ def _run(control, fleet, **kwargs):
         stall_seconds=kwargs.get("stall_seconds", 10800),
         self_deploy_enabled=kwargs.get("self_deploy_enabled", False),
         self_max_attempts=kwargs.get("self_max_attempts", 3),
+        gate_replace_seconds=kwargs.get("gate_replace_seconds", 0),
         next_id=lambda: f"fa_{len(fleet.list_open_alerts()) + 1}",
     )
+
+
+def test_gate_replacement_reconcile_opens_on_mc_row_then_resolves():
+    control = _control()
+    gate = _gate(control)
+    fleet = MemoryFleetStore()
+    _gate_alert(fleet, gate, "missed_heartbeat", _ago(hours=1))
+    opened = _run(control, fleet, gate_replace_seconds=1800)
+    # The recommendation opens on MC's OWN row (surfaces in the overview), naming the gate.
+    assert [a.kind for a in opened] == [GATE_REPLACEMENT_RECOMMENDED_ALERT]
+    assert fleet.has_open_alert(MC, GATE_REPLACEMENT_RECOMMENDED_ALERT)
+    # The gate's own infra alert on the gate's row is left untouched.
+    assert fleet.has_open_alert(gate, "missed_heartbeat")
+    # Idempotent second tick.
+    assert _run(control, fleet, gate_replace_seconds=1800) == []
+    # The gate recovers (its infra alert clears) → the recommendation resolves.
+    fleet.resolve_open_alerts(gate, "missed_heartbeat", _iso(NOW))
+    _run(control, fleet, gate_replace_seconds=1800)
+    assert not fleet.has_open_alert(MC, GATE_REPLACEMENT_RECOMMENDED_ALERT)
 
 
 def test_reconcile_opens_then_resolves_a_stall_alert():

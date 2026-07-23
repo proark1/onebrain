@@ -336,6 +336,15 @@ class Settings(BaseSettings):
     # infra alerts above, so on by default on MC; 0 disables just this signal. The
     # self-deploy give-up signal (MC exhausting its self-deploy retries) is always on.
     pipeline_stall_alert_seconds: int = Field(default=10800, ge=0)   # 3h
+    # Gate-replacement recommendation (roadmap Phase 4 / Gap E2, Tier 1 — DETECT-AND-ALERT
+    # ONLY). When the DESIGNATED release gate has an open hard-failure alert (missed_heartbeat
+    # / low_root_disk / low_data_disk) older than this, Mission Control opens a
+    # `gate_replacement_recommended` alert on its own row (and pushes it if a webhook is set)
+    # so a dead gate — which stalls the whole dev pipeline — is surfaced instead of found days
+    # later. Measured from the infra alert's age (so ~this + fleet_missed_heartbeat_seconds
+    # after the gate goes dark), long enough not to cry wolf on a reboot. The operator still
+    # runs the manual replace; NOTHING is auto-provisioned or torn down. 0 disables the signal.
+    gate_replace_after_seconds: int = Field(default=1800, ge=0)   # 30m
     # Alert delivery (roadmap Gap D). When set, Mission Control POSTs each newly-opened
     # fleet alert (infra + pipeline) to this webhook so a stall/low-disk actually reaches
     # you instead of waiting to be noticed in the console. The body carries a Slack-style

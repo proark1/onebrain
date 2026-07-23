@@ -711,6 +711,8 @@ _OPERATOR_APP_CONTROL_ENV = (
     # Pipeline-stall detection + alert delivery (Phase 3, #65).
     "ONEBRAIN_PIPELINE_STALL_ALERT_SECONDS",
     "ONEBRAIN_FLEET_ALERT_WEBHOOK_URL",
+    # Gate-replacement recommendation (Phase 4 Tier 1).
+    "ONEBRAIN_GATE_REPLACE_AFTER_SECONDS",
 )
 
 

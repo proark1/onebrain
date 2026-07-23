@@ -107,6 +107,7 @@ def test_mc_box_threads_operator_control_plane_settings():
         development_auto_retry_backup_backoff_seconds=333,
         pipeline_stall_alert_seconds=0,   # a deliberate DISABLE, not a default — must survive as 0
         fleet_alert_webhook_url="https://hooks.example.com/x?a=1",
+        gate_replace_after_seconds=1234,
     )
     art = mc.build_mc_artifacts(_args(_base_argv()), settings)
     api_env = extract_cloud_init_file(art.cloud_init, "/opt/onebrain/env/onebrain-api.env")
@@ -128,6 +129,8 @@ def test_mc_box_threads_operator_control_plane_settings():
     # Pipeline-stall detection + delivery (#65). 0 is a deliberate disable and must survive as 0.
     assert s.pipeline_stall_alert_seconds == 0
     assert s.fleet_alert_webhook_url == "https://hooks.example.com/x?a=1"
+    # Gate-replacement recommendation threshold (#Phase 4 Tier 1).
+    assert s.gate_replace_after_seconds == 1234
 
     # Drift guard: every declared operator knob maps to a real Settings field (a typo or a
     # non-field name would be silently dropped by resolve_box_api_settings/pydantic).
