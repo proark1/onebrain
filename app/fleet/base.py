@@ -23,12 +23,22 @@ OPERATOR_SELF_DEPLOY_STALLED_ALERT = "operator_self_deploy_stalled"
 # the whole dev pipeline is stalled behind it — recommend provisioning a replacement gate
 # (roadmap Phase 4 / Gap E2, Tier 1: DETECT-AND-ALERT ONLY; no auto-provision, no teardown).
 GATE_REPLACEMENT_RECOMMENDED_ALERT = "gate_replacement_recommended"
+# Gate AUTO-replacement operational alerts (roadmap Phase 4 / Gap E2, Tier 2). Opened by the
+# opt-in gate-auto-replace daemon, NOT the watchdogs. `gate_auto_replace_wedged` (on Mission
+# Control's row) means the daemon cannot make progress unattended — a replacement failed to go
+# healthy in time, a provision attempt died, or the fleet is at its server cap — and it has
+# STOPPED rather than loop. `gate_decommission_recommended` (on the OLD gate's own row) means a
+# healthy replacement is now designated and the superseded gate is safe to tear down by hand
+# (teardown stays a human action under Tier 2).
+GATE_AUTO_REPLACE_WEDGED_ALERT = "gate_auto_replace_wedged"
+GATE_DECOMMISSION_RECOMMENDED_ALERT = "gate_decommission_recommended"
 
 ALERT_KINDS = frozenset({
     "missed_heartbeat", "version_drift", "unhealthy", "migration_failed",
     "low_root_disk", "low_data_disk",
     DEV_PIPELINE_STALLED_ALERT, OPERATOR_SELF_DEPLOY_STALLED_ALERT,
     GATE_REPLACEMENT_RECOMMENDED_ALERT,
+    GATE_AUTO_REPLACE_WEDGED_ALERT, GATE_DECOMMISSION_RECOMMENDED_ALERT,
 })
 
 

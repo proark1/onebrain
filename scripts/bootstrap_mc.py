@@ -493,6 +493,17 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
         # reverses it before verify_secret. Both empty by default (candidate auth 401s until set).
         ("ONEBRAIN_RELEASE_CANDIDATE_KEY_ID", candidate_key_id),
         ("ONEBRAIN_RELEASE_CANDIDATE_KEY_HASH", candidate_key_hash),
+        # Gate AUTO-replacement daemon (Phase 4 Tier 2). Enabled flag + the three cost-runaway
+        # rails. All int/bool -> $-free, so Rule 2 (no $ in a baked .env value) is trivial. OFF
+        # by default: the daemon does not even start until gate_auto_replace_enabled is set.
+        ("ONEBRAIN_GATE_AUTO_REPLACE_ENABLED",
+         "true" if getattr(settings, "gate_auto_replace_enabled", False) else "false"),
+        ("ONEBRAIN_GATE_AUTO_REPLACE_POLL_SECONDS",
+         str(int(getattr(settings, "gate_auto_replace_poll_seconds", 300)))),
+        ("ONEBRAIN_GATE_AUTO_REPLACE_MIN_INTERVAL_SECONDS",
+         str(int(getattr(settings, "gate_auto_replace_min_interval_seconds", 21600)))),
+        ("ONEBRAIN_GATE_AUTO_REPLACE_TIMEOUT_SECONDS",
+         str(int(getattr(settings, "gate_auto_replace_timeout_seconds", 3600)))),
     ]
     dotenv += "".join(f"{k}={v}\n" for k, v in overlay)
 

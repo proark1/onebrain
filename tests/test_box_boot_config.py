@@ -108,6 +108,10 @@ def test_mc_box_threads_operator_control_plane_settings():
         pipeline_stall_alert_seconds=0,   # a deliberate DISABLE, not a default — must survive as 0
         fleet_alert_webhook_url="https://hooks.example.com/x?a=1",
         gate_replace_after_seconds=1234,
+        gate_auto_replace_enabled=True,
+        gate_auto_replace_poll_seconds=123,
+        gate_auto_replace_min_interval_seconds=456,
+        gate_auto_replace_timeout_seconds=789,
     )
     art = mc.build_mc_artifacts(_args(_base_argv()), settings)
     api_env = extract_cloud_init_file(art.cloud_init, "/opt/onebrain/env/onebrain-api.env")
@@ -131,6 +135,12 @@ def test_mc_box_threads_operator_control_plane_settings():
     assert s.fleet_alert_webhook_url == "https://hooks.example.com/x?a=1"
     # Gate-replacement recommendation threshold (#Phase 4 Tier 1).
     assert s.gate_replace_after_seconds == 1234
+    # Gate AUTO-replacement daemon (Phase 4 Tier 2). The enabled flag is what makes a provisioned
+    # MC able to opt into auto-provisioning at all; the three rails must thread through too.
+    assert s.gate_auto_replace_enabled is True
+    assert s.gate_auto_replace_poll_seconds == 123
+    assert s.gate_auto_replace_min_interval_seconds == 456
+    assert s.gate_auto_replace_timeout_seconds == 789
 
     # Drift guard: every declared operator knob maps to a real Settings field (a typo or a
     # non-field name would be silently dropped by resolve_box_api_settings/pydantic).

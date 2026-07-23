@@ -179,6 +179,18 @@ def create_app() -> FastAPI:
         except Exception as exc:  # never fatal
             logging.getLogger("onebrain").warning("Fleet reconcile scheduler not started: %s", exc)
 
+        # Gate auto-replacement daemon (roadmap Phase 4 / Gap E2, Tier 2). DOUBLY OFF by default
+        # (gate_auto_replace_enabled=false AND poll=0-gated) — it is the one daemon that PROVISIONS
+        # billable infra, so landing it cannot mint a box until the operator explicitly opts in. It
+        # never tears anything down (teardown stays a manual, alerted action). Never fatal.
+        try:
+            from app.controlplane.gate_auto_replace import start_gate_auto_replace_scheduler
+
+            if start_gate_auto_replace_scheduler(settings):
+                logging.getLogger("onebrain").info("Gate auto-replace scheduler enabled.")
+        except Exception as exc:  # never fatal
+            logging.getLogger("onebrain").warning("Gate auto-replace scheduler not started: %s", exc)
+
     @app.get("/health")
     def health():
         return {"status": "ok", "chunks": get_store().count()}
