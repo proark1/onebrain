@@ -731,6 +731,11 @@ _OPERATOR_APP_CONTROL_ENV = (
     "ONEBRAIN_GATE_AUTO_REPLACE_POLL_SECONDS",
     "ONEBRAIN_GATE_AUTO_REPLACE_MIN_INTERVAL_SECONDS",
     "ONEBRAIN_GATE_AUTO_REPLACE_TIMEOUT_SECONDS",
+    # Customer-teardown dual-control (sole-operator escape hatch, config.py). Threaded so a
+    # provisioned (SSH-less) MC can enable single-operator teardown; int/bool -> $-free (Rule 2
+    # trivial). Strict defaults (2 / false) keep a stock MC on full dual control until opt-in.
+    "ONEBRAIN_TEARDOWN_MIN_APPROVALS",
+    "ONEBRAIN_TEARDOWN_ALLOW_SELF_APPROVAL",
 )
 
 

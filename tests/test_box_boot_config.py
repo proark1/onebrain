@@ -112,6 +112,8 @@ def test_mc_box_threads_operator_control_plane_settings():
         gate_auto_replace_poll_seconds=123,
         gate_auto_replace_min_interval_seconds=456,
         gate_auto_replace_timeout_seconds=789,
+        teardown_min_approvals=1,
+        teardown_allow_self_approval=True,
     )
     art = mc.build_mc_artifacts(_args(_base_argv()), settings)
     api_env = extract_cloud_init_file(art.cloud_init, "/opt/onebrain/env/onebrain-api.env")
@@ -141,6 +143,10 @@ def test_mc_box_threads_operator_control_plane_settings():
     assert s.gate_auto_replace_poll_seconds == 123
     assert s.gate_auto_replace_min_interval_seconds == 456
     assert s.gate_auto_replace_timeout_seconds == 789
+    # Customer-teardown dual-control (sole-operator escape hatch). The sole operator must be able
+    # to bake single-operator teardown onto a provisioned MC (min_approvals=1 + self-approval).
+    assert s.teardown_min_approvals == 1
+    assert s.teardown_allow_self_approval is True
 
     # Drift guard: every declared operator knob maps to a real Settings field (a typo or a
     # non-field name would be silently dropped by resolve_box_api_settings/pydantic).
