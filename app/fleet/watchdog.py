@@ -14,6 +14,14 @@ from typing import Dict, List, Optional
 
 from app.fleet.base import FleetAlert, FleetStore, Heartbeat
 
+# The alert kinds THIS watchdog opens from heartbeat state. It must resolve only these —
+# other kinds in the ledger (e.g. the pipeline watchdog's control-plane alerts, which can
+# live on the same Mission Control deployment row) are not ours to clear.
+WATCHDOG_ALERT_KINDS = frozenset({
+    "missed_heartbeat", "unhealthy", "version_drift",
+    "low_root_disk", "low_data_disk", "data_volume_unavailable",
+})
+
 
 def _age_seconds(reference_iso: str, now_iso: str) -> Optional[float]:
     try:
@@ -160,6 +168,8 @@ def run_watchdog(
         # open until a *known* healthy capacity arrives (or its threshold is
         # intentionally disabled).
         for existing in store.list_open_alerts(deployment_id):
+            if existing.kind not in WATCHDOG_ALERT_KINDS:
+                continue  # not a heartbeat alert — leave pipeline/other kinds untouched
             if existing.kind not in want:
                 if existing.kind == "low_root_disk" and low_root_disk_percent > 0:
                     if _free_percent(latest.get(deployment_id), "root") is None:

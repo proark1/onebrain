@@ -115,10 +115,22 @@ other manual step below is a gap, not a feature.
   alerts for stale heartbeats, unhealthy deployments, version drift and low root/data disk
   ([watchdog.py:79-122](../../../app/fleet/watchdog.py)). What's missing is **pipeline-signal**
   alerting and any **delivery channel** — the alerts sit in the fleet UI, nothing pages.
-- **Fix:** add the pipeline signals the watchdog doesn't cover — `dev_failed` backlog age >
-  threshold and self-deploy give-up (from Gap A/B) — and wire a real notification channel for
-  all of them; the disk/heartbeat detection is already there, don't rebuild it. Channel TBD.
-- **Effort:** M · **Risk:** low.
+- **DONE (this PR) — pipeline stall detection.** The watchdog now also opens metadata-only
+  alerts on Mission Control's own row: `dev_pipeline_stalled` (a dev candidate stuck at
+  dev_failed past a threshold — excluding one superseded by a newer verified release or one
+  merely waiting on the daily backup) and `operator_self_deploy_stalled` (MC exhausting its
+  self-deploy retries). Reuses the existing fleet-alert mechanism + overview surface — no new
+  store, route, migration or frontend — scoped so it never disturbs the infra alerts sharing
+  that row. `app/fleet/pipeline_watchdog.py`; on by default via `pipeline_stall_alert_seconds`.
+- **DONE (this PR) — the delivery channel (fork #4 = webhook).** Mission Control now POSTs each
+  newly-opened alert (infra + pipeline) to `fleet_alert_webhook_url`, so a stall/low-disk
+  actually reaches you instead of waiting to be noticed. `app/fleet/alert_notify.py` — one
+  stdlib-`urllib` POST per alert (matches the fleet reporter, no new dependency), never raising;
+  a Slack-compatible `text` field + structured metadata (no secrets/customer content). Dormant
+  until the URL is set. Best-effort: delivered on the tick an alert first opens, so a webhook
+  outage then means a missed push (the alert is still in the console) — a retry/queue is a later
+  enhancement. Email/other channels can read the same `FleetAlert` rows if ever wanted.
+- **Effort:** M · **Risk:** low. **Gap D COMPLETE** (detection + webhook delivery).
 
 ### Gap E — Gate lifecycle
 - **E1 — fresh-gate migration bootstrap — DONE (#57, 2026-07-22).** A fresh gate could not
@@ -142,7 +154,8 @@ other manual step below is a gap, not a feature.
    reduction per unit effort; directly prevents the "notice days later, hand-retry" loop.
 2. **Phase 2 — MC runs itself.** Gap B + Gap C together (applier + prune). Ends the
    hand-deploy that dominated tonight.
-3. **Phase 3 — Observability.** Gap D in full.
+3. **Phase 3 — Observability. — LANDED (this PR).** Gap D complete: pipeline-stall detection
+   (fleet-console alerts) + webhook delivery (fork #4), so stalls actually reach the operator.
 4. **Phase 4 — Infra self-healing.** Gap E2 (gate auto-replacement). E1 already landed (#57).
 
 Each phase ships as its own PR per `AGENTS.md`. Phases 1–3 are pure control-plane / host
