@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional, Protocol
 
+from app.jobs.base import JOB_ACCOUNTING_EXTRACT
+
 
 ACCOUNTING_APP_ID = "buchhaltung"
 ACCOUNTING_READ_PURPOSE = "accounting_read"
@@ -34,6 +36,51 @@ def accounting_category_id(space_id: str) -> str:
     invoice") derive the same id from the space, so they always agree.
     """
     return f"acg_{space_id}_buchhaltung"
+
+
+def accounting_extract_idempotency_key(
+    file_id: str, revision_id: str, generation: int,
+) -> str:
+    """Canonical job identity shared by the clean-scan trigger and the reconcile.
+
+    Both the malware-clean enqueue (``DriveMalwareScanningService``) and the
+    durability reconcile derive an extraction job's identity here so they can
+    never drift: a reconcile that re-enqueues after a lost enqueue lands on the
+    SAME key, so at most one extraction job exists per (file, revision,
+    generation) — mirrors ``drive_ingest_idempotency_key``.
+    """
+    file_id = (file_id or "").strip()
+    revision_id = (revision_id or "").strip()
+    generation = int(generation)
+    if not file_id or not revision_id or generation < 0:
+        raise ValueError("Accounting extraction identity is invalid.")
+    return f"accounting-extract:{file_id}:{revision_id}:{generation}"
+
+
+def accounting_extract_enqueue_kwargs(file, *, max_attempts: int = 3) -> dict:
+    """Exact ``JobStore.enqueue`` kwargs for a Drive file's extraction job.
+
+    ``file`` is duck-typed (a Drive ``DriveFile``) so this module stays free of
+    the Drive layer. Shared by the clean-scan trigger and the reconcile so the
+    job type, payload, and idempotency key are identical on both paths.
+    """
+    return {
+        "type": JOB_ACCOUNTING_EXTRACT,
+        "tenant_id": file.tenant_id,
+        "account_id": file.account_id,
+        "space_id": file.space_id,
+        "requested_by": file.uploaded_by,
+        "payload": {
+            "file_id": file.id,
+            "revision_id": file.current_revision_id,
+            "generation": file.generation,
+        },
+        "max_attempts": max(1, int(max_attempts)),
+        "idempotency_key": accounting_extract_idempotency_key(
+            file.id, file.current_revision_id, file.generation,
+        ),
+    }
+
 
 # Booking is always human-confirmed: extraction creates a ``pending`` draft and
 # only a human confirmation makes it ``confirmed`` and countable in the overview.
@@ -139,6 +186,8 @@ class AccountingStore(Protocol):
     def document_for_revision(
         self, account_id: str, space_id: str, drive_file_id: str, drive_revision_id: str,
     ) -> Optional[dict]: ...
+
+    def documented_revision_ids(self, account_id: str, space_id: str) -> set[str]: ...
 
     def invoice_number_seen(
         self, account_id: str, space_id: str, issuer_name: str, invoice_number: str,

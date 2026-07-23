@@ -22,10 +22,12 @@ from app.drive.malware.base import (
     ScanRequest,
     ScanVerdict,
 )
-from app.accounting.base import accounting_category_id
+from app.accounting.base import (
+    accounting_category_id,
+    accounting_extract_enqueue_kwargs,
+)
 from app.drive.service import DriveService
 from app.jobs.base import (
-    JOB_ACCOUNTING_EXTRACT,
     JOB_DRIVE_FILE_INGEST,
     JOB_DRIVE_REVISION_MALWARE_SCAN,
 )
@@ -267,28 +269,18 @@ class DriveMalwareScanningService:
         verdict and the accounting AccessGroup category (derived per space so it
         matches what the install bootstrap seeded and the upload picker sets).
         Idempotent on (file, revision, generation) so a re-scan can't double-book.
+        If this enqueue is lost to a crash after the verdict commits, the
+        accounting reconcile (``reconcile_pending_extractions``) re-derives it
+        from the same clean-verdict + category signal on the next read.
         """
         file = completion.file
         if not file or completion.scan.status != "clean":
             return
         if file.category != accounting_category_id(file.space_id):
             return
-        self.job_store.enqueue(
-            type=JOB_ACCOUNTING_EXTRACT,
-            tenant_id=file.tenant_id,
-            account_id=file.account_id,
-            space_id=file.space_id,
-            requested_by=file.uploaded_by,
-            payload={
-                "file_id": file.id,
-                "revision_id": file.current_revision_id,
-                "generation": file.generation,
-            },
-            max_attempts=max(1, int(getattr(self.settings, "job_max_attempts", 3))),
-            idempotency_key=(
-                f"accounting-extract:{file.id}:{file.current_revision_id}:{file.generation}"
-            ),
-        )
+        self.job_store.enqueue(**accounting_extract_enqueue_kwargs(
+            file, max_attempts=getattr(self.settings, "job_max_attempts", 3),
+        ))
 
     def _drain_scan_outbox(self, *, limit: int) -> int:
         drained = 0
