@@ -116,6 +116,10 @@ export type DriveBootstrap = {
 export type DriveItemsResponse = {
   breadcrumbs: DriveBreadcrumb[];
   entries: DriveEntry[];
+  // Space-scoped filing options. Present on every /items listing so the console can
+  // refresh the filing controls when the selected root changes. Optional so a response
+  // that omits it (older Core) leaves the last known audience in place.
+  audience?: DriveAudience;
   next_cursor: string | null;
 };
 
