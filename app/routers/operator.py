@@ -1645,6 +1645,17 @@ def list_releases(principal: Principal = Depends(resolve_principal)):
     ]
 
 
+def _candidate_hash_from_env(stored: str) -> str:
+    """Reverse bootstrap_mc's transport-encoding of the candidate key hash.
+
+    The hash is stored "sha256$<hex>", but a rendered (SSH-less) Mission Control carries it in
+    the box's baked /opt/onebrain/.env, which docker-compose interpolates on first boot — a
+    literal '$' would be silently rewritten. scripts/bootstrap_mc.py percent-encodes the '$' as
+    %24 (compose-safe; guarded by _compose_env_safe) and this undoes it before verify_secret. A
+    hash set directly (hand-built MC, tests) carries no %24 and passes through unchanged."""
+    return stored.replace("%24", "$")
+
+
 def _require_candidate_auth(authorization: str, key_id: str) -> str:
     settings = get_settings()
     if not settings.operator_mode:
@@ -1655,7 +1666,7 @@ def _require_candidate_auth(authorization: str, key_id: str) -> str:
         or not key_id
         or key_id != settings.release_candidate_key_id
         or not settings.release_candidate_key_hash
-        or not verify_secret(token, settings.release_candidate_key_hash)
+        or not verify_secret(token, _candidate_hash_from_env(settings.release_candidate_key_hash))
     ):
         raise HTTPException(status_code=401, detail="Invalid release candidate credential.")
     return f"candidate:{key_id}"

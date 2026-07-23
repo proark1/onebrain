@@ -419,6 +419,21 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
             "ONEBRAIN_FLEET_ALERT_WEBHOOK_URL must not contain '$' or newlines: docker-compose "
             "interpolates the MC box's baked .env on first boot and would silently rewrite it. "
             "Percent-encode a literal '$' as %24.")
+    # The CI dev-candidate credential (POST /api/operator/release-candidates auth) rides the
+    # same baked .env. The key id is compared for EQUALITY, so a rewritten '$' would make auth
+    # never match — require it '$'-free and fail closed. The hash is stored "sha256$<hex>" and
+    # MUST carry a '$', so percent-encode it as %24 here; app/routers/operator._require_candidate_auth
+    # reverses it before verify_secret. (_compose_env_safe then only guards CR/LF/NUL in the encoded hash.)
+    candidate_key_id = getattr(settings, "release_candidate_key_id", "") or ""
+    if candidate_key_id and not _compose_env_safe(candidate_key_id):
+        raise ValueError(
+            "ONEBRAIN_RELEASE_CANDIDATE_KEY_ID must not contain '$' or newlines: docker-compose "
+            "interpolates the MC box's baked .env on first boot and would silently rewrite it.")
+    candidate_key_hash = (getattr(settings, "release_candidate_key_hash", "") or "").replace("$", "%24")
+    if candidate_key_hash and not _compose_env_safe(candidate_key_hash):
+        raise ValueError(
+            "ONEBRAIN_RELEASE_CANDIDATE_KEY_HASH must not contain newlines: docker-compose "
+            "interpolates the MC box's baked .env on first boot.")
     overlay = [
         # Arm Mission Control: is_operator_surface is a read-only @property, so the render's
         # ONEBRAIN_IS_OPERATOR_SURFACE=true does NOT set operator_mode. Bake the settable
@@ -470,6 +485,12 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
         ("ONEBRAIN_PIPELINE_STALL_ALERT_SECONDS",
          str(int(getattr(settings, "pipeline_stall_alert_seconds", 10800)))),
         ("ONEBRAIN_FLEET_ALERT_WEBHOOK_URL", alert_webhook_url),   # validated compose-safe above
+        # CI dev-candidate registration credential. The id is compared for equality (kept
+        # '$'-free above); the "sha256$<hex>" hash is percent-encoded ($ -> %24) so compose's
+        # first-boot interpolation of the baked .env cannot rewrite it — _require_candidate_auth
+        # reverses it before verify_secret. Both empty by default (candidate auth 401s until set).
+        ("ONEBRAIN_RELEASE_CANDIDATE_KEY_ID", candidate_key_id),
+        ("ONEBRAIN_RELEASE_CANDIDATE_KEY_HASH", candidate_key_hash),
     ]
     dotenv += "".join(f"{k}={v}\n" for k, v in overlay)
 

@@ -137,6 +137,47 @@ def test_mc_box_threads_operator_control_plane_settings():
         assert name[len("ONEBRAIN_"):].lower() in fields, name
 
 
+def test_mc_box_threads_candidate_registration_credential(monkeypatch):
+    """The CI dev-candidate credential (POST /api/operator/release-candidates auth) must reach a
+    PROVISIONED MC (no SSH). The hash is stored "sha256$<hex>", and docker-compose would rewrite
+    the literal '$' when it interpolates the box's baked /opt/onebrain/.env on first boot — so
+    bootstrap_mc percent-encodes it as %24 and operator._require_candidate_auth reverses it before
+    verify_secret. Prove the exact id + hash resolve on the box and that _require_candidate_auth
+    accepts a CI token bearing them (the whole dev-candidate pipeline is 401 on a rendered MC
+    without this)."""
+    import pytest
+    from fastapi import HTTPException
+
+    from app.fleet.keys import hash_secret
+    from app.routers import operator as operator_router
+
+    secret = "ci-candidate-secret-token"
+    priv, pub = generate_keypair()
+    settings = _mc_settings(
+        fleet_desired_state_private_key=priv, fleet_desired_state_public_keys=pub,
+        release_candidate_key_id="candidate-ci-v1",
+        release_candidate_key_hash=hash_secret(secret))
+    art = mc.build_mc_artifacts(_args(_base_argv()), settings)
+    api_env = extract_cloud_init_file(art.cloud_init, "/opt/onebrain/env/onebrain-api.env")
+    dotenv = extract_cloud_init_file(art.cloud_init, "/opt/onebrain/.env")
+    s = resolve_box_api_settings(api_env, dotenv)
+
+    # The id threads verbatim; the hash rides '$'-free on the box (compose cannot rewrite it),
+    # and _candidate_hash_from_env recovers the EXACT configured "sha256$<hex>".
+    assert s.release_candidate_key_id == "candidate-ci-v1"
+    assert s.release_candidate_key_hash and "$" not in s.release_candidate_key_hash
+    assert operator_router._candidate_hash_from_env(s.release_candidate_key_hash) == hash_secret(secret)
+
+    # End-to-end: the operator router, reading the box's resolved Settings, accepts a CI token
+    # signed with the configured secret and rejects a wrong one (401).
+    monkeypatch.setattr(operator_router, "get_settings", lambda: s)
+    assert operator_router._require_candidate_auth(
+        f"Bearer {secret}", "candidate-ci-v1") == "candidate:candidate-ci-v1"
+    with pytest.raises(HTTPException) as exc:
+        operator_router._require_candidate_auth("Bearer wrong-token", "candidate-ci-v1")
+    assert exc.value.status_code == 401
+
+
 # --- customer box ------------------------------------------------------------
 
 def _customer_boot_settings(*, bundle_overrides: dict | None = None):
