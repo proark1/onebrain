@@ -5890,11 +5890,6 @@
             "title": "Account Id",
             "type": "string"
           },
-          "accounting_deleted": {
-            "additionalProperties": true,
-            "title": "Accounting Deleted",
-            "type": "object"
-          },
           "ai_employees_deleted": {
             "additionalProperties": true,
             "title": "Ai Employees Deleted",

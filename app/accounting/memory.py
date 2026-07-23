@@ -74,20 +74,3 @@ class MemoryAccountingStore:
             if row.get("account_id") == account_id and (not space_id or row.get("space_id") == space_id)
         ]
         return {"documents": documents, "line_items": line_items}
-
-    def delete_scope(self, account_id: str, space_id: str = "") -> dict[str, int]:
-        with self._lock:
-            document_ids = [
-                row_id for row_id, row in self._documents.items()
-                if row.get("account_id") == account_id and (not space_id or row.get("space_id") == space_id)
-            ]
-            line_item_ids = [
-                row_id for row_id, row in self._line_items.items()
-                if row.get("account_id") == account_id and (not space_id or row.get("space_id") == space_id)
-            ]
-            for row_id in document_ids:
-                del self._documents[row_id]
-            for row_id in line_item_ids:
-                del self._line_items[row_id]
-            self._save()
-            return {"documents": len(document_ids), "line_items": len(line_item_ids)}

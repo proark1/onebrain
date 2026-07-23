@@ -55,7 +55,12 @@ class PostgresAccountingStore:
     def _conn(self, *, account_id: str = "", space_id: str = "", admin: bool = False):
         connection = self._psycopg.connect(self._operator_dsn if admin else self._dsn)
         if account_id or space_id:
-            set_rls_scope(connection, account_id=account_id, space_id=space_id)
+            # The 0036 policies require app.tenant_id (Drive's stronger shape), and
+            # tenant_id == account_id on a customer box — mirror the Drive store or
+            # every scoped read/write silently matches zero rows.
+            set_rls_scope(
+                connection, tenant_id=account_id, account_id=account_id, space_id=space_id,
+            )
         return connection
 
     def _validate_schema(self) -> None:
@@ -101,18 +106,3 @@ class PostgresAccountingStore:
             line_item_columns = [description[0] for description in cursor.description]
             line_items = [_row_to_dict(line_item_columns, row) for row in cursor.fetchall()]
         return {"documents": documents, "line_items": line_items}
-
-    def delete_scope(self, account_id: str, space_id: str = "") -> dict[str, int]:
-        clause = "account_id = %s"
-        params: tuple = (account_id,)
-        if space_id:
-            clause += " AND space_id = %s"
-            params = (account_id, space_id)
-        with self._conn(account_id=account_id, space_id=space_id) as connection, connection.cursor() as cursor:
-            cursor.execute(f"SELECT count(*) FROM accounting_line_items WHERE {clause}", params)
-            line_item_count = cursor.fetchone()[0]
-            # accounting_line_items cascades from accounting_documents (scoped FK).
-            cursor.execute(f"DELETE FROM accounting_documents WHERE {clause}", params)
-            document_count = cursor.rowcount
-            connection.commit()
-        return {"documents": document_count, "line_items": line_item_count}

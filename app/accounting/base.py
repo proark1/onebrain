@@ -3,9 +3,11 @@
 Phase 0 is the module skeleton. The two RLS tables (``accounting_documents`` and
 ``accounting_line_items``) exist, but no ingest/extraction path writes to them yet
 — that lands in Phase 1. The store therefore exposes only what the skeleton needs:
-a per-workspace overview (counts) plus the GDPR export/erase scope operations that
-every customer-data store must provide, so the module is compliant the moment
-documents can be created.
+a per-workspace overview (counts) and a GDPR export scope.
+
+Erasure is deliberately NOT wired here. Invoices are GoBD-retained, so a blanket
+GDPR erase must not destroy them; accounting erasure runs through the retention /
+legal-hold model (plan §7) that arrives with the write path in Phase 1.
 """
 
 from __future__ import annotations
@@ -45,5 +47,3 @@ class AccountingStore(Protocol):
     def overview(self, account_id: str, space_id: str) -> AccountingOverview: ...
 
     def export_scope(self, account_id: str, space_id: str = "") -> dict: ...
-
-    def delete_scope(self, account_id: str, space_id: str = "") -> dict[str, int]: ...

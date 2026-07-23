@@ -80,7 +80,6 @@ class PrivacyEraseOut(BaseModel):
     drive_deleted: dict = Field(default_factory=dict)
     drive_blobs_deleted: int = 0
     kpis_deleted: dict = Field(default_factory=dict)
-    accounting_deleted: dict = Field(default_factory=dict)
     ai_employees_deleted: dict = Field(default_factory=dict)
     connector_credentials_deleted: int = 0
     governance_deleted: dict = Field(default_factory=dict)
@@ -356,7 +355,9 @@ def _erase_account_data_impl(
     deleted_conversations = get_conversation_store().delete_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_records = get_intake_store().delete_records_by_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_kpis = get_kpi_store().delete_scope(account_id, space_id=space_id)
-    deleted_accounting = get_accounting_store().delete_scope(account_id, space_id=space_id)
+    # Accounting is intentionally NOT erased here: invoices are GoBD-retained, so
+    # accounting erasure runs through the Phase 1 retention/legal-hold model, not
+    # this blanket delete. Export above still includes them for access requests.
     deleted_ai_employees = ai_employee_store.delete_scope(
         tenant_id=account_id,
         account_id=account_id,
@@ -379,7 +380,6 @@ def _erase_account_data_impl(
             "drive_deleted": deleted_drive,
             "drive_blobs_deleted": drive_blobs_deleted,
             "kpis_deleted": deleted_kpis,
-            "accounting_deleted": deleted_accounting,
             "ai_employees_deleted": deleted_ai_employees,
             "connector_credentials_deleted": deleted_connector_credentials,
             "governance_deleted": deleted_governance,
@@ -408,7 +408,6 @@ def _erase_account_data_impl(
         drive_deleted=deleted_drive,
         drive_blobs_deleted=drive_blobs_deleted,
         kpis_deleted=deleted_kpis,
-        accounting_deleted=deleted_accounting,
         ai_employees_deleted=deleted_ai_employees,
         connector_credentials_deleted=deleted_connector_credentials,
         governance_deleted=deleted_governance,
