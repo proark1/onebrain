@@ -20,6 +20,7 @@ type PendingFile = {
   file: File;
   folderId: string;
   indexForAi: boolean;
+  category: string;
   root: DriveRoot;
 };
 
@@ -63,6 +64,7 @@ export function useDriveUploads({
         file: pending.file,
         idempotencyKey: `${record.id}:${record.attempt}:create`,
         indexForAi: pending.indexForAi,
+        category: pending.category,
       });
       dispatch({ type: "status", id: record.id, status: "uploading" });
       await putDriveUploadContent(
@@ -108,11 +110,11 @@ export function useDriveUploads({
     }
   }, [runUpload, uploads]);
 
-  const enqueue = useCallback((files: File[], root: DriveRoot | null, folderId: string, indexForAi: boolean) => {
+  const enqueue = useCallback((files: File[], root: DriveRoot | null, folderId: string, indexForAi: boolean, category: string) => {
     if (!root || files.length === 0) return;
     const records = files.map<DriveUploadRecord>((file) => {
       const id = crypto.randomUUID();
-      filesRef.current.set(id, { file, folderId, indexForAi, root });
+      filesRef.current.set(id, { file, folderId, indexForAi, category, root });
       const tooLarge = maxFileBytes > 0 && file.size > maxFileBytes;
       return {
         id,
