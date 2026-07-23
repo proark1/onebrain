@@ -15,8 +15,11 @@ import re
 from dataclasses import dataclass, replace
 from typing import Mapping
 
+from app.accounting.base import ACCOUNTING_APP_ID, accounting_category_id
 from app.platform.base import (
     ACCOUNT_KINDS,
+    AccessGroup,
+    AccessGroupMembership,
     Account,
     AppInstallation,
     AuditEvent,
@@ -177,6 +180,47 @@ def _record_bootstrap_audit_once(platform_store, event: AuditEvent) -> None:
             raise
 
 
+def _seed_accounting_category(
+    platform_store,
+    *,
+    account_id: str,
+    template,
+    spaces_by_key: Mapping[str, Space],
+    owner_user_id: str,
+    seed_membership: bool,
+) -> None:
+    """Create the ``buchhaltung`` Drive AccessGroup (+ owner) where installed.
+
+    The accounting file trigger recognises invoices by this deterministic
+    per-space AccessGroup id, so it must exist from install (plan §3/§4) — a bare
+    AppInstallation is not enough. Idempotent: re-reconcile upserts by the same id.
+    Admins already see the category regardless, so a membership is only seeded when
+    a real owner user exists (a non-admin finance user still needs it).
+    """
+    if template is None:
+        return
+    for key in template.space_keys:
+        space = spaces_by_key.get(key)
+        if not space:
+            continue
+        group_id = accounting_category_id(space.id)
+        platform_store.upsert_access_group(AccessGroup(
+            id=group_id,
+            account_id=account_id,
+            name="Buchhaltung",
+            kind="department",
+            space_id=space.id,
+        ))
+        if seed_membership and owner_user_id:
+            platform_store.upsert_access_group_membership(AccessGroupMembership(
+                id=f"agm_{space.id}_buchhaltung_owner",
+                account_id=account_id,
+                group_id=group_id,
+                user_id=owner_user_id,
+                space_id=space.id,
+            ))
+
+
 def reconcile_customer_bootstrap(
     descriptor: CustomerBootstrapDescriptor,
     *,
@@ -248,6 +292,15 @@ def reconcile_customer_bootstrap(
             allowed_purposes=template.purposes,
             display_name=template.display_name,
         ))
+
+    _seed_accounting_category(
+        platform_store,
+        account_id=descriptor.account_id,
+        template=app_templates.get(ACCOUNTING_APP_ID),
+        spaces_by_key=spaces_by_key,
+        owner_user_id=owner_user_id,
+        seed_membership=administrator is not None,
+    )
 
     platform_store.upsert_brand_theme(replace(
         default_brand_theme(descriptor.account_id),

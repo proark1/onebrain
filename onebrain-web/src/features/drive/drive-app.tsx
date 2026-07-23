@@ -368,9 +368,9 @@ export function DriveApp({
     if (files.length || capabilities.can_upload) setUploadRequest({ files, folderId });
   }
 
-  function startUpload(files: File[], indexForAi: boolean) {
+  function startUpload(files: File[], indexForAi: boolean, category: string) {
     if (!uploadRequest) return;
-    uploads.enqueue(files, state.selectedRoot, uploadRequest.folderId, indexForAi);
+    uploads.enqueue(files, state.selectedRoot, uploadRequest.folderId, indexForAi, category);
   }
 
   function dragEnter(event: DragEvent<HTMLDivElement>) {
@@ -449,7 +449,7 @@ export function DriveApp({
       {createFolderOpen ? <CreateFolderDialog audience={audience} canIndex={capabilities.can_index} open policyMode={capabilities.policy_mode} onClose={() => setCreateFolderOpen(false)} onCreate={createFolder} /> : null}
       {folderToManage ? <FolderDefaultsDialog audience={audience} canConfirmWidening={capabilities.can_permanently_delete} canIndex={capabilities.can_index} folder={folderToManage} open policyMode={capabilities.policy_mode} onClose={() => setFolderToManage(null)} onSave={saveFolderDefaults} /> : null}
       {fileToManage ? <FileFilingDialog audience={audience} canConfirmWidening={capabilities.can_permanently_delete} canIndex={capabilities.can_index} destinations={destinations} file={fileToManage} open policyMode={capabilities.policy_mode} onClose={() => setFileToManage(null)} onSave={saveFileFiling} /> : null}
-      {uploadRequest ? <UploadFilesDialog canIndex={capabilities.can_index} destinationName={uploadDestination} open policyMode={capabilities.policy_mode} preselectedFiles={uploadRequest.files} onClose={() => setUploadRequest(null)} onUpload={startUpload} /> : null}
+      {uploadRequest ? <UploadFilesDialog canIndex={capabilities.can_index} departments={audience.departments} destinationName={uploadDestination} open policyMode={capabilities.policy_mode} preselectedFiles={uploadRequest.files} onClose={() => setUploadRequest(null)} onUpload={startUpload} /> : null}
       {fileToDelete ? <PermanentDeleteDialog file={fileToDelete} open onClose={() => setFileToDelete(null)} onDelete={permanentlyDelete} /> : null}
       <DriveUploadTray uploads={uploads.uploads} onCancel={uploads.cancel} onDismiss={uploads.dismiss} onRetry={uploads.retry} />
     </div>
