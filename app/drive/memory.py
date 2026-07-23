@@ -1391,21 +1391,28 @@ class MemoryDriveStore:
         return sorted(rows, key=lambda row: (row.updated_at, row.id))
 
     def list_clean_category_files(
-        self, *, account_id: str, space_id: str, category: str, limit: int = 100,
+        self, *, account_id: str, space_id: str, category: str,
+        exclude_revision_ids: Sequence[str] = (), limit: int = 100,
     ) -> list[DriveFile]:
         """Non-trashed files in ``category`` whose current revision scanned clean.
 
         A tenant-scoped maintenance read (the in-memory analogue of the RLS scope
         the Postgres store enforces): downstream per-category workers — today the
         accounting extraction reconcile — re-derive stranded work from the durable
-        clean verdict. Read-only; it never touches malware evidence.
+        clean verdict. ``exclude_revision_ids`` is filtered out *before* ``limit``,
+        so the caller can hand it the already-processed revisions and a bounded
+        pass still surfaces older unprocessed files. Read-only; it never touches
+        malware evidence.
         """
         bounded = max(1, min(int(limit), 1_000))
+        excluded = set(exclude_revision_ids)
         rows: list[DriveFile] = []
         for file in self._files.values():
             if file.account_id != account_id or file.space_id != space_id:
                 continue
             if file.category != category or file.trashed_at or not file.current_revision_id:
+                continue
+            if file.current_revision_id in excluded:
                 continue
             revision = self._revisions.get(file.current_revision_id)
             if not revision or revision.file_id != file.id:

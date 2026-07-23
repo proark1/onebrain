@@ -187,6 +187,8 @@ class AccountingStore(Protocol):
         self, account_id: str, space_id: str, drive_file_id: str, drive_revision_id: str,
     ) -> Optional[dict]: ...
 
+    def documented_revision_ids(self, account_id: str, space_id: str) -> set[str]: ...
+
     def invoice_number_seen(
         self, account_id: str, space_id: str, issuer_name: str, invoice_number: str,
         *, exclude_id: str = "",

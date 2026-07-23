@@ -161,6 +161,14 @@ class MemoryAccountingStore:
                 return self._hydrate(row)
         return None
 
+    def documented_revision_ids(self, account_id: str, space_id: str) -> set[str]:
+        """Revisions in this workspace that already have a document (extraction done)."""
+        return {
+            row["drive_revision_id"]
+            for row in self._scoped(account_id, space_id)
+            if row.get("drive_revision_id")
+        }
+
     def invoice_number_seen(
         self, account_id: str, space_id: str, issuer_name: str, invoice_number: str,
         *, exclude_id: str = "",

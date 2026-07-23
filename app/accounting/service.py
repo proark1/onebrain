@@ -179,25 +179,24 @@ def reconcile_pending_extractions(
     re-derives a lost Drive ingest from the persisted ``index_status='queued'``
     marker.
 
-    Idempotent on two independent guards: it skips any file that already has a
-    document for the current revision (survives job garbage-collection, unlike the
-    enqueue key alone), and the shared idempotency key dedupes a racing retry — so
-    at most one extraction job exists per (file, revision, generation) no matter
-    how often this runs. Tenant-scoped (one account+space) so it stays within RLS.
-    Candidates come newest-first, so a freshly-stranded file is covered even when
-    more than ``limit`` clean files exist. Returns the count of clean accounting
-    files that lacked a document and were (re-)enqueued this pass.
+    The already-documented revisions are excluded *inside* the candidate query, so
+    the ``limit`` bounds the set of files that still need work — an older stranded
+    file is never hidden behind ``limit`` newer already-extracted ones. Idempotent:
+    the shared idempotency key dedupes a racing retry so at most one extraction job
+    exists per (file, revision, generation), and ``handle_extraction_job`` re-checks
+    ``document_for_revision`` before persisting (covering the race where a document
+    lands between the snapshot below and the enqueue). Tenant-scoped (one
+    account+space) so it stays within RLS. Returns the count of clean accounting
+    files still lacking a document that were enqueued this pass.
     """
     category = accounting_category_id(space_id)
     max_attempts = getattr(settings, "job_max_attempts", 3)
+    documented = accounting_store.documented_revision_ids(account_id, space_id)
     enqueued = 0
     for file in drive_store.list_clean_category_files(
-        account_id=account_id, space_id=space_id, category=category, limit=limit,
+        account_id=account_id, space_id=space_id, category=category,
+        exclude_revision_ids=documented, limit=limit,
     ):
-        if accounting_store.document_for_revision(
-            account_id, space_id, file.id, file.current_revision_id,
-        ):
-            continue
         job_store.enqueue(**accounting_extract_enqueue_kwargs(file, max_attempts=max_attempts))
         enqueued += 1
     return enqueued

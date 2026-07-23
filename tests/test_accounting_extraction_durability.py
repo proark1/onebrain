@@ -159,6 +159,16 @@ def _strand(env, monkeypatch, *, name="invoice.pdf"):
     return env.drive.get_file(file.id, account_id=ACCOUNT, space_id=SPACE), scan_job
 
 
+def _make_document(env, file, *, doc_id):
+    """Persist a minimal accounting document for a file's current revision."""
+    env.accounting.create_document({
+        "id": doc_id, "tenant_id": file.tenant_id, "account_id": ACCOUNT, "space_id": SPACE,
+        "drive_file_id": file.id, "drive_revision_id": file.current_revision_id,
+        "dedup_key": doc_id, "status": "pending", "check_flags": {},
+        "issuer_name": "", "invoice_number": "", "direction": "incoming",
+    }, [])
+
+
 def _extract_jobs(env):
     return [job for job in env.jobs._jobs.values() if job.type == JOB_ACCOUNTING_EXTRACT]
 
@@ -230,6 +240,31 @@ def test_reconcile_stops_once_a_document_exists(tmp_path, monkeypatch):
     # The document is now the durable idempotency guard — survives even if the job
     # row is later garbage-collected, unlike the enqueue key alone.
     assert _reconcile(env) == 0
+
+
+def test_reconcile_finds_an_older_stranded_file_behind_documented_newer_ones(tmp_path, monkeypatch):
+    env = _env(tmp_path)
+    # An OLD invoice stranded by the crash (clean, no document)...
+    old_file, _ = _strand(env, monkeypatch, name="old-invoice.pdf")
+    # ...and a NEWER invoice that extracted fine (clean + already has a document).
+    new_file, _ = _strand(env, monkeypatch, name="new-invoice.pdf")
+    _make_document(env, new_file, doc_id="acctdoc_new")
+
+    # Force a deterministic age gap so the stranded file sorts oldest.
+    env.drive._files[old_file.id] = replace(
+        env.drive._files[old_file.id], updated_at="2026-07-01T00:00:00+00:00",
+    )
+    env.drive._files[new_file.id] = replace(
+        env.drive._files[new_file.id], updated_at="2026-07-20T00:00:00+00:00",
+    )
+
+    # With limit=1 a naive newest-first scan would return only the DOCUMENTED newer
+    # file and skip it, leaving the older stranded file invisible forever. Excluding
+    # documented revisions BEFORE the limit is what still surfaces the older one.
+    assert _reconcile(env, limit=1) == 1
+    jobs = _extract_jobs(env)
+    assert len(jobs) == 1
+    assert jobs[0].payload["file_id"] == old_file.id
 
 
 def test_reconcile_skips_non_accounting_and_quarantined_files(tmp_path):

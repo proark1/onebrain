@@ -1714,7 +1714,8 @@ class PostgresDriveStore:
         return [self._file_row(row) for row in rows]
 
     def list_clean_category_files(
-        self, *, account_id: str, space_id: str, category: str, limit: int = 100,
+        self, *, account_id: str, space_id: str, category: str,
+        exclude_revision_ids: Sequence[str] = (), limit: int = 100,
     ) -> list[DriveFile]:
         """Non-trashed files in ``category`` whose current revision scanned clean.
 
@@ -1723,15 +1724,19 @@ class PostgresDriveStore:
         confirm the authoritative attempt is ``clean`` but mutates nothing, so it
         needs no fenced worker function. Downstream per-category maintenance (the
         accounting extraction reconcile) uses it to re-derive stranded work from
-        the durable clean verdict. The extraction handler re-validates the full
-        clean attestation + blob before it reads bytes, so ``status='clean'`` on
-        the authoritative attempt is a sufficient candidate filter here.
+        the durable clean verdict. ``exclude_revision_ids`` is applied *before*
+        ``LIMIT`` so passing the already-processed revisions guarantees an older
+        unprocessed file is still returned even past ``limit`` newer processed
+        ones. The extraction handler re-validates the full clean attestation +
+        blob before it reads bytes, so ``status='clean'`` on the authoritative
+        attempt is a sufficient candidate filter here.
         """
         bounded = max(1, min(int(limit), 1_000))
         with self._conn(account_id=account_id, space_id=space_id) as connection, connection.cursor() as cursor:
             cursor.execute(
                 f"SELECT {_FILE_COLUMNS} FROM drive_files "
                 "WHERE account_id=%s AND space_id=%s AND category=%s "
+                "AND current_revision_id <> ALL(%s::text[]) "
                 "AND trashed_at IS NULL AND COALESCE(current_revision_id,'')<>'' "
                 "AND EXISTS ("
                 "  SELECT 1 FROM drive_revision_malware_scans s "
@@ -1746,7 +1751,7 @@ class PostgresDriveStore:
                 "    )"
                 ") ORDER BY updated_at DESC, id DESC LIMIT %s",
                 (
-                    account_id, space_id, category,
+                    account_id, space_id, category, list(exclude_revision_ids),
                     DRIVE_MALWARE_POLICY_EPOCH, DRIVE_MALWARE_POLICY_EPOCH, bounded,
                 ),
             )
