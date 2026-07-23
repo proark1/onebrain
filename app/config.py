@@ -333,6 +333,20 @@ class Settings(BaseSettings):
     fleet_watchdog_seconds: int = Field(default=60, ge=0)
     fleet_low_root_disk_percent: int = Field(default=15, ge=0, le=100)
     fleet_low_data_disk_percent: int = Field(default=15, ge=0, le=100)
+    # Release-pipeline stall alerting (roadmap Gap D). The watchdog also opens a
+    # metadata-only alert on Mission Control's own row when a development candidate has
+    # been stuck at dev_failed longer than this — excluding one superseded by a newer
+    # verified release, or merely waiting for the daily backup. Passive detection like the
+    # infra alerts above, so on by default on MC; 0 disables just this signal. The
+    # self-deploy give-up signal (MC exhausting its self-deploy retries) is always on.
+    pipeline_stall_alert_seconds: int = Field(default=10800, ge=0)   # 3h
+    # Alert delivery (roadmap Gap D). When set, Mission Control POSTs each newly-opened
+    # fleet alert (infra + pipeline) to this webhook so a stall/low-disk actually reaches
+    # you instead of waiting to be noticed in the console. The body carries a Slack-style
+    # `text` field plus structured fields (metadata only — never a secret or customer
+    # content). Empty = disabled (nothing is pushed). Best-effort: an alert is delivered on
+    # the tick it first opens, so a webhook outage at that moment means a missed push.
+    fleet_alert_webhook_url: str = ""
     # Persistent PostgreSQL/data mount as seen by a reporter. A container that
     # does not mount it emits 0/0 (unknown), never a duplicate root filesystem.
     fleet_data_volume_path: str = "/mnt/onebrain-data"
@@ -361,6 +375,15 @@ class Settings(BaseSettings):
     # (UPDATE_RELEASE_PUBLIC_KEYS) for its updater to apply a dev-signed release. The
     # ONE predicate that widens this trust is is_operator_self_deployment().
     operator_auto_deploy_enabled: bool = False
+    # Bounded retry of MC's OWN self-deploy (roadmap Gap B). A self-update failure is only a
+    # convergence TIMEOUT — indistinguishable from a transient apply failure like disk-full —
+    # so the old "never re-attempt a failed target" guard permanently stranded an otherwise
+    # good release on one blip. Re-attempt up to N times with a backoff instead; the cap keeps
+    # a genuinely bad build from hot-looping the control plane. Only ever affects MC's own box
+    # (operator_auto_deploy_enabled must be on). Set max_attempts=1 to restore the old
+    # single-attempt behavior.
+    operator_self_max_attempts: int = 3
+    operator_self_retry_backoff_seconds: int = 900   # min spacing between self-deploy attempts (15 min)
     release_candidate_key_id: str = ""        # narrowly scoped CI candidate credential id
     release_candidate_key_hash: str = ""      # sha256$... hash; raw secret is never stored
     # ^ repo-prefix granular (B2): a bare host like "ghcr.io" would allowlist every GHCR tenant. The default
@@ -449,6 +472,21 @@ class Settings(BaseSettings):
                                                 # tick interval in seconds (MC only), clamped to a 30s floor.
                                                 # (G3-4) Default 0 keeps the daemon OFF on the already-deployed
                                                 # dormant MC — auto-advance is opt-in, never flipped by a deploy.
+    # --- Phase 1 automation: self-healing development pipeline (roadmap Gap A) ---
+    # Auto-retry development candidates stranded at dev_failed for a TRANSIENT reason
+    # (gate hiccup, rollout/dispatch blip, stale gate binding, a schema update waiting
+    # on the daily backup) so the pipeline self-heals instead of parking until an
+    # operator hand-runs retry-dev. Rides the MC-only reconcile tick under the same
+    # leadership lock, so it needs fleet_reconcile_seconds > 0. OFF by default: landing
+    # this changes nothing on the deployed MC — the operator opts in. It NEVER touches
+    # customer delivery or the prod-signing/customer-approval firebreak, and never
+    # retries a PERMANENT failure (bad build, invalid signature, module-set/gate
+    # replacement) — those alert and wait for a human. See app/controlplane/development_retry.py.
+    development_auto_retry_enabled: bool = False
+    development_auto_retry_max_attempts: int = 5            # bounded attempts, then a durable give-up alert
+    development_auto_retry_backoff_seconds: int = 600       # min spacing for infra-hiccup retries (10 min)
+    development_auto_retry_backup_backoff_seconds: int = 21600  # slow cadence for a backup-gate wait (6h) so a
+                                                                # migration-crosser rides through the 02:30 backup
     # --- Phase 5: network boundary (P5-05) ---
     hetzner_firewall_allow_ssh: bool = False    # break-glass ONLY; default false = NO inbound 22 rule emitted
 

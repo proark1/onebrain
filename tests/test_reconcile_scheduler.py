@@ -105,6 +105,68 @@ def test_reconcile_once_skips_when_another_postgres_replica_is_leader(monkeypatc
     assert store.get_rollout("c_dep").status == "pending"
 
 
+# --- development auto-retry wiring (roadmap Gap A) ----------------------------
+
+_ORCHESTRATOR = "app.controlplane.development_retry.reclaim_retryable_development_candidates"
+
+
+def test_auto_retry_is_a_noop_when_the_flag_is_off(monkeypatch):
+    called = []
+    monkeypatch.setattr(_ORCHESTRATOR, lambda *a, **k: called.append(True) or [])
+    # _settings() has no development_auto_retry_enabled attribute → getattr default False.
+    reconcile_scheduler._run_development_auto_retry(_settings(), object())
+    assert called == []
+
+
+def test_auto_retry_invokes_the_orchestrator_with_configured_bounds(monkeypatch):
+    captured = {}
+
+    def _fake(store, **kwargs):
+        captured["store"] = store
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(_ORCHESTRATOR, _fake)
+    store = object()
+    reconcile_scheduler._run_development_auto_retry(
+        _settings(development_auto_retry_enabled=True,
+                  development_auto_retry_max_attempts=3,
+                  development_auto_retry_backoff_seconds=120,
+                  development_auto_retry_backup_backoff_seconds=3600),
+        store)
+    assert captured["store"] is store
+    assert captured["max_attempts"] == 3
+    assert captured["backoff_seconds"] == 120
+    assert captured["backup_backoff_seconds"] == 3600
+    assert callable(captured["dispatch"])  # the real _dispatch_development_candidate
+
+
+def test_auto_retry_never_raises_out_of_the_tick(monkeypatch):
+    def _boom(*a, **k):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(_ORCHESTRATOR, _boom)
+    # Must swallow — a retry failure can never kill the reconcile daemon.
+    reconcile_scheduler._run_development_auto_retry(
+        _settings(development_auto_retry_enabled=True), object())
+
+
+def test_reconcile_once_runs_auto_retry_and_still_returns_runs(monkeypatch):
+    calls = []
+    monkeypatch.setattr(_ORCHESTRATOR, lambda store, **k: calls.append(store) or [])
+    store = _store_with_offered_child()
+    fleet = SimpleNamespace(
+        latest_heartbeats=lambda: {"dep_p": _hb("dep_p", attempt_id="c_dep", outcome="succeeded")})
+
+    runs = reconcile_scheduler.reconcile_once(
+        _settings(development_auto_retry_enabled=True), store, fleet)
+
+    # The reconcile result is preserved (auto-retry runs AFTER it, isolated) and the
+    # orchestrator ran on the same store within the same leader-held tick.
+    assert [r.id for r in runs] == ["f1"]
+    assert calls == [store]
+
+
 # --- start_reconcile_scheduler (gate only — no real thread) -------------------
 
 def test_start_reconcile_scheduler_returns_false_off_operator():

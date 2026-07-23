@@ -85,6 +85,58 @@ def test_mc_box_env_satisfies_onebrain_api_boot_requirements():
     assert settings.fleet_desired_state_public_keys == pub
 
 
+def test_mc_box_threads_operator_control_plane_settings():
+    """Every operator control-plane knob must reach the onebrain-api container on a
+    PROVISIONED MC (no SSH). A value baked only into /opt/onebrain/.env is used purely to
+    interpolate ${VAR} refs and never becomes a Setting (resolve_box_api_settings), so before
+    this fix an operator could bake e.g. operator_self_max_attempts=1 and the box still
+    resolved 3. Guards the render._OPERATOR_APP_CONTROL_ENV <-> bootstrap_mc overlay pair from
+    drifting back to that silent-default state."""
+    from app.provisioning.hetzner.render import _OPERATOR_APP_CONTROL_ENV
+
+    priv, pub = generate_keypair()
+    settings = _mc_settings(
+        fleet_desired_state_private_key=priv, fleet_desired_state_public_keys=pub,
+        operator_auto_deploy_enabled=True,
+        dev_release_verify_public_key="dev-verify-key-xyz",
+        operator_self_max_attempts=1,
+        operator_self_retry_backoff_seconds=111,
+        development_auto_retry_enabled=True,
+        development_auto_retry_max_attempts=9,
+        development_auto_retry_backoff_seconds=222,
+        development_auto_retry_backup_backoff_seconds=333,
+        pipeline_stall_alert_seconds=0,   # a deliberate DISABLE, not a default — must survive as 0
+        fleet_alert_webhook_url="https://hooks.example.com/x?a=1",
+    )
+    art = mc.build_mc_artifacts(_args(_base_argv()), settings)
+    api_env = extract_cloud_init_file(art.cloud_init, "/opt/onebrain/env/onebrain-api.env")
+    dotenv = extract_cloud_init_file(art.cloud_init, "/opt/onebrain/.env")
+    s = resolve_box_api_settings(api_env, dotenv)
+
+    # These two were latently overlay-only before this fix: operator_auto_deploy gates the
+    # whole self-deploy feature, and the app needs the dev verify key to register dev candidates.
+    assert s.operator_auto_deploy_enabled is True
+    assert s.dev_release_verify_public_key == "dev-verify-key-xyz"
+    # MC self-deploy bounded retry (#69): max_attempts=1 must restore single-attempt behavior.
+    assert s.operator_self_max_attempts == 1
+    assert s.operator_self_retry_backoff_seconds == 111
+    # Dev-pipeline auto-retry (#61).
+    assert s.development_auto_retry_enabled is True
+    assert s.development_auto_retry_max_attempts == 9
+    assert s.development_auto_retry_backoff_seconds == 222
+    assert s.development_auto_retry_backup_backoff_seconds == 333
+    # Pipeline-stall detection + delivery (#65). 0 is a deliberate disable and must survive as 0.
+    assert s.pipeline_stall_alert_seconds == 0
+    assert s.fleet_alert_webhook_url == "https://hooks.example.com/x?a=1"
+
+    # Drift guard: every declared operator knob maps to a real Settings field (a typo or a
+    # non-field name would be silently dropped by resolve_box_api_settings/pydantic).
+    fields = set(Settings.model_fields)
+    for name in _OPERATOR_APP_CONTROL_ENV:
+        assert name.startswith("ONEBRAIN_"), name
+        assert name[len("ONEBRAIN_"):].lower() in fields, name
+
+
 # --- customer box ------------------------------------------------------------
 
 def _customer_boot_settings(*, bundle_overrides: dict | None = None):
