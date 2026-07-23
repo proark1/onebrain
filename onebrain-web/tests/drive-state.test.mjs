@@ -46,6 +46,47 @@ test("Drive browser state scopes folder navigation to the selected root", () => 
   assert.equal(folder.folderId, "folder-2");
 });
 
+test("Switching Drive roots adopts the new space's audience once its listing loads", () => {
+  const initial = createDriveBrowserState(bootstrap());
+  assert.deepEqual(initial.audience.departments, [{ id: "general", name: "Everyone" }]);
+
+  const buchhaltung = { id: "root-2", account_id: "account-1", space_id: "space-2", kind: "space", name: "Buchhaltung" };
+  const switched = driveBrowserReducer(initial, { type: "select_root", root: buchhaltung });
+  // The audience is held over the loading window so filing controls never flash to bare defaults.
+  assert.deepEqual(switched.audience, initial.audience);
+  assert.equal(switched.selectedRoot.space_id, "space-2");
+
+  const loaded = driveBrowserReducer(switched, {
+    type: "load_success",
+    response: {
+      breadcrumbs: [],
+      entries: [],
+      next_cursor: null,
+      audience: {
+        classifications: ["internal", "confidential"],
+        locations: ["global"],
+        departments: [
+          { id: "general", name: "Everyone" },
+          { id: "acg_space-2_buchhaltung", name: "Buchhaltung" },
+        ],
+      },
+    },
+  });
+  assert.deepEqual(loaded.audience.departments, [
+    { id: "general", name: "Everyone" },
+    { id: "acg_space-2_buchhaltung", name: "Buchhaltung" },
+  ]);
+});
+
+test("Drive listing keeps the last audience when a response omits it", () => {
+  const initial = createDriveBrowserState(bootstrap());
+  const loaded = driveBrowserReducer(initial, {
+    type: "load_success",
+    response: { breadcrumbs: [], entries: [], next_cursor: null },
+  });
+  assert.deepEqual(loaded.audience, initial.audience);
+});
+
 test("Drive upload reducer prevents progress from moving backwards and supports retry", () => {
   const record = {
     id: "upload-1",

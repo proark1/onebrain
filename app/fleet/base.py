@@ -19,11 +19,16 @@ from typing import Dict, List, Optional, Protocol
 # alerts. Kept distinct from the infra kinds the heartbeat watchdog manages.
 DEV_PIPELINE_STALLED_ALERT = "dev_pipeline_stalled"
 OPERATOR_SELF_DEPLOY_STALLED_ALERT = "operator_self_deploy_stalled"
+# The DESIGNATED release gate has a sustained hard-failure signal (dead box / disk death), so
+# the whole dev pipeline is stalled behind it — recommend provisioning a replacement gate
+# (roadmap Phase 4 / Gap E2, Tier 1: DETECT-AND-ALERT ONLY; no auto-provision, no teardown).
+GATE_REPLACEMENT_RECOMMENDED_ALERT = "gate_replacement_recommended"
 
 ALERT_KINDS = frozenset({
     "missed_heartbeat", "version_drift", "unhealthy", "migration_failed",
     "low_root_disk", "low_data_disk",
     DEV_PIPELINE_STALLED_ALERT, OPERATOR_SELF_DEPLOY_STALLED_ALERT,
+    GATE_REPLACEMENT_RECOMMENDED_ALERT,
 })
 
 

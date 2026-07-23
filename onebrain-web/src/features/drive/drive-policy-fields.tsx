@@ -6,12 +6,6 @@ import type {
 } from "./types";
 import styles from "./drive.module.css";
 
-export const DEFAULT_DRIVE_AUDIENCE: DriveAudience = {
-  classifications: ["internal"],
-  locations: ["global"],
-  departments: [{ id: "general", name: "Everyone" }],
-};
-
 export function defaultDrivePolicy(
   audience: DriveAudience,
   canIndex: boolean,

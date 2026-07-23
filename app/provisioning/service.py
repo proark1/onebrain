@@ -15,7 +15,17 @@ from app.controlplane.base import (
     validate_deployment,
     validate_module,
 )
-from app.platform.base import Account, AppInstallation, AuditEvent, BrandTheme, BRAND_COLOR_FIELDS, Space, default_brand_theme
+from app.platform.base import (
+    Account,
+    AppInstallation,
+    AuditEvent,
+    BrandTheme,
+    BRAND_COLOR_FIELDS,
+    DEFAULT_LOCALE,
+    Space,
+    default_brand_theme,
+    normalize_locale,
+)
 from app.provisioning.bundles import ModuleComposition, resolve_module_composition
 from app.servicekeys.base import SCOPE_READ, SCOPE_WRITE, ServiceKey, generate_key, hash_secret
 from app.users.base import User
@@ -163,6 +173,7 @@ class CustomerProvisioner:
         customer_name: str,
         owner_user_id: str,
         module_ids: Iterable[str] | None = None,
+        default_locale: str = DEFAULT_LOCALE,
         deployment_id: str,
         deployment_type: str,
         region: str,
@@ -233,6 +244,7 @@ class CustomerProvisioner:
             kind=account_kind.strip(),
             name=customer_name,
             owner_user_id=owner_user_id,
+            default_locale=normalize_locale(default_locale),
         ))
 
         # H-10: when an owner email is supplied (and a user store is wired), mint

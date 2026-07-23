@@ -71,6 +71,9 @@ def _run_pipeline_watchdog(settings, control_store, fleet_store, now_iso: str) -
             # this getattr picks it up and the alert threshold tracks the real budget. Defaulting
             # to 3 here would leave the alert silent on the current single-attempt behavior.
             self_max_attempts=int(getattr(settings, "operator_self_max_attempts", 1) or 1),
+            # Phase 4 Tier 1: recommend replacing the designated gate once it has been hard-down
+            # this long (detect-and-alert only). 0 disables just this signal.
+            gate_replace_seconds=int(getattr(settings, "gate_replace_after_seconds", 0) or 0),
             next_id=lambda: f"fa_{uuid4().hex}",
         )
     except Exception as exc:  # never let pipeline detection break the watchdog daemon

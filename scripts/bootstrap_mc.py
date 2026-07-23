@@ -485,6 +485,8 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
         ("ONEBRAIN_PIPELINE_STALL_ALERT_SECONDS",
          str(int(getattr(settings, "pipeline_stall_alert_seconds", 10800)))),
         ("ONEBRAIN_FLEET_ALERT_WEBHOOK_URL", alert_webhook_url),   # validated compose-safe above
+        ("ONEBRAIN_GATE_REPLACE_AFTER_SECONDS",
+         str(int(getattr(settings, "gate_replace_after_seconds", 1800)))),
         # CI dev-candidate registration credential. The id is compared for equality (kept
         # '$'-free above); the "sha256$<hex>" hash is percent-encoded ($ -> %24) so compose's
         # first-boot interpolation of the baked .env cannot rewrite it — _require_candidate_auth

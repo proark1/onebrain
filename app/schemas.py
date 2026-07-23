@@ -94,6 +94,9 @@ class SessionInfo(BaseModel):
     # control plane is mounted here at all.
     operator_mode: bool = False
     is_operator_surface: bool = False
+    # The account's provisioned UI language (de/en). The console seeds its default
+    # language from this; a per-user switch (client-side) can override it.
+    default_locale: str = "de"
 
 
 class LoginRequest(BaseModel):

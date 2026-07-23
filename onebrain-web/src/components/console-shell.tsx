@@ -1,10 +1,10 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
+import { ConsoleCommandBar } from "@/components/console-command-bar";
 import { ConsoleNavigation } from "@/components/console-navigation";
+import { LocaleProvider } from "@/components/locale-provider";
 import { WorkspaceProvider } from "@/components/workspace-provider";
-import { WorkspaceSelector } from "@/components/workspace-selector";
-import { ALL_NAV, consoleNavigationGroups, type ConsoleSection } from "@/lib/console-navigation";
+import { consoleNavigationGroups, type ConsoleSection } from "@/lib/console-navigation";
 import type { SessionInfo } from "@/lib/onebrain-types";
 
 type ConsoleShellProps = {
@@ -24,8 +24,6 @@ export function ConsoleShell({ active, children, session, workspaceMode = "conso
   // operator-surface capability.
   const navGroups = consoleNavigationGroups(session.operator_mode);
   const homeHref = session.operator_mode ? "/fleet" : "/chat";
-  const activeLabel = ALL_NAV.find((item) => item.id === active)?.label || "Console";
-  const surfaceLabel = session.operator_mode ? "Mission Control" : "Workspace";
   const initials = identity
     .split(/\s+|@/)
     .filter(Boolean)
@@ -37,20 +35,13 @@ export function ConsoleShell({ active, children, session, workspaceMode = "conso
       <ConsoleNavigation active={active} groups={navGroups} homeHref={homeHref} />
 
       <div className="consoleFrame">
-        <header className={workspaceMode === "feature" ? "commandBar featureScoped" : "commandBar"}>
-          <div className="commandContext">
-            <span>{surfaceLabel}</span>
-            <i aria-hidden="true">/</i>
-            <strong>{activeLabel}</strong>
-          </div>
-          {workspaceMode === "feature" ? null : active === "kpis" || active === "buchhaltung" ? <span /> : <WorkspaceSelector />}
-          <div className="commandIdentity">
-            <Link aria-label={`Account settings for ${identity}`} href="/settings">
-              <span>{identity}</span>
-              <strong className="commandAvatar" aria-hidden="true">{initials}</strong>
-            </Link>
-          </div>
-        </header>
+        <ConsoleCommandBar
+          active={active}
+          identity={identity}
+          initials={initials}
+          operatorMode={session.operator_mode}
+          workspaceMode={workspaceMode}
+        />
 
         <section className="consoleContent">
           {children}
@@ -58,5 +49,10 @@ export function ConsoleShell({ active, children, session, workspaceMode = "conso
       </div>
     </main>
   );
-  return workspaceMode === "feature" ? shell : <WorkspaceProvider session={session}>{shell}</WorkspaceProvider>;
+  // LocaleProvider seeds the UI language from the account default and wraps every
+  // console surface (both workspace and feature mode); WorkspaceProvider stays
+  // scoped to console mode as before.
+  const scoped =
+    workspaceMode === "feature" ? shell : <WorkspaceProvider session={session}>{shell}</WorkspaceProvider>;
+  return <LocaleProvider defaultLocale={session.default_locale}>{scoped}</LocaleProvider>;
 }

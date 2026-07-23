@@ -11,6 +11,8 @@ export type SessionInfo = {
   // Privacy) so the console reads as an admin-only overview.
   operator_mode: boolean;
   is_operator_surface: boolean;
+  // The account's provisioned UI language (de/en); seeds the console default.
+  default_locale: string;
 };
 
 export type AiEmployeeWorkspace = {
@@ -429,6 +431,7 @@ export type ProvisionCustomerInput = {
   account_id?: string;
   account_kind?: string;
   module_ids: string[];
+  default_locale?: string;
   current_migration?: string;
   customer_name: string;
   deployment_id?: string;
