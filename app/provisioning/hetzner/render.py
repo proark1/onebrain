@@ -719,6 +719,13 @@ _OPERATOR_APP_CONTROL_ENV = (
     "ONEBRAIN_FLEET_ALERT_WEBHOOK_URL",
     # Gate-replacement recommendation (Phase 4 Tier 1).
     "ONEBRAIN_GATE_REPLACE_AFTER_SECONDS",
+    # CI dev-candidate registration credential (POST /api/operator/release-candidates auth,
+    # app/routers/operator._require_candidate_auth). The hash is stored "sha256$<hex>": the
+    # literal '$' would be rewritten by compose's first-boot interpolation of the baked .env,
+    # so bootstrap_mc percent-encodes it as %24 and _require_candidate_auth reverses it before
+    # verify_secret. The id is compared for equality and kept '$'-free (bootstrap fails closed).
+    "ONEBRAIN_RELEASE_CANDIDATE_KEY_ID",
+    "ONEBRAIN_RELEASE_CANDIDATE_KEY_HASH",
 )
 
 

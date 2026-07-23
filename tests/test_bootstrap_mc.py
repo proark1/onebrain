@@ -231,6 +231,30 @@ def test_production_auto_deploy_without_dev_key_fails_bootstrap_preflight(tmp_pa
     assert s.dev_release_verify_public_key == "dev-verify-key"
 
 
+def test_candidate_key_id_dollar_rejected_and_hash_dollar_encoded():
+    """The CI dev-candidate credential rides the MC box's baked .env, which docker-compose
+    interpolates on first boot. The key id is compared for equality, so a '$' in it (which
+    compose would rewrite) must fail closed at render. The hash is stored "sha256$<hex>" and
+    MUST carry a '$', so it is percent-encoded ($ -> %24) instead — surviving compose intact,
+    to be reversed app-side by operator._require_candidate_auth."""
+    from app.fleet.keys import hash_secret
+
+    bad = _mc_settings(release_candidate_key_id="candidate$ci")
+    with pytest.raises(ValueError, match=r"RELEASE_CANDIDATE_KEY_ID"):
+        mc.build_mc_artifacts(_args(_base_argv()), bad)
+
+    ok = _mc_settings(
+        release_candidate_key_id="candidate-ci-v1",
+        release_candidate_key_hash=hash_secret("ci-secret-token"))
+    art = mc.build_mc_artifacts(_args(_base_argv()), ok)
+    dotenv = extract_cloud_init_file(art.cloud_init, "/opt/onebrain/.env")
+    # The id rides verbatim; the hash rides '$'-free (percent-encoded), and the raw "sha256$..."
+    # — which compose would mangle — must NOT appear in the baked .env.
+    assert "ONEBRAIN_RELEASE_CANDIDATE_KEY_ID=candidate-ci-v1\n" in dotenv
+    assert "ONEBRAIN_RELEASE_CANDIDATE_KEY_HASH=sha256%24" in dotenv
+    assert "ONEBRAIN_RELEASE_CANDIDATE_KEY_HASH=sha256$" not in dotenv
+
+
 # --- dry-run: the baked operator cloud-init (G3-1) ---------------------------
 
 def test_dry_run_bakes_operator_env_and_omits_bootstrap_token():
