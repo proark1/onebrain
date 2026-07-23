@@ -419,6 +419,28 @@ def build_mc_artifacts(args, settings) -> McArtifacts:
          getattr(settings, "dev_release_verify_public_key", "") or ""),
         ("ONEBRAIN_OPERATOR_AUTO_DEPLOY_ENABLED",
          "true" if getattr(settings, "operator_auto_deploy_enabled", False) else "false"),
+        # Operator control-plane recovery knobs (roadmap Phases 1-3). Baked so the onebrain-api
+        # ${VAR} refs (render._OPERATOR_APP_CONTROL_ENV) resolve to the operator's chosen values
+        # on a provisioned MC — without these an overlay-less field silently keeps its default
+        # and the SSH-less box cannot be tuned. All default to their inert values, so a stock MC
+        # stays dormant until the operator opts in. int() (never `or default`) so a deliberate
+        # 0 (e.g. pipeline_stall_alert_seconds=0 disables that signal) is preserved, not clobbered.
+        ("ONEBRAIN_OPERATOR_SELF_MAX_ATTEMPTS",
+         str(int(getattr(settings, "operator_self_max_attempts", 3)))),
+        ("ONEBRAIN_OPERATOR_SELF_RETRY_BACKOFF_SECONDS",
+         str(int(getattr(settings, "operator_self_retry_backoff_seconds", 900)))),
+        ("ONEBRAIN_DEVELOPMENT_AUTO_RETRY_ENABLED",
+         "true" if getattr(settings, "development_auto_retry_enabled", False) else "false"),
+        ("ONEBRAIN_DEVELOPMENT_AUTO_RETRY_MAX_ATTEMPTS",
+         str(int(getattr(settings, "development_auto_retry_max_attempts", 5)))),
+        ("ONEBRAIN_DEVELOPMENT_AUTO_RETRY_BACKOFF_SECONDS",
+         str(int(getattr(settings, "development_auto_retry_backoff_seconds", 600)))),
+        ("ONEBRAIN_DEVELOPMENT_AUTO_RETRY_BACKUP_BACKOFF_SECONDS",
+         str(int(getattr(settings, "development_auto_retry_backup_backoff_seconds", 21600)))),
+        ("ONEBRAIN_PIPELINE_STALL_ALERT_SECONDS",
+         str(int(getattr(settings, "pipeline_stall_alert_seconds", 10800)))),
+        ("ONEBRAIN_FLEET_ALERT_WEBHOOK_URL",
+         getattr(settings, "fleet_alert_webhook_url", "") or ""),
     ]
     dotenv += "".join(f"{k}={v}\n" for k, v in overlay)
 
