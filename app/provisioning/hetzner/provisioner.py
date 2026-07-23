@@ -34,7 +34,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from app.controlplane.desired_state import active_signer_in_served_set
-from app.platform.base import DEFAULT_LOCALE
+from app.platform.base import DEFAULT_LOCALE, normalize_locale
 from app.fleet.bootstrap_bundle import validate_bundle
 from app.fleet.enrollment import mint_deployment_fleet_key
 from app.fleet.keys import generate_bootstrap_token, hash_secret
@@ -215,7 +215,6 @@ class HetznerProvisioner:
             account_kind=str(run.request_payload.get("account_kind", "organization")),
             customer_name=deployment.customer_name,
             module_ids=run.module_ids,
-            default_locale=str(run.request_payload.get("default_locale", DEFAULT_LOCALE)),
         ))
 
         # Development candidates are signed by a CI-only key that customer boxes
@@ -309,6 +308,11 @@ class HetznerProvisioner:
                 bootstrap_token=bootstrap_token,
                 callback_token=callback_token,
                 customer_bootstrap=customer_bootstrap,
+                # UI language rides a plain box.env value (not the strict descriptor),
+                # so a box on an older release ignores it instead of failing bootstrap.
+                customer_default_locale=normalize_locale(
+                    str(run.request_payload.get("default_locale", DEFAULT_LOCALE))
+                ),
                 # BK3: non-secret offsite-backup config baked into box.env (the two S3 creds ride
                 # the sealed bundle as ${VAR} refs). backup_dbs = the enabled products' DB names.
                 backup_enabled=bool(getattr(settings, "backup_enabled", False)),

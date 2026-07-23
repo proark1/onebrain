@@ -33,13 +33,14 @@ from app.servicekeys.base import ServiceKey, hash_secret, parse_key
 BOOTSTRAP_SCHEMA_VERSION = 2
 MAX_BOOTSTRAP_ENCODED_BYTES = 4096
 _ACCOUNT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,119}$")
-_REQUIRED_FIELDS = frozenset({"schema_version", "account_id", "account_kind", "customer_name", "module_ids"})
-# ``default_locale`` is OPTIONAL, not a schema-version bump: boxes provisioned
-# before the i18n foundation carry a descriptor without it, and create_app()
-# re-decodes that descriptor on every boot. An absent value reads as the platform
-# default (German), so existing boxes keep decoding rather than crash-looping.
-_OPTIONAL_FIELDS = frozenset({"default_locale"})
-_FIELDS = _REQUIRED_FIELDS | _OPTIONAL_FIELDS
+# The bootstrap descriptor is a STRICT, versioned closed set: already-released box
+# images validate this field set exactly and reject any extra key before they can
+# reconcile. It must therefore never gain a field — a box provisioned onto an
+# older, still-approved release would fail bootstrap on the new key. Additive
+# per-account settings like the UI locale ride a SEPARATE box.env value instead
+# (ONEBRAIN_CUSTOMER_DEFAULT_LOCALE), which older images simply ignore; see the
+# default_locale parameter of reconcile_customer_bootstrap.
+_FIELDS = frozenset({"schema_version", "account_id", "account_kind", "customer_name", "module_ids"})
 _LOCAL_INTEGRATION_APPS = ("assistant", "communication")
 
 
@@ -49,7 +50,6 @@ class CustomerBootstrapDescriptor:
     account_kind: str
     customer_name: str
     module_ids: tuple[str, ...] = ()
-    default_locale: str = DEFAULT_LOCALE
     schema_version: int = BOOTSTRAP_SCHEMA_VERSION
 
 
@@ -86,9 +86,6 @@ def _validated_descriptor(descriptor: CustomerBootstrapDescriptor) -> CustomerBo
         account_kind=account_kind,
         customer_name=customer_name,
         module_ids=composition.selected_module_ids,
-        # Coerce rather than reject: an unrecognized locale must never crash-loop a
-        # box at bootstrap. The provisioning API already constrains input to de/en.
-        default_locale=normalize_locale(descriptor.default_locale),
     )
 
 
@@ -100,7 +97,6 @@ def encode_customer_bootstrap(descriptor: CustomerBootstrapDescriptor) -> str:
             "account_kind": descriptor.account_kind,
             "customer_name": descriptor.customer_name,
             "module_ids": list(descriptor.module_ids),
-            "default_locale": descriptor.default_locale,
             "schema_version": descriptor.schema_version,
         },
         ensure_ascii=False,
@@ -131,12 +127,7 @@ def decode_customer_bootstrap(encoded: str) -> CustomerBootstrapDescriptor | Non
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("Customer bootstrap descriptor is not valid JSON.") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("Customer bootstrap descriptor fields are invalid.")
-    keys = set(payload)
-    # All required fields present, and no unknown extras — but an OMITTED optional
-    # field (e.g. default_locale on a pre-i18n box) is fine and defaults below.
-    if not (_REQUIRED_FIELDS <= keys) or not (keys <= _FIELDS):
+    if not isinstance(payload, dict) or set(payload) != _FIELDS:
         raise ValueError("Customer bootstrap descriptor fields are invalid.")
     module_ids = payload.get("module_ids")
     if not isinstance(module_ids, list) or any(not isinstance(module_id, str) for module_id in module_ids):
@@ -148,7 +139,6 @@ def decode_customer_bootstrap(encoded: str) -> CustomerBootstrapDescriptor | Non
             account_kind=str(payload["account_kind"]),
             customer_name=str(payload["customer_name"]),
             module_ids=tuple(module_ids),
-            default_locale=str(payload.get("default_locale", DEFAULT_LOCALE)),
         )
     except (TypeError, ValueError) as exc:
         raise ValueError("Customer bootstrap descriptor fields are invalid.") from exc
@@ -205,9 +195,17 @@ def reconcile_customer_bootstrap(
     session_store,
     administrator_email: str,
     integration_keys: Mapping[str, str],
+    default_locale: str = DEFAULT_LOCALE,
 ) -> CustomerBootstrapResult:
-    """Converge a customer database to its explicit product-module selection."""
+    """Converge a customer database to its explicit product-module selection.
+
+    ``default_locale`` is the account's UI language. It is passed alongside the
+    descriptor (not inside it) so it can travel as a plain box.env value that older
+    box images ignore — see the note on ``_FIELDS``. Coerced to a supported locale
+    so a stray value can never crash the box at bootstrap.
+    """
     descriptor = _validated_descriptor(descriptor)
+    resolved_locale = normalize_locale(default_locale)
     composition = resolve_module_composition(descriptor.module_ids)
     expected_integrations = [
         app_id
@@ -245,7 +243,7 @@ def reconcile_customer_bootstrap(
         kind=descriptor.account_kind,
         name=descriptor.customer_name,
         owner_user_id=owner_user_id,
-        default_locale=descriptor.default_locale,
+        default_locale=resolved_locale,
     ))
 
     spaces_by_key: dict[str, Space] = {}
@@ -306,7 +304,7 @@ def reconcile_customer_bootstrap(
         decision="allowed",
         meta={
             "module_ids": list(descriptor.module_ids),
-            "default_locale": descriptor.default_locale,
+            "default_locale": resolved_locale,
             "schema_version": descriptor.schema_version,
         },
     ))

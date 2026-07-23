@@ -224,6 +224,10 @@ class Settings(BaseSettings):
     # Customer boxes receive a non-secret topology descriptor plus app-specific
     # raw keys. Startup stores only the key hashes in the customer database.
     customer_bootstrap: str = ""
+    # Account UI language (de/en), rendered into box.env at provisioning and applied
+    # by the tenant-local bootstrap reconcile. Not part of the strict bootstrap
+    # descriptor, so a box on an older release simply ignores it.
+    customer_default_locale: str = "de"
     assistant_service_key: str = ""
     communication_service_key: str = ""
 

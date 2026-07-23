@@ -49,50 +49,47 @@ def test_customer_bootstrap_descriptor_round_trips_and_is_deterministic():
     assert decode_customer_bootstrap("") is None
 
 
-def test_customer_bootstrap_descriptor_carries_an_explicit_locale():
-    encoded = encode_customer_bootstrap(replace(_descriptor(), default_locale="en"))
+def test_customer_bootstrap_descriptor_stays_a_strict_five_field_set():
+    # Already-released box images validate the descriptor field-for-field and reject
+    # any extra key before they can reconcile. Adding a field would fail bootstrap on
+    # a box provisioned onto an older, still-approved release, so the encoded shape
+    # must stay exactly these five keys — per-account extras (e.g. the UI locale)
+    # travel outside the descriptor (ONEBRAIN_CUSTOMER_DEFAULT_LOCALE).
+    encoded = encode_customer_bootstrap(_descriptor())
+    payload = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
 
-    assert decode_customer_bootstrap(encoded).default_locale == "en"
-
-
-def test_pre_i18n_descriptor_without_a_locale_decodes_as_german():
-    # A box provisioned before the i18n foundation carries a descriptor with no
-    # default_locale, and create_app() re-decodes it on every boot. It must keep
-    # decoding — as German, the platform default — rather than crash-loop the box.
-    legacy = base64.urlsafe_b64encode(
-        json.dumps(
-            {
-                "account_id": "onebrain-development",
-                "account_kind": "project",
-                "customer_name": "One Brain Development Gate",
-                "module_ids": list(OPTIONAL_MODULE_IDS),
-                "schema_version": 2,
-            },
-            sort_keys=True,
-        ).encode("utf-8")
-    ).decode("ascii").rstrip("=")
-
-    descriptor = decode_customer_bootstrap(legacy)
-
-    assert descriptor is not None
-    assert descriptor.default_locale == "de"
+    assert set(payload) == {
+        "schema_version",
+        "account_id",
+        "account_kind",
+        "customer_name",
+        "module_ids",
+    }
 
 
-def test_reconcile_persists_the_default_locale_on_the_account():
-    platform = MemoryPlatformStore()
+def test_reconcile_applies_the_default_locale_passed_alongside_the_descriptor():
+    # default_locale is a reconcile parameter (not a descriptor field): it lands on
+    # the account, and an unsupported value is coerced to the German default rather
+    # than crashing the box at bootstrap.
+    def _reconcile(platform, locale):
+        return reconcile_customer_bootstrap(
+            replace(_descriptor(), module_ids=()),
+            platform_store=platform,
+            service_key_store=MemoryServiceKeyStore(),
+            user_store=MemoryUserStore(),
+            session_store=MemorySessionStore(),
+            administrator_email="",
+            integration_keys={},
+            default_locale=locale,
+        )
 
-    reconcile_customer_bootstrap(
-        replace(_descriptor(), module_ids=(), default_locale="en"),
-        platform_store=platform,
-        service_key_store=MemoryServiceKeyStore(),
-        user_store=MemoryUserStore(),
-        session_store=MemorySessionStore(),
-        administrator_email="",
-        integration_keys={},
-    )
+    english = MemoryPlatformStore()
+    _reconcile(english, "en")
+    assert english.get_account("onebrain-development").default_locale == "en"
 
-    account = platform.get_account("onebrain-development")
-    assert account is not None and account.default_locale == "en"
+    coerced = MemoryPlatformStore()
+    _reconcile(coerced, "fr")
+    assert coerced.get_account("onebrain-development").default_locale == "de"
 
 
 @pytest.mark.parametrize(
