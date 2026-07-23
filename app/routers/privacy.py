@@ -15,6 +15,7 @@ from app.auth.principal import Principal, resolve_principal
 from app.drive.blobs import drive_scope_prefix
 from app.drive.export import prepare_drive_export, iter_drive_export_tar
 from app.deps import (
+    get_accounting_store,
     get_ai_employee_google_calendar_connector,
     get_ai_employee_store,
     get_conversation_store,
@@ -54,6 +55,7 @@ class PrivacyExportOut(BaseModel):
     conversations: list[dict]
     intake_records: list[dict] = Field(default_factory=list)
     kpis: dict = Field(default_factory=dict)
+    accounting: dict = Field(default_factory=dict)
     ai_employees: dict = Field(default_factory=dict)
     drive: dict = Field(default_factory=dict)
     governance: dict = Field(default_factory=dict)
@@ -164,6 +166,7 @@ def export_account_data(
     conversations = get_conversation_store().export_scope(account_id, account_id=account_id, space_id=space_id)
     intake_records = get_intake_store().export_records(account_id, account_id=account_id, space_id=space_id)
     kpis = get_kpi_store().export_scope(account_id, space_id)
+    accounting = get_accounting_store().export_scope(account_id, space_id)
     ai_employees = _redact_ai_employee_export(get_ai_employee_store().export_scope(
         tenant_id=account_id,
         account_id=account_id,
@@ -208,6 +211,7 @@ def export_account_data(
             "conversations": len(conversations),
             "intake_records": len(intake_records),
             "kpis": {key: len(value) for key, value in kpis.items()},
+            "accounting": {key: len(value) for key, value in accounting.items()},
             "ai_employees": {key: len(value) for key, value in ai_employees.items()},
             "drive": {key: len(value) for key, value in drive.items()},
             "governance": {key: len(value) for key, value in governance.items()},
@@ -221,6 +225,7 @@ def export_account_data(
         conversations=conversations,
         intake_records=intake_records,
         kpis=kpis,
+        accounting=accounting,
         ai_employees=ai_employees,
         drive=drive,
         governance=governance,
@@ -350,6 +355,9 @@ def _erase_account_data_impl(
     deleted_conversations = get_conversation_store().delete_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_records = get_intake_store().delete_records_by_scope(account_id, account_id=account_id, space_id=space_id)
     deleted_kpis = get_kpi_store().delete_scope(account_id, space_id=space_id)
+    # Accounting is intentionally NOT erased here: invoices are GoBD-retained, so
+    # accounting erasure runs through the Phase 1 retention/legal-hold model, not
+    # this blanket delete. Export above still includes them for access requests.
     deleted_ai_employees = ai_employee_store.delete_scope(
         tenant_id=account_id,
         account_id=account_id,

@@ -459,6 +459,21 @@ class Settings(BaseSettings):
                                                 # tick interval in seconds (MC only), clamped to a 30s floor.
                                                 # (G3-4) Default 0 keeps the daemon OFF on the already-deployed
                                                 # dormant MC — auto-advance is opt-in, never flipped by a deploy.
+    # --- Phase 1 automation: self-healing development pipeline (roadmap Gap A) ---
+    # Auto-retry development candidates stranded at dev_failed for a TRANSIENT reason
+    # (gate hiccup, rollout/dispatch blip, stale gate binding, a schema update waiting
+    # on the daily backup) so the pipeline self-heals instead of parking until an
+    # operator hand-runs retry-dev. Rides the MC-only reconcile tick under the same
+    # leadership lock, so it needs fleet_reconcile_seconds > 0. OFF by default: landing
+    # this changes nothing on the deployed MC — the operator opts in. It NEVER touches
+    # customer delivery or the prod-signing/customer-approval firebreak, and never
+    # retries a PERMANENT failure (bad build, invalid signature, module-set/gate
+    # replacement) — those alert and wait for a human. See app/controlplane/development_retry.py.
+    development_auto_retry_enabled: bool = False
+    development_auto_retry_max_attempts: int = 5            # bounded attempts, then a durable give-up alert
+    development_auto_retry_backoff_seconds: int = 600       # min spacing for infra-hiccup retries (10 min)
+    development_auto_retry_backup_backoff_seconds: int = 21600  # slow cadence for a backup-gate wait (6h) so a
+                                                                # migration-crosser rides through the 02:30 backup
     # --- Phase 5: network boundary (P5-05) ---
     hetzner_firewall_allow_ssh: bool = False    # break-glass ONLY; default false = NO inbound 22 rule emitted
 

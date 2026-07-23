@@ -43,6 +43,7 @@ const APP_IDS = [
   "ai_employees",
   "communication",
   "kpi_dashboard",
+  "buchhaltung",
   "admin_console",
   "workers",
 ];
@@ -68,6 +69,10 @@ const PURPOSES = [
   "kpi_read",
   "kpi_configure",
   "kpi_snapshot_write",
+  "accounting_read",
+  "accounting_ingest",
+  "accounting_configure",
+  "accounting_export",
 ];
 
 const APP_DEFAULT_PURPOSES: Record<string, string[]> = {
@@ -84,6 +89,7 @@ const APP_DEFAULT_PURPOSES: Record<string, string[]> = {
   ],
   communication: ["customer_service_answer", "customer_service_inbox"],
   kpi_dashboard: ["kpi_read", "kpi_configure", "kpi_snapshot_write"],
+  buchhaltung: ["accounting_read", "accounting_ingest", "accounting_configure", "accounting_export"],
   admin_console: ["admin_management"],
   workers: ["analytics"],
 };

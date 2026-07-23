@@ -297,6 +297,34 @@ class MemoryControlPlaneStore:
     def list_release_promotion_events(self, version: str) -> List[ReleasePromotionEvent]:
         return [event for event in self._release_promotion_events if event.release_version == version]
 
+    def record_release_promotion_event(
+        self,
+        version: str,
+        *,
+        action: str,
+        actor: str = "",
+        note: str = "",
+        metadata: Optional[Dict] = None,
+    ) -> ReleasePromotionEvent:
+        """Append a promotion event WITHOUT a state transition (e.g. a give-up alert)."""
+        with self._lock:
+            promotion = self._release_promotions.get(version)
+            state = promotion.state if promotion else ""
+            event = ReleasePromotionEvent(
+                id=f"event-{len(self._release_promotion_events) + 1}",
+                release_version=version,
+                actor=actor,
+                action=action,
+                from_state=state,
+                to_state=state,
+                note=note,
+                metadata=dict(metadata or {}),
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            self._release_promotion_events.append(event)
+            self._save()
+            return event
+
     def set_release_production_signature(
         self,
         version: str,

@@ -6,7 +6,7 @@ from typing import Iterable
 
 
 BASELINE_ALEMBIC_REVISION = "0001_baseline_onebrain_schema"
-REQUIRED_ALEMBIC_REVISION = "0035_fleet_decommission_tombstone"
+REQUIRED_ALEMBIC_REVISION = "0036_accounting_foundations"
 DRIVE_MALWARE_POLICY_EPOCH = 1
 # The Alembic revision that OWNS the Drive-malware quarantine schema + policy
 # identity. Deliberately NOT the moving head: migration 0034 stamps
