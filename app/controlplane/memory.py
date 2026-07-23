@@ -459,6 +459,18 @@ class MemoryControlPlaneStore:
             self._save()
             return updated
 
+    def update_deployment_modules(
+        self, deployment_id: str, *, selected_module_ids: tuple[str, ...]
+    ) -> CustomerDeployment:
+        with self._lock:
+            deployment = self._deployments.get(deployment_id)
+            if not deployment:
+                raise ValueError(f"unknown deployment: {deployment_id}")
+            updated = replace(deployment, selected_module_ids=tuple(selected_module_ids))
+            self._deployments[deployment_id] = updated
+            self._save()
+            return updated
+
     def mark_deployment_provisioned(
         self,
         deployment_id: str,

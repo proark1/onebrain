@@ -343,7 +343,10 @@ def test_env_files_are_per_service_and_cover_requirements():
     assistant = env["env/assistant-service.env"]
     assert "ONEBRAIN_SERVICE_KEY=${ONEBRAIN_ASSISTANT_SERVICE_KEY}" in assistant
     api = env["env/onebrain-api.env"]
-    assert f"ONEBRAIN_CUSTOMER_BOOTSTRAP={descriptor}" in api
+    # The descriptor is delivered via the re-fetched bundle (a ${VAR} ref), never baked
+    # as a frozen literal — that is what lets an operator change the module set later.
+    assert "ONEBRAIN_CUSTOMER_BOOTSTRAP=${ONEBRAIN_CUSTOMER_BOOTSTRAP}" in api
+    assert descriptor not in api
     assert "ONEBRAIN_ASSISTANT_SERVICE_KEY=${ONEBRAIN_ASSISTANT_SERVICE_KEY}" in api
     assert "ONEBRAIN_COMMUNICATION_SERVICE_KEY=${ONEBRAIN_COMMUNICATION_SERVICE_KEY}" in api
     assert "ONEBRAIN_MODULE_PROBES_ENABLED=true" in api

@@ -366,6 +366,10 @@ class ControlPlaneStore(Protocol):
         reported_migration: str = "",
     ) -> CustomerDeployment: ...
 
+    def update_deployment_modules(
+        self, deployment_id: str, *, selected_module_ids: tuple[str, ...]
+    ) -> CustomerDeployment: ...
+
     def mark_deployment_provisioned(
         self,
         deployment_id: str,

@@ -34,6 +34,7 @@ def _full_bundle(**overrides) -> dict:
         "ONEBRAIN_ASSISTANT_SERVICE_KEY": "",
         "ONEBRAIN_COMMUNICATION_SERVICE_KEY": "",
         "ONEBRAIN_COMMUNICATION_SPACE_ID": "",
+        "ONEBRAIN_CUSTOMER_BOOTSTRAP": "eyJhY2NvdW50X2lkIjoiYWNjdF8xIn0",
         "UPDATE_BACKUP_KEY": "backup-secret",
         "UPDATE_DESIRED_STATE_PUBLIC_KEYS": "pub1,pub2",
         "ONEBRAIN_DNS_TOKEN": "",

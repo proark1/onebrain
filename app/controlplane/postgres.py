@@ -608,6 +608,21 @@ class PostgresControlPlaneStore:
             conn.commit()
         return self._deployment(row)
 
+    def update_deployment_modules(
+        self, deployment_id: str, *, selected_module_ids: tuple[str, ...]
+    ) -> CustomerDeployment:
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE control_deployments SET selected_module_ids = %s WHERE id = %s "
+                f"RETURNING {self._DEPLOYMENT_COLS}",
+                (json.dumps(list(selected_module_ids)), deployment_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"unknown deployment: {deployment_id}")
+            conn.commit()
+        return self._deployment(row)
+
     def mark_deployment_provisioned(
         self,
         deployment_id: str,
