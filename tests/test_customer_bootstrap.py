@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from dataclasses import replace
 
 import pytest
@@ -45,6 +47,52 @@ def test_customer_bootstrap_descriptor_round_trips_and_is_deterministic():
     assert encoded == encode_customer_bootstrap(descriptor)
     assert decode_customer_bootstrap(encoded) == descriptor
     assert decode_customer_bootstrap("") is None
+
+
+def test_customer_bootstrap_descriptor_carries_an_explicit_locale():
+    encoded = encode_customer_bootstrap(replace(_descriptor(), default_locale="en"))
+
+    assert decode_customer_bootstrap(encoded).default_locale == "en"
+
+
+def test_pre_i18n_descriptor_without_a_locale_decodes_as_german():
+    # A box provisioned before the i18n foundation carries a descriptor with no
+    # default_locale, and create_app() re-decodes it on every boot. It must keep
+    # decoding — as German, the platform default — rather than crash-loop the box.
+    legacy = base64.urlsafe_b64encode(
+        json.dumps(
+            {
+                "account_id": "onebrain-development",
+                "account_kind": "project",
+                "customer_name": "One Brain Development Gate",
+                "module_ids": list(OPTIONAL_MODULE_IDS),
+                "schema_version": 2,
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+
+    descriptor = decode_customer_bootstrap(legacy)
+
+    assert descriptor is not None
+    assert descriptor.default_locale == "de"
+
+
+def test_reconcile_persists_the_default_locale_on_the_account():
+    platform = MemoryPlatformStore()
+
+    reconcile_customer_bootstrap(
+        replace(_descriptor(), module_ids=(), default_locale="en"),
+        platform_store=platform,
+        service_key_store=MemoryServiceKeyStore(),
+        user_store=MemoryUserStore(),
+        session_store=MemorySessionStore(),
+        administrator_email="",
+        integration_keys={},
+    )
+
+    account = platform.get_account("onebrain-development")
+    assert account is not None and account.default_locale == "en"
 
 
 @pytest.mark.parametrize(
@@ -289,7 +337,7 @@ def test_upsert_bootstrap_account_asks_for_its_own_account_scope():
             return None
 
         def fetchone(self):
-            return ("acct_x", "organization", "Name", "usr_1", "active", None)
+            return ("acct_x", "organization", "Name", "usr_1", "active", None, "de")
 
         def __enter__(self):
             return self

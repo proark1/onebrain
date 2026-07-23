@@ -17,11 +17,13 @@ from typing import Mapping
 
 from app.platform.base import (
     ACCOUNT_KINDS,
+    DEFAULT_LOCALE,
     Account,
     AppInstallation,
     AuditEvent,
     Space,
     default_brand_theme,
+    normalize_locale,
 )
 from app.provisioning.bundles import resolve_module_composition
 from app.provisioning.service import PURPOSE_SCOPES
@@ -31,7 +33,13 @@ from app.servicekeys.base import ServiceKey, hash_secret, parse_key
 BOOTSTRAP_SCHEMA_VERSION = 2
 MAX_BOOTSTRAP_ENCODED_BYTES = 4096
 _ACCOUNT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,119}$")
-_FIELDS = frozenset({"schema_version", "account_id", "account_kind", "customer_name", "module_ids"})
+_REQUIRED_FIELDS = frozenset({"schema_version", "account_id", "account_kind", "customer_name", "module_ids"})
+# ``default_locale`` is OPTIONAL, not a schema-version bump: boxes provisioned
+# before the i18n foundation carry a descriptor without it, and create_app()
+# re-decodes that descriptor on every boot. An absent value reads as the platform
+# default (German), so existing boxes keep decoding rather than crash-looping.
+_OPTIONAL_FIELDS = frozenset({"default_locale"})
+_FIELDS = _REQUIRED_FIELDS | _OPTIONAL_FIELDS
 _LOCAL_INTEGRATION_APPS = ("assistant", "communication")
 
 
@@ -41,6 +49,7 @@ class CustomerBootstrapDescriptor:
     account_kind: str
     customer_name: str
     module_ids: tuple[str, ...] = ()
+    default_locale: str = DEFAULT_LOCALE
     schema_version: int = BOOTSTRAP_SCHEMA_VERSION
 
 
@@ -77,6 +86,9 @@ def _validated_descriptor(descriptor: CustomerBootstrapDescriptor) -> CustomerBo
         account_kind=account_kind,
         customer_name=customer_name,
         module_ids=composition.selected_module_ids,
+        # Coerce rather than reject: an unrecognized locale must never crash-loop a
+        # box at bootstrap. The provisioning API already constrains input to de/en.
+        default_locale=normalize_locale(descriptor.default_locale),
     )
 
 
@@ -88,6 +100,7 @@ def encode_customer_bootstrap(descriptor: CustomerBootstrapDescriptor) -> str:
             "account_kind": descriptor.account_kind,
             "customer_name": descriptor.customer_name,
             "module_ids": list(descriptor.module_ids),
+            "default_locale": descriptor.default_locale,
             "schema_version": descriptor.schema_version,
         },
         ensure_ascii=False,
@@ -118,7 +131,12 @@ def decode_customer_bootstrap(encoded: str) -> CustomerBootstrapDescriptor | Non
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("Customer bootstrap descriptor is not valid JSON.") from exc
-    if not isinstance(payload, dict) or set(payload) != _FIELDS:
+    if not isinstance(payload, dict):
+        raise ValueError("Customer bootstrap descriptor fields are invalid.")
+    keys = set(payload)
+    # All required fields present, and no unknown extras — but an OMITTED optional
+    # field (e.g. default_locale on a pre-i18n box) is fine and defaults below.
+    if not (_REQUIRED_FIELDS <= keys) or not (keys <= _FIELDS):
         raise ValueError("Customer bootstrap descriptor fields are invalid.")
     module_ids = payload.get("module_ids")
     if not isinstance(module_ids, list) or any(not isinstance(module_id, str) for module_id in module_ids):
@@ -130,6 +148,7 @@ def decode_customer_bootstrap(encoded: str) -> CustomerBootstrapDescriptor | Non
             account_kind=str(payload["account_kind"]),
             customer_name=str(payload["customer_name"]),
             module_ids=tuple(module_ids),
+            default_locale=str(payload.get("default_locale", DEFAULT_LOCALE)),
         )
     except (TypeError, ValueError) as exc:
         raise ValueError("Customer bootstrap descriptor fields are invalid.") from exc
@@ -226,6 +245,7 @@ def reconcile_customer_bootstrap(
         kind=descriptor.account_kind,
         name=descriptor.customer_name,
         owner_user_id=owner_user_id,
+        default_locale=descriptor.default_locale,
     ))
 
     spaces_by_key: dict[str, Space] = {}
@@ -284,7 +304,11 @@ def reconcile_customer_bootstrap(
         target_type="account",
         target_id=descriptor.account_id,
         decision="allowed",
-        meta={"module_ids": list(descriptor.module_ids), "schema_version": descriptor.schema_version},
+        meta={
+            "module_ids": list(descriptor.module_ids),
+            "default_locale": descriptor.default_locale,
+            "schema_version": descriptor.schema_version,
+        },
     ))
 
     return CustomerBootstrapResult(

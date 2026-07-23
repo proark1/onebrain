@@ -100,6 +100,10 @@ class CustomerProvisionCreate(BaseModel):
 
     customer_name: str = Field(min_length=1, max_length=200)
     module_ids: list[str] = Field(default_factory=list, max_length=5)
+    # Platform UI language for the customer, chosen in the same MC step as the
+    # modules. Persisted on the account (via the bootstrap descriptor + reconcile)
+    # as the console's default language. German primary, English available.
+    default_locale: str = Field(default="de", pattern="^(de|en)$")
     account_kind: str = Field(default="organization", pattern="^(person|organization|family|project)$")
     account_id: str | None = Field(default=None, max_length=120)
     deployment_id: str | None = Field(default=None, max_length=120)
@@ -175,6 +179,7 @@ class ProvisionedAccountOut(BaseModel):
     kind: str
     name: str
     owner_user_id: str = ""
+    default_locale: str = "de"
 
 
 class ProvisionedSpaceOut(BaseModel):
@@ -457,6 +462,7 @@ def _result_out(result: ProvisioningResult, run: ProvisioningRun | None = None) 
             kind=result.account.kind,
             name=result.account.name,
             owner_user_id=result.account.owner_user_id,
+            default_locale=result.account.default_locale,
         ),
         spaces=[ProvisionedSpaceOut(id=s.id, kind=s.kind, name=s.name) for s in result.spaces],
         apps=[
@@ -554,6 +560,7 @@ def _provision_customer_impl(body: CustomerProvisionCreate, principal: Principal
             owner_user_id=principal.user_id,
             owner_email=body.owner_email,
             module_ids=body.module_ids,
+            default_locale=body.default_locale,
             deployment_id=deployment_id,
             deployment_type=body.deployment_type,
             environment=body.environment,
@@ -581,6 +588,7 @@ def _provision_customer_impl(body: CustomerProvisionCreate, principal: Principal
             "module_ids": list(result.composition.selected_module_ids),
             "customer_name": body.customer_name,
             "account_kind": body.account_kind,
+            "default_locale": body.default_locale,
             "deployment_type": body.deployment_type,
             "region": body.region,
             "release_ring": body.release_ring,

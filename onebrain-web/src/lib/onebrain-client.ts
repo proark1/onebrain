@@ -551,6 +551,7 @@ export function provisionCustomer(input: ProvisionCustomerInput): Promise<Provis
       account_id: input.account_id?.trim() || null,
       account_kind: input.account_kind || "organization",
       module_ids: input.module_ids,
+      default_locale: input.default_locale || "de",
       current_migration: input.current_migration?.trim() || "",
       customer_name: input.customer_name.trim(),
       deployment_id: input.deployment_id?.trim() || null,
