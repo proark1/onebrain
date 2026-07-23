@@ -131,6 +131,12 @@ def test_bad_vat_id_is_flagged_but_absent_is_not():
     assert validate(_clean_invoice(issuer_vat_id=""))[0]["vat_id_valid"] is None
 
 
+def test_non_eur_invoice_is_flagged_for_review():
+    flags, _ = validate(_clean_invoice(currency="USD"))
+    assert flags["non_eur"] is True
+    assert flags["needs_review"] is True
+
+
 def test_dedup_key_is_stable_for_the_same_invoice():
     a = compute_dedup_key(_clean_invoice(), file_sha256="x")
     b = compute_dedup_key(_clean_invoice(), file_sha256="y")

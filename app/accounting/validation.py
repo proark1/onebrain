@@ -162,6 +162,7 @@ def validate(invoice: ExtractedInvoice, *, file_sha256: str = "") -> tuple[dict,
     mandatory = check_mandatory_fields(invoice)
     vat_ok = check_vat_id(invoice)
 
+    currency = (invoice.currency or "EUR").upper()
     flags = {
         "arithmetic_ok": arithmetic["ok"],
         "arithmetic": arithmetic["detail"],
@@ -171,6 +172,9 @@ def validate(invoice: ExtractedInvoice, *, file_sha256: str = "") -> tuple[dict,
         "vat_id_valid": vat_ok,
         "reverse_charge": bool(invoice.reverse_charge),
         "intra_community": bool(invoice.intra_community),
+        # Non-EUR invoices are captured but never folded into the EUR VAT dashboard
+        # (this German-first path does no conversion); flag them for a human.
+        "non_eur": currency != "EUR",
     }
     flags["needs_review"] = needs_review(flags)
     return flags, compute_dedup_key(invoice, file_sha256=file_sha256)
@@ -186,4 +190,5 @@ def needs_review(flags: dict) -> bool:
         or flags.get("invoice_number_unique") is False
         or flags.get("reverse_charge")
         or flags.get("intra_community")
+        or flags.get("non_eur")
     )

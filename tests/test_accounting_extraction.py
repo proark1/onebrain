@@ -110,6 +110,13 @@ def test_unsupported_media_type_is_rejected():
         _to_images(b"data", "application/zip", "archive.zip")
 
 
+def test_octet_stream_image_gets_a_real_image_mime():
+    # A client that sends application/octet-stream for a .jpg must still yield image/*.
+    assert _to_images(b"jpegbytes", "application/octet-stream", "receipt.jpg") == [
+        ("image/jpeg", b"jpegbytes"),
+    ]
+
+
 def test_build_messages_encodes_a_data_uri():
     _system, user = _build_messages([("image/png", b"abc")])
     image_block = [block for block in user["content"] if block["type"] == "image_url"][0]

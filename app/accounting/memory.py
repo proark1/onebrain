@@ -19,6 +19,7 @@ from typing import Optional
 
 from app.accounting.base import AccountingOverview, build_summary
 from app.accounting.model import INCOMING, OUTGOING
+from app.accounting.validation import needs_review
 
 
 def _now_iso() -> str:
@@ -41,7 +42,12 @@ def summarize_documents(account_id: str, space_id: str, documents: list[dict]) -
     confirmed = [row for row in documents if row.get("status") == "confirmed"]
 
     def side(direction: str) -> dict:
-        rows = [row for row in confirmed if row.get("direction") == direction]
+        # Only EUR money aggregates — non-EUR invoices are captured + flagged, never
+        # summed into the EUR VAT dashboard (no conversion on this German-first path).
+        rows = [
+            row for row in confirmed
+            if row.get("direction") == direction and (row.get("currency") or "EUR").upper() == "EUR"
+        ]
         return {
             "count": len(rows),
             "net": sum((_dec(row.get("total_net")) for row in rows), Decimal("0")),
@@ -178,12 +184,29 @@ class MemoryAccountingStore:
     def create_document(self, document: dict, line_items: list[dict]) -> dict:
         with self._lock:
             document_id = document["id"]
-            if document_id not in self._documents:
-                self._documents[document_id] = dict(document)
-                for line in line_items:
-                    self._line_items[line["id"]] = dict(line)
-                self._save()
-            return self._hydrate(self._documents[document_id])
+            if document_id in self._documents:
+                return self._hydrate(self._documents[document_id])
+            # Finalise duplicate / invoice-number flags UNDER the lock so two
+            # concurrent creates of the same invoice cannot both see "no duplicate".
+            account_id = document.get("account_id", "")
+            space_id = document.get("space_id", "")
+            flags = dict(document.get("check_flags") or {})
+            duplicate = self.find_duplicate(
+                account_id, space_id, document.get("dedup_key") or "", exclude_id=document_id,
+            )
+            flags["duplicate"] = bool(duplicate)
+            flags["duplicate_of"] = duplicate["id"] if duplicate else ""
+            flags["invoice_number_unique"] = not self.invoice_number_seen(
+                account_id, space_id, document.get("issuer_name", ""),
+                document.get("invoice_number", ""), exclude_id=document_id,
+            )
+            flags["needs_review"] = needs_review(flags)
+            stored = {**document, "check_flags": flags}
+            self._documents[document_id] = stored
+            for line in line_items:
+                self._line_items[line["id"]] = dict(line)
+            self._save()
+            return self._hydrate(stored)
 
     def confirm_documents(
         self, account_id: str, space_id: str, confirmations: list[dict], confirmed_by: str,
@@ -205,12 +228,16 @@ class MemoryAccountingStore:
                     if line.get("document_id") != document_id:
                         continue
                     correction = corrections.get(line.get("id"), {})
-                    line["confirmed_account"] = (
-                        correction.get("account") or line.get("proposed_account") or ""
-                    ).strip()
-                    line["confirmed_tax_key"] = (
-                        correction.get("tax_key") or line.get("proposed_tax_key") or ""
-                    ).strip()
+                    # An explicit "" clears the field (e.g. a tax-exempt/reverse-charge
+                    # line with no BU key); only an OMITTED field falls back to proposed.
+                    if "account" in correction:
+                        line["confirmed_account"] = (correction.get("account") or "").strip()
+                    else:
+                        line["confirmed_account"] = (line.get("proposed_account") or "").strip()
+                    if "tax_key" in correction:
+                        line["confirmed_tax_key"] = (correction.get("tax_key") or "").strip()
+                    else:
+                        line["confirmed_tax_key"] = (line.get("proposed_tax_key") or "").strip()
                     if "cost_center" in correction:
                         line["cost_center"] = (correction.get("cost_center") or "").strip()
                     line["updated_at"] = timestamp

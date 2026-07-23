@@ -71,8 +71,12 @@ class _FakeBlob:
         yield b"imagebytes"
 
 
-def _file(file_id="f1", revision_id="r1"):
-    return SimpleNamespace(id=file_id, current_revision_id=revision_id, name="invoice.png")
+def _file(file_id="f1", revision_id="r1", *, category=None, generation=1, trashed_at=""):
+    return SimpleNamespace(
+        id=file_id, current_revision_id=revision_id, name="invoice.png",
+        category=accounting_category_id("sp_business") if category is None else category,
+        generation=generation, trashed_at=trashed_at,
+    )
 
 
 def _revision(revision_id="r1", file_id="f1"):
@@ -169,6 +173,23 @@ def test_stale_revision_is_a_no_op(monkeypatch):
     drive.add(_file("f1", "current"), _revision("r1", "f1"))  # file points at a newer revision
     service = _service(monkeypatch, platform, accounting, drive)
     assert service.handle_extraction_job(_job("f1", "r1"))["status"] == "stale"
+
+
+def test_file_recategorised_after_enqueue_is_skipped(monkeypatch):
+    platform, accounting = _platform(), MemoryAccountingStore()
+    drive = _FakeDriveStore()
+    drive.add(_file(category="general"), _revision())  # moved out of the accounting category
+    service = _service(monkeypatch, platform, accounting, drive)
+    assert service.handle_extraction_job(_job())["status"] == "decategorised"
+    assert accounting.list_documents("acme", "sp_business") == []
+
+
+def test_trashed_file_is_skipped(monkeypatch):
+    platform, accounting = _platform(), MemoryAccountingStore()
+    drive = _FakeDriveStore()
+    drive.add(_file(trashed_at="2026-07-23T00:00:00Z"), _revision())
+    service = _service(monkeypatch, platform, accounting, drive)
+    assert service.handle_extraction_job(_job())["status"] == "trashed"
 
 
 def test_unavailable_extractor_reports_status_without_crashing(monkeypatch):

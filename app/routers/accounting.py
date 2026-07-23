@@ -24,6 +24,8 @@ from app.accounting.base import (
     ACCOUNTING_READ_PURPOSE,
     DOCUMENT_STATUSES,
 )
+from app.accounting.booking import propose_line
+from app.accounting.model import to_rate
 from app.auth.account_access import is_account_member
 from app.auth.principal import Principal, resolve_principal
 from app.deps import get_accounting_store, get_platform_store
@@ -257,9 +259,13 @@ def confirm_accounting_documents(
         raise HTTPException(status_code=400, detail="No documents to confirm.")
     platform = get_platform_store()
     authorize_accounting_writer(principal, body.account_id, body.space_id, platform)
-    confirmations = [item.model_dump(exclude_unset=True) for item in body.confirmations]
+    store = get_accounting_store()
+    confirmations = [
+        _resolve_confirmation(store, body.account_id, body.space_id, item)
+        for item in body.confirmations
+    ]
     try:
-        updated = get_accounting_store().confirm_documents(
+        updated = store.confirm_documents(
             body.account_id, body.space_id, confirmations, principal.user_id,
         )
     except KeyError:
@@ -285,6 +291,37 @@ def get_accounting_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found.")
     return _document_out(document)
+
+
+def _resolve_confirmation(store, account_id: str, space_id: str, item) -> dict:
+    """Turn a confirm item into a store payload, re-proposing bookings on a direction flip.
+
+    If the reviewer corrects the direction (incoming↔outgoing) without overriding every
+    line, the untouched lines would otherwise keep the extractor's opposite-direction
+    account/key (e.g. a 4980 Vorsteuer line on an outgoing revenue doc). Re-propose those
+    lines for the new direction; explicit line corrections always win.
+    """
+    payload = item.model_dump(exclude_unset=True)
+    if not item.direction:
+        return payload
+    document = store.get_document(account_id, space_id, item.document_id)
+    if not document or document.get("direction") == item.direction:
+        return payload
+    flags = document.get("check_flags") or {}
+    explicit_ids = {correction["id"] for correction in payload.get("line_items", [])}
+    reproposed = []
+    for line in document.get("line_items", []):
+        if line["id"] in explicit_ids:
+            continue
+        proposal = propose_line(
+            item.direction, to_rate(line.get("tax_rate")),
+            reverse_charge=bool(flags.get("reverse_charge")),
+            intra_community=bool(flags.get("intra_community")),
+        )
+        reproposed.append({"id": line["id"], "account": proposal.account, "tax_key": proposal.tax_key})
+    if reproposed:
+        payload["line_items"] = payload.get("line_items", []) + reproposed
+    return payload
 
 
 def _record_confirm_audit(platform, principal, account_id, space_id, document_ids) -> None:

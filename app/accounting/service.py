@@ -18,6 +18,7 @@ from uuid import uuid4
 from app.accounting.base import (
     ACCOUNTING_APP_ID,
     ACCOUNTING_INGEST_PURPOSE,
+    accounting_category_id,
 )
 from app.accounting.booking import propose
 from app.accounting.extraction import (
@@ -25,7 +26,7 @@ from app.accounting.extraction import (
     InvoiceExtractorUnavailable,
 )
 from app.accounting.model import ExtractedInvoice, ExtractedLineItem
-from app.accounting.validation import needs_review, validate
+from app.accounting.validation import validate
 from app.drive.base import is_clean_attestation
 from app.drive.blobs import blob_matches_revision
 
@@ -192,9 +193,10 @@ class AccountingService:
         if existing:
             return {"status": "exists", "document_id": existing["id"]}
 
-        read = self._read_clean_bytes(account_id, space_id, file_id, revision_id)
+        generation = job.payload.get("generation")
+        read = self._read_clean_bytes(account_id, space_id, file_id, revision_id, generation)
         if isinstance(read, dict):
-            return read  # a stale/quarantined/mismatch no-op status
+            return read  # a stale/quarantined/mismatch/decategorised no-op status
         file, revision, data = read
 
         if not self.extractor.available:
@@ -221,10 +223,20 @@ class AccountingService:
             "needs_review": document["check_flags"].get("needs_review", True),
         }
 
-    def _read_clean_bytes(self, account_id: str, space_id: str, file_id: str, revision_id: str):
+    def _read_clean_bytes(
+        self, account_id: str, space_id: str, file_id: str, revision_id: str, generation=None,
+    ):
         file = self.drive_store.get_file(file_id, account_id=account_id, space_id=space_id)
         if not file or file.current_revision_id != revision_id:
             return {"status": "stale", "file_id": file_id}
+        if generation is not None and getattr(file, "generation", generation) != generation:
+            return {"status": "stale", "file_id": file_id}
+        # The file may have been re-categorised, moved out of the audience, or trashed
+        # between the clean-scan enqueue and now — it is no longer an accounting doc.
+        if file.category != accounting_category_id(space_id):
+            return {"status": "decategorised", "file_id": file_id}
+        if getattr(file, "trashed_at", ""):
+            return {"status": "trashed", "file_id": file_id}
         revision = self.drive_store.get_revision(
             revision_id, account_id=account_id, space_id=space_id,
         )
@@ -247,15 +259,16 @@ class AccountingService:
         revision_sha256: str, created_by: str,
     ) -> dict:
         flags, dedup_key = validate(invoice, file_sha256=revision_sha256)
-        duplicate = (
-            self.store.find_duplicate(account_id, space_id, dedup_key) if dedup_key else None
-        )
-        flags["duplicate"] = bool(duplicate)
-        flags["duplicate_of"] = duplicate["id"] if duplicate else ""
-        flags["invoice_number_unique"] = not self.store.invoice_number_seen(
-            account_id, space_id, invoice.issuer_name, invoice.invoice_number,
-        )
-        flags["needs_review"] = needs_review(flags)
+        # Preserve the extracted legal identifiers/terms — 0036 has no header column
+        # for them, but a reviewer must be able to verify what was read.
+        flags["extracted_fields"] = {
+            "issuer_vat_id": invoice.issuer_vat_id,
+            "issuer_tax_number": invoice.issuer_tax_number,
+            "recipient_vat_id": invoice.recipient_vat_id,
+            "payment_terms": invoice.payment_terms,
+        }
+        # duplicate / invoice-number uniqueness are finalised by the store UNDER its
+        # write lock (create_document), so concurrent duplicate uploads stay flagged.
 
         document_id = f"acctdoc_{uuid4().hex}"
         now = _now_iso()

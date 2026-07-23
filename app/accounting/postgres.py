@@ -14,6 +14,7 @@ from decimal import Decimal
 
 from app.accounting.base import AccountingOverview, build_summary
 from app.accounting.model import INCOMING, OUTGOING
+from app.accounting.validation import needs_review
 from app.db.rls import set_rls_scope
 from app.db.schema import validate_postgres_schema
 
@@ -171,6 +172,8 @@ class PostgresAccountingStore:
                 "coalesce(sum(total_tax), 0), coalesce(sum(total_gross), 0) "
                 "FROM accounting_documents "
                 "WHERE account_id = %s AND space_id = %s AND status = 'confirmed' "
+                # EUR-only money (non-EUR invoices are flagged, never summed here).
+                "AND upper(currency) = 'EUR' "
                 "GROUP BY direction",
                 (account_id, space_id),
             )
@@ -289,6 +292,7 @@ class PostgresAccountingStore:
     def create_document(self, document: dict, line_items: list[dict]) -> dict:
         account_id = document["account_id"]
         space_id = document["space_id"]
+        document = {**document, "check_flags": dict(document.get("check_flags") or {})}
         with self._conn(account_id=account_id, space_id=space_id) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -296,18 +300,56 @@ class PostgresAccountingStore:
                     (f"acct:{account_id}:{space_id}",),
                 )
                 cursor.execute(
-                    f"INSERT INTO accounting_documents ({_DOCUMENT_COLUMNS}) "
-                    f"VALUES ({_DOCUMENT_PLACEHOLDERS}) ON CONFLICT (id) DO NOTHING",
-                    _row_params(_DOCUMENT_COLUMN_LIST, document),
+                    "SELECT 1 FROM accounting_documents "
+                    "WHERE id = %s AND account_id = %s AND space_id = %s",
+                    (document["id"], account_id, space_id),
                 )
-                for line in line_items:
+                if cursor.fetchone() is None:
+                    # Dedup lookup inside the same locked tx as the insert so two
+                    # concurrent creates of one invoice can't both miss the duplicate.
+                    self._finalize_dedup_flags(cursor, account_id, space_id, document)
                     cursor.execute(
-                        f"INSERT INTO accounting_line_items ({_LINE_ITEM_COLUMNS}) "
-                        f"VALUES ({_LINE_ITEM_PLACEHOLDERS}) ON CONFLICT (id) DO NOTHING",
-                        _row_params(_LINE_ITEM_COLUMN_LIST, line),
+                        f"INSERT INTO accounting_documents ({_DOCUMENT_COLUMNS}) "
+                        f"VALUES ({_DOCUMENT_PLACEHOLDERS}) ON CONFLICT (id) DO NOTHING",
+                        _row_params(_DOCUMENT_COLUMN_LIST, document),
                     )
+                    for line in line_items:
+                        cursor.execute(
+                            f"INSERT INTO accounting_line_items ({_LINE_ITEM_COLUMNS}) "
+                            f"VALUES ({_LINE_ITEM_PLACEHOLDERS}) ON CONFLICT (id) DO NOTHING",
+                            _row_params(_LINE_ITEM_COLUMN_LIST, line),
+                        )
             connection.commit()
         return self.get_document(account_id, space_id, document["id"])
+
+    def _finalize_dedup_flags(self, cursor, account_id: str, space_id: str, document: dict) -> None:
+        flags = document["check_flags"]
+        dedup_key = document.get("dedup_key") or ""
+        duplicate_id = ""
+        if dedup_key:
+            cursor.execute(
+                "SELECT id FROM accounting_documents "
+                "WHERE account_id = %s AND space_id = %s AND dedup_key = %s AND id <> %s "
+                "ORDER BY created_at LIMIT 1",
+                (account_id, space_id, dedup_key, document["id"]),
+            )
+            row = cursor.fetchone()
+            duplicate_id = row[0] if row else ""
+        flags["duplicate"] = bool(duplicate_id)
+        flags["duplicate_of"] = duplicate_id
+        invoice_number = (document.get("invoice_number") or "").strip()
+        if invoice_number:
+            cursor.execute(
+                "SELECT 1 FROM accounting_documents "
+                "WHERE account_id = %s AND space_id = %s "
+                "AND lower(btrim(invoice_number)) = lower(btrim(%s)) "
+                "AND lower(btrim(issuer_name)) = lower(btrim(%s)) AND id <> %s LIMIT 1",
+                (account_id, space_id, invoice_number, document.get("issuer_name") or "", document["id"]),
+            )
+            flags["invoice_number_unique"] = cursor.fetchone() is None
+        else:
+            flags["invoice_number_unique"] = True
+        flags["needs_review"] = needs_review(flags)
 
     def confirm_documents(
         self, account_id: str, space_id: str, confirmations: list[dict], confirmed_by: str,
@@ -340,8 +382,16 @@ class PostgresAccountingStore:
                     )
                     for line_id, proposed_account, proposed_tax_key, cost_center in cursor.fetchall():
                         correction = corrections.get(line_id, {})
-                        confirmed_account = (correction.get("account") or proposed_account or "").strip()
-                        confirmed_tax_key = (correction.get("tax_key") or proposed_tax_key or "").strip()
+                        # Explicit "" clears the field; only an omitted field falls back
+                        # to the proposal (so a tax-exempt line can drop its BU key).
+                        if "account" in correction:
+                            confirmed_account = (correction.get("account") or "").strip()
+                        else:
+                            confirmed_account = (proposed_account or "").strip()
+                        if "tax_key" in correction:
+                            confirmed_tax_key = (correction.get("tax_key") or "").strip()
+                        else:
+                            confirmed_tax_key = (proposed_tax_key or "").strip()
                         new_cost = (
                             (correction.get("cost_center") or "").strip()
                             if "cost_center" in correction else cost_center

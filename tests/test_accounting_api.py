@@ -12,13 +12,21 @@ import pytest
 from fastapi import HTTPException
 
 import app.routers.accounting as accounting_router
+from app.accounting.base import accounting_category_id
 from app.accounting.memory import MemoryAccountingStore
 from app.accounting.model import ExtractedInvoice, ExtractedLineItem, TaxBreakdownEntry
 from app.accounting.service import build_document_row, build_line_item_rows
 from app.accounting.validation import needs_review, validate
 from app.auth.principal import Principal
 from app.auth.roles import ROLES
-from app.platform.base import Account, AppInstallation, Space
+from app.platform.base import (
+    AccessGroup,
+    AccessGroupMembership,
+    Account,
+    AppInstallation,
+    Membership,
+    Space,
+)
 from app.platform.memory import MemoryPlatformStore
 
 
@@ -239,3 +247,67 @@ def test_document_detail_unknown_is_404(monkeypatch):
             document_id="ghost", account_id="acme", space_id="sp_business", principal=_human(),
         )
     assert missing.value.status_code == 404
+
+
+def test_reader_must_be_a_category_member_or_admin(monkeypatch):
+    platform, accounting = _stores(install=True)
+    platform.upsert_membership(Membership(
+        id="mem_clerk", account_id="acme", user_id="clerk@acme",
+        role_id="finance", space_id="sp_business",
+    ))
+    monkeypatch.setattr(accounting_router, "get_platform_store", lambda: platform)
+    monkeypatch.setattr(accounting_router, "get_accounting_store", lambda: accounting)
+    clerk = _human(role_id="finance", user_id="clerk@acme", tenant_id="acme")
+
+    # A workspace member who is not in the confidential buchhaltung category is refused.
+    with pytest.raises(HTTPException) as blocked:
+        accounting_router.get_accounting_overview(
+            account_id="acme", space_id="sp_business", principal=clerk,
+        )
+    assert blocked.value.status_code == 403
+
+    group_id = accounting_category_id("sp_business")
+    platform.upsert_access_group(AccessGroup(
+        id=group_id, account_id="acme", name="Buchhaltung", kind="department", space_id="sp_business",
+    ))
+    platform.upsert_access_group_membership(AccessGroupMembership(
+        id="agm_clerk", account_id="acme", group_id=group_id,
+        user_id="clerk@acme", space_id="sp_business",
+    ))
+    overview = accounting_router.get_accounting_overview(
+        account_id="acme", space_id="sp_business", principal=clerk,
+    )
+    assert overview.total_documents == 0
+
+
+def test_confirm_can_clear_the_tax_key(monkeypatch):
+    _, accounting = _wire(monkeypatch, install=True)
+    document = _seed(accounting, doc_id="acctdoc_1")
+    line_id = document["line_items"][0]["id"]
+    body = accounting_router.AccountingConfirmIn(
+        account_id="acme", space_id="sp_business",
+        confirmations=[accounting_router.AccountingConfirmItemIn(
+            document_id="acctdoc_1",
+            line_items=[accounting_router.AccountingLineCorrectionIn(
+                id=line_id, account="4980", tax_key="",  # explicit empty = tax-exempt
+            )],
+        )],
+    )
+    updated = accounting_router.confirm_accounting_documents(body=body, principal=_human())
+    assert updated[0].line_items[0].confirmed_tax_key == ""  # honoured, not fallen back to "9"
+
+
+def test_confirm_reproposes_lines_when_direction_flips(monkeypatch):
+    _, accounting = _wire(monkeypatch, install=True)
+    _seed(accounting, doc_id="acctdoc_1", direction="incoming")  # proposed 4980 / key 9
+    body = accounting_router.AccountingConfirmIn(
+        account_id="acme", space_id="sp_business",
+        confirmations=[accounting_router.AccountingConfirmItemIn(
+            document_id="acctdoc_1", direction="outgoing",  # flip, no explicit line override
+        )],
+    )
+    updated = accounting_router.confirm_accounting_documents(body=body, principal=_human())
+    assert updated[0].direction == "outgoing"
+    # Re-proposed for the new direction instead of keeping the incoming booking.
+    assert updated[0].line_items[0].confirmed_account == "8400"
+    assert updated[0].line_items[0].confirmed_tax_key == "3"
