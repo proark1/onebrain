@@ -300,7 +300,430 @@
         "title": "AccountOut",
         "type": "object"
       },
-      "AccountingOverviewOut": {
+      "AccountingConfirmIn": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          },
+          "confirmations": {
+            "items": {
+              "$ref": "#/components/schemas/AccountingConfirmItemIn"
+            },
+            "maxItems": 500,
+            "title": "Confirmations",
+            "type": "array"
+          },
+          "space_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "space_id"
+        ],
+        "title": "AccountingConfirmIn",
+        "type": "object"
+      },
+      "AccountingConfirmItemIn": {
+        "additionalProperties": false,
+        "properties": {
+          "direction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "incoming",
+                  "outgoing"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "document_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "line_items": {
+            "items": {
+              "$ref": "#/components/schemas/AccountingLineCorrectionIn"
+            },
+            "maxItems": 200,
+            "title": "Line Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "document_id"
+        ],
+        "title": "AccountingConfirmItemIn",
+        "type": "object"
+      },
+      "AccountingDocumentOut": {
+        "additionalProperties": false,
+        "properties": {
+          "check_flags": {
+            "additionalProperties": true,
+            "title": "Check Flags",
+            "type": "object"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "confirmed_by": {
+            "title": "Confirmed By",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "dedup_key": {
+            "title": "Dedup Key",
+            "type": "string"
+          },
+          "direction": {
+            "title": "Direction",
+            "type": "string"
+          },
+          "drive_file_id": {
+            "title": "Drive File Id",
+            "type": "string"
+          },
+          "drive_revision_id": {
+            "title": "Drive Revision Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "invoice_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invoice Date"
+          },
+          "invoice_number": {
+            "title": "Invoice Number",
+            "type": "string"
+          },
+          "issuer_name": {
+            "title": "Issuer Name",
+            "type": "string"
+          },
+          "jurisdiction": {
+            "title": "Jurisdiction",
+            "type": "string"
+          },
+          "line_items": {
+            "items": {
+              "$ref": "#/components/schemas/AccountingLineItemOut"
+            },
+            "title": "Line Items",
+            "type": "array"
+          },
+          "recipient_name": {
+            "title": "Recipient Name",
+            "type": "string"
+          },
+          "service_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Date"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tax_breakdown": {
+            "items": {},
+            "title": "Tax Breakdown",
+            "type": "array"
+          },
+          "total_gross": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Gross"
+          },
+          "total_net": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Net"
+          },
+          "total_tax": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Tax"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "id",
+          "direction",
+          "issuer_name",
+          "recipient_name",
+          "invoice_number",
+          "currency",
+          "dedup_key",
+          "status",
+          "jurisdiction",
+          "drive_file_id",
+          "drive_revision_id",
+          "created_by",
+          "confirmed_by"
+        ],
+        "title": "AccountingDocumentOut",
+        "type": "object"
+      },
+      "AccountingLineCorrectionIn": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account"
+          },
+          "cost_center": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Center"
+          },
+          "id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "tax_key": {
+            "anyOf": [
+              {
+                "maxLength": 16,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tax Key"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "AccountingLineCorrectionIn",
+        "type": "object"
+      },
+      "AccountingLineItemOut": {
+        "additionalProperties": false,
+        "properties": {
+          "amount_gross": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Gross"
+          },
+          "amount_net": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Net"
+          },
+          "amount_tax": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Tax"
+          },
+          "confirmed_account": {
+            "title": "Confirmed Account",
+            "type": "string"
+          },
+          "confirmed_tax_key": {
+            "title": "Confirmed Tax Key",
+            "type": "string"
+          },
+          "cost_center": {
+            "title": "Cost Center",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "line_no": {
+            "title": "Line No",
+            "type": "integer"
+          },
+          "proposed_account": {
+            "title": "Proposed Account",
+            "type": "string"
+          },
+          "proposed_tax_key": {
+            "title": "Proposed Tax Key",
+            "type": "string"
+          },
+          "tax_rate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tax Rate"
+          }
+        },
+        "required": [
+          "id",
+          "line_no",
+          "description",
+          "proposed_account",
+          "confirmed_account",
+          "proposed_tax_key",
+          "confirmed_tax_key",
+          "cost_center"
+        ],
+        "title": "AccountingLineItemOut",
+        "type": "object"
+      },
+      "AccountingSideOut": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "gross": {
+            "title": "Gross",
+            "type": "string"
+          },
+          "net": {
+            "title": "Net",
+            "type": "string"
+          },
+          "tax": {
+            "title": "Tax",
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "net",
+          "tax",
+          "gross"
+        ],
+        "title": "AccountingSideOut",
+        "type": "object"
+      },
+      "AccountingSummaryOut": {
         "additionalProperties": false,
         "properties": {
           "account_id": {
@@ -310,6 +733,24 @@
           "confirmed_documents": {
             "title": "Confirmed Documents",
             "type": "integer"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "incoming": {
+            "$ref": "#/components/schemas/AccountingSideOut"
+          },
+          "input_vat": {
+            "title": "Input Vat",
+            "type": "string"
+          },
+          "outgoing": {
+            "$ref": "#/components/schemas/AccountingSideOut"
+          },
+          "output_vat": {
+            "title": "Output Vat",
+            "type": "string"
           },
           "pending_documents": {
             "title": "Pending Documents",
@@ -322,16 +763,26 @@
           "total_documents": {
             "title": "Total Documents",
             "type": "integer"
+          },
+          "vat_balance": {
+            "title": "Vat Balance",
+            "type": "string"
           }
         },
         "required": [
           "account_id",
           "space_id",
+          "currency",
           "total_documents",
           "pending_documents",
-          "confirmed_documents"
+          "confirmed_documents",
+          "incoming",
+          "outgoing",
+          "input_vat",
+          "output_vat",
+          "vat_balance"
         ],
-        "title": "AccountingOverviewOut",
+        "title": "AccountingSummaryOut",
         "type": "object"
       },
       "AccountingWorkspaceOut": {
@@ -344,6 +795,11 @@
           "account_name": {
             "title": "Account Name",
             "type": "string"
+          },
+          "can_configure": {
+            "default": false,
+            "title": "Can Configure",
+            "type": "boolean"
           },
           "space_id": {
             "title": "Space Id",
@@ -7740,7 +8196,7 @@
   "paths": {
     "/api/accounting": {
       "get": {
-        "description": "Aggregate document counts for one workspace (403 unless Accounting is enabled).",
+        "description": "Workspace dashboard: counts + confirmed-only net/VAT per direction (403 unless enabled).",
         "operationId": "get_accounting_overview_api_accounting_get",
         "parameters": [
           {
@@ -7781,7 +8237,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AccountingOverviewOut"
+                  "$ref": "#/components/schemas/AccountingSummaryOut"
                 }
               }
             },
@@ -7799,6 +8255,228 @@
           }
         },
         "summary": "Get Accounting Overview",
+        "tags": [
+          "accounting"
+        ]
+      }
+    },
+    "/api/accounting/documents": {
+      "get": {
+        "description": "List documents (optionally filtered to pending/confirmed) with flags + proposals.",
+        "operationId": "list_accounting_documents_api_accounting_documents_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AccountingDocumentOut"
+                  },
+                  "title": "Response List Accounting Documents Api Accounting Documents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Accounting Documents",
+        "tags": [
+          "accounting"
+        ]
+      }
+    },
+    "/api/accounting/documents/confirm": {
+      "post": {
+        "description": "Confirm one document or a batch of clean ones (accept or correct proposals).",
+        "operationId": "confirm_accounting_documents_api_accounting_documents_confirm_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountingConfirmIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AccountingDocumentOut"
+                  },
+                  "title": "Response Confirm Accounting Documents Api Accounting Documents Confirm Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm Accounting Documents",
+        "tags": [
+          "accounting"
+        ]
+      }
+    },
+    "/api/accounting/documents/{document_id}": {
+      "get": {
+        "description": "One document with its line items, booking proposals, and validation flags.",
+        "operationId": "get_accounting_document_api_accounting_documents__document_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountingDocumentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Accounting Document",
         "tags": [
           "accounting"
         ]
