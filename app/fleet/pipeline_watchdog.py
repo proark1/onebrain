@@ -45,7 +45,12 @@ _PREFLIGHT_FAILURE_REASON = "dev_preflight_failed"
 # an app restart self-recovers, so it is too soft to recommend a (heavy) gate replacement on
 # (design fork B). A dead box (missed_heartbeat) and disk death — low_root/low_data plus an
 # unavailable data volume, the 2026-07-22 case — are the strong signals.
-_GATE_FAILURE_ALERT_KINDS = frozenset({
+#
+# PUBLIC single source of truth: Tier 1 ALERTS on this condition (below) and Tier 2 ACTS on the
+# very same condition (app/controlplane/gate_auto_replace.py). They must never diverge — a gate
+# the operator is told to replace is exactly the gate the daemon would auto-replace — so both
+# import this set and `sustained_gate_failure` rather than each defining "gate is dead".
+GATE_HARD_FAILURE_ALERT_KINDS = frozenset({
     "missed_heartbeat", "low_root_disk", "low_data_disk", "data_volume_unavailable",
 })
 
@@ -99,7 +104,7 @@ def _failed_at(promotion) -> Optional[datetime]:
     )
 
 
-def _sustained_gate_failure(
+def sustained_gate_failure(
     fleet_store, gate_id: str, now: datetime, threshold: int
 ) -> Optional[tuple[str, float]]:
     """The gate's oldest open HARD-failure alert whose age exceeds ``threshold``, as
@@ -107,10 +112,12 @@ def _sustained_gate_failure(
 
     Reuses the infra alerts the heartbeat watchdog already opened on the GATE's own row, so a
     transient blip the watchdog will resolve on the next healthy heartbeat never trips the
-    recommendation. Only ``_GATE_FAILURE_ALERT_KINDS`` count (a soft ``unhealthy`` is ignored)."""
+    recommendation. Only ``GATE_HARD_FAILURE_ALERT_KINDS`` count (a soft ``unhealthy`` is ignored).
+
+    PUBLIC: shared verbatim by the Tier-2 auto-replace daemon so detection and action agree."""
     worst: Optional[tuple[str, float]] = None
     for alert in fleet_store.list_open_alerts(gate_id):
-        if alert.kind not in _GATE_FAILURE_ALERT_KINDS:
+        if alert.kind not in GATE_HARD_FAILURE_ALERT_KINDS:
             continue
         created = _parse_ts(getattr(alert, "created_at", "") or "")
         if created is None:
@@ -195,7 +202,7 @@ def desired_pipeline_alerts(
     if gate_replace_seconds > 0 and fleet_store is not None:
         gate = control_store.get_release_gate()
         if gate is not None and gate.id and gate.id != mc_deployment_id:
-            sustained = _sustained_gate_failure(fleet_store, gate.id, now, gate_replace_seconds)
+            sustained = sustained_gate_failure(fleet_store, gate.id, now, gate_replace_seconds)
             if sustained is not None:
                 kind, age = sustained
                 alerts[GATE_REPLACEMENT_RECOMMENDED_ALERT] = (

@@ -349,6 +349,32 @@ class Settings(BaseSettings):
     # after the gate goes dark), long enough not to cry wolf on a reboot. The operator still
     # runs the manual replace; NOTHING is auto-provisioned or torn down. 0 disables the signal.
     gate_replace_after_seconds: int = Field(default=1800, ge=0)   # 30m
+    # Gate AUTO-replacement (roadmap Phase 4 / Gap E2, Tier 2 — the opt-in that ACTS on the
+    # Tier 1 signal). When enabled, a Mission-Control-only daemon that finds the DESIGNATED gate
+    # sustained-dead (the SAME gate_replace_after_seconds window) auto-PROVISIONS a replacement
+    # gate through the broker and — once it boots healthy and passes the designation blockers —
+    # DESIGNATES it, so the dev pipeline recovers with no operator action. Teardown of the old
+    # (now-undesignated) gate STAYS MANUAL: the daemon only opens a `gate_decommission_recommended`
+    # alert. OFF by default; the trust model (broker-only token, server cap, P1-D destroy guard,
+    # dual-control teardown) is untouched. The cost-runaway rails below are load-bearing.
+    gate_auto_replace_enabled: bool = False
+    # Daemon cadence. The auto-replace tick can PROVISION, so it runs on its own thread (not the
+    # watchdog loop, whose contract is "never change a deployment"). Gated by both
+    # gate_auto_replace_enabled AND operator_mode, so this interval is inert until opted in;
+    # clamped to a 60s floor. 0 also disables the scheduler.
+    gate_auto_replace_poll_seconds: int = Field(default=300, ge=0)   # 5m
+    # Cost-runaway rail #1 — minimum interval between provision ATTEMPTS (successful OR failed),
+    # measured from the newest replacement box's creation. Together with one-in-flight (a live
+    # replacement refuses a second) and the broker's hard server cap, this bounds even a flapping
+    # gate to at most one new box per window. Proposed 6h. NOTE: 0 DISABLES this debounce, leaving
+    # only one-in-flight + the cap as the ceiling — do not set 0 unless you intend that.
+    gate_auto_replace_min_interval_seconds: int = Field(default=21600, ge=0)  # 6h
+    # Orphan-wedge guard — if a provisioned replacement has not gone healthy + designation-ready
+    # within this long, the daemon STOPS and opens a `gate_auto_replace_wedged` alert instead of
+    # looping: a stuck replacement already blocks another via one-in-flight and would otherwise
+    # sit on a cap slot while the old gate stays designated-dead. The operator intervenes. 0 =
+    # never time out (rely on one-in-flight alone).
+    gate_auto_replace_timeout_seconds: int = Field(default=3600, ge=0)  # 1h
     # Alert delivery (roadmap Gap D). When set, Mission Control POSTs each newly-opened
     # fleet alert (infra + pipeline) to this webhook so a stall/low-disk actually reaches
     # you instead of waiting to be noticed in the console. The body carries a Slack-style

@@ -726,6 +726,11 @@ _OPERATOR_APP_CONTROL_ENV = (
     # verify_secret. The id is compared for equality and kept '$'-free (bootstrap fails closed).
     "ONEBRAIN_RELEASE_CANDIDATE_KEY_ID",
     "ONEBRAIN_RELEASE_CANDIDATE_KEY_HASH",
+    # Gate AUTO-replacement daemon (Phase 4 Tier 2). All int/bool -> $-free (Rule 2 trivial).
+    "ONEBRAIN_GATE_AUTO_REPLACE_ENABLED",
+    "ONEBRAIN_GATE_AUTO_REPLACE_POLL_SECONDS",
+    "ONEBRAIN_GATE_AUTO_REPLACE_MIN_INTERVAL_SECONDS",
+    "ONEBRAIN_GATE_AUTO_REPLACE_TIMEOUT_SECONDS",
 )
 
 
