@@ -46,6 +46,32 @@ def test_watchdog_once_opens_low_disk_alerts_for_registered_deployments():
     assert {alert.kind for alert in opened} == {"low_root_disk", "low_data_disk"}
 
 
+def test_watchdog_once_also_opens_pipeline_stall_alerts_on_mission_control():
+    from datetime import timedelta
+
+    from app.controlplane.base import ReleaseManifest, ReleasePromotion, ReleasePromotionEvent
+    from app.fleet.base import DEV_PIPELINE_STALLED_ALERT
+
+    control = MemoryControlPlaneStore()
+    control.create_deployment(CustomerDeployment(
+        id="mc", customer_name="mc", deployment_type="dedicated_server"))
+    stale = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+    control.create_release_candidate(
+        ReleaseManifest(version="2026.07.22.500", git_sha="a" * 40, modules={"onebrain-api": "1"}),
+        ReleasePromotion(release_version="2026.07.22.500", state="dev_failed",
+                         failure_reason="dev_rollout_failed", dev_completed_at=stale),
+        ReleasePromotionEvent(id="", release_version="2026.07.22.500", action="seed",
+                              to_state="dev_failed"),
+    )
+    fleet = MemoryFleetStore()
+    settings = _settings(deployment_id="mc", pipeline_stall_alert_seconds=10800)
+
+    opened = watchdog_once(settings, control, fleet)
+
+    assert DEV_PIPELINE_STALLED_ALERT in {alert.kind for alert in opened}
+    assert fleet.has_open_alert("mc", DEV_PIPELINE_STALLED_ALERT)
+
+
 def test_start_fleet_watchdog_requires_operator_mode_and_positive_interval():
     assert start_fleet_watchdog(_settings(operator_mode=False)) is False
     assert start_fleet_watchdog(_settings(fleet_watchdog_seconds=0)) is False

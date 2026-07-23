@@ -329,6 +329,13 @@ class Settings(BaseSettings):
     fleet_watchdog_seconds: int = Field(default=60, ge=0)
     fleet_low_root_disk_percent: int = Field(default=15, ge=0, le=100)
     fleet_low_data_disk_percent: int = Field(default=15, ge=0, le=100)
+    # Release-pipeline stall alerting (roadmap Gap D). The watchdog also opens a
+    # metadata-only alert on Mission Control's own row when a development candidate has
+    # been stuck at dev_failed longer than this — excluding one superseded by a newer
+    # verified release, or merely waiting for the daily backup. Passive detection like the
+    # infra alerts above, so on by default on MC; 0 disables just this signal. The
+    # self-deploy give-up signal (MC exhausting its self-deploy retries) is always on.
+    pipeline_stall_alert_seconds: int = Field(default=10800, ge=0)   # 3h
     # Persistent PostgreSQL/data mount as seen by a reporter. A container that
     # does not mount it emits 0/0 (unknown), never a duplicate root filesystem.
     fleet_data_volume_path: str = "/mnt/onebrain-data"

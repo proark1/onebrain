@@ -14,24 +14,51 @@ import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from app.fleet.pipeline_watchdog import run_pipeline_watchdog
 from app.fleet.watchdog import run_watchdog
 
 _log = logging.getLogger("onebrain.fleet")
 
 
 def watchdog_once(settings, control_store, fleet_store) -> list:
-    """Reconcile heartbeat, version, and capacity alerts for every deployment."""
+    """Reconcile heartbeat, version, and capacity alerts for every deployment, plus the
+    release-pipeline stall alerts on Mission Control's own row (roadmap Gap D)."""
+    now_iso = datetime.now(timezone.utc).isoformat()
     deployment_ids = [deployment.id for deployment in control_store.list_deployments()]
-    return run_watchdog(
+    opened = run_watchdog(
         fleet_store,
         deployment_ids,
-        now_iso=datetime.now(timezone.utc).isoformat(),
+        now_iso=now_iso,
         missed_after_seconds=max(1, float(settings.fleet_missed_heartbeat_seconds)),
         expected_version=str(getattr(settings, "fleet_target_version", "") or ""),
         low_root_disk_percent=float(getattr(settings, "fleet_low_root_disk_percent", 0) or 0),
         low_data_disk_percent=float(getattr(settings, "fleet_low_data_disk_percent", 0) or 0),
         next_id=lambda: f"fa_{uuid4().hex}",
     )
+    opened += _run_pipeline_watchdog(settings, control_store, fleet_store, now_iso)
+    return opened
+
+
+def _run_pipeline_watchdog(settings, control_store, fleet_store, now_iso: str) -> list:
+    """Mission-Control-only release-pipeline stall alerts (roadmap Gap D). Never raises: a
+    control-store hiccup degrades to no pipeline alerts this tick, never a crashed watchdog."""
+    if not getattr(settings, "operator_mode", False):
+        return []
+    mc_deployment_id = (getattr(settings, "deployment_id", "") or "").strip()
+    if not mc_deployment_id:
+        return []
+    try:
+        return run_pipeline_watchdog(
+            control_store, fleet_store,
+            now_iso=now_iso, mc_deployment_id=mc_deployment_id,
+            stall_seconds=int(getattr(settings, "pipeline_stall_alert_seconds", 0) or 0),
+            self_deploy_enabled=bool(getattr(settings, "operator_auto_deploy_enabled", False)),
+            self_max_attempts=int(getattr(settings, "operator_self_max_attempts", 3) or 3),
+            next_id=lambda: f"fa_{uuid4().hex}",
+        )
+    except Exception as exc:  # never let pipeline detection break the watchdog daemon
+        _log.warning("Pipeline watchdog tick failed: %s", exc)
+        return []
 
 
 def start_fleet_watchdog(settings) -> bool:
