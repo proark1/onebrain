@@ -22,8 +22,13 @@ from app.drive.malware.base import (
     ScanRequest,
     ScanVerdict,
 )
+from app.accounting.base import accounting_category_id
 from app.drive.service import DriveService
-from app.jobs.base import JOB_DRIVE_FILE_INGEST, JOB_DRIVE_REVISION_MALWARE_SCAN
+from app.jobs.base import (
+    JOB_ACCOUNTING_EXTRACT,
+    JOB_DRIVE_FILE_INGEST,
+    JOB_DRIVE_REVISION_MALWARE_SCAN,
+)
 from app.platform.base import AuditEvent
 
 
@@ -111,6 +116,7 @@ class DriveMalwareScanningService:
             consecutive_failures=failures,
         )
         self._enqueue_ingestion_if_needed(completion)
+        self._enqueue_accounting_extraction_if_needed(completion)
         self._record_terminal_audit(completion.scan, worker_id=job.locked_by)
         self._publish_runtime_status(job.tenant_id, verdict)
         return {
@@ -251,6 +257,38 @@ class DriveMalwareScanningService:
         )
         if job.id != completion.ingestion_job_id:
             raise RuntimeError("Drive ingestion job identity did not match scan completion.")
+
+    def _enqueue_accounting_extraction_if_needed(self, completion: DriveMalwareCompletion) -> None:
+        """Kick invoice extraction when a clean file is in the buchhaltung category.
+
+        Deliberately independent of ``ingestion_job_id`` / ``desired_indexed``: an
+        accounting file the user did NOT mark "index for AI" produces no Drive
+        ingest job, but it must still be extracted. The only signals are a clean
+        verdict and the accounting AccessGroup category (derived per space so it
+        matches what the install bootstrap seeded and the upload picker sets).
+        Idempotent on (file, revision, generation) so a re-scan can't double-book.
+        """
+        file = completion.file
+        if not file or completion.scan.status != "clean":
+            return
+        if file.category != accounting_category_id(file.space_id):
+            return
+        self.job_store.enqueue(
+            type=JOB_ACCOUNTING_EXTRACT,
+            tenant_id=file.tenant_id,
+            account_id=file.account_id,
+            space_id=file.space_id,
+            requested_by=file.uploaded_by,
+            payload={
+                "file_id": file.id,
+                "revision_id": file.current_revision_id,
+                "generation": file.generation,
+            },
+            max_attempts=max(1, int(getattr(self.settings, "job_max_attempts", 3))),
+            idempotency_key=(
+                f"accounting-extract:{file.id}:{file.current_revision_id}:{file.generation}"
+            ),
+        )
 
     def _drain_scan_outbox(self, *, limit: int) -> int:
         drained = 0

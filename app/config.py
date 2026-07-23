@@ -157,6 +157,10 @@ class Settings(BaseSettings):
     # provider (gemini / mistral / anthropic / openai) is a one-line change.
     litellm_model: str = "gemini/gemini-2.5-flash"
     litellm_embedding_model: str = "gemini/gemini-embedding-001"
+    # Optional override for the accounting invoice vision model only; empty falls
+    # back to litellm_model. Still passes through the sovereign gate (§5). The
+    # model string must be in app/llm/pricing.py or its cost logs as None.
+    invoice_recognition_model: str = ""
 
     # AI Employees is provider-neutral, while the first live roster is Gemini.
     # Anthropic remains fail-closed until all three gates and its credential are present.

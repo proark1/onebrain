@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
-from app.accounting.base import ACCOUNTING_APP_ID, ACCOUNTING_READ_PURPOSE
+from app.accounting.base import (
+    ACCOUNTING_APP_ID,
+    ACCOUNTING_CONFIGURE_PURPOSE,
+    ACCOUNTING_READ_PURPOSE,
+)
 from app.auth.account_access import authorize_account_member
 
 
@@ -17,6 +21,15 @@ def authorize_accounting_reader(principal, account_id: str, space_id: str, platf
     account = authorize_account_member(principal, account_id, space_id, platform_store)
     space = _require_space(account.id, space_id, platform_store)
     _require_app_access(account.id, space.id, ACCOUNTING_READ_PURPOSE, platform_store)
+    return account, space
+
+
+def authorize_accounting_writer(principal, account_id: str, space_id: str, platform_store):
+    """Confirming/correcting a booking is a routine finance action — a workspace
+    member with the ``accounting_configure`` purpose, not necessarily an admin."""
+    account = authorize_account_member(principal, account_id, space_id, platform_store)
+    space = _require_space(account.id, space_id, platform_store)
+    _require_app_access(account.id, space.id, ACCOUNTING_CONFIGURE_PURPOSE, platform_store)
     return account, space
 
 

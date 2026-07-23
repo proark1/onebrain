@@ -4,6 +4,7 @@ from dataclasses import replace
 
 import pytest
 
+from app.accounting.base import accounting_category_id
 from app.auth.passwords import hash_password
 from app.platform.memory import MemoryPlatformStore
 from app.provisioning.bundles import OPTIONAL_MODULE_IDS
@@ -130,6 +131,16 @@ def test_full_stack_bootstrap_creates_local_topology_credentials_and_audit_once(
     assert {installation.app_id for installation in installations} == {
         "onebrain_core", "assistant", "communication", "kpi_dashboard", "ai_employees", "buchhaltung",
     }
+
+    # Buchhaltung seeds a deterministic Drive category group (+ owner membership)
+    # wherever the module is enabled, so the malware-clean extraction trigger has a
+    # category to recognise. Idempotent across both reconciles above.
+    business = next(space for space in platform.list_spaces(first.account_id) if space.kind == "business")
+    group_id = accounting_category_id(business.id)
+    assert group_id in {group.id for group in platform.list_access_groups(first.account_id, business.id)}
+    memberships = platform.list_access_group_memberships(first.account_id, admin.id)
+    assert any(membership.group_id == group_id for membership in memberships)
+
     assert len(platform.list_audit(first.account_id)) == 1
     assert platform.list_audit(first.account_id)[0].action == "customer.bootstrap_reconciled"
     assert platform.get_brand_theme(first.account_id) is not None

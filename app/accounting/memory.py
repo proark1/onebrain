@@ -1,8 +1,11 @@
 """Thread-safe JSON-backed accounting store for local development and tests.
 
-Phase 0 skeleton: no ingest path exists yet, so the store starts empty and stays
-empty until Phase 1 adds extraction. It still honours the GDPR export/erase scope
-contract so the module is compliant the moment documents can be created.
+Phase 1 adds the write path: extraction creates a ``pending`` document + line
+items, a human confirms it (batch or single) to ``confirmed``, and only confirmed
+documents fold into the summary. Money is stored as decimal *strings* (JSON-safe,
+mirroring the Postgres store's ``_json_safe`` output) and parsed back to Decimal
+for aggregation. Every read is filtered by ``account_id`` + ``space_id`` — the
+in-memory analogue of the RLS scope the Postgres store enforces.
 """
 
 from __future__ import annotations
@@ -10,9 +13,47 @@ from __future__ import annotations
 import json
 import os
 import threading
+from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Optional
 
-from app.accounting.base import AccountingOverview
+from app.accounting.base import AccountingOverview, build_summary
+from app.accounting.model import INCOMING, OUTGOING
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _dec(value) -> Decimal:
+    if value in (None, ""):
+        return Decimal("0")
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal("0")
+
+
+def summarize_documents(account_id: str, space_id: str, documents: list[dict]) -> dict:
+    """Counts + confirmed-only per-direction money for one workspace."""
+    total = len(documents)
+    pending = sum(1 for row in documents if row.get("status") == "pending")
+    confirmed = [row for row in documents if row.get("status") == "confirmed"]
+
+    def side(direction: str) -> dict:
+        rows = [row for row in confirmed if row.get("direction") == direction]
+        return {
+            "count": len(rows),
+            "net": sum((_dec(row.get("total_net")) for row in rows), Decimal("0")),
+            "tax": sum((_dec(row.get("total_tax")) for row in rows), Decimal("0")),
+            "gross": sum((_dec(row.get("total_gross")) for row in rows), Decimal("0")),
+        }
+
+    return build_summary(
+        account_id, space_id,
+        total=total, pending=pending, confirmed=len(confirmed),
+        incoming=side(INCOMING), outgoing=side(OUTGOING),
+    )
 
 
 class MemoryAccountingStore:
@@ -49,11 +90,24 @@ class MemoryAccountingStore:
                 handle,
             )
 
-    def overview(self, account_id: str, space_id: str) -> AccountingOverview:
-        documents = [
+    # ---- reads --------------------------------------------------------------
+
+    def _scoped(self, account_id: str, space_id: str) -> list[dict]:
+        return [
             row for row in self._documents.values()
             if row.get("account_id") == account_id and row.get("space_id") == space_id
         ]
+
+    def _hydrate(self, document: dict) -> dict:
+        lines = [
+            dict(row) for row in self._line_items.values()
+            if row.get("document_id") == document.get("id")
+        ]
+        lines.sort(key=lambda row: (row.get("line_no", 0), row.get("id", "")))
+        return {**document, "line_items": lines}
+
+    def overview(self, account_id: str, space_id: str) -> AccountingOverview:
+        documents = self._scoped(account_id, space_id)
         pending = sum(1 for row in documents if row.get("status") == "pending")
         confirmed = sum(1 for row in documents if row.get("status") == "confirmed")
         return AccountingOverview(
@@ -63,6 +117,112 @@ class MemoryAccountingStore:
             pending_documents=pending,
             confirmed_documents=confirmed,
         )
+
+    def summary(self, account_id: str, space_id: str) -> dict:
+        return summarize_documents(account_id, space_id, self._scoped(account_id, space_id))
+
+    def get_document(self, account_id: str, space_id: str, document_id: str) -> Optional[dict]:
+        row = self._documents.get(document_id)
+        if not row or row.get("account_id") != account_id or row.get("space_id") != space_id:
+            return None
+        return self._hydrate(row)
+
+    def list_documents(self, account_id: str, space_id: str, status: str = "") -> list[dict]:
+        rows = self._scoped(account_id, space_id)
+        if status:
+            rows = [row for row in rows if row.get("status") == status]
+        rows.sort(key=lambda row: (row.get("created_at", ""), row.get("id", "")), reverse=True)
+        return [self._hydrate(row) for row in rows]
+
+    def find_duplicate(
+        self, account_id: str, space_id: str, dedup_key: str, *, exclude_id: str = "",
+    ) -> Optional[dict]:
+        if not dedup_key:
+            return None
+        for row in self._scoped(account_id, space_id):
+            if row.get("dedup_key") == dedup_key and row.get("id") != exclude_id:
+                return self._hydrate(row)
+        return None
+
+    def document_for_revision(
+        self, account_id: str, space_id: str, drive_file_id: str, drive_revision_id: str,
+    ) -> Optional[dict]:
+        for row in self._scoped(account_id, space_id):
+            if (
+                row.get("drive_file_id") == drive_file_id
+                and row.get("drive_revision_id") == drive_revision_id
+            ):
+                return self._hydrate(row)
+        return None
+
+    def invoice_number_seen(
+        self, account_id: str, space_id: str, issuer_name: str, invoice_number: str,
+        *, exclude_id: str = "",
+    ) -> bool:
+        number = (invoice_number or "").strip().casefold()
+        if not number:
+            return False
+        issuer = (issuer_name or "").strip().casefold()
+        for row in self._scoped(account_id, space_id):
+            if row.get("id") == exclude_id:
+                continue
+            if (
+                (row.get("invoice_number", "") or "").strip().casefold() == number
+                and (row.get("issuer_name", "") or "").strip().casefold() == issuer
+            ):
+                return True
+        return False
+
+    # ---- writes -------------------------------------------------------------
+
+    def create_document(self, document: dict, line_items: list[dict]) -> dict:
+        with self._lock:
+            document_id = document["id"]
+            if document_id not in self._documents:
+                self._documents[document_id] = dict(document)
+                for line in line_items:
+                    self._line_items[line["id"]] = dict(line)
+                self._save()
+            return self._hydrate(self._documents[document_id])
+
+    def confirm_documents(
+        self, account_id: str, space_id: str, confirmations: list[dict], confirmed_by: str,
+    ) -> list[dict]:
+        updated: list[dict] = []
+        with self._lock:
+            timestamp = _now_iso()
+            for confirmation in confirmations:
+                document_id = confirmation.get("document_id", "")
+                row = self._documents.get(document_id)
+                if not row or row.get("account_id") != account_id or row.get("space_id") != space_id:
+                    raise KeyError(document_id)
+                corrections = {
+                    correction["id"]: correction
+                    for correction in confirmation.get("line_items", [])
+                    if correction.get("id")
+                }
+                for line in self._line_items.values():
+                    if line.get("document_id") != document_id:
+                        continue
+                    correction = corrections.get(line.get("id"), {})
+                    line["confirmed_account"] = (
+                        correction.get("account") or line.get("proposed_account") or ""
+                    ).strip()
+                    line["confirmed_tax_key"] = (
+                        correction.get("tax_key") or line.get("proposed_tax_key") or ""
+                    ).strip()
+                    if "cost_center" in correction:
+                        line["cost_center"] = (correction.get("cost_center") or "").strip()
+                    line["updated_at"] = timestamp
+                direction = confirmation.get("direction")
+                if direction in (INCOMING, OUTGOING):
+                    row["direction"] = direction
+                row["status"] = "confirmed"
+                row["confirmed_by"] = confirmed_by
+                row["updated_at"] = timestamp
+                updated.append(self._hydrate(row))
+            self._save()
+        return updated
 
     def export_scope(self, account_id: str, space_id: str = "") -> dict:
         documents = [
