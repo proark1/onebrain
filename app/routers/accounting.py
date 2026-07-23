@@ -11,6 +11,7 @@ purpose. Extraction itself is driven by the Drive malware-clean trigger, not her
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Literal, Optional
 from uuid import uuid4
 
@@ -30,11 +31,20 @@ from app.accounting.base import (
 )
 from app.accounting.booking import propose_line
 from app.accounting.model import to_rate
+from app.accounting.service import reconcile_pending_extractions
 from app.auth.account_access import is_account_member
 from app.auth.principal import Principal, resolve_principal
-from app.deps import get_accounting_store, get_platform_store
+from app.deps import (
+    get_accounting_store,
+    get_drive_store,
+    get_job_store,
+    get_platform_store,
+    get_settings,
+)
 from app.platform.base import AuditEvent
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/accounting", tags=["accounting"])
 
@@ -234,6 +244,31 @@ def list_accounting_workspaces(principal: Principal = Depends(resolve_principal)
     return workspaces
 
 
+def _reconcile_extractions(account_id: str, space_id: str) -> None:
+    """Opportunistically re-enqueue any extraction stranded by a worker crash.
+
+    The read-path analogue of the Drive listing's ``_reconcile_index_jobs``: a
+    clean invoice whose extraction enqueue was lost (worker died between the
+    verdict commit and the enqueue) is re-derived here so it appears the next
+    time the workspace is opened. Fail-open — a queue hiccup must never break a
+    read; the next read retries.
+    """
+    try:
+        reconcile_pending_extractions(
+            drive_store=get_drive_store(),
+            accounting_store=get_accounting_store(),
+            job_store=get_job_store(),
+            settings=get_settings(),
+            account_id=account_id,
+            space_id=space_id,
+        )
+    except Exception:
+        logger.warning(
+            "accounting extraction reconcile skipped for %s/%s",
+            account_id, space_id, exc_info=True,
+        )
+
+
 @router.get("", response_model=AccountingSummaryOut)
 def get_accounting_overview(
     account_id: Annotated[str, _ID],
@@ -243,6 +278,7 @@ def get_accounting_overview(
     """Workspace dashboard: counts + confirmed-only net/VAT per direction (403 unless enabled)."""
     platform = get_platform_store()
     authorize_accounting_reader(principal, account_id, space_id, platform)
+    _reconcile_extractions(account_id, space_id)
     return _summary_out(get_accounting_store().summary(account_id, space_id))
 
 
@@ -258,6 +294,7 @@ def list_accounting_documents(
         raise HTTPException(status_code=400, detail="Unknown status filter.")
     platform = get_platform_store()
     authorize_accounting_reader(principal, account_id, space_id, platform)
+    _reconcile_extractions(account_id, space_id)
     documents = get_accounting_store().list_documents(account_id, space_id, status or "")
     return [_document_out(document) for document in documents]
 
