@@ -124,15 +124,48 @@ def reconcile_once(settings, control_store, fleet_store) -> list:
         with _reconcile_leadership(settings) as leader:
             if not leader:
                 return []
-            return reconcile_pull_targets(
+            runs = reconcile_pull_targets(
                 control_store, control_store, fleet_store.latest_heartbeats(),
                 now=datetime.now(timezone.utc),
                 deadline_seconds=settings.fleet_pull_convergence_deadline_seconds,
                 dispatch_child=fleet_dispatch_child,
                 operator_self_deployment_id=_operator_self_deployment_id(settings))
+            # Self-healing development pipeline (roadmap Gap A). Same leader, same tick:
+            # reclaim any development candidate stranded at dev_failed for a TRANSIENT
+            # reason. Isolated below so a retry failure never discards `runs`.
+            _run_development_auto_retry(settings, control_store)
+            return runs
     except Exception as exc:  # a reconcile failure must never kill the daemon
         _log.warning("Pull reconcile tick failed: %s", exc)
         return []
+
+
+def _run_development_auto_retry(settings, control_store) -> None:
+    """Reclaim transiently-failed development candidates (roadmap Gap A).
+
+    Opt-in (``development_auto_retry_enabled``) and never-raising: a store or dispatch
+    failure degrades to a no-op tick, never a crashed daemon. The dispatcher is imported
+    LAZILY so importing this module at startup never pulls the router graph in — the same
+    reason reconcile_once imports fleet_dispatch_child lazily. Both re-dispatch through the
+    SAME ``_dispatch_development_candidate`` path the operator's retry-dev endpoint uses."""
+    if not getattr(settings, "development_auto_retry_enabled", False):
+        return
+    try:
+        from app.controlplane.development_retry import reclaim_retryable_development_candidates
+        from app.routers.operator import _dispatch_development_candidate
+
+        reclaim_retryable_development_candidates(
+            control_store,
+            now=datetime.now(timezone.utc),
+            max_attempts=int(getattr(settings, "development_auto_retry_max_attempts", 5)),
+            backoff_seconds=int(getattr(settings, "development_auto_retry_backoff_seconds", 600)),
+            backup_backoff_seconds=int(
+                getattr(settings, "development_auto_retry_backup_backoff_seconds", 21600)
+            ),
+            dispatch=_dispatch_development_candidate,
+        )
+    except Exception as exc:  # never let auto-retry break the reconcile tick
+        _log.warning("Development auto-retry tick failed: %s", exc)
 
 
 def start_reconcile_scheduler(settings) -> bool:
