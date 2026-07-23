@@ -812,7 +812,13 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             # agent (not this Compose service) owns the fleet credential and
             # reports the release-gate heartbeat.
             pairs += [
-                ("ONEBRAIN_CUSTOMER_BOOTSTRAP", inp.customer_bootstrap),
+                # The descriptor is delivered through the re-fetched secret bundle as a
+                # ${VAR} ref (like the integration keys below), NOT baked as a frozen
+                # literal, so an operator can change the customer's module set after
+                # provisioning: MC re-mints the bundle with a new descriptor + bumps
+                # secrets_epoch, the box re-fetches, and the boot reconcile converges.
+                # inp.customer_bootstrap is still validated in _validate (account match).
+                ("ONEBRAIN_CUSTOMER_BOOTSTRAP", "${ONEBRAIN_CUSTOMER_BOOTSTRAP}"),
                 # Account UI language, applied by the box's reconcile. A newer box reads it;
                 # an older one ignores the unknown var — the forward-compatible channel for
                 # a per-account setting the strict bootstrap descriptor must not carry.

@@ -13,6 +13,7 @@ import {
   latestOperatorBackup,
   latestOperatorHealth,
   listOperatorCustomers,
+  activateOperatorProductModules,
   listOperatorDeploymentModules,
   listOperatorDeployments,
   listOperatorReleases,
@@ -75,12 +76,22 @@ type BusyAction =
   | "revoke"
   | "retry"
   | "secret"
+  | "modules"
   | "";
 
 type OperatorTab = "customers" | "provisioning" | "releases" | "rollouts" | "credentials";
 
 const HETZNER_DEPLOYMENT_TYPE = "dedicated_server";
 const HETZNER_REGION = "nbg1";
+
+// Product modules that run inside the Core containers (no separate service). Phase 1
+// activates these in place — the box just re-fetches its descriptor and reconciles.
+// Service-backed modules (Assistant, Communication) need the Phase-2 compose work.
+const DB_ONLY_PRODUCT_MODULES: Array<{ id: string; label: string }> = [
+  { id: "kpi_dashboard", label: "KPI Dashboard" },
+  { id: "ai_employees", label: "AI Employees" },
+  { id: "buchhaltung", label: "Accounting" },
+];
 
 const RELEASE_RINGS = [
   { label: "Manual", value: "manual" },
@@ -511,6 +522,28 @@ export function OperatorPanel() {
     }
   }
 
+  async function onActivateModules(deploymentId: string, moduleId: string) {
+    if (busyAction) {
+      return;
+    }
+    setBusyAction("modules");
+    setBusyId(deploymentId);
+    setError("");
+    setNotice("");
+    try {
+      const result = await activateOperatorProductModules(deploymentId, [moduleId]);
+      setNotice(result.changed
+        ? `Module activated. The box applies it on its next fetch (secrets epoch ${result.secrets_epoch}).`
+        : "That module was already active.");
+      await loadOperator();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not activate the module.");
+    } finally {
+      setBusyAction("");
+      setBusyId("");
+    }
+  }
+
   async function onDesignateGate(deploymentId: string) {
     if (busyAction) {
       return;
@@ -927,6 +960,7 @@ export function OperatorPanel() {
                 busyAction={busyAction}
                 busyId={busyId}
                 key={row.deployment.id}
+                onActivateModules={onActivateModules}
                 onPlan={onPlan}
                 onStartRollout={onStartRollout}
                 onTargetReleaseChange={(deploymentId, version) => {
@@ -1546,6 +1580,7 @@ function ThemeSwatches({ theme }: { theme: BrandTheme | BrandThemeInput }) {
 function DeploymentCard({
   busyAction,
   busyId,
+  onActivateModules,
   onPlan,
   onStartRollout,
   onTargetReleaseChange,
@@ -1556,6 +1591,7 @@ function DeploymentCard({
 }: {
   busyAction: BusyAction;
   busyId: string;
+  onActivateModules: (deploymentId: string, moduleId: string) => Promise<void>;
   onPlan: (row: DeploymentRow) => Promise<void>;
   onStartRollout: (row: DeploymentRow) => Promise<void>;
   onTargetReleaseChange: (deploymentId: string, version: string) => void;
@@ -1609,6 +1645,33 @@ function DeploymentCard({
       <div className="pillRail">
         {row.modules.map((module) => <span key={module.module_id}>{module.module_id} {module.version}</span>)}
       </div>
+      {!row.deployment.is_release_gate ? (
+        <div className="deploymentModules">
+          <p className="operatorMuted">Product modules</p>
+          <div className="pillRail">
+            {row.deployment.selected_module_ids.length
+              ? row.deployment.selected_module_ids.map((id) => <span key={id}>{labelFor(id)}</span>)
+              : <span>Core only</span>}
+          </div>
+          {DB_ONLY_PRODUCT_MODULES.some((module) => !row.deployment.selected_module_ids.includes(module.id)) ? (
+            <div className="pillRail">
+              {DB_ONLY_PRODUCT_MODULES
+                .filter((module) => !row.deployment.selected_module_ids.includes(module.id))
+                .map((module) => (
+                  <button
+                    className="secondaryButton"
+                    disabled={Boolean(busyAction)}
+                    key={module.id}
+                    onClick={() => void onActivateModules(row.deployment.id, module.id)}
+                    type="button"
+                  >
+                    {busyAction === "modules" && busyId === row.deployment.id ? "Activating…" : `Add ${module.label}`}
+                  </button>
+                ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <div className="deploymentControls">
         <SelectField
           label="Target release"

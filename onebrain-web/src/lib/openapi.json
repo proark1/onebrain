@@ -4948,6 +4948,13 @@
             "title": "Release Ring",
             "type": "string"
           },
+          "selected_module_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Module Ids",
+            "type": "array"
+          },
           "status": {
             "title": "Status",
             "type": "string"
@@ -8650,6 +8657,63 @@
           "name"
         ],
         "title": "ProcessorOut",
+        "type": "object"
+      },
+      "ProductModulesActivateIn": {
+        "properties": {
+          "add_module_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5,
+            "minItems": 1,
+            "title": "Add Module Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "add_module_ids"
+        ],
+        "title": "ProductModulesActivateIn",
+        "type": "object"
+      },
+      "ProductModulesOut": {
+        "properties": {
+          "added_module_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Added Module Ids",
+            "type": "array"
+          },
+          "changed": {
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "deployment_id": {
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "secrets_epoch": {
+            "title": "Secrets Epoch",
+            "type": "integer"
+          },
+          "selected_module_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Module Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "selected_module_ids",
+          "added_module_ids",
+          "secrets_epoch",
+          "changed"
+        ],
+        "title": "ProductModulesOut",
         "type": "object"
       },
       "ProductionSignatureIn": {
@@ -17088,6 +17152,69 @@
           }
         },
         "summary": "Set Update Policy",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/operator/deployments/{deployment_id}/product-modules": {
+      "post": {
+        "description": "Activate additional product modules on a live customer deployment (Phase 1: DB-only,\nadd-only). Re-mints the box's bootstrap descriptor into its re-fetched secret bundle and\nbumps secrets_epoch; the box converges on its next fetch as onebrain-api's boot reconcile\nupserts the new app installations \u2014 no host asset is delivered to the running box.",
+        "operationId": "activate_product_modules_api_operator_deployments__deployment_id__product_modules_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "ob_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ob Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductModulesActivateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductModulesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Activate Product Modules",
         "tags": [
           "operator"
         ]

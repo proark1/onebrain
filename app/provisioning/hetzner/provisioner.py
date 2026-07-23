@@ -279,7 +279,7 @@ class HetznerProvisioner:
             bootstrap_token, callback_token = self._provision_box_secrets(
                 run, owner_otp=owner_otp, service_key=service_key, space_id=space_id,
                 owner_email=owner_email, integration_credentials=integration_credentials,
-                enabled_modules=tuple(modules))
+                enabled_modules=tuple(modules), customer_bootstrap=customer_bootstrap)
 
         # 4b. Render cloud-init (pure). A render ValueError (hostile id / a release
         #     image map that fails to cover an enabled module) becomes a
@@ -426,7 +426,8 @@ class HetznerProvisioner:
                                service_key: str, space_id: str,
                                owner_email: str = "",
                                integration_credentials: dict[str, tuple[str, str]] | None = None,
-                               enabled_modules: tuple[str, ...] = ()) -> tuple[str, str]:
+                               enabled_modules: tuple[str, ...] = (),
+                               customer_bootstrap: str = "") -> tuple[str, str]:
         """Mint the box's real secrets, seal the RE-READABLE bundle (G1-4 seal_bundle,
         never the one-time envelope), persist it + a single-use first-boot bootstrap
         token, and return (raw_bootstrap_token, raw_callback_token) for the renderer to
@@ -487,6 +488,10 @@ class HetznerProvisioner:
                 "ONEBRAIN_ASSISTANT_SERVICE_KEY": assistant_key,
                 "ONEBRAIN_COMMUNICATION_SERVICE_KEY": communication_key,
                 "ONEBRAIN_COMMUNICATION_SPACE_ID": communication_space_id,
+                # The non-secret customer topology descriptor rides the re-readable bundle
+                # (env/onebrain-api.env references ${ONEBRAIN_CUSTOMER_BOOTSTRAP}) so the
+                # module set can be changed post-provision by re-minting + bumping the epoch.
+                "ONEBRAIN_CUSTOMER_BOOTSTRAP": customer_bootstrap,
                 "UPDATE_BACKUP_KEY": secrets.token_urlsafe(32),
                 "UPDATE_DESIRED_STATE_PUBLIC_KEYS": (
                     settings.fleet_desired_state_public_keys

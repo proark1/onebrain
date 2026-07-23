@@ -544,6 +544,14 @@ export type OperatorDeployment = {
   selected_module_ids: string[];
 };
 
+export type OperatorProductModulesResult = {
+  deployment_id: string;
+  selected_module_ids: string[];
+  added_module_ids: string[];
+  secrets_epoch: number;
+  changed: boolean;
+};
+
 export type CustomerTeardownRequest = {
   id: string;
   deployment_id: string;

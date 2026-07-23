@@ -45,6 +45,12 @@ BUNDLE_KEYS = (
     "ONEBRAIN_SERVICE_KEY", "ONEBRAIN_SPACE_ID",
     "ONEBRAIN_ASSISTANT_SERVICE_KEY",
     "ONEBRAIN_COMMUNICATION_SERVICE_KEY", "ONEBRAIN_COMMUNICATION_SPACE_ID",
+    # The non-secret customer topology descriptor (account + selected product modules).
+    # It rides the re-fetched bundle rather than frozen box.env so an operator can change
+    # a customer's module set after provisioning: a re-mint bumps secrets_epoch, the box
+    # re-fetches, and onebrain-api's boot reconcile upserts the new app installations.
+    # OPTIONAL: only customer-shaped boxes carry one (MC never does).
+    "ONEBRAIN_CUSTOMER_BOOTSTRAP",
     "UPDATE_BACKUP_KEY",
     "UPDATE_DESIRED_STATE_PUBLIC_KEYS",   # P5-02: the accepted wrapper-key SET (csv)
     "ONEBRAIN_DNS_TOKEN",                 # §5 lists it; empty for a normal customer box

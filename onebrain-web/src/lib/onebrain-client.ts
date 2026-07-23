@@ -28,6 +28,7 @@ import type {
   OperatorDeployment,
   OperatorHealth,
   OperatorModule,
+  OperatorProductModulesResult,
   OperatorObservability,
   OperatorRelease,
   CustomerTeardownExecuted,
@@ -604,6 +605,20 @@ export function listOperatorDeployments(): Promise<OperatorDeployment[]> {
 
 export function listOperatorDeploymentModules(deploymentId: string): Promise<OperatorModule[]> {
   return requestJson<OperatorModule[]>(`/operator/deployments/${encodeURIComponent(deploymentId)}/modules`);
+}
+
+export function activateOperatorProductModules(
+  deploymentId: string,
+  addModuleIds: string[],
+): Promise<OperatorProductModulesResult> {
+  return requestJson<OperatorProductModulesResult>(
+    `/operator/deployments/${encodeURIComponent(deploymentId)}/product-modules`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ add_module_ids: addModuleIds }),
+    },
+  );
 }
 
 export function listOperatorReleases(): Promise<OperatorRelease[]> {

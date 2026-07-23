@@ -57,6 +57,7 @@ from app.controlplane.development_gate import (
     validate_module_transition,
 )
 from app.controlplane.desired_state import active_signer_in_served_set
+from app.controlplane.module_activation import set_deployment_modules
 from app.controlplane.fleet_runner import plan_and_start_fleet_rollout, reconcile_fleet_rollout
 from app.controlplane.promotion import (
     attach_production_signature,
@@ -121,6 +122,9 @@ class DeploymentOut(BaseModel):
     last_heartbeat_healthy: bool | None = None
     last_reported_version: str = ""
     last_reported_migration: str = ""
+    # Selected product modules (KPI Dashboard, AI Employees, Buchhaltung, …) — the operator
+    # console reads this to show which modules are active and offer post-provision activation.
+    selected_module_ids: list[str] = Field(default_factory=list)
 
 
 class ModuleUpsert(BaseModel):
@@ -134,6 +138,19 @@ class ModuleOut(BaseModel):
     module_id: str
     version: str
     status: str
+
+
+class ProductModulesActivateIn(BaseModel):
+    # Optional product-module ids to ADD to a live customer deployment (Phase 1: DB-only).
+    add_module_ids: list[str] = Field(min_length=1, max_length=5)
+
+
+class ProductModulesOut(BaseModel):
+    deployment_id: str
+    selected_module_ids: list[str]
+    added_module_ids: list[str]
+    secrets_epoch: int
+    changed: bool
 
 
 class ReleaseCreate(BaseModel):
@@ -1280,6 +1297,60 @@ def set_update_policy(deployment_id: str, body: UpdatePolicyUpdate,
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _deployment_out(deployment)
+
+
+@router.post("/deployments/{deployment_id}/product-modules", response_model=ProductModulesOut)
+def activate_product_modules(
+    deployment_id: str,
+    body: ProductModulesActivateIn,
+    principal: Principal = Depends(resolve_principal),
+):
+    """Activate additional product modules on a live customer deployment (Phase 1: DB-only,
+    add-only). Re-mints the box's bootstrap descriptor into its re-fetched secret bundle and
+    bumps secrets_epoch; the box converges on its next fetch as onebrain-api's boot reconcile
+    upserts the new app installations — no host asset is delivered to the running box."""
+    _require_admin(principal)
+    _authorize_deployment(principal, deployment_id)
+    control = get_control_plane_store()
+    deployment = control.get_deployment(deployment_id)
+    if not deployment:
+        raise HTTPException(status_code=404, detail="Deployment not found.")
+    add = [module_id.strip() for module_id in body.add_module_ids if module_id.strip()]
+    desired = tuple(dict.fromkeys((*deployment.selected_module_ids, *add)))
+    try:
+        result = set_deployment_modules(
+            deployment=deployment,
+            desired_module_ids=desired,
+            provision_store=get_provisioning_run_store(),
+            control_store=control,
+            settings=get_settings(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result.changed and deployment.account_id:
+        get_platform_store().record_audit(AuditEvent(
+            id=f"aud_module_activate_{uuid4().hex}",
+            account_id=deployment.account_id,
+            actor_id=principal.user_id,
+            actor_type=principal.principal_type,
+            action="deployment.product_modules_activated",
+            target_type="customer_deployment",
+            target_id=deployment_id,
+            purpose="module_activation",
+            decision="allowed",
+            meta={
+                "added_module_ids": list(result.added_module_ids),
+                "selected_module_ids": list(result.selected_module_ids),
+                "secrets_epoch": result.secrets_epoch,
+            },
+        ))
+    return ProductModulesOut(
+        deployment_id=result.deployment_id,
+        selected_module_ids=list(result.selected_module_ids),
+        added_module_ids=list(result.added_module_ids),
+        secrets_epoch=result.secrets_epoch,
+        changed=result.changed,
+    )
 
 
 @router.post(
