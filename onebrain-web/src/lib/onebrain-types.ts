@@ -886,6 +886,7 @@ export type AccountingWorkspace = {
   space_id: string;
   space_name: string;
   space_kind: string;
+  can_configure: boolean;
 };
 
 export type AccountingSide = {

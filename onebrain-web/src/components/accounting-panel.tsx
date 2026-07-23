@@ -9,13 +9,19 @@ import {
   listAccountingWorkspaces,
 } from "@/lib/onebrain-client";
 import type {
+  AccountingConfirmItemInput,
   AccountingDocument,
   AccountingLineItem,
   AccountingOverview,
   AccountingWorkspace,
 } from "@/lib/onebrain-types";
 
-type Edit = { account: string; tax_key: string };
+// Only user-touched fields are held; an untouched line sends no correction so the
+// backend uses its proposal (or re-proposes it when the direction is flipped).
+type Edit = { account?: string; tax_key?: string };
+
+// AccountingConfirmIn.confirmations is capped at 500 server-side.
+const BATCH_LIMIT = 500;
 
 function workspaceKey(workspace: AccountingWorkspace): string {
   return `${workspace.account_id}:${workspace.space_id}`;
@@ -23,6 +29,12 @@ function workspaceKey(workspace: AccountingWorkspace): string {
 
 function needsReview(document: AccountingDocument): boolean {
   return document.check_flags?.needs_review === true;
+}
+
+// A line with no proposed Steuerschlüssel (0%/unknown VAT) is not safe to batch-book
+// blind — route it to single review even when the document-level flags look clean.
+function hasUncertainBooking(document: AccountingDocument): boolean {
+  return document.line_items.some((line) => !line.proposed_tax_key);
 }
 
 function money(value: string | null, currency: string): string {
@@ -33,7 +45,12 @@ function directionLabel(direction: string): string {
   return direction === "outgoing" ? "Outgoing" : "Incoming";
 }
 
-// Turn the raw check_flags into short human reasons a reviewer can act on.
+function lineDefault(line: AccountingLineItem, field: keyof Edit): string {
+  return field === "account"
+    ? line.confirmed_account || line.proposed_account
+    : line.confirmed_tax_key || line.proposed_tax_key;
+}
+
 function flagReasons(flags: Record<string, unknown>): string[] {
   const reasons: string[] = [];
   if (flags.arithmetic_ok === false) reasons.push("Net + VAT ≠ gross");
@@ -46,31 +63,20 @@ function flagReasons(flags: Record<string, unknown>): string[] {
   if (flags.invoice_number_unique === false) reasons.push("Invoice number seen before");
   if (flags.reverse_charge === true) reasons.push("Reverse charge (§13b)");
   if (flags.intra_community === true) reasons.push("Intra-community");
+  if (flags.non_eur === true) reasons.push("Non-EUR — not in the EUR totals");
   return reasons;
-}
-
-function initialEdits(documents: AccountingDocument[]): Record<string, Edit> {
-  const edits: Record<string, Edit> = {};
-  for (const document of documents) {
-    for (const line of document.line_items) {
-      edits[line.id] = {
-        account: line.confirmed_account || line.proposed_account,
-        tax_key: line.confirmed_tax_key || line.proposed_tax_key,
-      };
-    }
-  }
-  return edits;
 }
 
 // Phase 1: capture → review → book. Extraction drops pending drafts (via the Drive
 // upload trigger); this panel is where a human confirms them. Clean drafts batch in
-// one click; flagged ones are reviewed singly with their booking editable.
+// one click; flagged ones are reviewed singly with direction + booking editable.
 export function AccountingPanel() {
   const [workspaces, setWorkspaces] = useState<AccountingWorkspace[]>([]);
   const [selectedWorkspaceKey, setSelectedWorkspaceKey] = useState("");
   const [overview, setOverview] = useState<AccountingOverview | null>(null);
-  const [documents, setDocuments] = useState<AccountingDocument[]>([]);
+  const [pending, setPending] = useState<AccountingDocument[]>([]);
   const [edits, setEdits] = useState<Record<string, Edit>>({});
+  const [directions, setDirections] = useState<Record<string, string>>({});
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(true);
   const [loadingData, setLoadingData] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -112,18 +118,20 @@ export function AccountingPanel() {
       setLoadingData(true);
       setError("");
       try {
-        const [nextOverview, nextDocuments] = await Promise.all([
+        // The review desk only needs pending drafts — never the whole ledger.
+        const [nextOverview, nextPending] = await Promise.all([
           getAccountingOverview(selectedWorkspace!.account_id, selectedWorkspace!.space_id),
-          listAccountingDocuments(selectedWorkspace!.account_id, selectedWorkspace!.space_id),
+          listAccountingDocuments(selectedWorkspace!.account_id, selectedWorkspace!.space_id, "pending"),
         ]);
         if (cancelled) return;
         setOverview(nextOverview);
-        setDocuments(nextDocuments);
-        setEdits(initialEdits(nextDocuments));
+        setPending(nextPending);
+        setEdits({});
+        setDirections(Object.fromEntries(nextPending.map((document) => [document.id, document.direction])));
       } catch (loadError) {
         if (!cancelled) {
           setOverview(null);
-          setDocuments([]);
+          setPending([]);
           setError(loadError instanceof Error ? loadError.message : "Could not load the accounting overview.");
         }
       } finally {
@@ -135,15 +143,27 @@ export function AccountingPanel() {
   }, [selectedWorkspace, refreshVersion]);
 
   const view = selectedWorkspace ? overview : null;
-  const pending = useMemo(() => documents.filter((document) => document.status === "pending"), [documents]);
-  const cleanDocuments = useMemo(() => pending.filter((document) => !needsReview(document)), [pending]);
-  const flaggedDocuments = useMemo(() => pending.filter(needsReview), [pending]);
-  const bookedDocuments = useMemo(
-    () => documents.filter((document) => document.status === "confirmed").slice(0, 8),
-    [documents],
+  const canBook = selectedWorkspace?.can_configure ?? false;
+  const cleanDocuments = useMemo(
+    () => pending.filter((document) => !needsReview(document) && !hasUncertainBooking(document)),
+    [pending],
+  );
+  const flaggedDocuments = useMemo(
+    () => pending.filter((document) => needsReview(document) || hasUncertainBooking(document)),
+    [pending],
   );
 
-  async function confirm(confirmations: { document_id: string; line_items?: { id: string; account: string; tax_key: string }[] }[]) {
+  function chooseWorkspace(key: string) {
+    // Clear the previous workspace's drafts immediately so a stale confirm can't fire.
+    setSelectedWorkspaceKey(key);
+    setPending([]);
+    setOverview(null);
+    setEdits({});
+    setDirections({});
+    setNotice("");
+  }
+
+  async function confirm(confirmations: AccountingConfirmItemInput[]) {
     if (!selectedWorkspace || confirmations.length === 0) return;
     setBusy(true);
     setError("");
@@ -164,17 +184,24 @@ export function AccountingPanel() {
   }
 
   function confirmReview(document: AccountingDocument) {
-    const corrections = document.line_items.map((line) => ({
-      id: line.id,
-      account: edits[line.id]?.account ?? line.proposed_account,
-      tax_key: edits[line.id]?.tax_key ?? line.proposed_tax_key,
-    }));
-    void confirm([{ document_id: document.id, line_items: corrections }]);
+    const item: AccountingConfirmItemInput = { document_id: document.id };
+    const corrections = document.line_items
+      .filter((line) => edits[line.id])
+      .map((line) => ({ id: line.id, ...edits[line.id] }));
+    if (corrections.length) item.line_items = corrections;
+    const direction = directions[document.id];
+    if (direction && direction !== document.direction) {
+      item.direction = direction as "incoming" | "outgoing";
+    }
+    void confirm([item]);
   }
 
   function setEdit(lineId: string, field: keyof Edit, value: string) {
     setEdits((current) => ({ ...current, [lineId]: { ...current[lineId], [field]: value } }));
   }
+
+  const actionsDisabled = busy || loadingData;
+  const batch = cleanDocuments.slice(0, BATCH_LIMIT);
 
   return (
     <div className="accountingWorkspace">
@@ -186,6 +213,7 @@ export function AccountingPanel() {
           <>
             <StatusBadge tone="neutral">{selectedWorkspace.account_name}</StatusBadge>
             <StatusBadge tone="running">{selectedWorkspace.space_name}</StatusBadge>
+            {!canBook ? <StatusBadge tone="warning">read-only</StatusBadge> : null}
           </>
         ) : <StatusBadge tone="neutral">No workspace selected</StatusBadge>}
         actions={workspaces.length > 1 ? (
@@ -194,7 +222,7 @@ export function AccountingPanel() {
             <select
               disabled={loadingWorkspaces || busy}
               value={selectedWorkspaceKey}
-              onChange={(event) => setSelectedWorkspaceKey(event.target.value)}
+              onChange={(event) => chooseWorkspace(event.target.value)}
             >
               {workspaces.map((workspace) => (
                 <option key={workspaceKey(workspace)} value={workspaceKey(workspace)}>
@@ -208,6 +236,9 @@ export function AccountingPanel() {
 
       {error ? <Notice tone="error">{error}</Notice> : null}
       {notice ? <Notice tone="success">{notice}</Notice> : null}
+      {selectedWorkspace && !canBook ? (
+        <Notice tone="warning">You can review documents here, but booking needs the accounting configure permission.</Notice>
+      ) : null}
 
       <MetricStrip
         metrics={[
@@ -247,14 +278,14 @@ export function AccountingPanel() {
           title="Ready to book"
           count={cleanDocuments.length}
           intro="Clean, non-duplicate drafts that passed every check. Book them in one click."
-          actions={cleanDocuments.length > 0 ? (
+          actions={canBook && cleanDocuments.length > 0 ? (
             <button
               className="primaryButton"
               type="button"
-              disabled={busy}
-              onClick={() => confirm(cleanDocuments.map((document) => ({ document_id: document.id })))}
+              disabled={actionsDisabled}
+              onClick={() => confirm(batch.map((document) => ({ document_id: document.id })))}
             >
-              {busy ? "Booking…" : `Confirm all (${cleanDocuments.length})`}
+              {busy ? "Booking…" : `Confirm ${batch.length} clean${cleanDocuments.length > BATCH_LIMIT ? ` (of ${cleanDocuments.length})` : ""}`}
             </button>
           ) : null}
         >
@@ -272,7 +303,7 @@ export function AccountingPanel() {
                     <th>Date</th>
                     <th>Direction</th>
                     <th>Gross</th>
-                    <th aria-label="actions" />
+                    {canBook ? <th aria-label="actions" /> : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -283,16 +314,18 @@ export function AccountingPanel() {
                       <td>{document.invoice_date ?? "—"}</td>
                       <td>{directionLabel(document.direction)}</td>
                       <td>{money(document.total_gross, document.currency)}</td>
-                      <td>
-                        <button
-                          className="textButton"
-                          type="button"
-                          disabled={busy}
-                          onClick={() => confirm([{ document_id: document.id }])}
-                        >
-                          Confirm
-                        </button>
-                      </td>
+                      {canBook ? (
+                        <td>
+                          <button
+                            className="textButton"
+                            type="button"
+                            disabled={actionsDisabled}
+                            onClick={() => confirm([{ document_id: document.id }])}
+                          >
+                            Confirm
+                          </button>
+                        </td>
+                      ) : null}
                     </tr>
                   ))}
                 </tbody>
@@ -307,7 +340,7 @@ export function AccountingPanel() {
           eyebrow="Review by exception"
           title="Needs review"
           count={flaggedDocuments.length}
-          intro="Drafts with a warning — check the reasons, correct the booking if needed, then confirm."
+          intro="Drafts with a warning — check the reasons, set the direction/booking if needed, then confirm."
         >
           {!loadingData && flaggedDocuments.length === 0 ? (
             <p className="panelIntro">Nothing needs review.</p>
@@ -317,38 +350,14 @@ export function AccountingPanel() {
               key={document.id}
               document={document}
               edits={edits}
-              busy={busy}
+              direction={directions[document.id] ?? document.direction}
+              canBook={canBook}
+              busy={actionsDisabled}
               onEdit={setEdit}
+              onDirection={(value) => setDirections((current) => ({ ...current, [document.id]: value }))}
               onConfirm={() => confirmReview(document)}
             />
           ))}
-        </Panel>
-      ) : null}
-
-      {selectedWorkspace && bookedDocuments.length > 0 ? (
-        <Panel eyebrow="Booked" title="Recently booked" count={view?.confirmed_documents ?? bookedDocuments.length}>
-          <div className="tableScroll">
-            <table className="adminTable">
-              <thead>
-                <tr>
-                  <th>Issuer</th>
-                  <th>Invoice</th>
-                  <th>Direction</th>
-                  <th>Gross</th>
-                </tr>
-              </thead>
-              <tbody>
-                {bookedDocuments.map((document) => (
-                  <tr key={document.id}>
-                    <td>{document.issuer_name || "—"}</td>
-                    <td>{document.invoice_number || "—"}</td>
-                    <td>{directionLabel(document.direction)}</td>
-                    <td>{money(document.total_gross, document.currency)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
         </Panel>
       ) : null}
     </div>
@@ -358,14 +367,20 @@ export function AccountingPanel() {
 function ReviewCard({
   document,
   edits,
+  direction,
+  canBook,
   busy,
   onEdit,
+  onDirection,
   onConfirm,
 }: {
   document: AccountingDocument;
   edits: Record<string, Edit>;
+  direction: string;
+  canBook: boolean;
   busy: boolean;
   onEdit: (lineId: string, field: keyof Edit, value: string) => void;
+  onDirection: (value: string) => void;
   onConfirm: () => void;
 }) {
   const reasons = flagReasons(document.check_flags ?? {});
@@ -374,7 +389,6 @@ function ReviewCard({
       <div className="pageHeaderMeta">
         <StatusBadge tone="neutral">{document.issuer_name || "Unknown issuer"}</StatusBadge>
         <StatusBadge tone="running">{document.invoice_number || "no number"}</StatusBadge>
-        <StatusBadge tone="neutral">{directionLabel(document.direction)}</StatusBadge>
         <StatusBadge tone="warning">{money(document.total_gross, document.currency)}</StatusBadge>
       </div>
       {reasons.length > 0 ? (
@@ -382,6 +396,13 @@ function ReviewCard({
           {reasons.map((reason) => <li key={reason}>{reason}</li>)}
         </ul>
       ) : null}
+      <label className="compactField">
+        <span>Direction</span>
+        <select value={direction} disabled={busy || !canBook} onChange={(event) => onDirection(event.target.value)}>
+          <option value="incoming">Incoming (expense)</option>
+          <option value="outgoing">Outgoing (revenue)</option>
+        </select>
+      </label>
       <div className="tableScroll">
         <table className="adminTable">
           <thead>
@@ -402,7 +423,8 @@ function ReviewCard({
                 <td>
                   <input
                     className="input"
-                    value={edits[line.id]?.account ?? line.proposed_account}
+                    value={edits[line.id]?.account ?? lineDefault(line, "account")}
+                    disabled={busy || !canBook}
                     onChange={(event) => onEdit(line.id, "account", event.target.value)}
                     aria-label={`Account for ${line.description || `line ${line.line_no + 1}`}`}
                   />
@@ -410,7 +432,8 @@ function ReviewCard({
                 <td>
                   <input
                     className="input"
-                    value={edits[line.id]?.tax_key ?? line.proposed_tax_key}
+                    value={edits[line.id]?.tax_key ?? lineDefault(line, "tax_key")}
+                    disabled={busy || !canBook}
                     onChange={(event) => onEdit(line.id, "tax_key", event.target.value)}
                     aria-label={`Tax key for ${line.description || `line ${line.line_no + 1}`}`}
                   />
@@ -420,11 +443,13 @@ function ReviewCard({
           </tbody>
         </table>
       </div>
-      <div className="panelActions">
-        <button className="primaryButton" type="button" disabled={busy} onClick={onConfirm}>
-          {busy ? "Booking…" : "Confirm booking"}
-        </button>
-      </div>
+      {canBook ? (
+        <div className="panelActions">
+          <button className="primaryButton" type="button" disabled={busy} onClick={onConfirm}>
+            {busy ? "Booking…" : "Confirm booking"}
+          </button>
+        </div>
+      ) : null}
     </article>
   );
 }
