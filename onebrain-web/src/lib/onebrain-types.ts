@@ -880,6 +880,22 @@ export type KpiDashboard = {
   items: KpiDashboardItem[];
 };
 
+export type AccountingWorkspace = {
+  account_id: string;
+  account_name: string;
+  space_id: string;
+  space_name: string;
+  space_kind: string;
+};
+
+export type AccountingOverview = {
+  account_id: string;
+  space_id: string;
+  total_documents: number;
+  pending_documents: number;
+  confirmed_documents: number;
+};
+
 export type CreateKpiDefinitionInput = {
   account_id: string;
   space_id: string;

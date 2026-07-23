@@ -33,6 +33,8 @@ RLS_REQUIRED_TABLES = (
     "one_time_secret_envelopes",
     "kpi_definitions",
     "kpi_snapshots",
+    "accounting_documents",
+    "accounting_line_items",
     "ai_employee_versions",
     "ai_employee_profiles",
     "ai_employee_model_policies",

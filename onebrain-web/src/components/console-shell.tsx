@@ -43,7 +43,7 @@ export function ConsoleShell({ active, children, session, workspaceMode = "conso
             <i aria-hidden="true">/</i>
             <strong>{activeLabel}</strong>
           </div>
-          {workspaceMode === "feature" ? null : active === "kpis" ? <span /> : <WorkspaceSelector />}
+          {workspaceMode === "feature" ? null : active === "kpis" || active === "buchhaltung" ? <span /> : <WorkspaceSelector />}
           <div className="commandIdentity">
             <Link aria-label={`Account settings for ${identity}`} href="/settings">
               <span>{identity}</span>

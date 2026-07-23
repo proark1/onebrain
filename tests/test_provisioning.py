@@ -95,7 +95,7 @@ def test_module_composition_rejects_unknown_and_duplicate_optional_ids():
         resolve_module_composition(["assistant", "assistant"])
 
 
-def test_module_catalog_exposes_core_and_the_four_optional_choices(monkeypatch):
+def test_module_catalog_exposes_core_and_the_five_optional_choices(monkeypatch):
     monkeypatch.setattr(provisioning_router, "get_settings", lambda: _secret_settings())
 
     catalog = provisioning_router.get_module_catalog(principal=_principal("admin"))
@@ -103,10 +103,12 @@ def test_module_catalog_exposes_core_and_the_four_optional_choices(monkeypatch):
     assert catalog.core.id == "onebrain_core"
     assert catalog.core.modules == list(CORE_MODULES)
     assert [module.id for module in catalog.optional_modules] == [
-        "assistant", "kpi_dashboard", "ai_employees", "communication"
+        "assistant", "kpi_dashboard", "ai_employees", "communication", "buchhaltung"
     ]
     assert next(module for module in catalog.optional_modules if module.id == "kpi_dashboard").modules == []
     assert next(module for module in catalog.optional_modules if module.id == "ai_employees").modules == []
+    # Buchhaltung is a product without its own container, exactly like KPI/AI Employees.
+    assert next(module for module in catalog.optional_modules if module.id == "buchhaltung").modules == []
 
 
 def test_provisioning_request_rejects_legacy_bundle_and_duplicate_module_inputs():
