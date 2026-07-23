@@ -65,6 +65,19 @@ _log = logging.getLogger("onebrain.fleet")
 # is never confused with an operator's manual provision/designate (which carry a user id).
 GATE_AUTO_REPLACE_ACTOR = "mission-control:auto-gate-replace"
 
+# Detail for the wedge opened when a provision reached the broker but the box never came up
+# (dispatch_failed / never healthy) — a recent failed attempt row with no live replacement.
+_FAILED_ATTEMPT_WEDGE = (
+    "a recent auto-provision attempt reached the broker but the replacement box did not come up "
+    "(dispatch failed, or it never enrolled healthy); auto-replacement is holding off until the "
+    "min-interval — check the broker; it retries automatically"
+)
+
+# Provisioning-run statuses that mean the broker never created a box (so there is nothing to reap).
+# Mirrors app.routers.operator._DEAD_PROVISION_RUN_STATUSES minus "failed" (a "failed" run may have
+# created a box that later died — that IS reapable).
+_NEVER_CREATED_RUN_STATUSES = frozenset({"dispatch_failed", "cancelled"})
+
 
 def _parse_ts(value: str) -> Optional[datetime]:
     try:
@@ -103,16 +116,20 @@ def decide_gate_replacement(
     replace_timeout_seconds: int,
     provisioner_ready: bool,
     owner_email_available: bool,
-    baseline_ready: bool,
+    provision_block_reason: Optional[str],   # a pre-row config blocker (misconfig), else None
+    failed_attempt_recent: bool,             # a recent attempt reached the broker but produced no live box
     replacement_region: str,
 ) -> GateReplaceDecision:
     """Pure policy — no side effects, fully unit-testable without a store.
 
     The decommission recommendations (``reap_details``) ride EVERY decision, so a superseded dead
     gate is prompted for teardown whatever else the tick does. A ``wedge_detail`` is set only for
-    the world-derived, self-resolving stuck states (no owner email, at server cap, no trusted
-    baseline, replacement timed out); on any other tick it is ``None`` so the orchestrator resolves
-    a stale wedge. The provisioning ladder is ordered cheapest/hardest-stop first."""
+    world-derived, self-resolving stuck states (redundant replacement, no owner email, at server
+    cap, provisioning misconfigured, a failed attempt); on any other tick it is ``None`` so the
+    orchestrator resolves a stale wedge. The provisioning ladder is ordered cheapest/hardest-stop
+    first. Every wedge condition is RE-EVALUATED each tick from current world/config, so provision is
+    never called while it would fail pre-row (no silent retry loop) and a wedge clears the instant
+    its cause does."""
     reap = dict(reap_details)
 
     def _decide(action: str, reason: str, *, wedge: Optional[str] = None,
@@ -120,6 +137,20 @@ def decide_gate_replacement(
         return GateReplaceDecision(
             action=action, reason=reason, wedge_detail=wedge, reap_details=reap,
             replacement_id=replacement_id, provision_region=region,
+        )
+
+    # A replacement is in flight but the gate is HEALTHY or gone: it was provisioned when the gate
+    # was dead and the gate recovered (or was un-designated) first. It is now a redundant billable
+    # box that also holds the one-in-flight slot against the NEXT real failure — surface it rather
+    # than strand it silently. (Checked BEFORE the healthy-gate early return below.)
+    if live_replacement is not None and (gate is None or gate_sustained_failure is None):
+        return _decide(
+            "noop", "redundant replacement after gate recovery",
+            wedge=(
+                f"replacement gate {live_replacement.id} was provisioned but the gate recovered or "
+                "is no longer designated — it is redundant and holds the one-in-flight slot; "
+                "designate it or decommission it"
+            ),
         )
 
     # No designated gate, or the gate is healthy / not sustained-dead -> nothing to replace.
@@ -185,20 +216,31 @@ def decide_gate_replacement(
                 "ONEBRAIN_HETZNER_MAX_FLEET_SERVERS"
             ),
         )
-    if not baseline_ready:
+    if provision_block_reason:
+        # Pre-row provisioning is blocked (misconfig: no trusted baseline/images, missing dev verify
+        # key or fleet_public_url, broker not ready). World-derived + re-evaluated each tick, so
+        # provision is NEVER called while it would fail before creating a box -> no silent retry loop,
+        # and this clears the instant the configuration is fixed.
         return _decide(
-            "noop", "no trusted baseline release",
+            "noop", "provisioning blocked",
             wedge=(
-                "cannot auto-provision a replacement gate: no trusted approved baseline release "
-                "to seed it; auto-replacement blocked (approve a baseline release first)"
+                f"cannot auto-provision a replacement gate: {provision_block_reason}; "
+                "auto-replacement blocked until Mission Control provisioning is fixed"
             ),
         )
+    if failed_attempt_recent:
+        # The last provision reached the broker but the box never came up (dispatch_failed / never
+        # enrolled healthy). Surface the stuck Tier-2 state and hold off until the min-interval;
+        # this both bounds the cost and is the alert operators are told to watch for.
+        return _decide("noop", "recent provision attempt failed", wedge=_FAILED_ATTEMPT_WEDGE)
     if (
         min_interval_seconds > 0
         and last_attempt_at is not None
         and (now - last_attempt_at).total_seconds() < min_interval_seconds
     ):
-        # Cost-runaway rail: at most one provision attempt per window, even if every attempt fails.
+        # Cost-runaway rail: at most one provision attempt per window. Anchors on the newest
+        # replacement row, so a gate that was itself just provisioned and died is not re-provisioned
+        # instantly (no wedge — a plain rate limit, distinct from the failed-attempt state above).
         elapsed = int((now - last_attempt_at).total_seconds())
         return _decide("noop", f"min-interval debounce ({elapsed}s < {min_interval_seconds}s)")
 
@@ -265,7 +307,7 @@ def run_gate_auto_replace_tick(
     provisioner_ready: bool,
     blockers_for: Callable,               # (deployment) -> list[str]
     is_live_replacement: Callable,        # (deployment, gate, newest_run_status) -> bool
-    baseline_ready: Callable[[], bool],   # () -> bool
+    provision_preflight: Callable,        # () -> Optional[str]  (a pre-row block reason, or None)
     provision: Callable,                  # (owner_email, region) -> None  (may raise)
     designate: Callable,                  # (deployment_id) -> None        (may raise)
     next_id: Callable[[], str],
@@ -297,15 +339,27 @@ def run_gate_auto_replace_tick(
         None,
     )
 
-    # Reap candidates: an undesignated gate-identity row (not the live replacement) whose OWN row
-    # carries an open hard-failure alert -> the box is dead and safe to tear down by hand.
+    # Reap candidates: an undesignated dead GATE that is safe to tear down by hand. Matched by gate
+    # SHAPE (a development dedicated_server) rather than the id prefix, so a gate that was designated
+    # from `prepare-existing` / a manual non-standard id is reaped too once auto-replacement moves
+    # off it. A pure dispatch-failed attempt (never a real box) is excluded — there is nothing to
+    # decommission. list_deployments already hides tombstoned rows.
     reap_details: Dict[str, str] = {}
     if gate is not None:
-        for deployment in gate_rows:
+        for deployment in deployments:
             if deployment.id == gate.id:
                 continue
             if live_replacement is not None and deployment.id == live_replacement.id:
                 continue
+            is_gate_shaped = (
+                deployment.id == gate_base_id or deployment.id.startswith(gate_base_id + "-")
+                or (getattr(deployment, "environment", "") == "development"
+                    and getattr(deployment, "deployment_type", "") == "dedicated_server")
+            )
+            if not is_gate_shaped:
+                continue
+            if _newest_run_status(deployment.id) in _NEVER_CREATED_RUN_STATUSES:
+                continue   # a failed dispatch never became a box -> nothing to reap
             if any(alert.kind in GATE_HARD_FAILURE_ALERT_KINDS
                    for alert in fleet_store.list_open_alerts(deployment.id)):
                 reap_details[deployment.id] = (
@@ -331,6 +385,21 @@ def run_gate_auto_replace_tick(
     ]
     last_attempt_at = max([t for t in suffix_times if t is not None], default=None)
 
+    # A recent suffixed row that is NEITHER the designated gate NOR the (single) live replacement is
+    # a provision attempt that reached the broker but produced no healthy box (dispatch_failed, or a
+    # box that never enrolled). Distinct from the plain rate-limit debounce so it surfaces a wedge.
+    failed_attempt_recent = (
+        min_interval_seconds > 0 and gate is not None
+        and any(
+            deployment.id != gate.id
+            and (live_replacement is None or deployment.id != live_replacement.id)
+            and _parse_ts(deployment.created_at) is not None
+            and (now - _parse_ts(deployment.created_at)).total_seconds() < min_interval_seconds
+            for deployment in gate_rows
+            if deployment.id.startswith(gate_base_id + "-")
+        )
+    )
+
     replacement_region = (getattr(gate, "region", "") or "nbg1") if gate is not None else "nbg1"
 
     decision = decide_gate_replacement(
@@ -341,30 +410,28 @@ def run_gate_auto_replace_tick(
         live_deployment_count=len(deployments), max_fleet_servers=max_fleet_servers,
         min_interval_seconds=min_interval_seconds, replace_timeout_seconds=replace_timeout_seconds,
         provisioner_ready=provisioner_ready, owner_email_available=bool(owner_email.strip()),
-        # Only pay for the baseline check when we might actually provision this tick.
-        baseline_ready=(baseline_ready() if considering_provision else True),
+        # Only pay for the (dry-run) provisioning preflight when we might actually provision.
+        provision_block_reason=(provision_preflight() if considering_provision else None),
+        failed_attempt_recent=failed_attempt_recent,
         replacement_region=replacement_region,
     )
 
-    # Take the one imperative step FIRST, isolated, so a pre-row provision rejection can contribute
-    # its wedge to the SAME alert reconcile below (a stable, deduped alert — never a per-tick
-    # open/resolve churn). A provision/designate failure is caught; the tick still returns cleanly.
-    action_wedge: Optional[str] = None
+    opened = _reconcile_tier2_alerts(
+        fleet_store, mc_deployment_id=mc_deployment_id, wedge_detail=decision.wedge_detail,
+        reap_details=decision.reap_details, gate_present=gate is not None,
+        now_iso=now_iso, next_id=next_id,
+    )
+
+    # Take the one imperative step, isolated: a failure is logged and the tick still returns cleanly
+    # (the next tick re-derives). Pre-row rejections are already pre-checked (provision_block_reason),
+    # so a provision here is expected to reach the broker; it is asynchronous, so this is a SUBMISSION,
+    # not a confirmed box — a dispatch failure surfaces next tick via failed_attempt_recent.
     if decision.action == "provision":
         try:
             provision(owner_email, decision.provision_region)
-            logger.info("gate auto-replace: provisioning replacement (%s)", decision.reason)
+            logger.info("gate auto-replace: submitted a replacement provision (%s)", decision.reason)
         except Exception as exc:  # billable path — never let it crash the daemon
-            logger.warning("gate auto-replace: provision attempt failed: %s", exc)
-            # A rejection BEFORE the box is created (misconfigured MC: baseline images/allowlist,
-            # broker readiness, dev key, callback) leaves no row to anchor min-interval, so it would
-            # otherwise retry silently forever. Surface it as a stable wedge ("degrade to an alert").
-            action_wedge = (
-                "auto-provision was rejected before a replacement box was created — Mission "
-                "Control provisioning is misconfigured (check the trusted baseline's images / "
-                "registry allowlist, broker readiness, the dev verify key, and fleet_public_url); "
-                "see Mission Control logs"
-            )
+            logger.warning("gate auto-replace: provision submission failed: %s", exc)
     elif decision.action == "designate":
         try:
             designate(decision.replacement_id)
@@ -372,13 +439,6 @@ def run_gate_auto_replace_tick(
         except Exception as exc:
             logger.warning(
                 "gate auto-replace: could not designate %s: %s", decision.replacement_id, exc)
-
-    opened = _reconcile_tier2_alerts(
-        fleet_store, mc_deployment_id=mc_deployment_id,
-        wedge_detail=(decision.wedge_detail if decision.wedge_detail is not None else action_wedge),
-        reap_details=decision.reap_details, gate_present=gate is not None,
-        now_iso=now_iso, next_id=next_id,
-    )
 
     return decision, opened
 
@@ -428,13 +488,10 @@ def gate_auto_replace_once(settings, control_store, fleet_store, run_store) -> L
         return []
 
     try:
-        from app.provisioning.bundles import resolve_module_composition
         from app.routers.operator import (
             DEVELOPMENT_GATE_DEPLOYMENT_ID,
-            DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS,
             DevelopmentGateProvisionIn,
             _development_gate_blockers,
-            _development_gate_provisioning_baseline,
             _is_live_gate_replacement,
             dispatch_waiting_development_candidate,
             provision_development_gate,
@@ -449,26 +506,31 @@ def gate_auto_replace_once(settings, control_store, fleet_store, run_store) -> L
     def _blockers_for(deployment) -> list:
         return _development_gate_blockers(control_store, deployment)
 
-    def _baseline_ready() -> bool:
-        # Mirror provision_development_gate's PRE-ROW baseline gate exactly (modules + images +
-        # registry allowlist), so the most reachable pre-row rejection surfaces as the specific
-        # "no trusted baseline" wedge rather than a doomed provision call retried every tick.
+    def _provision_preflight() -> Optional[str]:
+        # Mirror provision_development_gate's FULL pre-row validation so provision is only attempted
+        # when it will actually reach the broker (no silent retry loop, Codex L355). The endpoint's
+        # DRY-RUN runs the backend / one-in-flight / trusted-baseline / image / registry-allowlist
+        # checks WITHOUT creating a box; the dev-key, callback, and broker-readiness checks sit AFTER
+        # the dry-run early return, so verify those explicitly. Returns a short, leak-free reason or
+        # None. A dev/non-hetzner MC returns None here and is handled by provisioner_ready upstream.
         try:
-            from app.trust.release import parse_registry_allowlist, verify_images
-
-            module_ids = resolve_module_composition(DEVELOPMENT_GATE_OPTIONAL_MODULE_IDS).modules
-            baseline, _source = _development_gate_provisioning_baseline(
-                control_store, module_ids, settings=settings)
-            if baseline is None or any(mid not in baseline.modules for mid in module_ids):
-                return False
-            if any(mid not in baseline.images for mid in module_ids):
-                return False
-            image_errors = verify_images(
-                {mid: baseline.images[mid] for mid in module_ids if mid in baseline.images},
-                parse_registry_allowlist(getattr(settings, "release_registry_allowlist", "")))
-            return not image_errors
-        except Exception:
-            return False
+            provision_development_gate(
+                DevelopmentGateProvisionIn(
+                    owner_email=(owner_email or "auto-replace@onebrain.local"), dry_run=True),
+                _daemon_admin_principal(),
+            )
+        except Exception as exc:
+            detail = getattr(exc, "detail", None) or str(exc) or exc.__class__.__name__
+            return str(detail)[:180]
+        if not (getattr(settings, "dev_release_verify_public_key", "") or "").strip():
+            return "Mission Control development release verification key is required"
+        if not (getattr(settings, "fleet_public_url", "") or "").strip():
+            return "Mission Control fleet_public_url is required"
+        try:
+            settings.assert_production_mission_control_ready()
+        except Exception as exc:
+            return f"Mission Control is not provisioning-ready ({str(exc)[:140]})"
+        return None
 
     def _provision(email: str, region: str) -> None:
         # Reuses the FULL operator provision path: identity/one-in-flight, trusted baseline, image
@@ -502,7 +564,7 @@ def gate_auto_replace_once(settings, control_store, fleet_store, run_store) -> L
             max_fleet_servers=int(getattr(settings, "hetzner_max_fleet_servers", 0) or 0),
             owner_email=owner_email, provisioner_ready=provisioner_ready,
             blockers_for=_blockers_for, is_live_replacement=_is_live_gate_replacement,
-            baseline_ready=_baseline_ready, provision=_provision, designate=_designate,
+            provision_preflight=_provision_preflight, provision=_provision, designate=_designate,
             next_id=lambda: f"fa_{uuid4().hex}",
         )
     except Exception as exc:  # the whole tick fails safe -> no alerts, no crash

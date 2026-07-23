@@ -55,7 +55,8 @@ def _decide(**over):
         live_replacement=None, live_replacement_created_at=None, live_replacement_blockers=[],
         reap_details={}, last_attempt_at=None, live_deployment_count=2, max_fleet_servers=5,
         min_interval_seconds=21600, replace_timeout_seconds=3600, provisioner_ready=True,
-        owner_email_available=True, baseline_ready=True, replacement_region="fsn1",
+        owner_email_available=True, provision_block_reason=None, failed_attempt_recent=False,
+        replacement_region="fsn1",
     )
     kwargs.update(over)
     return decide_gate_replacement(**kwargs)
@@ -103,10 +104,27 @@ def test_wedge_when_no_owner_email():
     assert "owner email" in decision.wedge_detail
 
 
-def test_wedge_when_no_trusted_baseline():
-    decision = _decide(baseline_ready=False)
+def test_wedge_when_provisioning_blocked():
+    decision = _decide(provision_block_reason="no trusted approved baseline release")
     assert decision.action == "noop"
     assert "baseline" in decision.wedge_detail
+    assert "blocked" in decision.wedge_detail
+
+
+def test_wedge_on_recent_failed_attempt():
+    # A provision reached the broker but no live box resulted -> surface the stuck state, hold off.
+    decision = _decide(failed_attempt_recent=True, last_attempt_at=NOW - timedelta(minutes=5))
+    assert decision.action == "noop"
+    assert decision.wedge_detail is not None and "broker" in decision.wedge_detail
+
+
+def test_redundant_replacement_after_gate_recovery():
+    # Gate recovered (sustained failure gone) but a replacement is still in flight -> flag it.
+    replacement = SimpleNamespace(id="gate-abc")
+    decision = _decide(gate_sustained_failure=None, live_replacement=replacement,
+                       live_replacement_blockers=["deployment_unhealthy"])
+    assert decision.action == "noop"
+    assert "redundant" in decision.wedge_detail and "gate-abc" in decision.wedge_detail
 
 
 def test_noop_min_interval_debounce():
@@ -153,7 +171,7 @@ def test_one_in_flight_never_provisions_even_when_guards_clear():
     decision = _decide(
         live_replacement=replacement, live_replacement_blockers=["deployment_unhealthy"],
         live_replacement_created_at=NOW - timedelta(minutes=1),
-        last_attempt_at=None, live_deployment_count=1, baseline_ready=True)
+        last_attempt_at=None, live_deployment_count=1, provision_block_reason=None)
     assert decision.action != "provision"
 
 
@@ -196,7 +214,7 @@ def _next_id():
     return _make
 
 
-def _tick(control, fleet, runs, *, blockers_for=None, baseline_ready=None,
+def _tick(control, fleet, runs, *, blockers_for=None, provision_preflight=None,
           provision=None, designate=None, **over):
     calls = {"provision": [], "designate": []}
     kwargs = dict(
@@ -209,7 +227,7 @@ def _tick(control, fleet, runs, *, blockers_for=None, baseline_ready=None,
         provisioner_ready=over.get("provisioner_ready", True),
         blockers_for=blockers_for or (lambda deployment: []),
         is_live_replacement=_is_live_gate_replacement,
-        baseline_ready=baseline_ready or (lambda: True),
+        provision_preflight=provision_preflight or (lambda: None),
         provision=provision or (lambda email, region: calls["provision"].append((email, region))),
         designate=designate or (lambda deployment_id: calls["designate"].append(deployment_id)),
         next_id=_next_id(),
@@ -285,21 +303,17 @@ def test_tick_opens_and_resolves_wedged_alert_at_cap():
     assert calls2["provision"]
 
 
-def test_tick_min_interval_anchors_on_failed_attempt_row():
+def test_tick_debounces_recently_provisioned_gate_that_died():
+    # A gate that was ITSELF just auto-provisioned (suffixed) and then died is rate-limited by the
+    # min-interval (not re-provisioned instantly) — a plain debounce, NOT the failed-attempt wedge
+    # (the recent row IS the gate, so it is not counted as a failed attempt).
     control, fleet, runs = _stores()
-    _designate_gate(control)
-    _hard_alert(fleet, BASE, "missed_heartbeat", _ago(hours=1))
-    # A recent FAILED provision attempt: its row is not "live" (failed run) but its creation
-    # still debounces the next attempt.
-    control.create_deployment(CustomerDeployment(
-        id=f"{BASE}-old", customer_name="failed", deployment_type="dedicated_server",
-        environment="development", created_at=_ago(hours=1)))
-    runs.create_run(ProvisioningRun(
-        id="run1", account_id="acct", deployment_id=f"{BASE}-old", requested_by="t",
-        status="dispatch_failed", created_at=_ago(hours=1)))
+    _designate_gate(control, gate_id=f"{BASE}-r1", created_at=_ago(hours=1))
+    _hard_alert(fleet, f"{BASE}-r1", "missed_heartbeat", _ago(hours=1))
     decision, _opened, calls = _tick(control, fleet, runs, min_interval_seconds=21600)
-    assert calls["provision"] == []               # debounced, even though the old row is dead
+    assert calls["provision"] == []
     assert "debounce" in decision.reason
+    assert not fleet.has_open_alert(MC, GATE_AUTO_REPLACE_WEDGED_ALERT)   # not a "failed attempt"
 
 
 def test_tick_recommends_reaping_a_superseded_dead_gate():
@@ -332,26 +346,74 @@ def test_tick_resolves_reap_when_old_gate_recovers():
     assert not fleet.has_open_alert(BASE, GATE_DECOMMISSION_RECOMMENDED_ALERT)
 
 
-def test_tick_wedges_on_pre_row_provision_failure_without_churn():
-    # A provision rejected BEFORE a box is created (misconfigured MC) leaves no row to anchor the
-    # min-interval debounce. The daemon must surface a STABLE wedge (degrade-to-alert), not spin
-    # silently. Regression for the P2 review finding.
+def test_tick_pre_row_block_wedges_and_never_calls_provision():
+    # A pre-row config block (misconfigured MC) is detected by the preflight, so provision is NEVER
+    # called (no silent retry loop, Codex L355) and a stable wedge surfaces + resolves when fixed.
     control, fleet, runs = _stores()
     _designate_gate(control)
     _hard_alert(fleet, BASE, "missed_heartbeat", _ago(hours=1))
 
-    def _reject(email, region):
-        raise RuntimeError("baseline images not in the registry allowlist")
-
-    d1, opened1, _c1 = _tick(control, fleet, runs, provision=_reject)
-    assert d1.action == "provision"
+    blocked = {"reason": "no trusted approved baseline release is required first"}
+    d1, opened1, calls1 = _tick(control, fleet, runs, provision_preflight=lambda: blocked["reason"])
+    assert calls1["provision"] == []                                   # provision NOT called
+    assert d1.action == "noop"
+    assert fleet.has_open_alert(MC, GATE_AUTO_REPLACE_WEDGED_ALERT)
     assert any(a.kind == GATE_AUTO_REPLACE_WEDGED_ALERT for a in opened1)
-    assert fleet.has_open_alert(MC, GATE_AUTO_REPLACE_WEDGED_ALERT)
 
-    # Same failure next tick: the wedge is NOT re-opened (dedup -> no alert-row churn / webhook spam).
-    _d2, opened2, _c2 = _tick(control, fleet, runs, provision=_reject)
+    # Same block next tick: wedge NOT re-opened (dedup -> no churn / webhook spam), still no provision.
+    _d2, opened2, calls2 = _tick(control, fleet, runs, provision_preflight=lambda: blocked["reason"])
+    assert calls2["provision"] == []
     assert not any(a.kind == GATE_AUTO_REPLACE_WEDGED_ALERT for a in opened2)
+
+    # Config fixed (preflight returns None) -> wedge resolves and provisioning proceeds.
+    _d3, _opened3, calls3 = _tick(control, fleet, runs, provision_preflight=lambda: None)
+    assert not fleet.has_open_alert(MC, GATE_AUTO_REPLACE_WEDGED_ALERT)
+    assert calls3["provision"]
+
+
+def test_tick_dispatch_failed_row_surfaces_wedge_and_holds_off():
+    # A provision that reached the broker but produced a dispatch_failed row (no live box) must
+    # surface a wedge and debounce, not be logged as success or retried immediately (Codex L479).
+    control, fleet, runs = _stores()
+    _designate_gate(control)
+    _hard_alert(fleet, BASE, "missed_heartbeat", _ago(hours=1))
+    control.create_deployment(CustomerDeployment(
+        id=f"{BASE}-r1", customer_name="attempt", deployment_type="dedicated_server",
+        environment="development", created_at=_ago(minutes=10)))
+    runs.create_run(ProvisioningRun(
+        id="run1", account_id="a", deployment_id=f"{BASE}-r1", requested_by="t",
+        status="dispatch_failed", created_at=_ago(minutes=10)))
+    decision, _opened, calls = _tick(control, fleet, runs)
+    assert calls["provision"] == []                                   # holds off, no re-attempt
     assert fleet.has_open_alert(MC, GATE_AUTO_REPLACE_WEDGED_ALERT)
+    assert "broker" in decision.wedge_detail
+
+
+def test_tick_reaps_nonstandard_id_gate_by_shape():
+    # An old gate designated with a non-standard id (from prepare-existing / manual) is matched for
+    # reap by gate SHAPE, not the id prefix, once auto-replacement moves off it (Codex L287).
+    control, fleet, runs = _stores()
+    _designate_gate(control, gate_id=f"{BASE}-new")     # the current, healthy standard gate
+    control.create_deployment(CustomerDeployment(
+        id="legacy-adopted-gate", customer_name="legacy", deployment_type="dedicated_server",
+        environment="development", created_at=_ago(days=40)))          # nonstandard id, dead
+    _hard_alert(fleet, "legacy-adopted-gate", "missed_heartbeat", _ago(hours=2))
+    _decision, opened, _calls = _tick(control, fleet, runs)
+    assert any(a.kind == GATE_DECOMMISSION_RECOMMENDED_ALERT and a.deployment_id == "legacy-adopted-gate"
+               for a in opened)
+
+
+def test_tick_flags_redundant_replacement_after_gate_recovery():
+    # Gate recovered while a replacement is in flight -> flag the redundant billable box (Codex L129).
+    control, fleet, runs = _stores()
+    _designate_gate(control)                                           # healthy (no failure alert)
+    control.create_deployment(CustomerDeployment(
+        id=f"{BASE}-r1", customer_name="replacement", deployment_type="dedicated_server",
+        environment="development", created_at=_ago(minutes=10)))
+    decision, _opened, calls = _tick(control, fleet, runs, blockers_for=lambda d: ["deployment_unhealthy"])
+    assert calls["provision"] == [] and calls["designate"] == []
+    assert fleet.has_open_alert(MC, GATE_AUTO_REPLACE_WEDGED_ALERT)
+    assert "redundant" in decision.wedge_detail
 
 
 def test_tick_gate_none_does_not_flap_reap_alerts():
