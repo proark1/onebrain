@@ -86,12 +86,20 @@ schedulers — MC-only, off by default):
    (reuses `_development_gate_identity`'s refusal); last replacement was > `min_interval` ago;
    fleet has cap headroom for +1; MC is production-ready (`assert_production_mission_control_ready`).
 3. **Provision** — call the same underlying provision path the endpoint uses (not the HTTP
-   endpoint) → a suffixed replacement box + provisioning run.
-4. **Wait** — the replacement boots, heartbeats healthy, a candidate reaches `dev_verified`
-   (fresh-gate migration bootstrap #57 already handles the first migration-crossing release).
-   A `replace_timeout` without healthy convergence → **alert + stop** (orphan-wedge guard).
-5. **Designate** — `designate_release_gate(replacement)` via the same `_development_gate_blockers`
-   preflight. #55 + #61 re-bind the backlog onto the new gate.
+   endpoint), supplying a fixed daemon principal + the gate's `owner_email` (the provision path
+   *requires* an owner email and rejects an external Hetzner provision without one) → a suffixed
+   replacement box + provisioning run.
+4. **Wait** — the replacement boots, enrolls, and heartbeats healthy, and passes
+   `_development_gate_blockers` (shape / module set / fresh healthy heartbeat / trusted baseline).
+   A `replace_timeout` without a healthy, enrolled box → **alert + stop** (orphan-wedge guard).
+   Note: do NOT wait for a `dev_verified` candidate here — dev-dispatch targets the *currently
+   designated* gate (`store.get_release_gate()`), so a fresh replacement cannot verify anything
+   until it is already the gate. Designation, not verification, is the gate promotion.
+5. **Designate** — `designate_release_gate(replacement)` (the same preflight the manual
+   `PUT …/development-gate/{id}` runs). This is what makes it the gate: only *after* designation
+   does dev-dispatch target it, so #55 + #61 re-bind the stalled backlog onto the new gate and it
+   verifies the tip. (Provisioning from a trusted baseline + the blocker preflight are what make
+   designating an as-yet-unverified fresh gate safe — exactly the manual flow's contract.)
 6. **Old-gate disposition** — *tier-dependent* (fork A): alert the operator to reap it, or
    auto-reap after a grace period.
 
@@ -99,18 +107,22 @@ schedulers — MC-only, off by default):
 
 ### Fork A — autonomy tier (THE decision)
 
-- **Tier 1 — detect + alert.** A new `gate_replacement_recommended` alert (rides the Gap-D
-  channel just shipped) fires when the gate is sustained-dead. The operator runs the existing
-  two-endpoint replace. *Effort S · Risk low.* Closes most of "found out days later" for gate
-  death with almost no new surface. **Build this regardless.**
+- **Tier 1 — detect + alert.** A new `gate_replacement_recommended` alert (delivered via the
+  Gap-D webhook shipped in **#65** — so this tier depends on #65 landing, not on a hypothetical
+  channel) fires when the gate is sustained-dead. The operator runs the existing two-endpoint
+  replace. *Effort S · Risk low.* Closes most of "found out days later" for gate death with
+  almost no new surface. **Build this regardless.**
 - **Tier 2 — auto-provision + designate (steps 1-5), teardown stays manual/alerted.** Zero-touch
   pipeline recovery; the destructive step (teardown) stays human, prompted by a "old gate ready
   to decommission" alert. *Effort M-L · Risk M* — the cost-runaway rails are the hard part.
   This is the roadmap's actual Gap E2 goal.
 - **Tier 3 — full end-to-end incl. auto-teardown.** Requires a **standing** `min_approvals=1`
-  + self-approval on the gate account so the daemon can execute a teardown unattended. *Effort L
-  · Risk M-H.* **Recommended against** — it removes the human from an irreversible, billable
-  destroy for a rare event, to save one operator action. Keep teardown human.
+  + self-approval so the daemon can execute a teardown unattended — and because
+  `_teardown_dual_control_policy` reads the **global** `teardown_min_approvals` /
+  `teardown_allow_self_approval` (not a per-account setting), that relaxation lowers the
+  dual-control bar for **every** teardown, customer boxes included. *Effort L · Risk H.*
+  **Recommended against** — it removes the human from an irreversible, billable destroy *and*
+  globally weakens the teardown gate, to save one operator action on a rare event. Keep teardown human.
 
 ### Fork B — trigger criteria + debounce/caps (settle if Tier ≥ 2)
 
@@ -130,8 +142,10 @@ Tiers 1-2 (operator reaps, prompted).
 **Tier 1 now** (safe, tiny, immediate value; a natural extension of the Gap-D alerting just
 shipped), and treat **Tier 2 as the deliberate opt-in** that delivers the roadmap's goal —
 built as its own PR with the debounce/one-in-flight/min-interval rails front-and-centre and an
-opt-in `gate_auto_replace_enabled` flag defaulted off. **Do not build Tier 3**; keep the
-irreversible teardown a human action, prompted by an alert.
+opt-in `gate_auto_replace_enabled` flag defaulted off. That flag (like the other new MC
+settings) must be threaded through the `box.env` / bootstrap render path, or a provisioned MC
+cannot set it — folded into the same config-threading follow-up tracked for #63/#65. **Do not
+build Tier 3**; keep the irreversible teardown a human action, prompted by an alert.
 
 Rationale: gate death is rare and the manual replace is cheap, so the marginal value of full
 autonomy is small, while the cost-runaway and irreversible-destroy risks are real and
