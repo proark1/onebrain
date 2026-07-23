@@ -3393,6 +3393,29 @@ button:disabled,
   min-height: calc(100vh - 102px);
 }
 
+.accountingWorkspace {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-height: calc(100vh - 102px);
+}
+
+.reviewCard {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgb(var(--brand-text-rgb) / 10%);
+  border-radius: var(--radius);
+  margin-block-start: 12px;
+}
+
+.reviewCard ul {
+  margin: 0;
+  padding-inline-start: 18px;
+  color: rgb(var(--brand-text-rgb) / 72%);
+  font-size: 13px;
+}
+
 .kpiHero {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);

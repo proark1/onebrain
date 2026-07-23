@@ -129,6 +129,7 @@ test("Drive upload creation accepts the Core API upload wrapper", async () => {
       file: new File(["plan"], "plan.txt", { type: "text/plain" }),
       idempotencyKey: "upload-attempt-1",
       indexForAi: false,
+      category: "",
     });
     assert.equal(session.upload_id, "upl_12345678");
     assert.equal(session.expires_at, "2026-07-19T12:00:00Z");
@@ -137,6 +138,46 @@ test("Drive upload creation accepts the Core API upload wrapper", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("Drive upload creation forwards the chosen department as the file category", async () => {
+  const originalFetch = globalThis.fetch;
+  const bodies = [];
+  globalThis.fetch = async (_input, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ upload: { id: "upl_12345678" } }), {
+      status: 201,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    // An explicit department (e.g. the Buchhaltung AccessGroup) rides through as `category`,
+    // which is what routes the upload into the accounting capture pipeline.
+    await createDriveUpload({
+      root: ROOT,
+      folderId: "",
+      file: new File(["invoice"], "invoice.pdf", { type: "application/pdf" }),
+      idempotencyKey: "upload-buchhaltung",
+      indexForAi: true,
+      category: "acg_space-b_buchhaltung",
+    });
+    // An empty category means "inherit the destination folder's default department"
+    // and is still sent verbatim so the Core API can apply that default.
+    await createDriveUpload({
+      root: ROOT,
+      folderId: "folder_12345678",
+      file: new File(["memo"], "memo.txt", { type: "text/plain" }),
+      idempotencyKey: "upload-inherit",
+      indexForAi: false,
+      category: "",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(bodies[0].category, "acg_space-b_buchhaltung");
+  assert.equal(bodies[0].index_for_ai, true);
+  assert.equal(bodies[1].category, "");
 });
 
 test("Drive folder creation and default updates send the complete filing policy", async () => {

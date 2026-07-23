@@ -889,14 +889,89 @@ export type AccountingWorkspace = {
   space_id: string;
   space_name: string;
   space_kind: string;
+  can_configure: boolean;
+};
+
+export type AccountingSide = {
+  count: number;
+  net: string;
+  tax: string;
+  gross: string;
 };
 
 export type AccountingOverview = {
   account_id: string;
   space_id: string;
+  currency: string;
   total_documents: number;
   pending_documents: number;
   confirmed_documents: number;
+  incoming: AccountingSide;
+  outgoing: AccountingSide;
+  input_vat: string;
+  output_vat: string;
+  vat_balance: string;
+};
+
+export type AccountingLineItem = {
+  id: string;
+  line_no: number;
+  description: string;
+  amount_net: string | null;
+  tax_rate: string | null;
+  amount_tax: string | null;
+  amount_gross: string | null;
+  proposed_account: string;
+  confirmed_account: string;
+  proposed_tax_key: string;
+  confirmed_tax_key: string;
+  cost_center: string;
+};
+
+export type AccountingDocument = {
+  id: string;
+  direction: string;
+  issuer_name: string;
+  recipient_name: string;
+  invoice_number: string;
+  invoice_date: string | null;
+  service_date: string | null;
+  currency: string;
+  total_net: string | null;
+  total_tax: string | null;
+  total_gross: string | null;
+  tax_breakdown: Array<Record<string, string | null>>;
+  dedup_key: string;
+  check_flags: Record<string, unknown>;
+  status: string;
+  confidence: string | null;
+  jurisdiction: string;
+  drive_file_id: string;
+  drive_revision_id: string;
+  created_by: string;
+  confirmed_by: string;
+  created_at: string | null;
+  updated_at: string | null;
+  line_items: AccountingLineItem[];
+};
+
+export type AccountingLineCorrectionInput = {
+  id: string;
+  account?: string;
+  tax_key?: string;
+  cost_center?: string;
+};
+
+export type AccountingConfirmItemInput = {
+  document_id: string;
+  direction?: "incoming" | "outgoing";
+  line_items?: AccountingLineCorrectionInput[];
+};
+
+export type AccountingConfirmInput = {
+  account_id: string;
+  space_id: string;
+  confirmations: AccountingConfirmItemInput[];
 };
 
 export type CreateKpiDefinitionInput = {
