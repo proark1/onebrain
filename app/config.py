@@ -336,6 +336,13 @@ class Settings(BaseSettings):
     # infra alerts above, so on by default on MC; 0 disables just this signal. The
     # self-deploy give-up signal (MC exhausting its self-deploy retries) is always on.
     pipeline_stall_alert_seconds: int = Field(default=10800, ge=0)   # 3h
+    # Alert delivery (roadmap Gap D). When set, Mission Control POSTs each newly-opened
+    # fleet alert (infra + pipeline) to this webhook so a stall/low-disk actually reaches
+    # you instead of waiting to be noticed in the console. The body carries a Slack-style
+    # `text` field plus structured fields (metadata only — never a secret or customer
+    # content). Empty = disabled (nothing is pushed). Best-effort: an alert is delivered on
+    # the tick it first opens, so a webhook outage at that moment means a missed push.
+    fleet_alert_webhook_url: str = ""
     # Persistent PostgreSQL/data mount as seen by a reporter. A container that
     # does not mount it emits 0/0 (unknown), never a duplicate root filesystem.
     fleet_data_volume_path: str = "/mnt/onebrain-data"

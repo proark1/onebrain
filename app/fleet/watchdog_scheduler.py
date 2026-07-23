@@ -36,7 +36,19 @@ def watchdog_once(settings, control_store, fleet_store) -> list:
         next_id=lambda: f"fa_{uuid4().hex}",
     )
     opened += _run_pipeline_watchdog(settings, control_store, fleet_store, now_iso)
+    _push_alert_webhook(settings, opened)
     return opened
+
+
+def _push_alert_webhook(settings, opened) -> None:
+    """Deliver newly-opened alerts (infra + pipeline) to the configured webhook (roadmap
+    Gap D). Dormant until fleet_alert_webhook_url is set; push_open_alerts never raises."""
+    url = (getattr(settings, "fleet_alert_webhook_url", "") or "").strip()
+    if not url or not opened:
+        return
+    from app.fleet.alert_notify import push_open_alerts
+
+    push_open_alerts(url, opened)
 
 
 def _run_pipeline_watchdog(settings, control_store, fleet_store, now_iso: str) -> list:

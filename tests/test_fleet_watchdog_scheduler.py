@@ -72,6 +72,39 @@ def test_watchdog_once_also_opens_pipeline_stall_alerts_on_mission_control():
     assert fleet.has_open_alert("mc", DEV_PIPELINE_STALLED_ALERT)
 
 
+def test_watchdog_once_pushes_opened_alerts_to_the_webhook(monkeypatch):
+    import app.fleet.alert_notify as alert_notify
+
+    pushed: list = []
+    monkeypatch.setattr(alert_notify, "push_open_alerts",
+                        lambda url, alerts, **kw: pushed.append((url, [a.kind for a in alerts])))
+    control = MemoryControlPlaneStore()
+    control.create_deployment(CustomerDeployment(
+        id="dep_a", customer_name="A", deployment_type="dedicated_server"))
+    fleet = MemoryFleetStore()   # no heartbeat -> a missed_heartbeat alert opens
+
+    opened = watchdog_once(_settings(fleet_alert_webhook_url="https://hook.example/x"), control, fleet)
+
+    assert any(alert.kind == "missed_heartbeat" for alert in opened)
+    assert pushed and pushed[0][0] == "https://hook.example/x"
+    assert "missed_heartbeat" in pushed[0][1]
+
+
+def test_watchdog_once_does_not_push_without_a_webhook_url(monkeypatch):
+    import app.fleet.alert_notify as alert_notify
+
+    called: list = []
+    monkeypatch.setattr(alert_notify, "push_open_alerts", lambda *a, **kw: called.append(True))
+    control = MemoryControlPlaneStore()
+    control.create_deployment(CustomerDeployment(
+        id="dep_a", customer_name="A", deployment_type="dedicated_server"))
+    fleet = MemoryFleetStore()
+
+    watchdog_once(_settings(), control, fleet)   # no webhook url configured
+
+    assert called == []
+
+
 def test_start_fleet_watchdog_requires_operator_mode_and_positive_interval():
     assert start_fleet_watchdog(_settings(operator_mode=False)) is False
     assert start_fleet_watchdog(_settings(fleet_watchdog_seconds=0)) is False

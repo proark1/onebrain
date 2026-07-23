@@ -113,11 +113,15 @@ other manual step below is a gap, not a feature.
   self-deploy retries). Reuses the existing fleet-alert mechanism + overview surface — no new
   store, route, migration or frontend — scoped so it never disturbs the infra alerts sharing
   that row. `app/fleet/pipeline_watchdog.py`; on by default via `pipeline_stall_alert_seconds`.
-- **Remaining — the delivery channel (fork #4).** Detection now exists and is console-visible,
-  but nothing PUSHES it — the alerts still sit in the fleet UI. A real channel (email / webhook)
-  reads these same `FleetAlert` rows; it is the one open decision. Until then "discovered days
-  later" is only half-solved: visible, not pushed.
-- **Effort:** M · **Risk:** low.
+- **DONE (this PR) — the delivery channel (fork #4 = webhook).** Mission Control now POSTs each
+  newly-opened alert (infra + pipeline) to `fleet_alert_webhook_url`, so a stall/low-disk
+  actually reaches you instead of waiting to be noticed. `app/fleet/alert_notify.py` — one
+  stdlib-`urllib` POST per alert (matches the fleet reporter, no new dependency), never raising;
+  a Slack-compatible `text` field + structured metadata (no secrets/customer content). Dormant
+  until the URL is set. Best-effort: delivered on the tick an alert first opens, so a webhook
+  outage then means a missed push (the alert is still in the console) — a retry/queue is a later
+  enhancement. Email/other channels can read the same `FleetAlert` rows if ever wanted.
+- **Effort:** M · **Risk:** low. **Gap D COMPLETE** (detection + webhook delivery).
 
 ### Gap E — Gate lifecycle
 - **E1 — fresh-gate migration bootstrap — DONE (#57, 2026-07-22).** A fresh gate could not
@@ -140,8 +144,8 @@ other manual step below is a gap, not a feature.
    loop.
 2. **Phase 2 — MC runs itself.** Gap B + Gap C together (applier + prune). Ends the
    hand-deploy that dominated tonight.
-3. **Phase 3 — Observability.** Gap D detection LANDED (this PR: pipeline-stall alerts in the
-   fleet console); the push channel (email/webhook, fork #4) is the one remaining decision.
+3. **Phase 3 — Observability. — LANDED (this PR).** Gap D complete: pipeline-stall detection
+   (fleet-console alerts) + webhook delivery (fork #4), so stalls actually reach the operator.
 4. **Phase 4 — Infra self-healing.** Gap E2 (gate auto-replacement). E1 already landed (#57).
 
 Each phase ships as its own PR per `AGENTS.md`. Phases 1–3 are pure control-plane / host
