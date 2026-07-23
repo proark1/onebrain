@@ -221,6 +221,7 @@ def create_app() -> FastAPI:
                 "assistant": settings.assistant_service_key,
                 "communication": settings.communication_service_key,
             },
+            default_locale=settings.customer_default_locale,
         )
         logging.getLogger("onebrain").info(
             "Customer bootstrap reconciled account=%s spaces=%s apps=%s integration_keys=%s.",

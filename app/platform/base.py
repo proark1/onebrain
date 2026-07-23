@@ -17,6 +17,12 @@ from app.assistant.employees import AI_EMPLOYEE_PURPOSES
 
 ACCOUNT_KINDS = frozenset({"person", "organization", "family", "project"})
 SPACE_KINDS = frozenset({"personal", "business", "customer_service", "shared", "family", "project"})
+# Platform-wide UI languages. German is primary; English is available. The chosen
+# default is picked at customer provisioning and persisted on the account (the
+# durable, queryable source the console seeds its language from). Keep this a small
+# closed set — the frontend catalogs (onebrain-web) mirror it.
+SUPPORTED_LOCALES = ("de", "en")
+DEFAULT_LOCALE = "de"
 APP_IDS = frozenset({"onebrain_core", "assistant", "ai_employees", "communication", "kpi_dashboard", "buchhaltung", "admin_console", "workers"})
 # Assistant purposes come from the assistant contract so the platform registry
 # cannot drift behind it (drift here rejects valid assistant writes as 422s).
@@ -76,6 +82,9 @@ class Account:
     owner_user_id: str = ""
     status: str = "active"
     created_at: str = ""
+    # UI language picked at provisioning (de/en). "de" for everything predating
+    # the i18n foundation and for any bootstrap descriptor that omits it.
+    default_locale: str = DEFAULT_LOCALE
 
 
 @dataclass(frozen=True)
@@ -480,6 +489,15 @@ def normalize_unique(values) -> tuple[str, ...]:
             seen.add(item)
             out.append(item)
     return tuple(out)
+
+
+def normalize_locale(value: str) -> str:
+    """Coerce a stored/received locale to a supported one, defaulting to German.
+
+    Used at the read boundary (session, provisioning) so a missing or unknown
+    value never reaches the console as an unsupported language."""
+    locale = (value or "").strip().lower()
+    return locale if locale in SUPPORTED_LOCALES else DEFAULT_LOCALE
 
 
 def normalize_hex_color(value: str) -> str:

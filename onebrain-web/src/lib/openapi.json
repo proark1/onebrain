@@ -4333,6 +4333,12 @@
             "title": "Customer Name",
             "type": "string"
           },
+          "default_locale": {
+            "default": "de",
+            "pattern": "^(de|en)$",
+            "title": "Default Locale",
+            "type": "string"
+          },
           "deployment_id": {
             "anyOf": [
               {
@@ -8859,6 +8865,11 @@
       },
       "ProvisionedAccountOut": {
         "properties": {
+          "default_locale": {
+            "default": "de",
+            "title": "Default Locale",
+            "type": "string"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -11025,6 +11036,11 @@
         "properties": {
           "clearance": {
             "title": "Clearance",
+            "type": "string"
+          },
+          "default_locale": {
+            "default": "de",
+            "title": "Default Locale",
             "type": "string"
           },
           "display_name": {

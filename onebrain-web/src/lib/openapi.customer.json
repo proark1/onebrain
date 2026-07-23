@@ -7932,6 +7932,11 @@
             "title": "Clearance",
             "type": "string"
           },
+          "default_locale": {
+            "default": "de",
+            "title": "Default Locale",
+            "type": "string"
+          },
           "display_name": {
             "default": "",
             "title": "Display Name",
