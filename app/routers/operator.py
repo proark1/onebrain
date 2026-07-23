@@ -7,6 +7,7 @@ expose customer content.
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -80,6 +81,8 @@ from app.platform.base import AuditEvent, scope_is_held
 from app.schemas import BrandThemeOut, ServiceKeyInfo
 
 router = APIRouter(prefix="/api/operator", tags=["operator"])
+
+_log = logging.getLogger("onebrain.fleet")
 
 
 class DeploymentCreate(BaseModel):
@@ -2129,7 +2132,22 @@ def _newest_operator_self_target(store) -> ReleaseManifest | None:
     return best
 
 
-def dispatch_operator_self_rollout(store, settings, *, actor: str = "mission-control") -> RolloutRun | None:
+def _latest_rollout_time(rollouts) -> datetime | None:
+    """The most recent completed_at (falling back to dispatched_at) among rollouts."""
+    times: list[datetime] = []
+    for rollout in rollouts:
+        raw = getattr(rollout, "completed_at", "") or getattr(rollout, "dispatched_at", "") or ""
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except (TypeError, ValueError):
+            continue
+        times.append(parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc))
+    return max(times) if times else None
+
+
+def dispatch_operator_self_rollout(
+    store, settings, *, actor: str = "mission-control", now: datetime | None = None,
+) -> RolloutRun | None:
     """Green main -> Mission Control. When operator self-deploy is enabled, open ONE
     pull rollout that moves MC's OWN box to the newest development-VERIFIED release, so a
     merged, gate-verified change reaches the control plane without an operator hand-
@@ -2137,8 +2155,12 @@ def dispatch_operator_self_rollout(store, settings, *, actor: str = "mission-con
       * no-op unless is_operator_self_deployment() holds for MC's own deployment row;
       * one self-update at a time (skips while any rollout is active);
       * only rolls FORWARD (target strictly newer than current_version);
-      * never re-attempts a target that already failed — a newer release supersedes it,
-        so a genuinely bad build cannot hot-loop the control plane;
+      * BOUNDED re-attempts of a failed target (operator_self_max_attempts, with a backoff
+        between tries). A self-update failure today is only a convergence TIMEOUT, which
+        cannot tell a transient apply failure (e.g. a disk-full that a prune later clears)
+        from a genuinely bad build — so a single timeout must not permanently strand an
+        otherwise-good release. The cap preserves the old invariant that a bad build cannot
+        hot-loop the control plane; a newer release supersedes and resets the count;
       * defers to the shared plan gate (operator_self path): a migration-crossing
         release, for instance, still needs a fresh backup before it can proceed.
     Customer delivery is untouched: this only ever targets MC's own deployment id, and
@@ -2160,11 +2182,25 @@ def dispatch_operator_self_rollout(store, settings, *, actor: str = "mission-con
         comparison = compare_versions(candidate.version, deployment.current_version)
         if comparison is None or comparison <= 0:
             return None  # already on the tip, or an incomparable version — never roll
-    if any(
-        rollout.target_version == candidate.version and rollout.status == "failed"
-        for rollout in store.list_rollouts(deployment_id)
-    ):
-        return None  # a prior attempt at this exact target failed; wait for a newer release
+    prior_failures = [
+        rollout for rollout in store.list_rollouts(deployment_id)
+        if rollout.target_version == candidate.version and rollout.status == "failed"
+    ]
+    max_attempts = max(1, int(getattr(settings, "operator_self_max_attempts", 3)))
+    if len(prior_failures) >= max_attempts:
+        # Budget exhausted: stop, so a genuinely bad build can never hot-loop the control
+        # plane. A newer dev-verified release resets this (its target_version differs).
+        return None
+    if prior_failures:
+        backoff = max(0, int(getattr(settings, "operator_self_retry_backoff_seconds", 900)))
+        last_failure = _latest_rollout_time(prior_failures)
+        clock = now or datetime.now(timezone.utc)
+        if last_failure is not None and (clock - last_failure).total_seconds() < backoff:
+            return None  # still inside the backoff window; re-attempt on a later tick
+        _log.info(
+            "operator self-deploy re-attempting %s (attempt %d/%d)",
+            candidate.version, len(prior_failures) + 1, max_attempts,
+        )
     if not store.plan_update(deployment_id, candidate.version).allowed:
         return None
     rollout = store.start_rollout(RolloutRun(

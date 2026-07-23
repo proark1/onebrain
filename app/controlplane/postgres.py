@@ -438,6 +438,31 @@ class PostgresControlPlaneStore:
             rows = cur.fetchall()
         return [self._promotion_event(row) for row in rows]
 
+    def record_release_promotion_event(
+        self,
+        version: str,
+        *,
+        action: str,
+        actor: str = "",
+        note: str = "",
+        metadata: Optional[Dict] = None,
+    ) -> ReleasePromotionEvent:
+        """Append a promotion event WITHOUT a state transition (e.g. a give-up alert)."""
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT state FROM control_release_promotions WHERE release_version = %s",
+                (version,),
+            )
+            row = cur.fetchone()
+            state = row[0] if row else ""
+            event = ReleasePromotionEvent(
+                id="", release_version=version, actor=actor, action=action,
+                from_state=state, to_state=state, note=note, metadata=dict(metadata or {}),
+            )
+            self._insert_promotion_event(cur, event)
+            conn.commit()
+        return event
+
     def set_release_production_signature(
         self,
         version: str,

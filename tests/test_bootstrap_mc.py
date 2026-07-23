@@ -191,6 +191,46 @@ def _mc_settings(**over):
     return Settings(**data)
 
 
+# --- config-threading safety (operator knobs) --------------------------------
+
+def test_alert_webhook_url_with_dollar_is_rejected_before_render():
+    """A webhook URL containing '$' would be silently rewritten by docker-compose's
+    first-boot interpolation of the MC box's baked .env (the operator box runs `compose up`
+    directly against it). build_mc_artifacts must fail closed with an actionable error
+    rather than ship an SSH-less box that posts alerts to a corrupted URL."""
+    settings = _mc_settings(fleet_alert_webhook_url="https://hooks.example.com/x?sig=$token")
+    with pytest.raises(ValueError, match=r"FLEET_ALERT_WEBHOOK_URL"):
+        mc.build_mc_artifacts(_args(_base_argv()), settings)
+
+    # The percent-encoded escape (%24) is compose-safe and renders into the baked .env.
+    ok = _mc_settings(fleet_alert_webhook_url="https://hooks.example.com/x?sig=%24token")
+    art = mc.build_mc_artifacts(_args(_base_argv()), ok)
+    dotenv = extract_cloud_init_file(art.cloud_init, "/opt/onebrain/.env")
+    assert "ONEBRAIN_FLEET_ALERT_WEBHOOK_URL=https://hooks.example.com/x?sig=%24token" in dotenv
+
+
+def test_production_auto_deploy_without_dev_key_fails_bootstrap_preflight(tmp_path):
+    """Threading operator_auto_deploy_enabled into the app env means a production MC with
+    auto-deploy on but no dev verify key would boot-loop create_app() (a dead, SSH-less box).
+    The bootstrap preflight must reject it BEFORE any server is created — mirroring
+    assert_production_mission_control_ready."""
+    settings = _production_mc_settings(
+        tmp_path, operator_auto_deploy_enabled=True, dev_release_verify_public_key="")
+    with pytest.raises(ValueError, match="ONEBRAIN_DEV_RELEASE_VERIFY_PUBLIC_KEY"):
+        mc.build_mc_artifacts(_args(_base_argv("--fqdn", "mc.example.com")), settings)
+
+    # With the dev key present the same production bootstrap renders, and the flag + key
+    # both reach the app (the whole point of the threading change).
+    ok = _production_mc_settings(
+        tmp_path, operator_auto_deploy_enabled=True, dev_release_verify_public_key="dev-verify-key")
+    art = mc.build_mc_artifacts(_args(_base_argv("--fqdn", "mc.example.com")), ok)
+    s = resolve_box_api_settings(
+        extract_cloud_init_file(art.cloud_init, "/opt/onebrain/env/onebrain-api.env"),
+        extract_cloud_init_file(art.cloud_init, "/opt/onebrain/.env"))
+    assert s.operator_auto_deploy_enabled is True
+    assert s.dev_release_verify_public_key == "dev-verify-key"
+
+
 # --- dry-run: the baked operator cloud-init (G3-1) ---------------------------
 
 def test_dry_run_bakes_operator_env_and_omits_bootstrap_token():

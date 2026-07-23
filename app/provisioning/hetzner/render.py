@@ -686,6 +686,34 @@ def _shell_kv(pairs) -> str:
     return "\n".join(out) + "\n"
 
 
+# Operator control-plane recovery knobs (roadmap Phases 1-3): read by the MC APP only
+# (reconcile scheduler, self-deploy retry, pipeline watchdog, operator router), never by a
+# host script. They must ride onebrain-api.env — a value baked only into /opt/onebrain/.env
+# is used purely to interpolate ${VAR} refs and NEVER becomes a Setting (proven by
+# tests/boot_config_helper.resolve_box_api_settings), so without a ref here a provisioned MC
+# silently keeps the field default no matter what the operator bakes. Emitted for the
+# operator role only (customer boxes never receive them) and filled from the MC's baked
+# overlay in scripts/bootstrap_mc.py. Keep this list and that overlay in lockstep — the
+# boot-config test (tests/test_box_boot_config.py) asserts each one resolves on the box.
+_OPERATOR_APP_CONTROL_ENV = (
+    # The app also needs the dev verify key (box.env carries it for the host updater; the
+    # APP registers/verifies dev-signed candidates) and the auto-deploy flag it gates on.
+    "ONEBRAIN_DEV_RELEASE_VERIFY_PUBLIC_KEY",
+    "ONEBRAIN_OPERATOR_AUTO_DEPLOY_ENABLED",
+    # MC self-deploy bounded retry (Phase 2, #69).
+    "ONEBRAIN_OPERATOR_SELF_MAX_ATTEMPTS",
+    "ONEBRAIN_OPERATOR_SELF_RETRY_BACKOFF_SECONDS",
+    # Dev-pipeline auto-retry (Phase 1, #61).
+    "ONEBRAIN_DEVELOPMENT_AUTO_RETRY_ENABLED",
+    "ONEBRAIN_DEVELOPMENT_AUTO_RETRY_MAX_ATTEMPTS",
+    "ONEBRAIN_DEVELOPMENT_AUTO_RETRY_BACKOFF_SECONDS",
+    "ONEBRAIN_DEVELOPMENT_AUTO_RETRY_BACKUP_BACKOFF_SECONDS",
+    # Pipeline-stall detection + alert delivery (Phase 3, #65).
+    "ONEBRAIN_PIPELINE_STALL_ALERT_SECONDS",
+    "ONEBRAIN_FLEET_ALERT_WEBHOOK_URL",
+)
+
+
 def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
     """Ordered (key, value) pairs for one service's env file. Secrets are ALWAYS
     ${VAR} refs (never plaintext)."""
@@ -862,6 +890,10 @@ def _module_env(module_id: str, inp: BoxRenderInputs) -> list:
             ("ONEBRAIN_RELEASE_REQUIRE_ROLLBACK_KIND", "true"),
             ("ONEBRAIN_RELEASE_PROMOTION_REQUIRED", "true"),
             ("ONEBRAIN_FLEET_RECONCILE_SECONDS", str(inp.operator_fleet_reconcile_seconds)),
+            # Operator control-plane recovery knobs, as ${VAR} refs filled from the MC's baked
+            # /opt/onebrain/.env so a provisioned (SSH-less) MC can actually set them. See
+            # _OPERATOR_APP_CONTROL_ENV for why an overlay-only value never reaches the app.
+            *((name, "${" + name + "}") for name in _OPERATOR_APP_CONTROL_ENV),
         ]
         if inp.operator_broker_client_certificate:
             pairs += [
