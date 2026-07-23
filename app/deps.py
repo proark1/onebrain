@@ -179,6 +179,22 @@ def get_accounting_store():
 
 
 @lru_cache
+def get_accounting_service():
+    from app.accounting.extraction import build_invoice_extractor
+    from app.accounting.service import AccountingService
+
+    settings = get_settings()
+    return AccountingService(
+        store=get_accounting_store(),
+        extractor=build_invoice_extractor(settings),
+        drive_store=get_drive_store(),
+        blob_store=get_drive_blob_store(),
+        platform_store=get_platform_store(),
+        settings=settings,
+    )
+
+
+@lru_cache
 def get_drive_store() -> DriveStore:
     from app.drive.factory import build_drive_store
 

@@ -186,6 +186,9 @@ export async function createDriveUpload(input: CreateDriveUploadInput): Promise<
     idempotency_key: input.idempotencyKey,
   };
   payload.index_for_ai = input.indexForAi;
+  // Empty string means "inherit the destination folder's default department";
+  // a concrete AccessGroup id (e.g. Buchhaltung) files the upload there instead.
+  payload.category = input.category;
   const response = await driveJson<DriveUploadSession | { id: string } | { upload: { id: string; expires_at?: string } }>("/uploads", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

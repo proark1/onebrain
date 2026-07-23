@@ -9,6 +9,7 @@ import {
 } from "./drive-policy-fields";
 import type {
   DriveAudience,
+  DriveDepartment,
   DriveFileEntry,
   DriveFilingPolicy,
   DriveFolderEntry,
@@ -91,6 +92,7 @@ export function CreateFolderDialog({
 
 export function UploadFilesDialog({
   canIndex,
+  departments,
   destinationName,
   open,
   policyMode,
@@ -99,29 +101,33 @@ export function UploadFilesDialog({
   onUpload,
 }: {
   canIndex: boolean;
+  departments: DriveDepartment[];
   destinationName: string;
   open: boolean;
   policyMode: DrivePolicyMode;
   preselectedFiles: File[];
   onClose: () => void;
-  onUpload: (files: File[], indexForAi: boolean) => void;
+  onUpload: (files: File[], indexForAi: boolean, category: string) => void;
 }) {
   const dialogRef = useModal(open);
   const titleId = useId();
   const inputId = useId();
+  const departmentId = useId();
   const [files, setFiles] = useState<File[]>(preselectedFiles);
   const [choice, setChoice] = useState<"index" | "store" | "">(canIndex ? "" : "store");
+  const [category, setCategory] = useState("");
 
   function closeDialog() {
     setFiles([]);
     setChoice(canIndex ? "" : "store");
+    setCategory("");
     onClose();
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!files.length || !choice) return;
-    onUpload(files, choice === "index" && canIndex);
+    onUpload(files, choice === "index" && canIndex, category);
     closeDialog();
   }
 
@@ -133,6 +139,13 @@ export function UploadFilesDialog({
           <span>{files.length ? `${files.length} file${files.length === 1 ? "" : "s"} selected` : "Choose files"}</span>
           <input id={inputId} multiple type="file" onChange={(event) => setFiles(Array.from(event.target.files ?? []))} />
           <small>{files.length ? summarizeFiles(files) : "Select one or more company files."}</small>
+        </label>
+        <label htmlFor={departmentId}>
+          <span>Department</span>
+          <select id={departmentId} value={category} onChange={(event) => setCategory(event.target.value)}>
+            <option value="">Folder default</option>
+            {departments.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
         </label>
         <fieldset className={styles.indexChoice}>
           <legend>AI use</legend>

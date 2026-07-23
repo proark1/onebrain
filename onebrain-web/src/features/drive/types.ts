@@ -155,6 +155,7 @@ export type CreateDriveUploadInput = {
   file: File;
   idempotencyKey: string;
   indexForAi: boolean;
+  category: string;
 };
 
 export type UpdateDriveFolderInput = {
