@@ -323,6 +323,16 @@ class ControlPlaneStore(Protocol):
 
     def list_release_promotion_events(self, version: str) -> List[ReleasePromotionEvent]: ...
 
+    def record_release_promotion_event(
+        self,
+        version: str,
+        *,
+        action: str,
+        actor: str = "",
+        note: str = "",
+        metadata: Optional[Dict] = None,
+    ) -> ReleasePromotionEvent: ...
+
     def set_release_production_signature(
         self,
         version: str,

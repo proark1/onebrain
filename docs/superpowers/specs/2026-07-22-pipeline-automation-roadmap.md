@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-22
 **Author:** operator + Claude (session 2775207f)
-**Status:** planning — no code yet
+**Status:** Phase 1 landed (self-healing dev pipeline); Phases 2–4 planned
 
 ## Why this exists
 
@@ -39,19 +39,28 @@ other manual step below is a gap, not a feature.
 
 ## The real gaps (each mapped to its cause)
 
-### Gap A — Dev candidates never auto-retry  ★ highest leverage
+### Gap A — Dev candidates never auto-retry  ★ highest leverage — **DONE (Phase 1, this PR)**
 - **Toil tonight:** the whole 471–501 backlog sat at `dev_failed` after the gate came
   back; I hand-ran `retry-dev` on 486.
 - **Cause:** `dispatch_waiting_development_candidate` selects **only** `dev_pending`
   ([operator.py:2105-2108](../../../app/routers/operator.py)). Nothing ever moves a
   `dev_failed` candidate back to retryable. A failure is terminal-until-a-human.
-- **Fix:** a bounded self-healing retry on the reconcile tick / heartbeat — reclassify
-  `dev_failed` candidates whose `failure_reason` is **transient** back into the dispatch
-  path, with a per-candidate attempt cap + backoff, and an alert when it gives up.
-- **Payoff:** tonight's re-binding bug would have **self-healed silently** (first auto-retry
-  re-binds, second passes) — no page, no investigation.
-- **Effort:** M · **Risk:** M (retry storms / masking a genuinely bad build → mitigated by
-  transient classification + caps + give-up alert).
+- **Fix (landed):** [`app/controlplane/development_retry.py`](../../../app/controlplane/development_retry.py)
+  — on the MC-only reconcile tick, `reclaim_retryable_development_candidates` re-dispatches
+  `dev_failed` candidates whose **effective** failure reason is transient (the generic
+  `dev_preflight_failed` is unwrapped to the plan reason in the final event note, exactly
+  like `is_current_replacement_bootstrap_failure`). Bounded by a per-candidate attempt cap
+  + backoff (a slower cadence for the backup-gate wait so a migration-crosser rides through
+  the 02:30 backup), and a durable, timeline-visible **give-up marker** event when the
+  budget is exhausted. Re-dispatch goes through the SAME `_dispatch_development_candidate`
+  path `retry-dev` uses, tagged actor `mission-control:auto-retry`. OFF by default
+  (`development_auto_retry_enabled`); needs `fleet_reconcile_seconds > 0`.
+- **Payoff:** a transient failure (gate hiccup, rollout/dispatch blip, stale binding, a
+  schema update waiting on the daily backup) now **self-heals with no page**; only a
+  genuinely stuck candidate escalates, and it does so legibly.
+- **Effort:** M · **Risk:** M → mitigated: transient/permanent classification (unknown ⇒
+  permanent, fail-safe), attempt caps, give-up alert, and it never acks a `restore_required`
+  release or touches customer delivery.
 
 ### Gap B — MC self-update is computed but never applied
 - **Toil tonight:** hand-edited `images.override.yml` + `docker compose --force-recreate`
@@ -127,9 +136,10 @@ other manual step below is a gap, not a feature.
 
 ## Recommended sequence
 
-1. **Phase 1 — Self-healing dev pipeline.** Gap A + a give-up alert (Gap D-lite). Biggest
-   toil reduction per unit effort; directly prevents the "notice days later, hand-retry"
-   loop.
+1. **Phase 1 — Self-healing dev pipeline. — LANDED (this PR).** Gap A + a give-up alert
+   (Gap D-lite): [`development_retry.py`](../../../app/controlplane/development_retry.py)
+   on the reconcile tick, opt-in via `development_auto_retry_enabled`. Biggest toil
+   reduction per unit effort; directly prevents the "notice days later, hand-retry" loop.
 2. **Phase 2 — MC runs itself.** Gap B + Gap C together (applier + prune). Ends the
    hand-deploy that dominated tonight.
 3. **Phase 3 — Observability.** Gap D in full.
@@ -138,26 +148,34 @@ other manual step below is a gap, not a feature.
 Each phase ships as its own PR per `AGENTS.md`. Phases 1–3 are pure control-plane / host
 work with no change to the trust model.
 
-## Design forks to decide before Phase 1
+## Design forks
 
-1. **Transient vs permanent classification** — *the crux.* Which failures auto-retry?
-   - *Transient (retry):* `dev_rollout_failed`, `development_gate_target_unavailable`,
-     `backup_required_for_schema_update` (once a backup exists), secrets-epoch-pending.
-   - *Permanent (do not retry — needs a human/new build):* `release_missing_modules`,
-     `release_signature_invalid`, module-set-invalid, `release_yanked`.
-   - **Read the reason from the right place.** `_fail_development_preflight` persists the
-     generic `failure_reason="dev_preflight_failed"` and puts the concrete cause
-     (`backup_required_for_schema_update`, `release_missing_modules:*`,
-     `release_signature_invalid`, …) **only in the promotion event note**
-     ([operator.py:1917-1925](../../../app/routers/operator.py)). Classifying preflight
-     failures off `failure_reason` alone therefore can't tell transient from permanent —
-     Phase 1 must consult the latest `dev_preflight_failed` event note/metadata, or first
-     change what `_fail_development_preflight` stores.
-2. **Retry policy** — max attempts per candidate, backoff curve, and whether to retry the
-   whole backlog or only the newest N (recommend: newest only — old builds are superseded).
-3. **MC self-apply autonomy** — fully automatic (trust the dev signature, already the design
-   intent) vs. require a one-click operator ack per MC update.
-4. **Alert channel + owner** — email / operator console / webhook, and who is on the hook.
+1. **Transient vs permanent classification** — *the crux.* — **DECIDED (this PR).**
+   Encoded as explicit frozensets in
+   [`development_retry.py`](../../../app/controlplane/development_retry.py):
+   - *Transient (retry):* infra/timing/stale-binding hiccups — `dev_rollout_failed`,
+     `dev_dispatch_failed`, `dev_convergence_timeout`, `dev_verification_timeout`,
+     `dev_heartbeat_time_invalid`, `dev_secrets_epoch_mismatch`/`_invalid`,
+     `development_gate_missing`/`_mismatch`, `deployment_rollout_active`/`_heartbeat_stale`/
+     `_unhealthy`; and `backup_required_for_schema_update` on a *slower* cadence so it rides
+     through the daily 02:30 backup.
+   - *Permanent (never retried — a human/new build/gate replacement owns it):*
+     `release_signature_invalid`, `release_unsigned`, `release_yanked`, the module-set /
+     gate-replacement reasons, every heartbeat verification mismatch (`dev_version_mismatch`,
+     `dev_migration_mismatch`, `dev_heartbeat_unhealthy`, `dev_attempt_mismatch`, …), and
+     `restore_required_ack_needed` (auto-retry never acks). **Anything unclassified ⇒
+     permanent** — fail safe.
+   - **Reads the reason from the right place.** `_fail_development_preflight` persists the
+     generic `failure_reason="dev_preflight_failed"` with the concrete cause **only in the
+     event note** ([operator.py:1917-1925](../../../app/routers/operator.py)); the classifier
+     unwraps it via `effective_failure_reason`, mirroring `is_current_replacement_bootstrap_failure`.
+2. **Retry policy** — **DECIDED (this PR).** Per-candidate attempt cap (default 5) + backoff
+   (default 10 min infra / 6 h backup-wait), all config-tunable; a durable `dev_auto_retry_exhausted`
+   marker + WARNING on give-up. **Newest wins:** a candidate superseded by a newer verified
+   release is skipped entirely (no retry, no give-up noise).
+3. **MC self-apply autonomy** *(Phase 2)* — fully automatic (trust the dev signature, already the
+   design intent) vs. require a one-click operator ack per MC update.
+4. **Alert channel + owner** *(Phase 3)* — email / operator console / webhook, and who is on the hook.
 
 ## Out of scope
 
